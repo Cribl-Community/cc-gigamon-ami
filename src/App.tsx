@@ -21,6 +21,7 @@ import { ShadowAi } from './tabs/ShadowAi'
 import { DataFlow } from './tabs/DataFlow'
 import { FieldExplorer } from './tabs/FieldExplorer'
 import { AmiReference } from './tabs/AmiReference'
+import { GuidedSetup } from './tabs/GuidedSetup'
 
 const TABS = [
   { to: '/findings', label: 'Findings', el: <Findings /> },
@@ -36,6 +37,7 @@ const TABS = [
   { to: '/data-flow', label: 'Data Flow', el: <DataFlow /> },
   { to: '/fields', label: 'Field Explorer', el: <FieldExplorer /> },
   { to: '/reference', label: 'AMI Reference', el: <AmiReference /> },
+  { to: '/setup', label: 'Guided Setup', el: <GuidedSetup /> },
 ]
 
 function RefreshIcon() {
