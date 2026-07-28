@@ -1,0 +1,36 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Packaged app archives — regenerable via `npm run package`.
+# Ignore all bundles except the latest published version.
+build/*
+!build/gigamon-ami-1.0.14.tgz
+
+# Local dev-only Cribl credentials for the Vite Search proxy (never committed)
+.dev/
+
+# Sample source data & reference dashboard screenshots — inputs, not app source
+sample_dashboards/
+samples_files/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
