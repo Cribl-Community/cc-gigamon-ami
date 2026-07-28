@@ -13,9 +13,10 @@ dist-ssr
 *.local
 
 # Packaged app archives — regenerable via `npm run package`.
-# Ignore all bundles except the latest published version.
+# Ignore everything except the stable "latest" alias, which the package
+# script refreshes to point at the newest build (version is inside the tgz).
 build/*
-!build/gigamon-ami-1.0.14.tgz
+!build/gigamon-ami-latest.tgz
 
 # Local dev-only Cribl credentials for the Vite Search proxy (never committed)
 .dev/

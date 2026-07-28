@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
@@ -74,4 +74,35 @@ await mkdir(buildOutDir, { recursive: true });
 const { closePromise, stdout } = await createAppPack(false);
 await Promise.all([pipeline(stdout, createWriteStream(tgzPath)), closePromise]);
 
+// Keep build/ tidy: retain the newest N versioned bundles (rollback window),
+// prune older ones, and refresh a stable "<name>-latest.tgz" alias that always
+// points at the newest build. Only "-latest.tgz" is tracked in git (see
+// .gitignore); the versioned window is a local convenience. Override N with
+// KEEP_BUNDLES, e.g. `KEEP_BUNDLES=10 npm run package`.
+const keepCount = Math.max(1, Number(process.env.KEEP_BUNDLES) || 5);
+const appName = packageInfo.name || 'app';
+const latestName = `${appName}-latest.tgz`;
+const latestPath = join(buildOutDir, latestName);
+const versionedBundle = new RegExp(`^${appName}-(\\d+)\\.(\\d+)\\.(\\d+)\\.tgz$`);
+
+// Newest-first by semver, so the retention window survives out-of-order mtimes.
+const bundles = (await readdir(buildOutDir))
+  .map((file) => {
+    const match = versionedBundle.exec(file);
+    if (!match) return null;
+    const rank = Number(match[1]) * 1_000_000 + Number(match[2]) * 1_000 + Number(match[3]);
+    return { file, rank };
+  })
+  .filter(Boolean)
+  .sort((a, b) => b.rank - a.rank);
+
+const stale = bundles.slice(keepCount);
+await Promise.all(stale.map(({ file }) => rm(join(buildOutDir, file), { force: true })));
+await copyFile(tgzPath, latestPath);
+
 console.log(`\nPackage created: ${tgzPath}`);
+console.log(`Latest alias:    ${latestPath}`);
+console.log(
+  `Retained ${Math.min(bundles.length, keepCount)} of ${bundles.length} bundle(s)` +
+    (stale.length > 0 ? `; pruned ${stale.length} older.` : '.'),
+);
