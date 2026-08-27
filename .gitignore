@@ -16,7 +16,11 @@ dist-ssr
 # Ignore everything except the stable "latest" alias, which the package
 # script refreshes to point at the newest build (version is inside the tgz).
 build/*
-!build/gigamon-ami-latest.tgz
+!build/cc-gigamon-ami-latest.tgz
+
+# Cribl pack layout for Git install (generated; committed only onto release tags by CI)
+/static/
+/default/
 
 # Local dev-only Cribl credentials for the Vite Search proxy (never committed)
 .dev/

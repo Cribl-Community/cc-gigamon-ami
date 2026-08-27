@@ -1,8 +1,19 @@
 {
-  "name": "gigamon-ami",
+  "name": "cc-gigamon-ami",
   "private": true,
   "version": "1.0.16",
   "type": "module",
+  "displayName": "Gigamon AMI",
+  "description": "Gigamon AMI dashboards for Cribl App Platform",
+  "author": "bwoodeux",
+  "license": "Apache-2.0",
+  "tags": {
+    "product": [
+      "stream",
+      "search",
+      "lake"
+    ]
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -28,8 +39,6 @@
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
   },
-  "displayName": "gigamon-ami",
-  "author": "James Pederson",
   "cribl": {
     "type": "app",
     "createAppScriptVersion": "0.4.0"
