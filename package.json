@@ -5,7 +5,7 @@
   "type": "module",
   "displayName": "Gigamon AMI",
   "description": "Gigamon AMI dashboards for Cribl App Platform",
-  "author": "bwoodeux",
+  "author": "James Pederson <jpederson@cribl.io>",
   "license": "Apache-2.0",
   "tags": {
     "product": [
