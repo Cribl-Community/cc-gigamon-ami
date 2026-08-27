@@ -8,6 +8,8 @@ network-performance-monitoring dashboard. It runs [Cribl Search](https://docs.cr
 renders the results across focused tabs — service dependencies, TCP/DNS/TLS health, capacity and
 top talkers, security findings, and more — without moving the data anywhere.
 
+![The Service Map tab: a service-to-service dependency graph built from Gigamon AMI flow metadata, sized by flow volume and colored by reset/latency health](./docs/screenshot-service-map.png)
+
 ## Why
 
 Gigamon AMI emits rich Layer 4–7 metadata (hundreds of fields per flow: service names, TCP/DNS/TLS
@@ -29,6 +31,8 @@ into the raw Cribl Search UI whenever you want to go deeper.
    Investigate) so any dashboard number is one click away from the underlying events.
 4. **Stay read-only.** Apart from Guided Setup provisioning (deliberate, idempotent, and
    user-triggered), the app never writes to your Cribl config or data.
+
+![The Findings tab: severity-ranked detections — security exposures, wire faults, and service failures — each naming the AMI field that evidences it and drilling into the matching flows in Cribl Search](./docs/screenshot-findings.png)
 
 ## Features
 
