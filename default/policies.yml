@@ -1,0 +1,21 @@
+# Product API access declaration. Declare Cribl product API paths your app needs to access.
+# At install time, admins see exactly which platform resources the app will use.
+#
+# This app is read-only: it runs Cribl Search jobs against the Cribl Lake dataset
+# `gigamon_ami` and reads their results. Search always runs in the default_search
+# group, so every call is under /m/default_search/search/...
+policies:
+  # Submit a search job (POST) and list jobs (GET).
+  - object: '/m/default_search/search/jobs'
+    actions: ['GET', 'POST']
+  # Poll job status, read results, and field-summaries (job sub-paths).
+  - object: '/m/default_search/search/jobs/*'
+    actions: ['GET']
+
+  # Cribl Search AI: read whether AI features are enabled, and read/generate
+  # "dataset intelligence" for the gigamon_ami Lake dataset. Without this the
+  # Copilot agent rediscovers the 319-field schema on every AI investigation.
+  - object: '/ai/settings/features'
+    actions: ['GET']
+  - object: '/ai/settings/dataset-intelligence/*'
+    actions: ['GET', 'POST']
