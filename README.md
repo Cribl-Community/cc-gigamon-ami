@@ -3,7 +3,7 @@
 [![Release](https://github.com/Cribl-Community/cc-gigamon-ami/actions/workflows/release.yml/badge.svg)](https://github.com/Cribl-Community/cc-gigamon-ami/actions/workflows/release.yml)
 
 A Cribl App that turns **Gigamon Application Metadata Intelligence (AMI)** flow records into a
-network-performance-monitoring dashboard. It runs [Cribl Search](https://docs.cribl.io/search/)
+network-observability dashboard. It runs [Cribl Search](https://docs.cribl.io/search/)
 (KQL) jobs against the `gigamon_ami` dataset in [Cribl Lake](https://docs.cribl.io/lake/) and
 renders the results across focused tabs — service dependencies, TCP/DNS/TLS health, capacity and
 top talkers, security findings, and more — without moving the data anywhere.

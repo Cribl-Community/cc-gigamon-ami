@@ -287,7 +287,7 @@ const RESOURCE_PHRASE: Record<ResourceKey, string> = {
 /**
  * Compose a self-describing commit message from the resources actually
  * committed — grouped by created vs. updated — so the Git history says what the
- * Gigamon NPM app did and why, not just "guided setup".
+ * Gigamon Network Observability app did and why, not just "guided setup".
  */
 function deployCommitMessage(group: string, steps: StepResult[]): string {
   const committed = steps.filter((s) => groupFile(group, s.key as ResourceKey))
@@ -298,8 +298,8 @@ function deployCommitMessage(group: string, steps: StepResult[]): string {
   if (updated.length) clauses.push(`updated ${updated.join(', ')}`)
   const what = clauses.length ? `: ${clauses.join('; ')}` : ''
   return (
-    `Gigamon NPM — onboard Gigamon AMI over Syslog into worker group '${group}'${what}. ` +
-    `Real AMX exports land in Cribl Lake dataset '${LAKE_DATASET_ID}', feeding the Gigamon NPM dashboards.`
+    `Gigamon Network Observability — onboard Gigamon AMI over Syslog into worker group '${group}'${what}. ` +
+    `Real AMX exports land in Cribl Lake dataset '${LAKE_DATASET_ID}', feeding the Gigamon Network Observability dashboards.`
   )
 }
 
@@ -307,7 +307,7 @@ function deployCommitMessage(group: string, steps: StepResult[]): string {
 function removeCommitMessage(group: string, keys: ResourceKey[]): string {
   const removed = keys.map((k) => RESOURCE_PHRASE[k]).join(', ')
   return (
-    `Gigamon NPM — remove Gigamon AMI Syslog onboarding from worker group '${group}': deleted ${removed}. ` +
+    `Gigamon Network Observability — remove Gigamon AMI Syslog onboarding from worker group '${group}': deleted ${removed}. ` +
     `Cribl Lake dataset '${LAKE_DATASET_ID}' retained (shared, group-independent).`
   )
 }

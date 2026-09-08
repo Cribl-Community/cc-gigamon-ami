@@ -144,7 +144,7 @@ const STAGES: Stage[] = [
     links: [{ href: criblUiUrl('/search'), label: 'Cribl Search' }],
   },
   {
-    id: 'app', name: 'This App · Gigamon NPM', kind: 'app', short: 'dashboards',
+    id: 'app', name: 'This App · Gigamon Network Observability', kind: 'app', short: 'dashboards',
     purpose:
       'The presentation layer you are looking at. It runs inside Cribl as a sandboxed app and calls Cribl Search through the platform fetch proxy — no separate credentials, no data leaving the workspace.',
     detail: [

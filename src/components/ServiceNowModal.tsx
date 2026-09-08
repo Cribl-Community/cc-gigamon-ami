@@ -70,7 +70,7 @@ export function ServiceNowModal({ service, onClose }: Props) {
             </label>
             <label className="fld">
               <span>Caller / reported by *</span>
-              <input className="fld-in" defaultValue="Gigamon NPM (automated)" />
+              <input className="fld-in" defaultValue="Gigamon Network Observability (automated)" />
             </label>
             <label className="fld">
               <span>Description *</span>

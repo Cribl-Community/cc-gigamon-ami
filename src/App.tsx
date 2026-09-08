@@ -115,10 +115,10 @@ function Header() {
     <header className="app-header">
       <div className="app-title-block">
         <h1 className="app-title">
-          <span className="title-bar" />Gigamon NPM
+          <span className="title-bar" />Gigamon Network Observability
         </h1>
         <p className="app-subtitle">
-          Network performance monitoring · Cribl Search · Gigamon AMI
+          Network observability · Cribl Search · Gigamon AMI
           <span className={`env-chip ${IS_INSTALLED ? 'env-installed' : 'env-dev'}`}>
             {IS_INSTALLED ? 'Cribl' : 'dev preview'}
           </span>

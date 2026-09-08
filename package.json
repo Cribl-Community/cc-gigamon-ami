@@ -1,11 +1,11 @@
 {
   "name": "cc-gigamon-ami",
   "private": true,
-  "version": "1.0.16",
+  "version": "1.0.17",
   "type": "module",
   "displayName": "Gigamon AMI",
   "description": "Gigamon AMI dashboards for Cribl App Platform",
-  "author": "James Pederson - jpederson@cribl.io",
+  "author": "Cribl TAP SE - tap-se@cribl.io",
   "license": "Apache-2.0",
   "tags": {
     "product": [

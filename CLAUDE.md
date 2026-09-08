@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-"Gigamon NPM" — a **Cribl App Platform app**: a React + TypeScript + Vite SPA that runs inside the Cribl UI (a sandboxed iframe) as a network-performance-monitoring dashboard. It runs **Cribl Search** (KQL) jobs against the Cribl Lake dataset `gigamon_ami` (Gigamon Application Metadata Intelligence flow records) and renders the results across a set of tabs.
+"Gigamon Network Observability" — a **Cribl App Platform app**: a React + TypeScript + Vite SPA that runs inside the Cribl UI (a sandboxed iframe) as a network-observability dashboard. It runs **Cribl Search** (KQL) jobs against the Cribl Lake dataset `gigamon_ami` (Gigamon Application Metadata Intelligence flow records) and renders the results across a set of tabs.
 
 Read **`AGENTS.md`** first — it is the authoritative Cribl App Platform developer guide (fetch proxy, KV store, `proxies.yml`/`policies.yml`, navigation, Capra UI rules, versioning). This file covers what's specific to *this* app.
 
