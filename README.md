@@ -1,6 +1,9 @@
-# Gigamon AMI
+# Gigamon Network Observability
 
 [![Release](https://github.com/Cribl-Community/cc-gigamon-ami/actions/workflows/release.yml/badge.svg)](https://github.com/Cribl-Community/cc-gigamon-ami/actions/workflows/release.yml)
+
+> **Preview.** This app is published as a preview — Gigamon AMI ingest, storage,
+> visualizations, and workflows. Expect ongoing changes.
 
 A Cribl App that turns **Gigamon Application Metadata Intelligence (AMI)** flow records into a
 network-observability dashboard. It runs [Cribl Search](https://docs.cribl.io/search/)

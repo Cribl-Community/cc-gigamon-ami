@@ -1,11 +1,11 @@
 {
   "name": "cc-gigamon-ami",
   "private": true,
-  "version": "1.0.17",
+  "version": "1.0.18",
   "type": "module",
-  "displayName": "Gigamon AMI",
-  "description": "Gigamon AMI dashboards for Cribl App Platform",
-  "author": "Cribl TAP SE - tap-se@cribl.io",
+  "displayName": "Gigamon Network Observability (preview)",
+  "description": "PREVIEW: Gigamon Network Observability: Gigamon AMI ingest, storage, visualizations and workflows.",
+  "author": "James Pederson - jpederson@cribl.io",
   "license": "Apache-2.0",
   "tags": {
     "product": [
