@@ -1,7 +1,7 @@
 {
   "name": "cc-gigamon-ami",
   "private": true,
-  "version": "1.0.18",
+  "version": "1.0.19",
   "type": "module",
   "displayName": "Gigamon Network Observability (preview)",
   "description": "PREVIEW: Gigamon Network Observability: Gigamon AMI ingest, storage, visualizations and workflows.",
