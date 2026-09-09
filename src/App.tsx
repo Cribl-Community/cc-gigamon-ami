@@ -119,10 +119,9 @@ function Header() {
           <span className="title-preview">(Preview)</span>
         </h1>
         <p className="app-subtitle">
-          Network observability · Cribl Search · Gigamon AMI
-          <span className={`env-chip ${IS_INSTALLED ? 'env-installed' : 'env-dev'}`}>
-            {IS_INSTALLED ? 'Cribl' : 'dev preview'}
-          </span>
+          {/* Kept dev-only: in the installed app it just says "Cribl", but on the
+              dev server it is the one cue that this is not the installed app. */}
+          {!IS_INSTALLED && <span className="env-chip env-dev">dev preview</span>}
           <span className="version-chip" title="App version (from package.json)">v{APP_VERSION}</span>
         </p>
       </div>
