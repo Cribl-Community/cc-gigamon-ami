@@ -48,7 +48,7 @@ The dashboard is organized into tabs, each answering a different operational que
 - **Web & API** — HTTP/API activity and status-code distributions
 - **TLS Posture** — protocol versions, cipher suites, and certificate signals
 - **PQC Readiness** — post-quantum cryptography readiness of observed TLS
-- **AI & SaaS** — shadow-AI and SaaS application usage
+- **Shadow AI** — shadow-AI and unsanctioned SaaS application usage
 - **Data Flow** — end-to-end flow-level view of the traffic
 - **Security** & **Findings** — security-relevant observations surfaced from the metadata
 - **Field Explorer** — browse the AMI field schema and per-field summaries

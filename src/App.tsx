@@ -33,7 +33,7 @@ const TABS = [
   { to: '/web-api', label: 'Web & API', el: <WebApiHealth /> },
   { to: '/tls-posture', label: 'TLS Posture', el: <TlsPosture /> },
   { to: '/pqc', label: 'PQC Readiness', el: <PqcReadiness /> },
-  { to: '/ai-saas', label: 'AI & SaaS', el: <ShadowAi /> },
+  { to: '/ai-saas', label: 'Shadow AI', el: <ShadowAi /> },
   { to: '/data-flow', label: 'Data Flow', el: <DataFlow /> },
   { to: '/fields', label: 'Field Explorer', el: <FieldExplorer /> },
   { to: '/reference', label: 'AMI Reference', el: <AmiReference /> },

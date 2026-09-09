@@ -53,7 +53,7 @@ export function ShadowAi() {
   return (
     <div className="tab">
       <div className="tab-intro">
-        <h2 className="tab-h">AI &amp; SaaS discovery</h2>
+        <h2 className="tab-h">Shadow AI discovery</h2>
         <p className="tab-sub">
           Application Metadata Intelligence names the apps on the wire — so shadow AI and unsanctioned SaaS show
           up with <strong>no endpoint agents and no TLS decryption</strong>. This view pivots <code>app_name</code>

@@ -149,7 +149,7 @@ const STAGES: Stage[] = [
     purpose:
       'The presentation layer you are looking at. It runs inside Cribl as a sandboxed app and calls Cribl Search through the platform fetch proxy — no separate credentials, no data leaving the workspace.',
     detail: [
-      'Service Map · Capacity · TCP Health · DNS Health · TLS Posture · AI & SaaS · Field Explorer.',
+      'Service Map · Capacity · TCP Health · DNS Health · TLS Posture · Shadow AI · Field Explorer.',
       'Runs inside Cribl (sandboxed iframe) and calls Cribl Search via the platform fetch proxy.',
     ],
     links: [{ href: criblUiUrl('/apps'), label: 'Cribl Apps' }],
