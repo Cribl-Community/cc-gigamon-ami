@@ -12,11 +12,15 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 /** @param {string} cwd */
-async function runNpmBuild(cwd) {
+export async function runNpmBuild(cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn('npm', ['run', 'build'], {
+    // Windows: the npm shim is npm.cmd, and Node >= 20 refuses to spawn a .cmd
+    // without a shell (EINVAL). The args are fixed literals, so the shell is safe.
+    const isWin = process.platform === 'win32';
+    const child = spawn(isWin ? 'npm.cmd' : 'npm', ['run', 'build'], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      shell: isWin,
     });
     let stdout = '';
     let stderr = '';

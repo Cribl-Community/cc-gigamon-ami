@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createAppPack } from './pkgutil.mjs';
+import { createAppPack, runNpmBuild } from './pkgutil.mjs';
 
 const rootDir = join(import.meta.dirname, '..');
 const buildOutDir = join(rootDir, 'build');
@@ -67,6 +67,10 @@ function nextVersion(currentVersion) {
 const packageInfo = JSON.parse(await readFile(packageJsonPath, 'utf8'));
 packageInfo.version = nextVersion(packageInfo.version || '0.0.0');
 await writeFile(packageJsonPath, `${JSON.stringify(packageInfo, null, 2)}\n`);
+
+// Build first: createAppPack copies dist/ and throws if it is missing, and the
+// release workflow runs `npm run package` with no separate build step.
+await runNpmBuild(rootDir);
 
 const tgzName = `${packageInfo.name || 'app'}-${packageInfo.version}.tgz`;
 const tgzPath = join(buildOutDir, tgzName);

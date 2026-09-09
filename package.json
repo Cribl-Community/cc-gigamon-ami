@@ -19,7 +19,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "package": "npm run build && node scripts/package.mjs"
+    "package": "node scripts/package.mjs"
   },
   "dependencies": {
     "@capra/core": "^1.8.2",
