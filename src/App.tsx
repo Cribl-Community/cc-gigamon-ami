@@ -116,6 +116,7 @@ function Header() {
       <div className="app-title-block">
         <h1 className="app-title">
           <span className="title-bar" />Gigamon Network Observability
+          <span className="title-preview">(Preview)</span>
         </h1>
         <p className="app-subtitle">
           Network observability · Cribl Search · Gigamon AMI

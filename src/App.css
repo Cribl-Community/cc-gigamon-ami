@@ -81,6 +81,15 @@ body {
   border-radius: 3px;
   background: token('color.background.warning.solid.default');
 }
+/* Preview qualifier: part of the name, but it should not compete with it —
+   lighter weight and subdued, sized to sit on the title's baseline. */
+.title-preview {
+  margin-left: -4px;
+  font-size: 19px;
+  font-weight: token('core.fontWeight.normal');
+  color: var(--gm-fg-subtle);
+  letter-spacing: 0;
+}
 .app-subtitle {
   margin: 6px 0 0 17px;
   color: var(--gm-fg-subtle);
