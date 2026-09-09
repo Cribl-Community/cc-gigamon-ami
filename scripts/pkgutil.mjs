@@ -15,13 +15,12 @@ import { fileURLToPath } from 'node:url';
 export async function runNpmBuild(cwd) {
   return new Promise((resolve, reject) => {
     // Windows: the npm shim is npm.cmd, and Node >= 20 refuses to spawn a .cmd
-    // without a shell (EINVAL). The args are fixed literals, so the shell is safe.
+    // without a shell (EINVAL). Pass the command as one shell string rather than
+    // argv — `shell: true` plus an args array triggers Node's DEP0190 warning.
     const isWin = process.platform === 'win32';
-    const child = spawn(isWin ? 'npm.cmd' : 'npm', ['run', 'build'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: isWin,
-    });
+    const child = isWin
+      ? spawn('npm run build', { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
+      : spawn('npm', ['run', 'build'], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout?.setEncoding('utf8');
