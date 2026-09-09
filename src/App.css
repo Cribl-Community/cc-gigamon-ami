@@ -410,85 +410,7 @@ body {
 }
 
 /* ---------- Flow diagram ---------- */
-.flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 4px; }
-.flow-item { display: flex; align-items: center; gap: 4px; }
-.flow-node {
-  display: flex; flex-direction: column; gap: 3px;
-  min-width: 150px; text-align: left;
-  background: var(--gm-panel); border: 1px solid var(--gm-border);
-  border-left: 3px solid token('color.background.neutral.solid.default');
-  border-radius: token('radius.md'); padding: 10px 12px; cursor: pointer; color: inherit;
-}
-.flow-gigamon { border-left-color: #ffa94d; }
-.flow-cribl { border-left-color: token('color.background.info.solid.default'); }
-.flow-app { border-left-color: token('color.background.success.solid.default'); }
-.flow-sel { background: token('color.background.neutral.selected'); }
-.flow-kind { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); }
-.flow-name { font-size: 13px; font-weight: token('core.fontWeight.semibold'); }
-.flow-short { font-size: 11.5px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
-.flow-arrow { color: var(--gm-fg-subtle); font-size: 16px; padding: 0 2px; }
 .flow-detail { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; line-height: 1.5; }
-
-/* Node + its ⓘ (the ⓘ sits outside the button — nesting buttons is invalid). */
-.flow-node-wrap { position: relative; display: flex; }
-.flow-node { padding-right: 30px; transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease; }
-.flow-node:hover { border-color: token('color.background.info.solid.default'); }
-.flow-sel-wrap .flow-node { box-shadow: 0 0 0 1px token('color.background.info.solid.default'); }
-.flow-info { position: absolute; top: 7px; right: 7px; line-height: 0; }
-
-/* Vertical pipeline: 7 stages never fit on one row (they wrapped and broke the
-   connector), and a column also stays readable at any window width. */
-.flow-vert { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
-.flow-row-item { display: flex; flex-direction: column; align-items: flex-start; width: 100%; }
-.flow-vert .flow-node-wrap { width: 100%; }
-.flow-vert .flow-node {
-  flex-direction: row; align-items: center; justify-content: space-between;
-  width: 100%; min-width: 0; gap: 16px; padding: 11px 34px 11px 13px;
-}
-.flow-node-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.flow-vert .flow-metric {
-  border-top: none; padding-top: 0; margin-top: 0; flex: none;
-  align-items: flex-end; text-align: right;
-}
-
-/* Connector: solid green line with pulses travelling downward, so the direction
-   of flow is unmistakable. Dim and static when no events are arriving. */
-.flow-link {
-  position: relative; width: 2px; height: 26px; flex: none; margin-left: 30px;
-  background: var(--gm-flow-line); overflow: visible;
-}
-.flow-link-on { background: var(--gm-flow-line-on); }
-/* A hop with no data / a blocked destination is called out on THAT hop. */
-.flow-link-idle { background: var(--gm-flow-idle); }
-.flow-link-blocked { background: token('color.background.danger.solid.default'); }
-.flow-link-flag {
-  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  font-size: 10px; letter-spacing: 0.04em; white-space: nowrap;
-}
-.flow-link-idle .flow-link-flag { color: var(--gm-fg-subtle); }
-.flow-link-blocked .flow-link-flag { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.semibold'); }
-.flow-dot {
-  position: absolute; left: 50%; margin-left: -3px; top: 0;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--gm-flow-dot); box-shadow: 0 0 7px var(--gm-flow-line-on); opacity: 0;
-}
-/* Only animate when the feed is actually returning events. */
-.flow-link-on .flow-dot { animation: flow-move 1.9s linear infinite; }
-.flow-link-on .flow-dot:nth-child(2) { animation-delay: 0.63s; }
-.flow-link-on .flow-dot:nth-child(3) { animation-delay: 1.26s; }
-@keyframes flow-move {
-  0%   { top: -4px; opacity: 0; }
-  15%  { opacity: 1; }
-  85%  { opacity: 1; }
-  100% { top: 100%; opacity: 0; }
-}
-
-/* Per-stage volume readout. */
-.flow-metric { display: flex; flex-direction: column; gap: 1px; margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--gm-border); }
-.flow-metric-v { font-size: 14px; font-weight: token('core.fontWeight.semibold'); font-variant-numeric: tabular-nums; color: var(--gm-flow-metric); }
-.flow-metric-idle { color: var(--gm-fg-subtle); }
-.flow-metric-l { font-size: 10.5px; color: var(--gm-fg-subtle); }
-.flow-metric-sub { font-size: 10px; color: var(--gm-fg-subtle); opacity: 0.8; font-variant-numeric: tabular-nums; }
 
 /* Where each number came from — Cribl component telemetry vs the AMI records. */
 .prov {
@@ -519,10 +441,6 @@ body {
 .pinfo-links { display: flex; flex-wrap: wrap; gap: 8px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .flow-link-on .flow-dot { animation: none; opacity: 0.9; }
-  .flow-link-on .flow-dot:nth-child(1) { top: 15%; }
-  .flow-link-on .flow-dot:nth-child(2) { top: 45%; }
-  .flow-link-on .flow-dot:nth-child(3) { top: 75%; }
   .flow-pulse-on { animation: none; }
 }
 
@@ -1176,3 +1094,226 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-toast-error { border-left: 3px solid var(--gm-st-danger); }
 .gs-toast-error .gs-toast-icon { color: var(--gm-st-danger); }
 @keyframes gs-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---------- Deep Observability Pipeline diagram (Data Flow tab) -------------
+   Brand composition of the Gigamon x Cribl architecture slide. Gigamon orange
+   and the Cribl teal/cyan are brand constants, so — like --gm-st-* above —
+   they are hand-picked and declared for both modes rather than tokenised.
+   The Cribl product cards stay dark in light mode too: that is how they are
+   drawn in the source artwork, and it keeps the platform block reading as one
+   object. ------------------------------------------------------------------ */
+:root {
+  --dop-canvas: #f6f7f5;
+  --dop-ink: #1d2430;
+  --dop-ink-sub: #5b6675;
+  --dop-pipe-1: #f5f7f9;
+  --dop-pipe-2: #dbe0e6;
+  --dop-pipe-3: #b4bcc6;
+  --dop-pipe-mouth: #c3cad2;
+}
+:root.dark {
+  --dop-canvas: #121821;
+  --dop-ink: #e8edf4;
+  --dop-ink-sub: #97a4b5;
+  --dop-pipe-1: #d5dce4;
+  --dop-pipe-2: #a3adba;
+  --dop-pipe-3: #737f8d;
+  --dop-pipe-mouth: #8a95a2;
+}
+:root, :root.dark {
+  --gg-orange: #f60;
+  --gg-orange-soft: #ff8a3d;
+  --cribl-card: #133f49;
+  --cribl-card-2: #2c3a4a;
+  --cribl-teal: #2bb3a8;
+  --cribl-cyan: #22d3ee;
+  --cribl-ink: #eaf6f8;
+  --cribl-ink-sub: #a8c6cd;
+}
+
+.dop-intro { margin-bottom: 10px; }
+.dop-h { margin-bottom: 2px; }
+.dop-kicker {
+  margin: 0 0 8px; font-size: 15px; font-style: italic;
+  font-weight: token('core.fontWeight.semibold'); color: var(--gg-orange);
+}
+
+.dop-wrap {
+  background: var(--dop-canvas);
+  border: 1px solid var(--gm-border);
+  border-radius: var(--gm-radius);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+/* Floor the scale so the composition stays legible, and let the canvas scroll
+   rather than crushing 1580 units of diagram into a narrow window. */
+.dop-svg { display: block; width: 100%; min-width: 1120px; height: auto; }
+
+/* --- left rail --- */
+.dop-origin-icon { color: var(--dop-ink-sub); }
+.dop-origin-label { text-anchor: middle; font-size: 15px; fill: var(--dop-ink); }
+.dop-bracket { fill: none; stroke: var(--dop-ink); stroke-width: 1.6; opacity: 0.75; }
+
+/* --- the two brand flow labels --- */
+.dop-flow-title {
+  text-anchor: middle; font-size: 15px; font-style: italic;
+  font-weight: token('core.fontWeight.semibold'); fill: var(--dop-ink);
+}
+.dop-flow-orange { fill: var(--gg-orange); }
+.dop-flow-value {
+  text-anchor: middle; font-size: 14px; font-variant-numeric: tabular-nums;
+  font-weight: token('core.fontWeight.semibold'); fill: var(--gm-flow-metric);
+}
+.dop-flow-label { text-anchor: middle; font-size: 10.5px; fill: var(--dop-ink-sub); }
+
+/* --- Gigamon's claim --- */
+.dop-bullets-h { font-size: 19px; font-weight: token('core.fontWeight.bold'); fill: var(--dop-ink); }
+.dop-bullet { font-size: 16px; fill: var(--dop-ink); }
+.dop-bullet-dot { fill: var(--dop-ink); }
+
+/* --- the pipe --- */
+.dop-pipe { cursor: pointer; }
+.dop-pipe-collar { fill: url(#dop-pipe); stroke: var(--dop-pipe-3); stroke-width: 1; }
+.dop-pipe-mouth { fill: var(--dop-pipe-mouth); }
+.dop-pipe-edge { stroke: var(--dop-pipe-3); stroke-width: 1; }
+.dop-pipe-sel .dop-pipe-collar { stroke: var(--gg-orange); stroke-width: 2.4; }
+.dop-pipe:focus { outline: none; }
+.dop-pipe:focus-visible .dop-pipe-collar { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-gg-mark {
+  text-anchor: middle; font-size: 17px; font-weight: token('core.fontWeight.bold');
+  fill: #fff; letter-spacing: 0.01em;
+}
+.dop-gg-r { font-size: 8px; }
+.dop-pipe-h { text-anchor: middle; font-size: 29px; fill: #1d2430; }
+.dop-pipe-sub { text-anchor: middle; font-size: 15px; letter-spacing: 0.42em; fill: #1d2430; }
+.dop-pipe-rule { stroke: var(--gg-orange); stroke-width: 1.6; }
+.dop-pipe-icon { color: #4a5462; }
+.dop-pipe-fn { text-anchor: middle; font-size: 11px; letter-spacing: 0.13em; fill: #4a5462; }
+
+/* --- AMX hit area (the enriched-metadata arrow is the clickable stage) --- */
+.dop-amx { cursor: pointer; }
+.dop-amx-hit { fill: transparent; stroke: transparent; stroke-width: 1.4; }
+.dop-amx-sel .dop-amx-hit,
+.dop-amx:hover .dop-amx-hit { stroke: var(--gg-orange); fill: rgba(255, 102, 0, 0.06); }
+.dop-amx:focus { outline: none; }
+.dop-amx:focus-visible .dop-amx-hit { stroke: var(--cribl-cyan); }
+
+/* --- the Cribl platform block --- */
+.dop-box { fill: none; stroke: var(--cribl-teal); stroke-width: 2; opacity: 0.85; }
+.dop-box-label {
+  font-size: 10.5px; letter-spacing: 0.18em;
+  fill: var(--cribl-teal); font-weight: token('core.fontWeight.semibold');
+}
+
+/* --- edges: a static rail with the live dashed pipe over it --- */
+.dop-edge { fill: none; stroke-width: 2; }
+.dop-edge-teal { stroke: var(--cribl-teal); opacity: 0.5; }
+.dop-edge-orange { stroke: var(--gg-orange); opacity: 0.9; }
+/* The network-traffic arrow is plain ink in the source artwork, not brand teal. */
+.dop-edge-ink { stroke: var(--dop-ink); opacity: 0.72; }
+.dop-edge-dash {
+  fill: none; stroke: transparent; stroke-width: 2.4;
+  stroke-dasharray: 7 9; stroke-linecap: round;
+}
+/* CSS, not SMIL: animating stroke-dashoffset via SMIL needs unsafe-inline in
+   Firefox, which the Cribl app CSP does not grant. Packets stay SMIL
+   (animateMotion is exempt) so they ride the real path geometry. */
+.dop-edge-live { stroke: var(--cribl-cyan); animation: dop-dash 1s linear infinite; }
+@keyframes dop-dash { to { stroke-dashoffset: -16; } }
+.dop-hop-orange .dop-edge-live { stroke: var(--gg-orange-soft); }
+.dop-packet { fill: var(--cribl-cyan); }
+.dop-hop-orange .dop-packet { fill: var(--gg-orange-soft); }
+.dop-hop-idle .dop-edge { stroke: var(--gm-flow-idle); opacity: 0.8; }
+.dop-hop-blocked .dop-edge { stroke: token('color.background.danger.solid.default'); opacity: 1; }
+.dop-flag { font-size: 10.5px; letter-spacing: 0.04em; }
+.dop-flag-idle { fill: var(--dop-ink-sub); }
+.dop-flag-blocked { fill: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.semibold'); }
+
+/* --- the Cribl Stream group: one product, three stages --- */
+.dop-group { fill: rgba(43, 179, 168, 0.06); stroke: var(--cribl-teal); stroke-width: 1.2; stroke-dasharray: 4 5; opacity: 0.75; }
+.dop-group-label {
+  font-size: 10px; letter-spacing: 0.16em;
+  fill: var(--cribl-teal); font-weight: token('core.fontWeight.semibold');
+}
+
+/* --- node cards: one centred column — icon, title, config id, metric --- */
+.dop-card { cursor: pointer; }
+.dop-card-bg {
+  fill: var(--cribl-card); stroke: rgba(255, 255, 255, 0.14); stroke-width: 1.4;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.18));
+}
+.dop-card-app .dop-card-bg { fill: var(--cribl-card-2); }
+
+/* The card's primary label: brand-coloured, bold, and the largest thing on it. */
+.dop-title {
+  text-anchor: middle; font-size: 19px; letter-spacing: -0.005em;
+  font-weight: token('core.fontWeight.bold'); fill: var(--cribl-cyan);
+}
+.dop-title-app { fill: #7ee0a8; }
+.dop-title-gigamon { fill: var(--gg-orange-soft); }
+
+/* Real product marks from @capra/icons. Capra sizes its icons from an inline
+   `--_size`, which beats anything passed as a prop, so pin the box here — a
+   wrapper rule rather than a dependency on Capra's generated class names. */
+.dop-prod-icon > svg { width: 30px; height: 30px; }
+.dop-prod-icon-cribl { color: var(--cribl-cyan); }
+
+/* Config ids are the thing people actually need to read off this diagram, so
+   they get a real reading size rather than caption size. 11px monospace keeps
+   the longest of them ("pipeline · gigamon_ami") inside its card. */
+.dop-card-sub {
+  text-anchor: middle; font-size: 11px; font-family: var(--gm-mono);
+  fill: var(--cribl-ink);
+}
+/* Fine print under the title — body font, so it reads as prose not a config id. */
+.dop-card-caption { text-anchor: middle; font-size: 11px; fill: var(--cribl-ink); }
+.dop-card:hover .dop-card-bg { stroke: var(--cribl-cyan); }
+.dop-card-sel .dop-card-bg { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-card:focus { outline: none; }
+.dop-card:focus-visible .dop-card-bg { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-card-rule { stroke: rgba(255, 255, 255, 0.16); stroke-width: 1; }
+.dop-value {
+  text-anchor: middle; font-size: 15px; font-weight: token('core.fontWeight.semibold');
+  font-variant-numeric: tabular-nums; fill: #fff;
+}
+.dop-value-idle { fill: var(--cribl-ink-sub); }
+.dop-card-label { text-anchor: middle; font-size: 10px; fill: var(--cribl-ink-sub); }
+.dop-prov-bg { opacity: 0.9; }
+.dop-prov-cribl { fill: rgba(34, 211, 238, 0.18); }
+.dop-prov-records { fill: rgba(255, 255, 255, 0.1); }
+.dop-prov {
+  text-anchor: middle; font-size: 8.5px; letter-spacing: 0.05em;
+  font-weight: token('core.fontWeight.semibold'); text-transform: uppercase;
+}
+.dop-prov-t-cribl { fill: var(--cribl-cyan); }
+.dop-prov-t-records { fill: var(--cribl-ink-sub); }
+/* Same chip, but sitting on the light diagram canvas rather than a dark card. */
+.dop-prov-canvas { fill: rgba(125, 155, 190, 0.2); }
+.dop-prov-t-canvas { fill: var(--dop-ink-sub); }
+
+/* --- selected-stage detail + brand footer --- */
+/* Config ids appear here verbatim, so this deliberately does not uppercase. */
+.dop-stage-kicker {
+  margin: 0 0 10px; font-size: 12.5px; letter-spacing: 0.02em;
+  font-family: var(--gm-mono); color: var(--gm-fg-subtle);
+}
+.dop-arrowhead-ink { fill: var(--dop-ink); }
+.dop-footer {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 14px;
+  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--gm-border);
+  font-size: 13px; color: var(--gm-fg-subtle);
+}
+.dop-footer-brand { display: inline-flex; align-items: center; gap: 8px; }
+.dop-footer-brand strong { color: var(--gm-fg); letter-spacing: 0.01em; }
+.dop-cribl-mark { fill: var(--cribl-cyan); }
+.dop-footer-gg {
+  background: var(--gg-orange); color: #fff; border-radius: 3px;
+  padding: 2px 8px; font-weight: token('core.fontWeight.bold'); font-size: 12px;
+}
+.dop-footer-tag { font-style: italic; }
+.dop-footer-sep { flex: 1 1 40px; height: 1px; background: var(--cribl-teal); opacity: 0.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dop-edge-live { animation: none; }
+}

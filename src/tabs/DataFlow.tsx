@@ -4,6 +4,7 @@ import { q } from '../cribl/search'
 import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
 import { PanelInfo } from '../components/PanelInfo'
+import { DopDiagram, type DopNode, type HopId, type HopState, type SlotId } from '../components/DopDiagram'
 import { toNum, fmtCount, fmtBytes, windowSeconds } from '../lib/format'
 
 /** Volume figures for the current window, shared by every stage. */
@@ -25,10 +26,9 @@ interface Volume {
   lakeTotalEvents: number
   lakeTotalBytes: number
   lakeTotalLoading: boolean
+  /** False when the retention query returned no row — not the same as zero. */
+  lakeTotalKnown: boolean
 }
-
-/** Where a stage's number comes from — surfaced in the UI so it's unambiguous. */
-type Provenance = 'cribl' | 'records'
 
 /**
  * Real Cribl component telemetry, scoped to THIS data path.
@@ -81,19 +81,20 @@ const G = STREAM_GROUP
 
 const STAGES: Stage[] = [
   {
-    id: 'gigasmart', name: 'GigaVUE · GigaSMART', kind: 'gigamon', short: 'Application Metadata Intelligence',
+    id: 'gigasmart', name: 'GigaVUE · GigaSMART', kind: 'gigamon', short: 'Deep Observability Pipeline',
     purpose:
-      'The packet broker. GigaSMART inspects mirrored traffic and extracts application-layer metadata — no agent runs on the workloads, so it sees east-west traffic that host-based tooling misses. This is where every field in this app originates.',
+      'The packet broker — the Deep Observability Pipeline itself. GigaSMART accesses, brokers, transforms and enriches mirrored traffic, extracting application-layer metadata. No agent runs on the workloads, so it sees east-west traffic that host-based tooling misses. This is where every field in this app originates.',
     detail: [
+      'ACCESS · BROKER · TRANSFORM · ENRICH — acquires raw packets with no blind spots and inspects layers 2–7, including encrypted traffic.',
       'Extracts app-layer metadata from mirrored network traffic (up to ~6000 attributes across 4000+ apps).',
       'No agents on the workloads — visibility comes from the packet broker.',
     ],
     links: [{ href: 'https://docs.gigamon.com/', label: 'Gigamon docs ↗' }],
   },
   {
-    id: 'amx', name: 'Application Metadata Exporter (AMX)', kind: 'gigamon', short: 'CEF → JSON',
+    id: 'amx', name: 'Application Metadata Exporter (AMX)', kind: 'gigamon', short: 'enriched metadata · CEF → JSON',
     purpose:
-      'Gigamon exports AMI records as IPFIX/CEF. AMX converts them to JSON and ships them downstream — that JSON is exactly the shape of the sample data this app replays.',
+      'Gigamon exports AMI records as IPFIX/CEF. AMX converts them to JSON and ships that enriched metadata downstream into Cribl — that JSON is exactly the shape of the sample data this app replays.',
     detail: [
       'Converts AMI records (IPFIX/CEF) to JSON and exports to downstream tools.',
       'This is exactly the shape of the sample data: {vendor:"Gigamon", version:"6.13.00", ...}.',
@@ -101,7 +102,7 @@ const STAGES: Stage[] = [
     links: [{ href: 'https://docs.gigamon.com/', label: 'Gigamon docs ↗' }],
   },
   {
-    id: 'datagen', name: 'Cribl Stream · DataGen Source', kind: 'cribl', short: 'in_gigamon_datagen',
+    id: 'datagen', name: 'Cribl Stream · Source', kind: 'cribl', short: 'in_gigamon_datagen',
     purpose:
       'Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a "last 15 minutes" window is always populated.',
     detail: [
@@ -111,7 +112,7 @@ const STAGES: Stage[] = [
     links: [{ href: criblUiUrl(`/stream/m/${G}/inputs/datagen/in_gigamon_datagen`), label: 'DataGen source' }],
   },
   {
-    id: 'pipeline', name: 'Pipeline · gigamon_ami', kind: 'cribl', short: 'cast + derive',
+    id: 'pipeline', name: 'Cribl Stream · Pipeline gigamon_ami', kind: 'cribl', short: 'cast + derive',
     purpose:
       'Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly.',
     detail: [
@@ -121,9 +122,9 @@ const STAGES: Stage[] = [
     links: [{ href: criblUiUrl(`/stream/m/${G}/pipelines/gigamon_ami`), label: 'Pipeline editor' }],
   },
   {
-    id: 'lake', name: `Cribl Lake · ${LAKE_DATASET}`, kind: 'cribl', short: 'dataset',
+    id: 'lake', name: `Cribl Lake · ${LAKE_DATASET}`, kind: 'cribl', short: 'destination + dataset',
     purpose:
-      'Durable, queryable storage. The gigamon_lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping 30 days of history. The headline figure is what the dataset HOLDS (summed writes over the retention period, independent of the range picker); the line under it is what the selected window added. Those coincide today because no data has aged out yet — once the feed passes 30 days, the headline becomes "written" rather than "held".',
+      'Durable, queryable storage. The gigamon_lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping 30 days of history. The diagram splits the two halves: the Destinations plate reports what the selected window wrote, the Cribl Lake card reports what the dataset HOLDS (summed writes over the retention period, independent of the range picker). Those coincide today because no data has aged out yet — once the feed passes 30 days, the held figure becomes "written" rather than "held".',
     detail: [
       'Destination gigamon_lake (type cribl_lake) writes JSON to the gigamon_ami Lake dataset.',
       '30-day retention; flushes every ~60s for near-live queries.',
@@ -156,66 +157,78 @@ const STAGES: Stage[] = [
 ]
 
 /**
- * Volume shown on each stage. The Cribl stages deliberately report the same
- * event count — that IS the point: nothing is dropped between source, pipeline,
- * Lake and Search. Only the framing changes per stage.
+ * Diagram nodes. The Cribl stages deliberately report the same event count —
+ * that IS the point: nothing is dropped between source, pipeline, Lake and
+ * Search. Only the framing changes per node. Title and label lines are authored
+ * as arrays so long Cribl ids wrap inside the card rather than truncating.
  */
-const METRIC: Record<string, (v: Volume) => { value: string; label: string; from: Provenance; sub?: string }> = {
-  // Upstream of Cribl — no Cribl telemetry exists, so these come from the
-  // contents of the AMI records themselves.
-  gigasmart: (v) => ({ value: fmtBytes(v.bytes), label: 'network observed on the wire', from: 'records' }),
-  amx: (v) => ({ value: fmtCount(v.events), label: 'AMI records exported', from: 'records' }),
-  // Cribl components — real component telemetry from cribl_metrics.
-  datagen: (v) => ({
-    value: fmtCount(v.srcEvents),
-    label: `events out · ${Math.round(v.srcEvents / Math.max(1, v.windowSec))}/s`,
-    from: 'cribl',
-  }),
-  pipeline: (v) => ({ value: fmtCount(v.pipeEvents), label: `events out · ${v.fields} fields`, from: 'cribl' }),
-  // Storage stage: headline what the Lake HOLDS, with the window's inflow below.
-  lake: (v) => ({
-    value: v.lakeTotalLoading ? '…' : fmtBytes(v.lakeTotalBytes),
-    label: v.lakeTotalLoading ? 'totalling dataset…' : `${fmtCount(v.lakeTotalEvents)} events held · 30d retention`,
-    sub: `+${fmtBytes(v.dstBytes)} · ${fmtCount(v.dstEvents)} events this window`,
-    from: 'cribl',
-  }),
-  // Search/app volume is what OUR queries scan, which Cribl's component
-  // counters don't describe — so this stays record-derived and says so.
-  search: (v) => ({ value: fmtCount(v.events), label: 'events scanned by this app', from: 'records' }),
-  app: (v) => ({ value: fmtCount(v.events), label: 'events visualized', from: 'records' }),
+function buildNodes(v: Volume): Record<SlotId, DopNode> {
+  return {
+    // Source and destination are the artwork's label plates — no product mark,
+    // since the group box around them already says Cribl Stream.
+    sources: {
+      id: 'datagen', title: ['Sources'], tier: 'cribl',
+      sub: ['in_gigamon_datagen'],
+      value: fmtCount(v.srcEvents),
+      label: [`events out · ${Math.round(v.srcEvents / Math.max(1, v.windowSec))}/s`],
+      from: 'cribl',
+    },
+    stream: {
+      id: 'pipeline', title: ['Processing'], tier: 'cribl', icon: 'stream',
+      sub: ['pipeline · gigamon_ami'],
+      value: fmtCount(v.pipeEvents),
+      label: [`events out · ${v.fields} fields`],
+      from: 'cribl',
+    },
+    destinations: {
+      id: 'lake', title: ['Destinations'], tier: 'cribl',
+      sub: ['gigamon_lake'],
+      value: fmtBytes(v.dstBytes),
+      label: [`written this window · ${fmtCount(v.dstEvents)} events`],
+      from: 'cribl',
+    },
+    lake: {
+      id: 'lake', title: ['Cribl Lake'], tier: 'cribl', icon: 'lake',
+      sub: [`${LAKE_DATASET} dataset`],
+      value: v.lakeTotalLoading ? '…' : v.lakeTotalKnown ? fmtBytes(v.lakeTotalBytes) : '—',
+      label: v.lakeTotalLoading
+        ? ['totalling dataset… · 30d retention']
+        : v.lakeTotalKnown
+          ? [`${fmtCount(v.lakeTotalEvents)} events held · 30d retention`]
+          : ['retention total unavailable'],
+      from: 'cribl',
+    },
+    search: {
+      id: 'search', title: ['Cribl Search'], tier: 'cribl', icon: 'search',
+      value: fmtCount(v.events),
+      label: ['events scanned by this app'],
+      from: 'records',
+    },
+    app: {
+      id: 'app', title: ['Cribl Apps'], tier: 'cribl', icon: 'apps',
+      caption: ['Gigamon Network Observability'],
+      // No figure: the app renders what Search already returned, and costs
+      // nothing of its own. "events visualized" only restated Search's number.
+    },
+  }
 }
-
-type HopState = 'on' | 'idle' | 'blocked'
 
 /**
  * State of each connector, so a break shows up on the hop that actually broke
  * rather than dimming the whole diagram.
  */
-function hopStates(v: Volume): HopState[] {
+function hopStates(v: Volume): Record<HopId, HopState> {
   const on = (n: number): HopState => (n > 0 ? 'on' : 'idle')
-  const lakeHop: HopState = v.blocked > 0 || v.backpressure > 0 ? 'blocked' : on(v.dstEvents)
-  return [
-    on(v.events),      // GigaSMART → AMX   (upstream; inferred from records arriving)
-    on(v.events),      // AMX → DataGen
-    on(v.srcEvents),   // DataGen → Pipeline
-    on(v.pipeEvents),  // Pipeline → Lake
-    lakeHop,           // Lake → Search     (blocked/backpressure surfaces here)
-    on(v.events),      // Search → App
-  ]
-}
-
-/** Animated connector — dots travel along the link to show data moving. */
-function FlowLink({ state }: { state: HopState }) {
-  const title =
-    state === 'on' ? 'Data flowing' : state === 'blocked' ? 'Destination blocked / backpressure' : 'No data in this window'
-  return (
-    <span className={`flow-link flow-link-${state}`} title={title}>
-      <span className="flow-dot" />
-      <span className="flow-dot" />
-      <span className="flow-dot" />
-      {state !== 'on' && <span className="flow-link-flag">{state === 'blocked' ? 'blocked' : 'no data'}</span>}
-    </span>
-  )
+  return {
+    wire: on(v.events),        // origins → the Gigamon pipe (inferred from records arriving)
+    enriched: on(v.events),    // pipe → Cribl, via AMX
+    ingest: on(v.srcEvents),   // into the platform → source
+    process: on(v.srcEvents),  // source → pipeline
+    store: on(v.pipeEvents),   // pipeline → Lake destination
+    // Destination → dataset is where a blocked output or backpressure shows up.
+    query: v.blocked > 0 || v.backpressure > 0 ? 'blocked' : on(v.dstEvents),
+    render: on(v.events),      // dataset → Search → this app
+  }
 }
 
 export function DataFlow() {
@@ -247,19 +260,20 @@ export function DataFlow() {
     lakeTotalEvents: toNum(lrow?.total_events),
     lakeTotalBytes: toNum(lrow?.total_bytes),
     lakeTotalLoading: lakeTotal.loading,
+    lakeTotalKnown: !!lrow,
   }
   const loading = agg.loading || met.loading
-  const hops = hopStates(vol)
   const selected = STAGES.find((s) => s.id === sel)!
 
   return (
     <div className="tab">
-      <div className="tab-intro">
-        <h2 className="tab-h">Data flow</h2>
+      <div className="tab-intro dop-intro">
+        <h2 className="tab-h dop-h">The Gigamon Deep Observability Pipeline</h2>
+        <p className="dop-kicker">Transforming network traffic into trusted, network-derived intelligence</p>
         <p className="tab-sub">
           How Gigamon AMI data reaches these dashboards — from the packet broker, through Cribl Stream into
-          Cribl Lake, and out via Cribl Search. Click a stage for detail, or use its{' '}
-          <strong>ⓘ</strong> to read what the stage does and jump straight to that object in Cribl.
+          Cribl Lake, and out via Cribl Search. Every node carries its live volume for the window below;
+          click one for detail, or use its <strong>ⓘ</strong> to jump straight to that object in Cribl.
         </p>
       </div>
 
@@ -281,48 +295,22 @@ export function DataFlow() {
         <span className="flow-tb-note">
           <span className="prov prov-cribl">Cribl metrics</span> = live component telemetry from{' '}
           <code>cribl_metrics</code>; <span className="prov prov-records">from records</span> = computed from the
-          AMI data itself. Every figure is scoped to the range above.
+          AMI data itself. Every figure is scoped to the range above, except the <em>Cribl Lake</em> card, which reports
+          the full 30-day retention.
         </span>
       </div>
 
-      <div className="flow flow-vert" data-tour="data-flow">
-        {STAGES.map((s, i) => {
-          const m = METRIC[s.id](vol)
-          return (
-            <div className="flow-row-item" key={s.id}>
-              <div className={`flow-node-wrap ${sel === s.id ? 'flow-sel-wrap' : ''}`}>
-                <button
-                  type="button"
-                  className={`flow-node flow-${s.kind} ${sel === s.id ? 'flow-sel' : ''}`}
-                  onClick={() => setSel(s.id)}
-                >
-                  <span className="flow-node-main">
-                    <span className="flow-kind">{s.kind === 'gigamon' ? 'Gigamon' : s.kind === 'cribl' ? 'Cribl' : 'App'}</span>
-                    <span className="flow-name">{s.name}</span>
-                    <span className="flow-short">{s.short}</span>
-                  </span>
-                  <span className="flow-metric">
-                    {loading ? (
-                      <span className="flow-metric-v flow-metric-idle">…</span>
-                    ) : (
-                      <>
-                        <span className="flow-metric-v">{m.value}</span>
-                        <span className="flow-metric-l">{m.label}</span>
-                        {m.sub && <span className="flow-metric-sub">{m.sub}</span>}
-                        <span className={`prov prov-${m.from}`}>{m.from === 'cribl' ? 'Cribl metrics' : 'from records'}</span>
-                      </>
-                    )}
-                  </span>
-                </button>
-                <span className="flow-info">
-                  <PanelInfo about={s.purpose} aboutHeading="What this stage does" links={s.links} />
-                </span>
-              </div>
-              {i < STAGES.length - 1 && <FlowLink state={loading ? 'on' : hops[i]} />}
-            </div>
-          )
-        })}
-      </div>
+      <DopDiagram
+        nodes={buildNodes(vol)}
+        // Neither Gigamon nor AMX reports telemetry here, so both figures are
+        // read back off the AMI records in Lake. Say what they actually count.
+        wire={{ value: fmtBytes(vol.bytes), label: 'bytes in AMI flows' }}
+        enriched={{ value: fmtCount(vol.events), label: 'AMI records received' }}
+        hops={hopStates(vol)}
+        selected={sel}
+        onSelect={setSel}
+        loading={loading}
+      />
 
       <section className="panel">
         <header className="panel-head">
@@ -337,13 +325,30 @@ export function DataFlow() {
           </span>
         </header>
         <div className="panel-body">
+          <p className="dop-stage-kicker">{selected.short}</p>
           <ul className="flow-detail">
-            {selected.detail.map((d, i) => (
-              <li key={i}>{d}</li>
+            {selected.detail.map((d) => (
+              <li key={d}>{d}</li>
             ))}
           </ul>
         </div>
       </section>
+
+      <footer className="dop-footer">
+        <span className="dop-footer-brand">
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden className="dop-cribl-mark">
+            <path d="M4 5 L16 12 L4 19 Z" />
+            <path d="M17.5 8.5 L21.5 12 L17.5 15.5 Z" />
+          </svg>
+          <strong>Cribl</strong>
+          <span className="dop-footer-tag">The AI platform for telemetry</span>
+        </span>
+        <span className="dop-footer-sep" />
+        <span className="dop-footer-brand">
+          <span className="dop-footer-gg">Gigamon</span>
+          <span className="dop-footer-tag">Deep Observability Pipeline</span>
+        </span>
+      </footer>
     </div>
   )
 }
