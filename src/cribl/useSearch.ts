@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { runSearch, type Row } from './search'
+import { runSearch, SearchTimeLimitError, type Row } from './search'
 import { useCostSlot } from './jobCost'
 import { useDashboard } from '../app/DashboardContext'
 
@@ -8,6 +8,8 @@ export interface UseSearchState {
   totalEventCount: number
   loading: boolean
   error: string | null
+  /** Heading for the error when its cause is known (a time-limit stop), else null. */
+  errorTitle: string | null
   /** Milliseconds the last successful query took. */
   elapsedMs: number | null
   /** Re-run just this query (per-panel refresh, no global page refresh). */
@@ -48,6 +50,7 @@ export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearch
     totalEventCount: 0,
     loading: enabled,
     error: null,
+    errorTitle: null,
     elapsedMs: null,
   })
   const reqId = useRef(0)
@@ -59,7 +62,7 @@ export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearch
     }
     const controller = new AbortController()
     const myReq = ++reqId.current
-    setState((s) => ({ ...s, loading: true, error: null }))
+    setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     const t0 = performance.now()
     runSearch(query, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot })
       .then((res) => {
@@ -69,12 +72,18 @@ export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearch
           totalEventCount: res.totalEventCount,
           loading: false,
           error: null,
+          errorTitle: null,
           elapsedMs: Math.round(performance.now() - t0),
         })
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted || myReq !== reqId.current) return
-        setState((s) => ({ ...s, loading: false, error: (err as Error).message }))
+        setState((s) => ({
+          ...s,
+          loading: false,
+          error: (err as Error).message,
+          errorTitle: err instanceof SearchTimeLimitError ? 'Search stopped' : null,
+        }))
       })
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps

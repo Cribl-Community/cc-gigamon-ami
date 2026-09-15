@@ -11,7 +11,8 @@ policies:
   # Poll job status, read results, field-summaries and per-job metrics (GET), and
   # cancel (POST /{id}/cancel — the only POST on this sub-path). The app cancels
   # a job it created seconds earlier when the search is abandoned (range change,
-  # tab switch, unmount) or passes its 90 s client timeout, so it stops billing
+  # tab switch, unmount) or outlives its client timeout (30 s past the search's
+  # server-side running-time cap), so it stops billing
   # instead of running to its cap. That needs no dialog: it is not configuration,
   # and the job belongs to the same user.
   - object: '/m/default_search/search/jobs/*'

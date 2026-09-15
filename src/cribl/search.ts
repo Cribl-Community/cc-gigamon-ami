@@ -107,6 +107,40 @@ export function capSecondsFor(earliest: string | number): number {
   return 900
 }
 
+/** How long the client waits before giving up and cancelling: 30 s past the
+ *  server cap, so the cap — which reports why it stopped — acts first. A flat
+ *  90 s would cancel legitimate long-range searches the cap allows (Data
+ *  Flow's 30-day total has taken 154 s). */
+function clientTimeoutMs(capSeconds: number): number {
+  return (capSeconds + 30) * 1000
+}
+
+/** A search Cribl stopped because it reached its running-time cap. */
+export class SearchTimeLimitError extends Error {
+  readonly capSeconds: number
+  constructor(capSeconds: number) {
+    super(`This search reached its ${Math.round(capSeconds / 60)}-minute time limit and was stopped. Try a shorter time range.`)
+    this.name = 'SearchTimeLimitError'
+    this.capSeconds = capSeconds
+  }
+}
+
+/** Whether a failed job was ended by its running-time cap: Cribl records "Job
+ *  has been running for the maximum allowed duration" among the job's errors
+ *  (a user cancel records "User canceled execution" instead). */
+async function stoppedByTimeLimit(jobId: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    const job = await api<{ items?: Array<{ errorStateConfig?: { errors?: Array<{ message?: unknown }> } }> }>(
+      searchUrl(`/search/jobs/${jobId}`),
+      { method: 'GET' },
+      signal,
+    )
+    return (job.items?.[0]?.errorStateConfig?.errors ?? []).some((e) => String(e.message ?? '').includes('maximum allowed duration'))
+  } catch {
+    return false
+  }
+}
+
 /** The query as executed. The `set` prefix goes into the job body only — a
  *  panel's ⓘ keeps showing the query string it was given. */
 function withExecPrefix(query: string, earliest: string | number): string {
@@ -143,8 +177,9 @@ async function submitJob(query: string, earliest: string | number, latest: strin
 }
 
 /** Poll job status until it completes. On abort or the client timeout the job
- *  is cancelled on the server too. */
-async function waitForJob(jobId: string, signal: AbortSignal | undefined, pollMs: number, timeoutMs: number): Promise<void> {
+ *  is cancelled on the server too. A job the server cap stopped throws
+ *  SearchTimeLimitError, so the panel can say so instead of "failed". */
+async function waitForJob(jobId: string, signal: AbortSignal | undefined, pollMs: number, timeoutMs: number, capSeconds: number): Promise<void> {
   const started = Date.now()
   try {
     for (;;) {
@@ -158,6 +193,7 @@ async function waitForJob(jobId: string, signal: AbortSignal | undefined, pollMs
         signal,
       )
       const status = st.items?.[0]?.status
+      if (status === 'failed' && (await stoppedByTimeLimit(jobId, signal))) throw new SearchTimeLimitError(capSeconds)
       if (status === 'failed' || status === 'canceled') throw new Error(`Cribl Search ${status}`)
       if (status === 'completed') return
       await sleep(pollMs, signal)
@@ -179,10 +215,11 @@ export async function runSearch(query: string, opts: SearchOptions = {}): Promis
 }
 
 async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<SearchResult> {
-  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs = 700, timeoutMs = 90000, costSlot } = opts
+  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs = 700, timeoutMs, costSlot } = opts
+  const cap = capSecondsFor(earliest)
 
   const jobId = await submitJob(query, earliest, latest, signal)
-  await waitForJob(jobId, signal, pollMs, timeoutMs)
+  await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
 
   // Results are NDJSON: header line then row lines.
@@ -239,9 +276,10 @@ export async function runFieldSummaries(query: string, opts: SearchOptions = {})
 }
 
 async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): Promise<FieldSummariesResult> {
-  const { earliest = '-15m', latest = 'now', signal, pollMs = 700, timeoutMs = 90000, costSlot } = opts
+  const { earliest = '-15m', latest = 'now', signal, pollMs = 700, timeoutMs, costSlot } = opts
+  const cap = capSecondsFor(earliest)
   const jobId = await submitJob(query, earliest, latest, signal)
-  await waitForJob(jobId, signal, pollMs, timeoutMs)
+  await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)
   const fields = data.fields ?? []
