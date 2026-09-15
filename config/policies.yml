@@ -8,9 +8,14 @@ policies:
   # Submit a search job (POST) and list jobs (GET).
   - object: '/m/default_search/search/jobs'
     actions: ['GET', 'POST']
-  # Poll job status, read results, and field-summaries (job sub-paths).
+  # Poll job status, read results, field-summaries and per-job metrics (GET), and
+  # cancel (POST /{id}/cancel — the only POST on this sub-path). The app cancels
+  # a job it created seconds earlier when the search is abandoned (range change,
+  # tab switch, unmount) or passes its 90 s client timeout, so it stops billing
+  # instead of running to its cap. That needs no dialog: it is not configuration,
+  # and the job belongs to the same user.
   - object: '/m/default_search/search/jobs/*'
-    actions: ['GET']
+    actions: ['GET', 'POST']
 
   # Cribl Search AI: read whether AI features are enabled, and read/generate
   # "dataset intelligence" for the gigamon_ami Lake dataset. Without this the

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { runFieldSummaries, runSearch, q, type FieldSummary } from '../cribl/search'
+import { useCostSlot } from '../cribl/jobCost'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
@@ -67,25 +68,29 @@ export function FieldExplorer() {
   // Local nonce for per-panel refresh (this tab uses runSearch directly, not useSearch).
   const [nonce, setNonce] = useState(0)
   const refresh = () => setNonce((n) => n + 1)
+  // Both searches follow the global range and refresh, so both count toward
+  // what an auto-refresh tick costs on this tab.
+  const summariesCost = useCostSlot(true)
+  const presenceCost = useCostSlot(true)
 
   // Field-summaries (fill / cardinality / top values) for the "In feed" browser.
   useEffect(() => {
     const ctrl = new AbortController()
     setState((s) => ({ ...s, loading: true, error: null }))
-    runFieldSummaries(q('| limit 5000'), { earliest: range.earliest, signal: ctrl.signal })
+    runFieldSummaries(q('| limit 5000'), { earliest: range.earliest, signal: ctrl.signal, costSlot: summariesCost })
       .then((res) => setState({ loading: false, error: null, fields: res.fields, sampled: res.sampled }))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
         setState((s) => ({ ...s, loading: false, error: (e as Error).message }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce])
+  }, [range.earliest, refreshNonce, nonce, summariesCost])
 
   // Whole-window presence counts for the AMI coverage view (accurate for rare fields).
   useEffect(() => {
     const ctrl = new AbortController()
     setPresence((s) => ({ ...s, loading: true, error: null }))
-    runSearch(PRESENCE_QUERY, { earliest: range.earliest, signal: ctrl.signal })
+    runSearch(PRESENCE_QUERY, { earliest: range.earliest, signal: ctrl.signal, costSlot: presenceCost })
       .then((res) => {
         const row = (res.rows[0] ?? {}) as Record<string, unknown>
         const count: Record<string, number> = {}
@@ -97,7 +102,7 @@ export function FieldExplorer() {
         setPresence((s) => ({ ...s, loading: false, error: (e as Error).message }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce])
+  }, [range.earliest, refreshNonce, nonce, presenceCost])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {

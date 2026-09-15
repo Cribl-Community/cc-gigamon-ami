@@ -4,6 +4,9 @@ import { AUTO_REFRESH, TIME_RANGES, useDashboard } from './app/DashboardContext'
 import { APP_VERSION, IS_INSTALLED } from './cribl/config'
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from './app/theme'
 import { useInflight } from './cribl/inflight'
+import { CPU_SECONDS_PER_CREDIT, useMountedSearchCost } from './cribl/jobCost'
+import { formatCost } from './lib/format'
+import { PanelInfo } from './components/PanelInfo'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { TopProgress } from './components/TopProgress'
 import { TourProvider } from './app/TourContext'
@@ -104,8 +107,37 @@ function LastUpdated({ ts, busy, inflight }: { ts: number; busy: boolean; inflig
   return <span className="last-updated" title="Time since the last query refresh">updated {label}</span>
 }
 
-function Header() {
+const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`
+
+/** What auto-refresh costs on this tab: a short cost on each option, and the
+ *  detail behind the ⓘ beside the menu. Every figure is computed from the
+ *  mounted searches' measured cost; nothing is a literal. */
+function useAutoRefreshCopy(tabName: string) {
+  const { panels, cpuSeconds } = useMountedSearchCost()
+  const measured = panels > 0
+  const creditsPerHourAt = (seconds: number) => (cpuSeconds / CPU_SECONDS_PER_CREDIT) * (3600 / seconds)
+
+  const optionLabel = (a: (typeof AUTO_REFRESH)[number]) => {
+    if (a.seconds === 0) return 'Auto: off'
+    if (!a.available) return `Auto: ${a.label} — unavailable`
+    return measured ? `Auto: ${a.label} — ${formatCost(creditsPerHourAt(a.seconds), 'credits/hour')}` : `Auto: ${a.label}`
+  }
+
+  // The switched-off intervals are priced at the fastest one.
+  const fastestOff = Math.min(...AUTO_REFRESH.filter((a) => !a.available).map((a) => a.seconds))
+  const about = measured
+    ? `Each refresh re-runs the ${plural(panels, 'panel', 'panels')} on ${tabName} that follow the time range: ` +
+      `${Math.round(cpuSeconds).toLocaleString('en-US')} billable CPU-seconds at their last run, so every 1 minute costs ` +
+      `${formatCost(creditsPerHourAt(60), 'credits/hour')}. ` +
+      `15 s and 30 s are switched off; here they would cost ${formatCost(creditsPerHourAt(fastestOff) * 24, 'credits a day')}.`
+    : '15 s and 30 s are switched off: every refresh re-runs each panel as a full Lake scan. ' +
+      'The cost of 1 minute appears here once this tab’s panels have run.'
+  return { optionLabel, about }
+}
+
+function Header({ tabName }: { tabName: string }) {
   const { range, setRange, refresh, autoSeconds, setAutoSeconds, lastRefresh } = useDashboard()
+  const autoRefresh = useAutoRefreshCopy(tabName)
   // Spin for exactly as long as work is actually happening, rather than a fixed
   // timeout that finishes while queries are still running (reads as a stall).
   const inflight = useInflight()
@@ -132,10 +164,18 @@ function Header() {
           onChange={(e) => { const next = TIME_RANGES.find((r) => r.label === e.target.value); if (next) setRange(next) }}>
           {TIME_RANGES.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
         </select>
-        <select className="range-select" value={autoSeconds} aria-label="Auto-refresh interval" title="Auto-refresh interval"
-          onChange={(e) => setAutoSeconds(Number(e.target.value))}>
-          {AUTO_REFRESH.map((a) => <option key={a.label} value={a.seconds}>{a.seconds === 0 ? 'Auto: off' : `Auto: ${a.label}`}</option>)}
-        </select>
+        <span className="auto-refresh">
+          <select id="auto-refresh" className="range-select" value={autoSeconds} aria-label="Auto-refresh interval"
+            aria-describedby="auto-refresh-note" onChange={(e) => setAutoSeconds(Number(e.target.value))}>
+            {AUTO_REFRESH.map((a) => (
+              <option key={a.label} value={a.seconds} disabled={!a.available}>{autoRefresh.optionLabel(a)}</option>
+            ))}
+          </select>
+          <span id="auto-refresh-note" className="sr-only">
+            15 and 30 second refreshes are switched off to limit search cost. The information button next to this menu explains the cost.
+          </span>
+          <PanelInfo aboutHeading="What auto-refresh costs" about={autoRefresh.about} label="What auto-refresh costs on this tab" />
+        </span>
         <TourLauncher />
         <ThemeToggle />
         <button type="button" className="btn-refresh" onClick={doRefresh} aria-busy={busy}>
@@ -160,11 +200,12 @@ function TabBar() {
 
 export default function App() {
   const location = useLocation()
+  const tabName = TABS.find((t) => location.pathname.startsWith(t.to))?.label ?? 'this tab'
   return (
     <TourProvider>
       <div className="app">
         <TopProgress />
-        <Header />
+        <Header tabName={tabName} />
         <TabBar />
         <TourNudge />
         <main className="app-main">

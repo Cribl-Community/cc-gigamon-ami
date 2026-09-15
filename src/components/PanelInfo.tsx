@@ -11,6 +11,8 @@ interface Props {
   links?: Array<{ href: string; label: string }>
   /** Heading above `about` (defaults to "What this shows"). */
   aboutHeading?: string
+  /** Accessible name for the ⓘ button, when there is no query behind it. */
+  label?: string
 }
 
 function OpenIcon() {
@@ -45,7 +47,7 @@ function pretty(q: string): string {
  * means AND the exact Cribl Search query, with a Copy button. Positioned
  * fixed so it escapes the panel's overflow clipping and viewport edges.
  */
-export function PanelInfo({ about, query, links, aboutHeading = 'What this shows' }: Props) {
+export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it' }: Props) {
   const { range } = useDashboard()
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
@@ -95,7 +97,7 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
         type="button"
         ref={btnRef}
         className={`pinfo-btn ${open ? 'pinfo-btn-on' : ''}`}
-        aria-label="What this shows and the query behind it"
+        aria-label={label}
         aria-expanded={open}
         onClick={toggle}
       >

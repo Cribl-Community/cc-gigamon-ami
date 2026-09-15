@@ -11,6 +11,7 @@
 
 import { searchUrl, LAKE_DATASET } from './config'
 import { beginQuery, endQuery } from './inflight'
+import { recordJobCost, type CostSlot } from './jobCost'
 
 export type Row = Record<string, unknown>
 
@@ -21,6 +22,8 @@ export interface SearchOptions {
   signal?: AbortSignal
   pollMs?: number
   timeoutMs?: number
+  /** Where to record this job's measured cost (the auto-refresh cost labels). */
+  costSlot?: CostSlot
 }
 
 export interface SearchResult {
@@ -69,12 +72,101 @@ async function api<T>(url: string, init: RequestInit, signal?: AbortSignal): Pro
 
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
-    const t = setTimeout(resolve, ms)
-    signal?.addEventListener('abort', () => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'))
+    const onAbort = () => {
       clearTimeout(t)
       reject(new DOMException('Aborted', 'AbortError'))
-    })
+    }
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
   })
+
+/** Seconds a relative earliest bound ('-15m', '-24h', '-30d') or epoch-seconds bound reaches back. */
+function windowSpanSeconds(earliest: string | number): number {
+  if (typeof earliest === 'number') return Math.max(0, Date.now() / 1000 - earliest)
+  const m = /^-(\d+)\s*([smhdw])$/.exec(earliest.trim())
+  if (!m) return 0
+  const unit = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 }[m[2] as 's' | 'm' | 'h' | 'd' | 'w']
+  return Number(m[1]) * unit
+}
+
+/**
+ * Server-side running-time cap for a live query, scaled by the window it reads:
+ * up to 1 h → 120 s, 4 h → 300 s, 24 h → 600 s, longer (Data Flow's pinned
+ * 30 days) → 900 s. A flat 120 s would cut off `-24h` panels on a tenant with a
+ * larger feed; the values are checked against measured wall time per range.
+ */
+export function capSecondsFor(earliest: string | number): number {
+  const span = windowSpanSeconds(earliest)
+  if (span <= 3600) return 120
+  if (span <= 4 * 3600) return 300
+  if (span <= 86400) return 600
+  return 900
+}
+
+/** The query as executed. The `set` prefix goes into the job body only — a
+ *  panel's ⓘ keeps showing the query string it was given. */
+function withExecPrefix(query: string, earliest: string | number): string {
+  return `set max_running_time_per_search=${capSecondsFor(earliest)}; ${query}`
+}
+
+/**
+ * Ask Cribl Search to stop a job this session created, so an abandoned search
+ * stops billing instead of running to its cap. Fire-and-forget: `keepalive`
+ * lets the request outlive an unmounting tab, and a failure (the job already
+ * finished, a network error) changes nothing for the caller.
+ */
+export function cancelJob(jobId: string): void {
+  try {
+    void fetch(searchUrl(`/search/jobs/${encodeURIComponent(jobId)}/cancel`), { method: 'POST', keepalive: true }).catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
+
+async function submitJob(query: string, earliest: string | number, latest: string | number, signal?: AbortSignal): Promise<string> {
+  const created = await api<{ items: Array<{ id: string }> }>(
+    searchUrl('/search/jobs'),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: withExecPrefix(query, earliest), earliest, latest }),
+    },
+    signal,
+  )
+  const jobId = created.items?.[0]?.id
+  if (!jobId) throw new Error('Cribl Search did not return a job id')
+  return jobId
+}
+
+/** Poll job status until it completes. On abort or the client timeout the job
+ *  is cancelled on the server too. */
+async function waitForJob(jobId: string, signal: AbortSignal | undefined, pollMs: number, timeoutMs: number): Promise<void> {
+  const started = Date.now()
+  try {
+    for (;;) {
+      if (Date.now() - started > timeoutMs) {
+        cancelJob(jobId)
+        throw new Error('Cribl Search timed out')
+      }
+      const st = await api<{ items: Array<{ status?: string }> }>(
+        searchUrl(`/search/jobs/${jobId}/status`),
+        { method: 'GET' },
+        signal,
+      )
+      const status = st.items?.[0]?.status
+      if (status === 'failed' || status === 'canceled') throw new Error(`Cribl Search ${status}`)
+      if (status === 'completed') return
+      await sleep(pollMs, signal)
+    }
+  } catch (err) {
+    if (signal?.aborted) cancelJob(jobId)
+    throw err
+  }
+}
 
 /** Run a Cribl Search query and return the result rows once the job completes. */
 export async function runSearch(query: string, opts: SearchOptions = {}): Promise<SearchResult> {
@@ -87,34 +179,11 @@ export async function runSearch(query: string, opts: SearchOptions = {}): Promis
 }
 
 async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<SearchResult> {
-  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs = 700, timeoutMs = 90000 } = opts
+  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs = 700, timeoutMs = 90000, costSlot } = opts
 
-  const created = await api<{ items: Array<{ id: string }> }>(
-    searchUrl('/search/jobs'),
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, earliest, latest }),
-    },
-    signal,
-  )
-  const jobId = created.items?.[0]?.id
-  if (!jobId) throw new Error('Cribl Search did not return a job id')
-
-  const started = Date.now()
-  // Poll job status until terminal state.
-  for (;;) {
-    if (Date.now() - started > timeoutMs) throw new Error('Cribl Search timed out')
-    const st = await api<{ items: Array<{ status?: string }> }>(
-      searchUrl(`/search/jobs/${jobId}/status`),
-      { method: 'GET' },
-      signal,
-    )
-    const status = st.items?.[0]?.status
-    if (status === 'failed' || status === 'canceled') throw new Error(`Cribl Search ${status}`)
-    if (status === 'completed') break
-    await sleep(pollMs, signal)
-  }
+  const jobId = await submitJob(query, earliest, latest, signal)
+  await waitForJob(jobId, signal, pollMs, timeoutMs)
+  if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
 
   // Results are NDJSON: header line then row lines.
   const res = await fetchRetry(searchUrl(`/search/jobs/${jobId}/results?limit=${limit}`), {}, signal)
@@ -170,23 +239,10 @@ export async function runFieldSummaries(query: string, opts: SearchOptions = {})
 }
 
 async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): Promise<FieldSummariesResult> {
-  const { earliest = '-15m', latest = 'now', signal, pollMs = 700, timeoutMs = 90000 } = opts
-  const created = await api<{ items: Array<{ id: string }> }>(
-    searchUrl('/search/jobs'),
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, earliest, latest }) },
-    signal,
-  )
-  const jobId = created.items?.[0]?.id
-  if (!jobId) throw new Error('Cribl Search did not return a job id')
-  const started = Date.now()
-  for (;;) {
-    if (Date.now() - started > timeoutMs) throw new Error('Cribl Search timed out')
-    const st = await api<{ items: Array<{ status?: string }> }>(searchUrl(`/search/jobs/${jobId}/status`), { method: 'GET' }, signal)
-    const status = st.items?.[0]?.status
-    if (status === 'failed' || status === 'canceled') throw new Error(`Cribl Search ${status}`)
-    if (status === 'completed') break
-    await new Promise((r) => setTimeout(r, pollMs))
-  }
+  const { earliest = '-15m', latest = 'now', signal, pollMs = 700, timeoutMs = 90000, costSlot } = opts
+  const jobId = await submitJob(query, earliest, latest, signal)
+  await waitForJob(jobId, signal, pollMs, timeoutMs)
+  if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)
   const fields = data.fields ?? []
   const sampled = fields.reduce((m, f) => Math.max(m, f.count + f.countNull), 0)
