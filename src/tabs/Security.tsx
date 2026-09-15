@@ -155,7 +155,7 @@ export function Security() {
 
       <div className="kpi-row kpi-row-3">
         <KpiTile label="Techniques firing" value={loading ? '…' : `${active}/${TECHNIQUES.length}`} accent={active > 3 ? 'warning' : 'info'}
-          sub="ATT&CK techniques with activity" info="How many of the detectable techniques have at least one event in the window." query={COUNTS} />
+          sub="ATT&CK techniques with activity" info="How many detectable techniques have activity, counted from two queries. Five flow-signal techniques fire on any matching event in the flow-count query shown on the Signal events tile. Two behaviour techniques are thresholded in the app over the 200 busiest sources in the query below: 20+ distinct destinations from a private-range source (host fan-out), or 6+ distinct ports from any source (port scan)." query={SOURCES} />
         <KpiTile label="Signal events" value={loading ? '…' : fmtCount(totalEvents)} accent="warning"
           sub="flow-level detections in window" info="Total flow-level technique detections (tunneling, MSRPC, SSH, LDAP/Kerberos, SNMP creds). Behaviour tiles are counted as sources, not summed here." query={COUNTS} />
         <KpiTile label="Coverage" value={String(TECHNIQUES.length)} unit={`/ ${TECHNIQUES.length + GAPS.length}`} accent="info"

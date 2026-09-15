@@ -101,7 +101,7 @@ export function TlsPosture() {
           info="Servers negotiating TLS 1.1/1.0 or SSL — deprecated and insecure." query={SERVERS} />
         <KpiTile label="Classical KEX (quantum-unsafe)" value={servers.loading ? '…' : String(classicalKex)}
           accent={classicalKex > 0 ? 'warning' : 'success'} sub="no hybrid ML-KEM offered"
-          info="Servers whose sessions only ever offered classical key exchange (x25519 / secp256r1) — vulnerable to harvest-now-decrypt-later. See the PQC Readiness tab for the full migration view." query={SERVERS} />
+          info="Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the up-to-60 busiest servers by flows that are missing from the query below; one dropped by its unsorted 200-row cap counts as classical too. See the PQC Readiness tab for the full migration view." query={PQC_BY_SERVER} />
       </div>
 
       <Panel tourId="tls-servers" title="Servers" info="Each row: server name, issuer (when a cert chain is present), negotiated TLS version, days to expiry, a posture badge, and a key-exchange tag (PQC = offered hybrid ML-KEM; classical = quantum-vulnerable). CA trust is checked against a list of well-known public CAs; anything else is flagged Unknown CA / Self-signed." query={SERVERS} onRefresh={() => { servers.refetch(); pqcServers.refetch() }} refreshing={servers.loading || pqcServers.loading} note={`${shown.length} of ${assessed.length} shown · worst first`}>
