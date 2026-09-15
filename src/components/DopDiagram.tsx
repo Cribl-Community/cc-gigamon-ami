@@ -53,6 +53,8 @@ export interface DopNode {
 }
 
 export type SlotId = 'sources' | 'stream' | 'destinations' | 'search' | 'lake' | 'app'
+/** Anything that can carry an ⓘ — every card plus the two Gigamon stages. */
+export type InfoKey = SlotId | 'gigasmart' | 'amx'
 export type HopId = 'wire' | 'enriched' | 'ingest' | 'process' | 'store' | 'query' | 'render'
 
 /**
@@ -73,6 +75,12 @@ export interface DopDiagramProps {
   selected: string
   onSelect: (id: string) => void
   loading: boolean
+  /**
+   * ⓘ affordances, drawn as an HTML overlay above the SVG rather than in a
+   * foreignObject: PanelInfo positions its popover `fixed`, which does not
+   * survive being scaled by a viewBox.
+   */
+  info?: Partial<Record<InfoKey, ReactNode>>
 }
 
 /* ---------- geometry (authored) ---------- */
@@ -141,6 +149,22 @@ const HOP_PATHS: Record<HopId, string> = {
   query: `M${midX('destinations')},${bottom('destinations')} V555 H${midX('lake')} V${CARDS.lake.y}`,
   // Out of Lake's right side, up the right-hand corridor, into Search's right edge.
   render: `M${right('lake')},${midY('lake')} H${RISER_X} V262 H${right('search')}`,
+}
+
+/**
+ * Where each ⓘ sits, in viewBox units. Cards get their top-right corner; the
+ * two Gigamon stages get a spot inside their own artwork. `tone` picks the icon
+ * colour, since the cards are dark in both themes but the pipe never is.
+ */
+const INFO_ANCHORS: Record<InfoKey, { x: number; y: number; tone: 'dark' | 'light' | 'canvas' }> = {
+  sources: { x: CARDS.sources.x + CARDS.sources.w - 13, y: CARDS.sources.y + 13, tone: 'dark' },
+  stream: { x: CARDS.stream.x + CARDS.stream.w - 13, y: CARDS.stream.y + 13, tone: 'dark' },
+  destinations: { x: CARDS.destinations.x + CARDS.destinations.w - 13, y: CARDS.destinations.y + 13, tone: 'dark' },
+  search: { x: CARDS.search.x + CARDS.search.w - 13, y: CARDS.search.y + 13, tone: 'dark' },
+  lake: { x: CARDS.lake.x + CARDS.lake.w - 13, y: CARDS.lake.y + 13, tone: 'dark' },
+  app: { x: CARDS.app.x + CARDS.app.w - 13, y: CARDS.app.y + 13, tone: 'dark' },
+  gigasmart: { x: 726, y: 336, tone: 'light' },
+  amx: { x: 928, y: 404, tone: 'canvas' },
 }
 
 /** Search → this app, which sits above Search rather than inside the platform. */
@@ -375,7 +399,7 @@ function Card({ slot, n, selected, onSelect, loading }: {
 
 /* ---------- the diagram ---------- */
 
-export function DopDiagram({ nodes, wire, enriched, hops, selected, onSelect, loading }: DopDiagramProps) {
+export function DopDiagram({ nodes, wire, enriched, hops, selected, onSelect, loading, info }: DopDiagramProps) {
   const reduced = usePrefersReducedMotion()
   const activate = (id: string) => (e: ReactKeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -386,6 +410,9 @@ export function DopDiagram({ nodes, wire, enriched, hops, selected, onSelect, lo
 
   return (
     <div className="dop-wrap" data-tour="data-flow">
+      {/* Positioning context for the ⓘ overlay: the SVG scales inside it, and the
+          anchors are placed as percentages of the viewBox, so they track exactly. */}
+      <div className="dop-stage">
       <svg
         viewBox={`0 0 ${VB.w} ${VB.h}`}
         className="dop-svg"
@@ -529,6 +556,25 @@ export function DopDiagram({ nodes, wire, enriched, hops, selected, onSelect, lo
           />
         ))}
       </svg>
+      {info && (
+        <div className="dop-info-layer">
+          {(Object.keys(INFO_ANCHORS) as InfoKey[]).map((k) => {
+            const node = info[k]
+            if (!node) return null
+            const a = INFO_ANCHORS[k]
+            return (
+              <span
+                key={k}
+                className={`dop-info-anchor dop-info-${a.tone}`}
+                style={{ left: `${(a.x / VB.w) * 100}%`, top: `${(a.y / VB.h) * 100}%` }}
+              >
+                {node}
+              </span>
+            )
+          })}
+        </div>
+      )}
+      </div>
     </div>
   )
 }

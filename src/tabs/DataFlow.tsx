@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useSearch } from '../cribl/useSearch'
 import { q } from '../cribl/search'
 import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
 import { PanelInfo } from '../components/PanelInfo'
-import { DopDiagram, type DopNode, type HopId, type HopState, type SlotId } from '../components/DopDiagram'
+import { DopDiagram, type DopNode, type HopId, type HopState, type InfoKey, type SlotId } from '../components/DopDiagram'
 import { toNum, fmtCount, fmtBytes, windowSeconds } from '../lib/format'
 
 /** Volume figures for the current window, shared by every stage. */
@@ -214,6 +214,28 @@ function buildNodes(v: Volume): Record<SlotId, DopNode> {
 }
 
 /**
+ * An ⓘ per node, so "what is this stage and where does it live in Cribl" is one
+ * click away on the diagram itself rather than only on the selected stage below.
+ * Destinations and Cribl Lake are two halves of the same stage, so they share one.
+ */
+function stageInfo(): Partial<Record<InfoKey, ReactNode>> {
+  const of = (id: string) => {
+    const s = STAGES.find((x) => x.id === id)!
+    return <PanelInfo about={s.purpose} aboutHeading="What this stage does" links={s.links} />
+  }
+  return {
+    gigasmart: of('gigasmart'),
+    amx: of('amx'),
+    sources: of('datagen'),
+    stream: of('pipeline'),
+    destinations: of('lake'),
+    lake: of('lake'),
+    search: of('search'),
+    app: of('app'),
+  }
+}
+
+/**
  * State of each connector, so a break shows up on the hop that actually broke
  * rather than dimming the whole diagram.
  */
@@ -310,6 +332,7 @@ export function DataFlow() {
         selected={sel}
         onSelect={setSel}
         loading={loading}
+        info={stageInfo()}
       />
 
       <section className="panel">
