@@ -149,30 +149,42 @@ function withExecPrefix(query: string, earliest: string | number): string {
 
 /**
  * Ask Cribl Search to stop a job this session created, so an abandoned search
- * stops billing instead of running to its cap. Fire-and-forget: `keepalive`
- * lets the request outlive an unmounting tab, and a failure (the job already
- * finished, a network error) changes nothing for the caller.
+ * stops billing instead of running to its cap. Fire-and-forget: a failure
+ * changes nothing for the caller, but it is logged, because a cancel that
+ * silently never happens looks exactly like one that worked. No `keepalive`:
+ * the platform's fetch proxy does not document it, and a tab switch does not
+ * unload the page.
  */
 export function cancelJob(jobId: string): void {
   try {
-    void fetch(searchUrl(`/search/jobs/${encodeURIComponent(jobId)}/cancel`), { method: 'POST', keepalive: true }).catch(() => {})
-  } catch {
-    /* ignore */
+    fetch(searchUrl(`/search/jobs/${encodeURIComponent(jobId)}/cancel`), { method: 'POST' })
+      .then((res) => {
+        if (!res.ok) console.warn(`Cribl Search: cancel of job ${jobId} answered ${res.status}`)
+      })
+      .catch((err: unknown) => console.warn(`Cribl Search: cancel of job ${jobId} failed`, err))
+  } catch (err) {
+    console.warn(`Cribl Search: cancel of job ${jobId} failed`, err)
   }
 }
 
+/**
+ * Submit a job. The POST is deliberately not aborted: if the search is
+ * abandoned while it is in flight, aborting it would lose the job id while the
+ * job still starts in Cribl. Instead the submit completes, and a job whose
+ * search was abandoned meanwhile is cancelled at once.
+ */
 async function submitJob(query: string, earliest: string | number, latest: string | number, signal?: AbortSignal): Promise<string> {
-  const created = await api<{ items: Array<{ id: string }> }>(
-    searchUrl('/search/jobs'),
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: withExecPrefix(query, earliest), earliest, latest }),
-    },
-    signal,
-  )
+  const created = await api<{ items: Array<{ id: string }> }>(searchUrl('/search/jobs'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: withExecPrefix(query, earliest), earliest, latest }),
+  })
   const jobId = created.items?.[0]?.id
   if (!jobId) throw new Error('Cribl Search did not return a job id')
+  if (signal?.aborted) {
+    cancelJob(jobId)
+    throw new DOMException('Aborted', 'AbortError')
+  }
   return jobId
 }
 
