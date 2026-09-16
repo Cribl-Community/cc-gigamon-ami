@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { useWriteGate } from '../cribl/authz'
 import { LAKE_DATASET } from '../cribl/config'
 import { aiEnabled, generateDatasetIntel, getDatasetIntel, type IntelStatus } from '../cribl/datasetIntel'
 import { usePref } from '../cribl/prefs'
+import { GatedControl } from './GatedControl'
 
 /**
  * Offers to generate Cribl dataset intelligence when it's absent, so the
@@ -15,10 +17,14 @@ import { usePref } from '../cribl/prefs'
  */
 export function DatasetIntelPrompt() {
   const [status, setStatus] = useState<IntelStatus | null>(null)
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dismissed, setDismissed] = usePref('intelPromptDismissed')
   const poll = useRef<number | null>(null)
+  // Generation is a write to Cribl under a declared policy path, so it can be
+  // refused. When it is, the gate has the sentence that names the object; the
+  // bare `Could not start generation (403)` below would be saying the same thing
+  // twice and worse.
+  const gate = useWriteGate('dataset_intel.generate')
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -49,14 +55,12 @@ export function DatasetIntelPrompt() {
   }, [status])
 
   const start = async () => {
-    setBusy(true); setError(null)
+    setError(null)
     try {
       await generateDatasetIntel()
       setStatus('processing')
     } catch (e) {
       setError((e as Error).message)
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -85,12 +89,16 @@ export function DatasetIntelPrompt() {
         <strong>AI investigations aren’t grounded yet.</strong> Cribl has no dataset intelligence for{' '}
         <code>{LAKE_DATASET}</code>, so Copilot rediscovers this 319-field schema on every investigation before it
         can start. Generating it once makes every <strong>✦ AI investigate</strong> faster and better grounded.
-        {error && <span className="intel-err"> — {error}</span>}
+        {error && !gate.denied && <span className="intel-err"> — {error}</span>}
       </span>
       <span className="intel-actions">
-        <button type="button" className="tour-btn tour-btn-primary" onClick={() => void start()} disabled={busy}>
-          {busy ? 'Starting…' : 'Generate'}
-        </button>
+        <GatedControl
+          write="dataset_intel.generate"
+          label="Generate"
+          busyLabel="Starting…"
+          className="tour-btn tour-btn-primary"
+          run={start}
+        />
         <button type="button" className="tour-btn" onClick={() => setDismissed(true)}>Dismiss</button>
       </span>
     </div>

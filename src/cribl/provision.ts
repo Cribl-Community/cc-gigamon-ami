@@ -27,6 +27,7 @@
 // platform proxy (installed) and the Vite `/capi` proxy (`npm run dev`) both
 // inject it, so nothing here handles a token.
 
+import { isDenial } from './authz'
 import { capi, errText, groupPath, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
 import { appendLog } from './kv'
@@ -206,12 +207,27 @@ export async function listStreamGroups(): Promise<StreamGroup[]> {
 
 export type ResourceKey = 'dataset' | 'destination' | 'pipeline' | 'source' | 'route'
 
-export interface SetupStatus {
-  dataset: boolean
-  destination: boolean
-  pipeline: boolean
-  source: boolean
-  route: boolean
+/**
+ * What a status check can honestly say about one resource.
+ *
+ * `unreadable` is the state this used to lack, and its absence reached
+ * customers. Every check below is a GET, and a GET the platform refuses answers
+ * neither "there" nor "not there" — but a boolean has nowhere to put that, so a
+ * refused read became `false`, the row rendered "— absent", and the screen
+ * positively told somebody who could not SEE the stack that it did not exist and
+ * offered to deploy it. A gate downstream reading that boolean would be reading
+ * laundered data, which is worse than no gate at all.
+ */
+export type ResourceState = 'present' | 'absent' | 'unreadable'
+
+export type SetupStatus = Record<ResourceKey, ResourceState>
+
+/** What one status GET really told us. `present` is the caller's own reading of
+ *  the body; a refusal overrides it, because the body of a refused call says
+ *  nothing about the resource. */
+function stateOf(r: ApiResp, present: boolean): ResourceState {
+  if (isDenial(r.status)) return 'unreadable'
+  return present ? 'present' : 'absent'
 }
 
 export async function checkStatus(group: string = DEFAULT_STREAM_GROUP): Promise<SetupStatus> {
@@ -225,11 +241,11 @@ export async function checkStatus(group: string = DEFAULT_STREAM_GROUP): Promise
   const dsItems = (ds.body as { items?: Array<{ id?: string }> })?.items || []
   const routeList = ((routes.body as { items?: Array<{ routes?: Array<{ id?: string; name?: string }> }> })?.items?.[0]?.routes) || []
   return {
-    dataset: dsItems.some((d) => d.id === LAKE_DATASET_ID),
-    destination: dest.status === 200,
-    pipeline: pipe.status === 200,
-    source: src.status === 200,
-    route: routeList.some((r) => r.id === SYSLOG_ROUTE_ID || r.name === SYSLOG_ROUTE_ID),
+    dataset: stateOf(ds, dsItems.some((d) => d.id === LAKE_DATASET_ID)),
+    destination: stateOf(dest, dest.status === 200),
+    pipeline: stateOf(pipe, pipe.status === 200),
+    source: stateOf(src, src.status === 200),
+    route: stateOf(routes, routeList.some((r) => r.id === SYSLOG_ROUTE_ID || r.name === SYSLOG_ROUTE_ID)),
   }
 }
 
@@ -819,10 +835,12 @@ export async function removeSyslogStack(
   const out: StepResult[] = []
   const touched: ResourceKey[] = []
   // When cleaning up a partial stack, only touch resources that actually exist —
-  // if `present` was supplied, skip anything already absent so we don't issue
+  // if `present` was supplied, skip anything KNOWN to be absent so we don't issue
   // pointless deletes or report spurious failures. Without it, attempt all
-  // (still 404-tolerant below).
-  const exists = (k: ResourceKey) => present?.[k] !== false
+  // (still 404-tolerant below). A resource whose state could not be read is
+  // attempted rather than skipped: "I could not see it" is not "it is not there",
+  // and the DELETE answers the question for real.
+  const exists = (k: ResourceKey) => present?.[k] !== 'absent'
 
   // Route: remove our entry, keep the rest.
   if (exists('route')) {

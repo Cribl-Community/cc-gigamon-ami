@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { GatedControl } from './GatedControl'
 import { Panel } from './Panel'
 import {
   DEFAULT_CAP_TIERS, MAX_CAP_SECONDS, MIN_CAP_SECONDS, capTiersInForce, type CapTier,
@@ -206,14 +207,26 @@ export function SearchLimitsPanel() {
       </p>
 
       <div className="sl-actions">
-        <button
-          type="button"
-          className="gs-btn gs-btn-primary"
-          onClick={() => void onSave()}
-          disabled={saving || !canSave}
-        >
-          {saving ? 'Saving…' : 'Save for everyone'}
-        </button>
+        {/* Gated even though this writes only the app's own document. The store
+            is app-scoped and granted with the app (AGENTS.md), so it cannot be
+            refused for lack of a role — but if the platform ever does refuse
+            this app's own calls, "Could not save" is not the sentence somebody
+            needs, and the gate's is. The gate closes only on a refusal, never on
+            the ordinary unreachable-store case the panel already explains below,
+            so Save stays live for the retry it was deliberately kept live for. */}
+        <GatedControl
+          write="search_caps.save"
+          label="Save for everyone"
+          busyLabel="Saving…"
+          unavailable={
+            blocked
+              ? `Each limit must be ${CAP_RANGE_TEXT}.`
+              : canSave
+                ? null
+                : 'These are the limits already in force — nothing to save.'
+          }
+          run={onSave}
+        />
         <button type="button" className="gs-btn gs-btn-ghost" onClick={onReset} disabled={saving}>
           Reset to defaults
         </button>

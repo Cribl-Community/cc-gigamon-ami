@@ -1065,6 +1065,19 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-confirm-list li { line-height: 1.45; }
 .gs-confirm code { font-family: var(--gm-mono); }
 
+/* GatedControl (components/GatedControl.tsx). The wrapper carries no look of its
+   own — a gated button has to be indistinguishable from the plain one it
+   replaced — it only stacks the refusal note under the button it belongs to,
+   inside whatever row the caller already had. */
+.gate { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
+.gate-note {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  max-width: 62ch; padding: 9px 12px; font-size: 12.5px; line-height: 1.5;
+  color: var(--gm-fg); border: 1px solid var(--gm-st-danger); border-radius: token('radius.md');
+}
+.gate-note-text { flex: 1 1 260px; min-width: 0; }
+.gate-retry { flex: none; padding: 5px 10px; font-size: 12px; }
+
 .gs-steps { margin-top: 16px; border-top: 1px solid var(--gm-border); padding-top: 12px; display: flex; flex-direction: column; gap: 5px; }
 .gs-step { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-family: var(--gm-mono); }
 .gs-step-icon { flex: none; width: 14px; text-align: center; }

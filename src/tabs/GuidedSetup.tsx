@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { GateNote, GatedControl } from '../components/GatedControl'
 import { Panel } from '../components/Panel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
+import { useWriteGate } from '../cribl/authz'
 import { IS_INSTALLED } from '../cribl/config'
 import {
   checkStatus, deployAll, removeSyslogStack, suggestedSyslogHost, pendingDeploy,
@@ -54,6 +56,13 @@ export function GuidedSetup() {
   const [groupReady, setGroupReady] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
   const toastId = useRef(0)
+  // Both writes on this screen are two-stage: an outer button that opens a
+  // confirmation, and a "Yes, …" inside it that actually writes. `<GatedControl>`
+  // owns the inner one. These read the same gate so the OUTER button closes too
+  // after a refusal — walking somebody into a confirmation they cannot complete
+  // is worse than telling them at the button they pressed.
+  const applyGate = useWriteGate('syslog_stack.apply')
+  const removeGate = useWriteGate('syslog_stack.remove')
 
   // Step logs and fatal errors are kept PER worker group so switching groups (or
   // re-checking) preserves the last outcome for each — a provisioning failure
@@ -209,8 +218,13 @@ export function GuidedSetup() {
   }, [groupReady, populate])
 
   const allPresent = status
-    ? RESOURCES.every((r) => status[r.key])
+    ? RESOURCES.every((r) => status[r.key] === 'present')
     : false
+  // A resource the platform refused to show us. Not "absent" — see ResourceState
+  // in cribl/provision.ts. It is called out on the row and beside the actions,
+  // because everything else on this screen (what is offered, what a confirmation
+  // lists) is reasoning from a picture that has a hole in it.
+  const unreadable = status ? RESOURCES.filter((r) => status[r.key] === 'unreadable') : []
 
   // Per-resource outcomes from this group's step log, surfaced inline on the
   // rows: a failure (e.g. the syslog port conflict) and any downstream steps
@@ -227,7 +241,7 @@ export function GuidedSetup() {
   // The group-scoped resources the teardown removes. When some (but not all) of
   // these exist, the stack is "partial" and can be cleaned up.
   const REMOVABLE_KEYS: ResourceKey[] = ['source', 'pipeline', 'route']
-  const anyRemovable = status ? REMOVABLE_KEYS.some((k) => status[k]) : false
+  const anyRemovable = status ? REMOVABLE_KEYS.some((k) => status[k] === 'present') : false
   const partial = anyRemovable && !allPresent
 
   // Reached only from the "Yes, …" button inside the confirmation below. It
@@ -341,19 +355,28 @@ export function GuidedSetup() {
               </button>
             </div>
             {RESOURCES.map((r) => {
-              const present = status?.[r.key]
+              const present = status?.[r.key] === 'present'
+              // Cribl refused the read. The row must not claim the resource is
+              // missing — that claim is what used to invite a user who cannot see
+              // the stack to deploy a second one over the top of it.
+              const unread = status?.[r.key] === 'unreadable'
               const rowErr = !present ? errorByKey[r.key] : undefined
               const rowSkip = !present && !rowErr ? skippedByKey[r.key] : undefined
               const rc = commitByKey[r.key]
               return (
                 <div key={r.key} className="gs-res-row">
-                  <span className={`gs-pill ${present ? 'gs-ok' : rowErr ? 'gs-err' : rowSkip ? 'gs-skip' : loading ? 'gs-unknown' : 'gs-missing'}`}>
-                    {present ? '✓ present' : rowErr ? '✕ failed' : rowSkip ? '⤼ skipped' : loading ? '…' : '— absent'}
+                  <span className={`gs-pill ${present ? 'gs-ok' : rowErr ? 'gs-err' : unread ? 'gs-skip' : rowSkip ? 'gs-skip' : loading ? 'gs-unknown' : 'gs-missing'}`}>
+                    {present ? '✓ present' : rowErr ? '✕ failed' : unread ? '? unreadable' : rowSkip ? '⤼ skipped' : loading ? '…' : '— absent'}
                   </span>
                   <div className="gs-res-text">
                     <span className="gs-res-label">{r.label}</span>
                     <span className="gs-res-detail"><code>{r.detail}</code></span>
                     {rowErr && <span className="gs-res-error">{rowErr}</span>}
+                    {unread && !rowErr && (
+                      <span className="gs-res-skip">
+                        Cribl refused the read, so this app cannot tell whether it exists — usually a permission.
+                      </span>
+                    )}
                     {rowSkip && <span className="gs-res-skip">{rowSkip}</span>}
                     {rc && (
                       <span className="gs-res-commit" title={rc.message}>
@@ -410,22 +433,50 @@ export function GuidedSetup() {
                 <div>
                   {/* The confirmation can outlive the state it was opened in —
                       a Re-check started underneath it, say — so the button that
-                      actually writes re-checks that nothing is already running. */}
-                  <button type="button" className="gs-btn gs-btn-primary" onClick={() => void onDeploy()} disabled={running !== null}>
-                    {allPresent ? `Yes, re-apply to ${group}` : `Yes, deploy to ${group}`}
-                  </button>
+                      actually writes re-checks that nothing is already running.
+                      It is a GatedControl because this is the click that writes:
+                      if Cribl refuses one of the calls behind it, the refusal is
+                      caught here and named rather than reported as a generic
+                      failed step. */}
+                  <GatedControl
+                    write="syslog_stack.apply"
+                    label={allPresent ? `Yes, re-apply to ${group}` : `Yes, deploy to ${group}`}
+                    busyLabel="Deploying…"
+                    unavailable={running !== null ? 'Another run is already in progress.' : null}
+                    run={onDeploy}
+                  />
                   <button type="button" className="gs-btn gs-btn-ghost" onClick={() => setConfirmDeploy(false)}>Cancel</button>
                 </div>
               </div>
             ) : (
               <>
-                <button type="button" className="gs-btn gs-btn-primary" onClick={() => { setConfirmRemove(false); setConfirmDeploy(true) }} disabled={running !== null || loading}>
+                <button
+                  type="button"
+                  className="gs-btn gs-btn-primary"
+                  onClick={() => { setConfirmRemove(false); setConfirmDeploy(true) }}
+                  disabled={running !== null || loading || applyGate.denied !== null}
+                  title={applyGate.reason ?? undefined}
+                >
                   {running === 'deploy' ? 'Deploying…' : allPresent ? 'Re-apply onboarding stack' : 'Deploy onboarding stack'}
                 </button>
+                {/* The confirmation closes itself before the write runs, so by
+                    the time there is a refusal to report its "Yes" button is
+                    gone. The note belongs here, beside the trigger the user is
+                    now looking at. */}
+                <GateNote write="syslog_stack.apply" />
                 <p className="gs-action-note">
                   Creates any missing resources, then commits &amp; deploys to the <code>{group}</code> group.
                   You'll get to review exactly what changes first.
                 </p>
+                {unreadable.length > 0 && (
+                  <p className="gs-action-note gs-action-warn">
+                    Cribl refused to let this app read part of <code>{group}</code>{' '}
+                    ({unreadable.map((r) => r.label).join(', ')}), so the rows above are an incomplete
+                    picture — those resources may already exist. Deploying is still safe, because every step
+                    creates only what is missing, but check the group in Cribl before you rely on what this
+                    screen says.
+                  </p>
+                )}
                 {pending && (
                   <p className="gs-action-note gs-action-warn">
                     Commit <code>#{pending.slice(0, 10)}</code> is committed to <code>{group}</code> but not
@@ -446,9 +497,9 @@ export function GuidedSetup() {
                       whoever clicks this has to be able to check the list against
                       what they think is in the group. */}
                   <ul className="gs-confirm-list">
-                    {status?.source && <li>Syslog source <code>{SYSLOG_SOURCE_ID}</code> — deleted</li>}
-                    {status?.pipeline && <li>Pipeline <code>{SYSLOG_PIPELINE_ID}</code> — deleted</li>}
-                    {status?.route && (
+                    {status?.source === 'present' && <li>Syslog source <code>{SYSLOG_SOURCE_ID}</code> — deleted</li>}
+                    {status?.pipeline === 'present' && <li>Pipeline <code>{SYSLOG_PIPELINE_ID}</code> — deleted</li>}
+                    {status?.route === 'present' && (
                       <li>
                         Route <code>{SYSLOG_ROUTE_ID}</code> — removed from the routing table of{' '}
                         <code>{group}</code>. Every other route keeps its order.
@@ -462,22 +513,33 @@ export function GuidedSetup() {
                     this app; the config is recoverable only from the group's Git history.
                   </span>
                   <div>
-                    <button type="button" className="gs-btn gs-btn-danger" onClick={() => void onRemove()} disabled={running !== null}>Yes, delete from {group}</button>
+                    <GatedControl
+                      write="syslog_stack.remove"
+                      label={`Yes, delete from ${group}`}
+                      busyLabel="Removing…"
+                      className="gs-btn gs-btn-danger"
+                      unavailable={running !== null ? 'Another run is already in progress.' : null}
+                      run={onRemove}
+                    />
                     <button type="button" className="gs-btn gs-btn-ghost" onClick={() => setConfirmRemove(false)}>Cancel</button>
                   </div>
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className="gs-btn gs-btn-ghost gs-btn-danger-text"
-                  // One confirmation open at a time: two prompts about the same
-                  // group, with opposite answers, is how the wrong button gets
-                  // pressed.
-                  onClick={() => { setConfirmDeploy(false); setConfirmRemove(true) }}
-                  disabled={running !== null}
-                >
-                  {partial ? 'Remove partial stack' : 'Remove onboarding stack'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="gs-btn gs-btn-ghost gs-btn-danger-text"
+                    // One confirmation open at a time: two prompts about the same
+                    // group, with opposite answers, is how the wrong button gets
+                    // pressed.
+                    onClick={() => { setConfirmDeploy(false); setConfirmRemove(true) }}
+                    disabled={running !== null || removeGate.denied !== null}
+                    title={removeGate.reason ?? undefined}
+                  >
+                    {partial ? 'Remove partial stack' : 'Remove onboarding stack'}
+                  </button>
+                  <GateNote write="syslog_stack.remove" />
+                </>
               )
             )}
           </div>

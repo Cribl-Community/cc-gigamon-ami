@@ -215,7 +215,7 @@ describe('ensureRoute', () => {
       table: { comments: [{ text: 'keep me' }] },
       pending: [`groups/${GROUP}/local/cribl/routes.yml`],
     })
-    await new Promise<void>((resolve) => { void removeSyslogStack(() => {}, GROUP, undefined, { route: true, source: false, pipeline: false }).then(() => resolve()) })
+    await new Promise<void>((resolve) => { void removeSyslogStack(() => {}, GROUP, undefined, { route: 'present', source: 'absent', pipeline: 'absent' }).then(() => resolve()) })
 
     expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'b', 'default'])
     expect((patched(calls)!.body as { comments?: unknown }).comments).toEqual([{ text: 'keep me' }])

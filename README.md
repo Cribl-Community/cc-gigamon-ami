@@ -71,6 +71,45 @@ The dashboard is organized into tabs, each answering a different operational que
 Once installed, open the app and start on the **Guided Setup** tab if the `gigamon_ami` dataset
 does not yet exist in your environment.
 
+### What installing this app grants
+
+The list of API paths you approve at install time (`config/policies.yml`) is not a description of
+the app — it is a grant. When you share the app with a user, Cribl gives **that user** those
+permissions for the duration of any request they make **through this app**. It does not widen what
+they can do anywhere else in Cribl, and it does not let the app act while nobody is using it: every
+call is made as the person clicking, from a click.
+
+Most of the list is reading. The dashboards submit Cribl Search jobs in the `default_search` group
+and read their results — that is all any tab except Guided Setup ever does, and none of it touches
+configuration.
+
+**The writes are worth reading properly.** Guided Setup can create a Syslog source, a pipeline, a
+route and a Cribl Lake destination and dataset, commit them to your Leader's config repo, and deploy
+that commit to a worker group — which restarts that group's Worker Processes. It only ever runs
+from a button press with a confirmation that names the objects it will change, it only touches
+objects it created, and it can remove the source, the pipeline and the route again. Two things it
+creates it does **not** remove: the `gigamon_ami` Lake dataset, because that holds your ingested
+data and deleting it is a Cribl Lake decision you should make deliberately, and the `gigamon_lake`
+destination, because on most tenants it already existed and other things may route through it — so
+on a tenant that lacked one, an uninstall leaves an unreferenced destination behind for you to
+delete in Stream. The Git commit is permanent by design; the app never calls revert or undo.
+
+**The one thing the app cannot narrow, and you should know about:** Guided Setup lets the user pick
+which worker group to onboard into, so the group is a variable in the granted path
+(`/m/:gid/...`). That means the write grants — create, update and delete of inputs and pipelines,
+and replacing the routing table — apply in **every** worker group on the Leader, not only the one
+the picker selects. A group has a single routing table and the API replaces it wholesale, so "this
+app may rewrite the routing table of any worker group" is a fair reading of what you are approving.
+What the app actually does is narrower (it edits the array it just read, leaving every other route
+at its own index, and its own route carries a filter scoped to its own source), but that is the
+app's behaviour, not a limit the platform enforces on it. If that is more than you want to grant,
+share the app only with people you would give those permissions to anyway — the dashboards work
+without Guided Setup once the dataset exists.
+
+Everything in that file is checked against the code: `src/cribl/policyCoverage.test.ts` fails if the
+app calls a path the file does not declare, and equally if the file declares a path the app never
+calls.
+
 ## Development
 
 ```bash

@@ -19,6 +19,7 @@
 // product — folding them in would make this module about search, and bolting
 // search's semantics onto a provisioning call would retry writes.
 
+import { isDenial, noteDenial } from './authz'
 import { API_BASE } from './config'
 
 /** A Cribl response as the callers read it: the status, and whatever body came
@@ -66,12 +67,33 @@ export async function capi(method: string, path: string, body?: unknown, init: C
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   })
   const text = await res.text()
-  if (init.text) return { status: res.status, body: text }
   let parsed: unknown = null
-  if (text) {
+  if (!init.text && text) {
     try { parsed = JSON.parse(text) } catch { parsed = text }
   }
-  return { status: res.status, body: parsed }
+  const resp: ApiResp = { status: res.status, body: init.text ? text : parsed }
+  // Every configuration and KV call in this app leaves through here, so this is
+  // the one place a refusal can be recorded without asking every caller to
+  // remember. `capi` still does not throw and still reports the status as data —
+  // the control that caused the refusal is the thing that decides what it means
+  // (cribl/authz.ts), and a GET refused during a status check is not a failure
+  // at all, just a fact the screen has to stop calling "absent".
+  if (isDenial(resp.status)) noteDenial(method, path, resp.status, criblMessage(resp))
+  return resp
+}
+
+/**
+ * The sentence Cribl wrote, when it wrote one. Unlike `errText` this answers
+ * `undefined` rather than manufacturing "HTTP 403": a denial notice quotes Cribl
+ * only when there is something to quote, and quoting a status back at somebody
+ * who can already see it is noise.
+ */
+function criblMessage(r: ApiResp): string | undefined {
+  if (r.body && typeof r.body === 'object') {
+    const m = (r.body as { message?: string; error?: string }).message || (r.body as { error?: string }).error
+    return typeof m === 'string' && m ? m : undefined
+  }
+  return typeof r.body === 'string' && r.body.trim() ? r.body.slice(0, 200) : undefined
 }
 
 /**
