@@ -1304,7 +1304,7 @@
             "sources"
           ],
           "value": "loading ? '…' : `${active}/${TECHNIQUES.length}`",
-          "info": "How many detectable techniques have activity, counted from two queries. Five flow-signal techniques fire on any matching event in the flow-count query shown on the Signal events tile. Two behaviour techniques are thresholded in the app over the 200 busiest sources in the query below: 20+ distinct destinations from a private-range source (host fan-out), or 6+ distinct ports from any source (port scan).",
+          "info": "How many detectable techniques have activity, from two queries. Five fire on any matching event in the flow-count query on the Signal events tile. Two are thresholded in the app over the query below: 20+ destinations from a private-range source, or 6+ ports from any source.",
           "sub": "ATT&CK techniques with activity"
         },
         "KpiTile · Signal events": {
@@ -1692,8 +1692,8 @@
             "pqcServers",
             "servers"
           ],
-          "value": "servers.loading ? '…' : String(classicalKex)",
-          "info": "Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the up-to-60 busiest servers by flows that are missing from the query below; one dropped by its unsorted 200-row cap counts as classical too. See the PQC Readiness tab for the full migration view.",
+          "value": "servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
+          "info": "Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab.",
           "sub": "no hybrid ML-KEM offered"
         },
         "Panel · Servers": {
