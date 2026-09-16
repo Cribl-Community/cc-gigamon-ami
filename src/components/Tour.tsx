@@ -20,10 +20,14 @@ export function TourLauncher() {
   )
 }
 
-/** One-time nudge for first-time users. Never returns once a tour is run or dismissed. */
+/**
+ * One-time nudge for first-time users. Never returns once a tour is run or
+ * dismissed — and never appears at all until the stored preference says this
+ * viewer has not seen it, so it does not flash for the people who already have.
+ */
 export function TourNudge() {
-  const { seen, persona, openPicker, markSeen } = useTour()
-  if (seen || persona) return null
+  const { offerNudge, persona, openPicker, markSeen } = useTour()
+  if (!offerNudge || persona) return null
   return (
     <div className="tour-nudge" role="note">
       <span>

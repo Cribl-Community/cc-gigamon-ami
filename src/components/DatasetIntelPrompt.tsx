@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { LAKE_DATASET } from '../cribl/config'
 import { aiEnabled, generateDatasetIntel, getDatasetIntel, type IntelStatus } from '../cribl/datasetIntel'
-
-const DISMISS_KEY = 'gigamon-npm-intel-dismissed'
+import { usePref } from '../cribl/prefs'
 
 /**
  * Offers to generate Cribl dataset intelligence when it's absent, so the
@@ -11,15 +10,14 @@ const DISMISS_KEY = 'gigamon-npm-intel-dismissed'
  *
  * Deliberately quiet: it renders nothing unless the tenant has AI enabled AND
  * intelligence is genuinely missing or failed. Once generated (or dismissed) it
- * never comes back.
+ * never comes back for that viewer — the dismissal is per-user and lives in the
+ * app-scoped Cribl KV store, so it survives a reload and a change of browser.
  */
 export function DatasetIntelPrompt() {
   const [status, setStatus] = useState<IntelStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [dismissed, setDismissed] = useState(() => {
-    try { return localStorage.getItem(DISMISS_KEY) === '1' } catch { return false }
-  })
+  const [dismissed, setDismissed] = usePref('intelPromptDismissed')
   const poll = useRef<number | null>(null)
 
   useEffect(() => {
@@ -62,12 +60,10 @@ export function DatasetIntelPrompt() {
     }
   }
 
-  const dismiss = () => {
-    setDismissed(true)
-    try { localStorage.setItem(DISMISS_KEY, '1') } catch { /* non-fatal */ }
-  }
-
-  if (dismissed || status === null) return null
+  // `dismissed` is three-valued: undefined until the stored preference lands
+  // (cribl/prefs.ts). Only a definite `false` shows the note, so a viewer who
+  // dismissed it once does not watch it appear and vanish on every load.
+  if (dismissed !== false || status === null) return null
   if (status === 'complete' || status === 'partial' || status === 'unknown') return null
 
   if (status === 'processing') {
@@ -95,7 +91,7 @@ export function DatasetIntelPrompt() {
         <button type="button" className="tour-btn tour-btn-primary" onClick={() => void start()} disabled={busy}>
           {busy ? 'Starting…' : 'Generate'}
         </button>
-        <button type="button" className="tour-btn" onClick={dismiss}>Dismiss</button>
+        <button type="button" className="tour-btn" onClick={() => setDismissed(true)}>Dismiss</button>
       </span>
     </div>
   )

@@ -1,9 +1,20 @@
 # Product API access declaration. Declare Cribl product API paths your app needs to access.
 # At install time, admins see exactly which platform resources the app will use.
 #
-# This app is read-only: it runs Cribl Search jobs against the Cribl Lake dataset
-# `gigamon_ami` and reads their results. Search always runs in the default_search
-# group, so every call is under /m/default_search/search/...
+# The dashboards are read-only: they run Cribl Search jobs against the Cribl Lake
+# dataset `gigamon_ami` and read their results. Search always runs in the
+# default_search group, so every call is under /m/default_search/search/...
+#
+# The Guided Setup tab is the exception, and the second block below is its whole
+# surface. READ THAT BLOCK AS A GRANT, NOT AS DOCUMENTATION: AGENTS.md is explicit
+# that when an admin shares this app with a user, every path declared here is
+# granted to that user for the duration of a request made through the app. So
+# declaring the provisioning paths is what lets a non-admin press "Deploy
+# onboarding stack" and have it work — before they were declared, only users who
+# already held the permission got past a 403. Removing the block does not make the
+# app safer in any interesting way (an admin can still do all of it); it makes
+# Guided Setup silently fail for everyone else. Every one of those calls is behind
+# a confirmation in tabs/GuidedSetup.tsx that names the objects it will change.
 policies:
   # Submit a search job (POST) and list jobs (GET).
   - object: '/m/default_search/search/jobs'
@@ -25,3 +36,69 @@ policies:
     actions: ['GET']
   - object: '/ai/settings/dataset-intelligence/*'
     actions: ['GET', 'POST']
+
+  # --- Guided Setup: the Gigamon AMI syslog onboarding stack -----------------
+  # cribl/provision.ts, reached only from the Guided Setup tab's confirmed
+  # Deploy / Remove buttons. Everything it creates is additive and scoped to the
+  # five objects named in that confirmation.
+
+  # The Stream worker group the stack is applied to. GET lists the groups the
+  # picker offers and reads the commit a group is currently running
+  # (`configVersion`); PATCH .../deploy pushes a commit to its Workers.
+  # /products/stream/... is the current path family and /master/groups the
+  # deprecated one — both are declared because provision.ts falls back to the old
+  # path on a 404, which is how an older Leader answers the new one.
+  - object: '/products/stream/groups/*'
+    actions: ['GET', 'PATCH']
+  - object: '/master/groups'
+    actions: ['GET']
+  - object: '/master/groups/*'
+    actions: ['GET', 'PATCH']
+
+  # The Cribl Lake dataset the dashboards read. GET to see whether it exists,
+  # POST to create it when it does not. Never updated, never deleted: it is
+  # shared and group-independent, and the teardown deliberately leaves it.
+  - object: '/products/lake/lakes/:lakeId/datasets'
+    actions: ['GET', 'POST']
+
+  # The four group-scoped config objects, under the /m/:gid prefix every
+  # non-/system/ endpoint takes. GET answers "does this exist yet"; POST creates;
+  # PATCH re-applies the spec to one that does; DELETE is the teardown, and only
+  # ever of the source and pipeline this app created.
+  - object: '/m/:gid/system/inputs'
+    actions: ['POST']
+  - object: '/m/:gid/system/inputs/*'
+    # PATCH because re-applying an existing stack updates the source in place
+    # (provision.ts ensureSource). Without it a non-admin who was shared the app
+    # deploys a fresh stack fine and gets a 403 on every re-apply after that.
+    actions: ['GET', 'PATCH', 'DELETE']
+  - object: '/m/:gid/system/outputs'
+    actions: ['POST']
+  - object: '/m/:gid/system/outputs/*'
+    actions: ['GET']
+  - object: '/m/:gid/pipelines'
+    actions: ['POST']
+  - object: '/m/:gid/pipelines/*'
+    actions: ['GET', 'PATCH', 'DELETE']
+  # A group has one routing table and PATCH replaces it wholesale, so this is the
+  # most consequential entry in the file. provision.ts edits the array it just
+  # read — one insert or one in-place update — rather than composing a new one.
+  - object: '/m/:gid/routes'
+    actions: ['GET']
+  - object: '/m/:gid/routes/*'
+    actions: ['PATCH']
+
+  # Git versioning on the Leader. /version/status reads which files are pending so
+  # the commit can name exactly ours and leave anyone else's pending changes
+  # alone; /version/commit commits that list. /version and /version/files are
+  # read-only and answer one question: did an earlier run commit something this
+  # group never deployed? Without them a commit whose deploy failed can never be
+  # deployed by this app again.
+  - object: '/version'
+    actions: ['GET']
+  - object: '/version/status'
+    actions: ['GET']
+  - object: '/version/files'
+    actions: ['GET']
+  - object: '/version/commit'
+    actions: ['POST']

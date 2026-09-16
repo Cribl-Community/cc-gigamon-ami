@@ -16,10 +16,10 @@
     "searches": 37,
     "links": 23,
     "briefs": 17,
-    "prose": 13,
+    "prose": 14,
     "modules": 129,
     "catalogs": 13,
-    "states": 20,
+    "states": 24,
     "passthrough": 3,
     "unbound": 21
   },
@@ -80,6 +80,12 @@
     }
   },
   "states": {
+    "src/components/SearchLimitsPanel.tsx": {
+      "inForce": "null",
+      "note": "null",
+      "saving": "false",
+      "source": "'default'"
+    },
     "src/tabs/CapacityTopTalkers.tsx": {
       "applied": "''",
       "customGbps": "''",
@@ -304,6 +310,17 @@
           "about": "(unbound)",
           "aboutHeading": "What auto-refresh costs",
           "label": "What auto-refresh costs on this tab"
+        }
+      }
+    },
+    "src/components/SearchLimitsPanel.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "Panel · Search running-time limits": {
+          "info": "Every query this app submits is prefixed with set max_running_time_per_search=<seconds>, chosen from this table by the time range the panel reads. Cribl stops the job when it reaches that, and the panel names the limit rather than reporting a plain failure. Nothing here changes what a query returns — only how long Cribl lets it run before stopping it."
         }
       }
     },

@@ -1056,8 +1056,14 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-btn-danger-text { color: var(--gm-st-danger); border-style: dashed; }
 .gs-action-note { font-size: 12px; color: var(--gm-fg-subtle); margin: 0; line-height: 1.45; }
 .gs-action-note code { font-family: var(--gm-mono); }
+.gs-action-warn { color: var(--gm-st-warning); }
 .gs-confirm { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--gm-fg); padding: 10px; border: 1px solid var(--gm-st-danger); border-radius: token('radius.md'); }
 .gs-confirm > div { display: flex; gap: 8px; }
+/* The list of objects a confirmation names. Inherits the confirmation's own
+   type size, so the things about to change do not read as small print. */
+.gs-confirm-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+.gs-confirm-list li { line-height: 1.45; }
+.gs-confirm code { font-family: var(--gm-mono); }
 
 .gs-steps { margin-top: 16px; border-top: 1px solid var(--gm-border); padding-top: 12px; display: flex; flex-direction: column; gap: 5px; }
 .gs-step { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-family: var(--gm-mono); }
@@ -1350,3 +1356,35 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 @media (prefers-reduced-motion: reduce) {
   .dop-edge-live { animation: none; }
 }
+
+/* ---------- Search running-time limits (A-D30 settings surface) ---------- */
+.sl-rows { display: grid; gap: 10px; margin: 0 0 14px; }
+.sl-row {
+  display: grid; align-items: center; gap: 4px 14px;
+  grid-template-columns: minmax(150px, 220px) auto 1fr;
+}
+.sl-band { font-size: 13px; color: var(--gm-fg); font-weight: token('core.fontWeight.medium'); }
+.sl-input-wrap { display: inline-flex; align-items: baseline; gap: 6px; }
+.sl-input {
+  width: 96px; font-size: 13px; font-family: var(--gm-mono); color: var(--gm-fg);
+  background: var(--gm-panel); border: 1px solid var(--gm-border); border-radius: token('radius.md');
+  padding: 6px 8px; text-align: right;
+}
+.sl-input:disabled { opacity: 0.5; cursor: default; }
+.sl-input-bad { border-color: var(--gm-st-danger); }
+.sl-unit { font-size: 12px; color: var(--gm-fg-subtle); }
+.sl-default { font-size: 12px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.sl-field-err { grid-column: 1 / -1; font-size: 11.5px; color: var(--gm-st-danger); line-height: 1.35; }
+@media (max-width: 620px) {
+  .sl-row { grid-template-columns: 1fr; }
+}
+
+.sl-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.sl-actions-note { flex: 1 1 240px; min-width: 0; font-size: 12px; color: var(--gm-fg-subtle); line-height: 1.45; }
+.sl-note {
+  margin: 12px 0 0; padding: 9px 12px; font-size: 12.5px; line-height: 1.5;
+  border: 1px solid var(--gm-border); border-radius: token('radius.md');
+}
+.sl-note-ok { border-color: var(--gm-st-success); color: var(--gm-fg); }
+.sl-note-warn { border-color: var(--gm-st-warning); color: var(--gm-fg); }
+.sl-note-err { border-color: var(--gm-st-danger); color: var(--gm-fg); }

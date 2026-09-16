@@ -11,10 +11,26 @@
 // destination. The route is prepended above the catch-all `default` route with
 // a filter scoped to this source, so unrelated data is unaffected.
 //
-// Calls go through the same channel as Search: `${API_BASE}/...` (installed →
-// platform proxy; `npm run dev` → Vite `/capi` proxy). See cribl/config.ts.
+// Additive is not the same as harmless, though, and this is the only file in the
+// app that writes customer configuration. Three of the calls below overwrite
+// something that already exists — a PATCH of the pipeline, a PATCH of the source,
+// and the PATCH of the routing table, which replaces the whole array — and the
+// deploy pushes the result to running workers. AGENTS.md ("Confirming Destructive
+// Operations") requires an explicit confirmation naming exactly those objects
+// before any of it runs, and forbids reaching it from load, render or a timer.
+// Nothing here enforces that, because nothing here can tell a deliberate click
+// from an accidental one: the confirmation lives in tabs/GuidedSetup.tsx, in
+// front of `deployAll` and `removeSyslogStack`, which are the only two entry
+// points that write anything. Every other export is a GET.
+//
+// Calls go through cribl/capi.ts, which is where the auth story lives: the
+// platform proxy (installed) and the Vite `/capi` proxy (`npm run dev`) both
+// inject it, so nothing here handles a token.
 
-import { API_BASE, STREAM_GROUP } from './config'
+import { capi, errText, groupPath, type ApiResp } from './capi'
+import { STREAM_GROUP } from './config'
+import { appendLog } from './kv'
+import { loadCommitMemory } from './setupMemory'
 
 export const SYSLOG_SOURCE_ID = 'in_gigamon_syslog'
 export const SYSLOG_PIPELINE_ID = 'gigamon_syslog'
@@ -123,34 +139,12 @@ const DESTINATION_SPEC = {
   onBackpressure: 'block',
 }
 
-// --- Low-level API helper ------------------------------------------------
+// --- Addressing -----------------------------------------------------------
 
-interface ApiResp { status: number; body: unknown }
-
-async function capi(method: string, path: string, body?: unknown): Promise<ApiResp> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  })
-  let parsed: unknown = null
-  const text = await res.text()
-  if (text) {
-    try { parsed = JSON.parse(text) } catch { parsed = text }
-  }
-  return { status: res.status, body: parsed }
-}
-
-function errText(r: ApiResp): string {
-  if (r.body && typeof r.body === 'object') {
-    const m = (r.body as { message?: string; error?: string }).message || (r.body as { error?: string }).error
-    if (m) return m
-    return JSON.stringify(r.body).slice(0, 200)
-  }
-  return typeof r.body === 'string' ? r.body.slice(0, 200) : `HTTP ${r.status}`
-}
-
-const g = (group: string, path: string) => `/m/${group}${path}`
+// Every source, pipeline, route and destination below is addressed inside a
+// worker group; `g` is the short name this file has always used for that.
+const g = groupPath
+// The Lake dataset is the exception: Cribl Lake is group-independent.
 const datasetsPath = `/products/lake/lakes/${LAKE_ID}/datasets`
 
 // --- Worker groups --------------------------------------------------------
@@ -442,16 +436,251 @@ async function ensureSource(group: string): Promise<StepResult> {
     : { key: 'source', action: 'error', detail: errText(r) }
 }
 
-async function ensureRoute(group: string): Promise<StepResult> {
+// --- The routing table ----------------------------------------------------
+//
+// A group has ONE routing table, and `PATCH /m/<group>/routes/<id>` replaces it
+// wholesale — the array in the request body becomes the customer's routing
+// order. That makes these the most dangerous few lines in the app, so they are
+// written as an edit of the table that was just read, never as a table composed
+// from our spec plus "everything else".
+
+/** The routing table as the leader returns it. `comments` and `groups` (Route
+ *  Groups) ride along in the same object, so the index signature is not
+ *  defensive padding: sending back `{ id, routes }` alone would delete them. */
+interface RoutingTable {
+  id: string
+  routes: Array<Record<string, unknown>>
+  [field: string]: unknown
+}
+
+async function readRoutes(group: string): Promise<RoutingTable | null> {
   const cur = await capi('GET', g(group, '/routes'))
-  const obj = (cur.body as { items?: Array<{ id: string; routes: Array<Record<string, unknown>> }> })?.items?.[0]
+  const obj = (cur.body as { items?: RoutingTable[] })?.items?.[0]
+  return obj && Array.isArray(obj.routes) ? obj : null
+}
+
+/** Our route, by either of the two fields it can be identified by. */
+const isOurRoute = (r: Record<string, unknown>) => r.id === SYSLOG_ROUTE_ID || r.name === SYSLOG_ROUTE_ID
+
+/**
+ * Where a NEW route goes: directly above the catch-all. Cribl's table ends with
+ * a `default` route that matches everything, and a route below a final
+ * match-everything route never sees an event. This returns an insertion point
+ * and nothing else — every existing route keeps the index the customer gave it.
+ */
+function insertionIndex(routes: Array<Record<string, unknown>>): number {
+  const named = routes.findIndex((r) => r.id === 'default' || r.name === 'default')
+  if (named !== -1) return named
+  // No route called `default`: whatever matches unconditionally is the catch-all
+  // in practice, whatever it is called. Failing that, the end of the table.
+  const unconditional = routes.findIndex((r) => r.filter === 'true' || r.filter === true)
+  return unconditional === -1 ? routes.length : unconditional
+}
+
+/** True when the live entry already says everything ROUTE_SPEC says. Compared
+ *  field by field rather than wholesale, because a live route carries fields we
+ *  never set — `groupId` when somebody filed it into a Route Group, say — and
+ *  those are not ours to notice or to remove. */
+function routeMatchesSpec(live: Record<string, unknown>): boolean {
+  return Object.entries(ROUTE_SPEC).every(([k, v]) => JSON.stringify(live[k]) === JSON.stringify(v))
+}
+
+/**
+ * Add our route when it is missing; leave it exactly where it is when it is not.
+ *
+ * Position is configuration. An earlier version of this rebuilt the table as
+ * `[ours, ...theirs]` on every run, so re-applying an already-installed stack
+ * silently moved our route to the top of somebody's table — and a re-apply is a
+ * button this tab offers. Now: present and already correct is a no-op (not even
+ * a PATCH, so the group's Git status stays clean); present and stale is patched
+ * in place at its own index; absent is a single splice above the catch-all.
+ */
+async function ensureRoute(group: string): Promise<StepResult> {
+  const obj = await readRoutes(group)
   if (!obj) return { key: 'route', action: 'error', detail: 'routing table not found' }
-  const existing = obj.routes.filter((x) => x.id !== SYSLOG_ROUTE_ID && x.name !== SYSLOG_ROUTE_ID)
-  const already = obj.routes.length !== existing.length
-  const updated = { id: obj.id, routes: [ROUTE_SPEC, ...existing] }
-  const r = await capi('PATCH', g(group, `/routes/${obj.id}`), updated)
+  const at = obj.routes.findIndex(isOurRoute)
+  if (at !== -1 && routeMatchesSpec(obj.routes[at])) return { key: 'route', action: 'exists' }
+
+  const routes = obj.routes.slice()
+  // Merge onto the live entry rather than replacing it, for the same reason
+  // routeMatchesSpec compares field by field.
+  if (at !== -1) routes[at] = { ...routes[at], ...ROUTE_SPEC }
+  else routes.splice(insertionIndex(routes), 0, ROUTE_SPEC)
+
+  const r = await capi('PATCH', g(group, `/routes/${obj.id}`), { ...obj, routes })
   if (r.status !== 200) return { key: 'route', action: 'error', detail: errText(r) }
-  return { key: 'route', action: already ? 'updated' : 'created' }
+  return { key: 'route', action: at !== -1 ? 'updated' : 'created' }
+}
+
+// --- Deploy ---------------------------------------------------------------
+
+/**
+ * Push a commit to a worker group's running workers.
+ *
+ * `PATCH /products/stream/groups/{id}/deploy` is the current path.
+ * `PATCH /master/groups/{id}/deploy` does the same thing and is marked
+ * deprecated in the 4.19.0 spec, but it is still the only one an older leader
+ * answers, so it stays as a fallback — and ONLY on 404, which is the single
+ * status that means "this leader does not have that route".
+ *
+ * Not on 403, which means this user may not deploy this group: retrying that
+ * against a second path cannot grant permission, and the second 403 is the one
+ * the user would end up reading. Not on 5xx either, and that one matters more —
+ * a 5xx deploy may have started server-side, so a blind second attempt is a
+ * second deploy. Both surface as they are.
+ */
+async function deployGroup(group: string, hash: string): Promise<ApiResp> {
+  const body = { version: hash }
+  const r = await capi('PATCH', `/products/stream/groups/${group}/deploy`, body)
+  if (r.status !== 404) return r
+  // A 404 is ambiguous here — an old leader without the path, or a group id that
+  // does not exist. The fallback answers both: a missing group 404s again, and
+  // that is what the caller reports.
+  return capi('PATCH', `/master/groups/${group}/deploy`, body)
+}
+
+/** The commit a group's workers are actually running, or null when it cannot be
+ *  read — which is not the same as "none", and is never reported as one. */
+async function deployedVersion(group: string): Promise<string | null> {
+  let r = await capi('GET', `/products/stream/groups/${group}`)
+  if (r.status === 404) r = await capi('GET', `/master/groups/${group}`)
+  if (r.status !== 200) return null
+  const items = (r.body as { items?: Array<{ id?: string; configVersion?: string }> })?.items || []
+  const rec = items.find((it) => it.id === group) ?? items[0]
+  const v = rec?.configVersion
+  return typeof v === 'string' && v ? v : null
+}
+
+/** The newest commit in the leader's config repo, or null. */
+async function headCommit(): Promise<string | null> {
+  const r = await capi('GET', '/version?limit=5')
+  if (r.status !== 200) return null
+  const items = (r.body as { items?: Array<{ hash?: string; refs?: string }> })?.items || []
+  // The history comes back newest-first, but a deploy is not something to bet on
+  // an undocumented ordering: the newest commit is the one carrying
+  // `HEAD -> <branch>` in its refs. Take that one, and fall back to the first
+  // only when nothing says so. Getting this backwards would deploy an old commit
+  // to a live group, which is a rollback nobody asked for.
+  const head = items.find((c) => typeof c.refs === 'string' && c.refs.includes('HEAD')) ?? items[0]
+  const hash = head?.hash
+  return typeof hash === 'string' && hash ? hash : null
+}
+
+/** Config file paths that changed since `commit`, or null when the answer is
+ *  unavailable — again, not the same as "none". */
+async function filesChangedSince(commit: string): Promise<string[] | null> {
+  const r = await capi('GET', `/version/files?commit=${encodeURIComponent(commit)}`)
+  if (r.status !== 200) return null
+  const groups = (r.body as { items?: Array<{ items?: Array<{ name?: string; path?: string }> }> })?.items
+  if (!Array.isArray(groups)) return null
+  const names: string[] = []
+  // Two levels: one entry per commit range, each holding the files it touched.
+  // `name` is what this endpoint calls the path; `/version/status` calls the same
+  // thing `path`, so both are read rather than assumed.
+  for (const entry of groups) {
+    for (const f of entry.items || []) {
+      const n = f.name ?? f.path
+      if (typeof n === 'string') names.push(n)
+    }
+  }
+  return names
+}
+
+/**
+ * The hash of a commit this group has NOT deployed, or null when there is none.
+ *
+ * This exists because of a hole that used to be unrecoverable: a run whose
+ * commit succeeded and whose deploy failed left config committed and never
+ * running. The next run found no pending files, reported "already up to date"
+ * and returned — so the app could never deploy that commit again, and the only
+ * way out was the Cribl UI.
+ *
+ * Read-only: three GETs and no writes, so it is safe to ask on a status check.
+ *
+ * "Could not tell" answers null, exactly like "nothing pending". Offering to
+ * deploy something that might not exist is worse than not offering, and the
+ * whole point of the offer is that the user can trust it.
+ */
+export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+  const [deployed, head] = await Promise.all([deployedVersion(group), headCommit()])
+  if (!deployed || !head || deployed === head) return null
+  // The config repo is shared by every group, so a newer HEAD on its own only
+  // says that SOMEBODY committed something. Ask which files moved since the
+  // commit this group is running, and claim a pending deploy only when one of
+  // them belongs to this group — otherwise every commit anywhere on the leader
+  // would light this up.
+  const changed = await filesChangedSince(deployed)
+  if (changed === null) return head // endpoint unavailable: fall back to the coarse signal
+  if (!changed.some((p) => pathInGroup(p, group))) return null
+  return head
+}
+
+/** Deploy one commit and report it as a step. Shared by the normal path and by
+ *  the retry of a commit an earlier run stranded. */
+async function deployHash(
+  group: string,
+  hash: string,
+  out: StepResult[],
+  onStep: (r: StepResult) => void,
+  onPhase: OnPhase,
+  note = '',
+): Promise<void> {
+  onPhase({ kind: 'deploy', text: `Deploying to ${group}…` })
+  const dep = await deployGroup(group, hash)
+  if (dep.status >= 200 && dep.status < 300) {
+    const r: StepResult = { key: 'deploy', action: 'created', detail: `${group} · ${hash.slice(0, 10)}${note}` }
+    out.push(r); onStep(r); onPhase({ kind: 'done', text: `Deployed to ${group} ✓ (${hash.slice(0, 10)})` })
+  } else {
+    const r: StepResult = { key: 'deploy', action: 'error', detail: errText(dep) }
+    out.push(r); onStep(r); onPhase({ kind: 'error', text: `Deploy failed — ${r.detail}` })
+  }
+}
+
+/**
+ * Nothing new to commit is not the same as nothing to do. Before reporting the
+ * group up to date, ask whether an earlier run left a commit undeployed, and
+ * deploy that instead. The user has already asked for a deploy and confirmed it;
+ * this is that deploy finally happening, not a new one.
+ */
+async function deployStrandedCommit(
+  group: string,
+  out: StepResult[],
+  onStep: (r: StepResult) => void,
+  onPhase: OnPhase,
+  upToDate: string,
+): Promise<StepResult[]> {
+  const stranded = await pendingDeploy(group)
+  if (!stranded) {
+    onPhase({ kind: 'done', text: upToDate })
+    return out
+  }
+
+  // Only ever deploy a commit this app made. The config repo is shared, so an
+  // undeployed commit on this group can just as easily be another admin's
+  // half-finished work — and deploying it restarts the group's Worker
+  // Processes and puts their change live, which nobody asked for and the
+  // confirmation did not name. We know our own commits because Guided Setup
+  // records every hash it creates; a hash we cannot vouch for is reported and
+  // left alone.
+  //
+  // When the commit memory is empty — a fresh install, or a store that has
+  // never been written — nothing is ours, so nothing is deployed. That is the
+  // right default: silence is not consent.
+  const mem = await loadCommitMemory()
+  const ours = new Set(Object.values(mem[group] ?? {}).map((c) => c.hash))
+  if (!ours.has(stranded)) {
+    const r: StepResult = {
+      key: 'deploy',
+      action: 'exists',
+      detail: `${group} has an undeployed commit (${stranded.slice(0, 8)}) this app did not make — left alone`,
+    }
+    out.push(r); onStep(r)
+    onPhase({ kind: 'done', text: upToDate })
+    return out
+  }
+
+  await deployHash(group, stranded, out, onStep, onPhase, ' · committed earlier, not deployed')
+  return out
 }
 
 /**
@@ -461,6 +690,10 @@ async function ensureRoute(group: string): Promise<StepResult> {
  * given — so we always pass the explicit file list for the resources we touched,
  * leaving any unrelated pending changes in the group uncommitted and undeployed.
  * Reports a `commit` step and a `deploy` step (plus phase pop-ups) as it goes.
+ *
+ * Both of the two "nothing to commit" exits fall through to the stranded-commit
+ * check rather than returning. They are the exact states an interrupted run
+ * leaves behind, which is why they were where the commit got stuck.
  */
 async function commitAndDeploy(
   message: string,
@@ -474,8 +707,7 @@ async function commitAndDeploy(
   if (files.length === 0) {
     const r: StepResult = { key: 'commit', action: 'exists', detail: 'no changes to commit' }
     out.push(r); onStep(r)
-    onPhase({ kind: 'done', text: 'Already up to date — nothing to deploy' })
-    return out
+    return deployStrandedCommit(group, out, onStep, onPhase, 'Already up to date — nothing to deploy')
   }
 
   onPhase({ kind: 'commit', text: `Committing ${files.length} changed file${files.length === 1 ? '' : 's'}…` })
@@ -489,8 +721,8 @@ async function commitAndDeploy(
   const hash = body?.items?.[0]?.commit || body?.commit
   if (!hash) {
     const r: StepResult = { key: 'commit', action: 'exists', detail: 'nothing to commit' }
-    out.push(r); onStep(r); onPhase({ kind: 'done', text: 'No net changes — nothing to deploy' })
-    return out
+    out.push(r); onStep(r)
+    return deployStrandedCommit(group, out, onStep, onPhase, 'No net changes — nothing to deploy')
   }
   const cRes: StepResult = {
     key: 'commit', action: 'created',
@@ -499,16 +731,33 @@ async function commitAndDeploy(
   }
   out.push(cRes); onStep(cRes)
 
-  onPhase({ kind: 'deploy', text: `Deploying to ${group}…` })
-  const dep = await capi('PATCH', `/master/groups/${group}/deploy`, { version: hash })
-  if (dep.status === 200) {
-    const r: StepResult = { key: 'deploy', action: 'created', detail: `${group} · ${hash.slice(0, 10)}` }
-    out.push(r); onStep(r); onPhase({ kind: 'done', text: `Deployed to ${group} ✓ (${hash.slice(0, 10)})` })
-  } else {
-    const r: StepResult = { key: 'deploy', action: 'error', detail: errText(dep) }
-    out.push(r); onStep(r); onPhase({ kind: 'error', text: `Deploy failed — ${r.detail}` })
-  }
+  await deployHash(group, hash, out, onStep, onPhase)
   return out
+}
+
+/**
+ * One entry in this app's own audit trail per completed run.
+ *
+ * These two actions are the only things the app does to customer configuration,
+ * and the only record of them otherwise is a toast that is gone in four seconds
+ * and a Git commit that does not say who pressed the button. `appendLog` stamps
+ * the user and the time itself (cribl/kv.ts).
+ *
+ * Deliberately best-effort and not awaited: the trail answers false when the
+ * store refuses it, and a lost trail entry must not turn a successful deploy
+ * into a reported failure. What the user is told about is the deploy's own
+ * outcome, which is in `steps` either way.
+ *
+ * Called from the end of a user-triggered run and from nowhere else — a trail
+ * written on load or on a timer records nothing anybody did.
+ */
+function logRun(action: string, group: string, steps: StepResult[]): void {
+  void appendLog('gigamon', {
+    action,
+    group,
+    outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
+    steps: steps.map((s) => `${s.key}:${s.action}`),
+  })
 }
 
 /** Provision the whole stack in dependency order, reporting each step. */
@@ -542,6 +791,9 @@ export async function deployAll(
         const sk: StepResult = { key: k2, action: 'skipped', detail: `blocked by ${STEP_LABELS[key]}` }
         out.push(sk); onStep(sk)
       }
+      // A run that failed part-way still created whatever came before the
+      // failure, so it is exactly as worth recording as one that finished.
+      logRun('syslog_stack.applied', group, out)
       return out
     }
   }
@@ -551,7 +803,9 @@ export async function deployAll(
     .map((s) => s.key as ResourceKey)
   const files = await filesToCommit(group, touchedKeys)
   const cd = await commitAndDeploy(deployCommitMessage(group, out), group, files, onStep, onPhase)
-  return [...out, ...cd]
+  const all = [...out, ...cd]
+  logRun('syslog_stack.applied', group, all)
+  return all
 }
 
 /** Tear down the syslog stack (source, pipeline, route). Leaves the shared
@@ -573,13 +827,14 @@ export async function removeSyslogStack(
   // Route: remove our entry, keep the rest.
   if (exists('route')) {
     onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.route}…` })
-    const cur = await capi('GET', g(group, '/routes'))
-    const obj = (cur.body as { items?: Array<{ id: string; routes: Array<Record<string, unknown>> }> })?.items?.[0]
+    const obj = await readRoutes(group)
     if (obj) {
-      const kept = obj.routes.filter((x) => x.id !== SYSLOG_ROUTE_ID && x.name !== SYSLOG_ROUTE_ID)
+      // Drop our entry and nothing else: every other route keeps its index, and
+      // the table's own `comments` / Route Groups ride back out with `...obj`.
+      const kept = obj.routes.filter((x) => !isOurRoute(x))
       const removed = kept.length !== obj.routes.length
       if (removed) {
-        const r = await capi('PATCH', g(group, `/routes/${obj.id}`), { id: obj.id, routes: kept })
+        const r = await capi('PATCH', g(group, `/routes/${obj.id}`), { ...obj, routes: kept })
         const res: StepResult = { key: 'route', action: r.status === 200 ? 'updated' : 'error', detail: r.status === 200 ? 'deleted' : errText(r) }
         out.push(res); onStep(res)
         if (r.status === 200) touched.push('route')
@@ -609,7 +864,9 @@ export async function removeSyslogStack(
   // the real Git status (deletions/modifications show up there too).
   const files = await filesToCommit(group, touched)
   const cd = await commitAndDeploy(removeCommitMessage(group, touched), group, files, onStep, onPhase)
-  return [...out, ...cd]
+  const all = [...out, ...cd]
+  logRun('syslog_stack.removed', group, all)
+  return all
 }
 
 /** Best-effort Syslog ingress endpoint to point Gigamon AMX at. The worker

@@ -13,7 +13,7 @@
 // `withExecPrefix` is private for good reason.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { capSecondsFor, q, runSearch } from './search'
+import { MAX_CAP_SECONDS, MIN_CAP_SECONDS, capSecondsFor, parseCapTiers, q, runSearch } from './search'
 import { LAKE_DATASET } from './config'
 
 describe('q', () => {
@@ -44,6 +44,57 @@ describe('capSecondsFor', () => {
   it('treats a bound it cannot parse as the shortest window, not the longest', () => {
     // An unparseable bound spans 0 seconds, so it caps at 120 — the cheap end.
     expect(capSecondsFor('whenever')).toBe(120)
+  })
+})
+
+/**
+ * The gate between an installer's typing (or a hand-edited KV document) and the
+ * table every query is submitted under. `setCapTiers` checks that a table is a
+ * table; this is where "well-formed and absurd" is caught, and the failure it
+ * exists to stop is silent in both directions — a limit too low stops panels
+ * that were only slow, one too high lets a runaway query bill for its window.
+ */
+describe('parseCapTiers', () => {
+  it('accepts a table and sorts it, whatever order it arrives in', () => {
+    expect(parseCapTiers([{ upToSeconds: 86400, capSeconds: 900 }, { upToSeconds: 3600, capSeconds: 240 }])).toEqual([
+      { upToSeconds: 3600, capSeconds: 240 },
+      { upToSeconds: 86400, capSeconds: 900 },
+    ])
+  })
+
+  it('reads a JSON null bound as the unbounded tier', () => {
+    // JSON.stringify(Infinity) is null, so this is the shape every stored table
+    // comes back in. Read as anything else, the widest band matches nothing.
+    expect(parseCapTiers([{ upToSeconds: null, capSeconds: 600 }])).toEqual([{ upToSeconds: Infinity, capSeconds: 600 }])
+  })
+
+  it('refuses a limit that is not a limit, at either end', () => {
+    expect(parseCapTiers([{ upToSeconds: null, capSeconds: 86400 }])).toBe(null)
+    expect(parseCapTiers([{ upToSeconds: null, capSeconds: MAX_CAP_SECONDS + 1 }])).toBe(null)
+    expect(parseCapTiers([{ upToSeconds: null, capSeconds: MIN_CAP_SECONDS - 1 }])).toBe(null)
+    expect(parseCapTiers([{ upToSeconds: null, capSeconds: 0 }])).toBe(null)
+    expect(parseCapTiers([{ upToSeconds: null, capSeconds: -300 }])).toBe(null)
+  })
+
+  it('refuses the WHOLE table when one row is bad, rather than quietly dropping it', () => {
+    // Dropping the bad row would leave a table nobody wrote, with a different
+    // band answering for the missing one. Refusing leaves the table in force.
+    expect(parseCapTiers([{ upToSeconds: 3600, capSeconds: 120 }, { upToSeconds: null, capSeconds: 86400 }])).toBe(null)
+  })
+
+  it('refuses everything that is not a table of tiers at all', () => {
+    for (const value of [null, undefined, 'PT600S', 600, {}, [], [null], ['600'], [{ capSeconds: 600 }, 'x']]) {
+      expect(parseCapTiers(value), `parseCapTiers accepted ${JSON.stringify(value) ?? 'undefined'}`).toBe(null)
+    }
+  })
+
+  it('keeps a shorter limit on a wider window, because that is a position, not corruption', () => {
+    // "Anything over an hour fails fast, I only care about the live panels" is a
+    // choice an installer is allowed to make.
+    expect(parseCapTiers([{ upToSeconds: 3600, capSeconds: 600 }, { upToSeconds: null, capSeconds: 60 }])).toEqual([
+      { upToSeconds: 3600, capSeconds: 600 },
+      { upToSeconds: Infinity, capSeconds: 60 },
+    ])
   })
 })
 
