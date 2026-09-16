@@ -132,9 +132,9 @@
     "src/data/pqc.ts › SENSITIVE": "4 entries · sha256 2c5a2cce0bd15f8c",
     "src/data/pqc.ts › SENSITIVITY_RANK": "6 keys · sha256 59edaff906631cdf",
     "src/data/pqc.ts › TLS13_CODE": "string · sha256 88af3ac83c13f238",
-    "src/data/pqc.ts › classifyGroup": "function · sha256 2267435cd8e32a69",
-    "src/data/pqc.ts › sensitivityOf": "function · sha256 86f5c2296adb2faf",
-    "src/data/pqc.ts › tlsVersionLabel": "function · sha256 fc0446b1eeaf6509",
+    "src/data/pqc.ts › classifyGroup": "function · sha256 c6352d9e3949317a",
+    "src/data/pqc.ts › sensitivityOf": "function · sha256 0460d99aea2f45d0",
+    "src/data/pqc.ts › tlsVersionLabel": "function · sha256 3794410062707cad",
     "src/data/techniques.ts › TECHNIQUES": "7 entries · sha256 2218150543922c22"
   },
   "modules": {

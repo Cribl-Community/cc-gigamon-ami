@@ -182,7 +182,15 @@ const LIMITS = [
 
 const flat = (s) => s.replace(/\s+/g, ' ').trim()
 const rel = (p) => relative(ROOT, p).split(sep).join('/')
-const sha = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16)
+// Line endings are normalised before hashing, and this is not a nicety.
+// A digest of a function is a digest of its SOURCE TEXT (Function.prototype
+// .toString returns the characters as checked out), and this repo has
+// core.autocrlf=true with no .gitattributes — so the same committed file is
+// CRLF in a Windows working tree and LF in the object store that Linux CI
+// checks out. Without this the snapshot passed on the author's machine and
+// failed every CI run, which is the worst way for a gate to fail: it looks
+// like the gate caught something when all it caught was a checkout.
+const sha = (s) => createHash('sha256').update(String(s).replace(/\r\n/g, '\n')).digest('hex').slice(0, 16)
 
 /**
  * A one-line stand-in for a value that is data rather than a query.
