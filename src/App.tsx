@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { AUTO_REFRESH, TIME_RANGES, useDashboard } from './app/DashboardContext'
+import { AUTO_REFRESH, TIME_RANGES, WITHHELD_REFRESH_SECONDS, useDashboard } from './app/DashboardContext'
 import { APP_VERSION, IS_INSTALLED } from './cribl/config'
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from './app/theme'
 import { useInflight } from './cribl/inflight'
@@ -119,19 +119,20 @@ function useAutoRefreshCopy(tabName: string) {
 
   const optionLabel = (a: (typeof AUTO_REFRESH)[number]) => {
     if (a.seconds === 0) return 'Auto: off'
-    if (!a.available) return `Auto: ${a.label} — unavailable`
     return measured ? `Auto: ${a.label} — ${formatCost(creditsPerHourAt(a.seconds), 'credits/hour')}` : `Auto: ${a.label}`
   }
 
-  // The switched-off intervals are priced at the fastest one.
-  const fastestOff = Math.min(...AUTO_REFRESH.filter((a) => !a.available).map((a) => a.seconds))
+  // The withheld intervals are priced at the fastest one — the menu does not
+  // list them, so this is the only place their absence is accounted for.
+  const fastestOff = Math.min(...WITHHELD_REFRESH_SECONDS)
   const about = measured
     ? `Each refresh re-runs the ${plural(panels, 'panel', 'panels')} on ${tabName} that follow the time range: ` +
       `${Math.round(cpuSeconds).toLocaleString('en-US')} billable CPU-seconds at their last run, so every 1 minute costs ` +
       `${formatCost(creditsPerHourAt(60), 'credits/hour')}. ` +
-      `15 s and 30 s are switched off; here they would cost ${formatCost(creditsPerHourAt(fastestOff) * 24, 'credits a day')}.`
-    : '15 s and 30 s are switched off: every refresh re-runs each panel as a full Lake scan. ' +
-      'The cost of 1 minute appears here once this tab’s panels have run.'
+      `Faster intervals are not offered: at ${fastestOff} s this tab would cost ${formatCost(creditsPerHourAt(fastestOff) * 24, 'credits a day')}, ` +
+      'and this feed lands in minutes, so they would show nothing new.'
+    : 'Faster intervals than 1 minute are not offered: every refresh re-runs each panel as a full Lake scan, ' +
+      'and this feed lands in minutes. The cost of 1 minute appears here once this tab’s panels have run.'
   return { optionLabel, about }
 }
 
@@ -168,7 +169,7 @@ function Header({ tabName }: { tabName: string }) {
           <select id="auto-refresh" className="range-select" value={autoSeconds} aria-label="Auto-refresh interval"
             aria-describedby="auto-refresh-note" onChange={(e) => setAutoSeconds(Number(e.target.value))}>
             {AUTO_REFRESH.map((a) => (
-              <option key={a.label} value={a.seconds} disabled={!a.available}>{autoRefresh.optionLabel(a)}</option>
+              <option key={a.label} value={a.seconds}>{autoRefresh.optionLabel(a)}</option>
             ))}
           </select>
           <span id="auto-refresh-note" className="sr-only">

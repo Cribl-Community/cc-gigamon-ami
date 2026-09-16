@@ -14,16 +14,19 @@ export const TIME_RANGES: TimeRange[] = [
   { label: 'Last 24 hours', earliest: '-24h' },
 ]
 
-// 15 s and 30 s are switched off for everyone: every tick re-runs every
-// mounted panel as a full Lake scan, so a wall display on those intervals costs
-// hundreds to thousands of credits a day. They return when panels can be served
-// from stored results instead of live scans.
 export const AUTO_REFRESH = [
-  { label: 'Off', seconds: 0, available: true },
-  { label: '15s', seconds: 15, available: false },
-  { label: '30s', seconds: 30, available: false },
-  { label: '1m', seconds: 60, available: true },
+  { label: 'Off', seconds: 0 },
+  { label: '1m', seconds: 60 },
 ]
+
+// Intervals the app does not offer. Every tick re-runs every mounted panel as a
+// full Lake scan, so a wall display on these costs hundreds to thousands of
+// credits a day — and this feed lands in minutes, so they would show nothing
+// new. They are left out of the menu rather than greyed out in it, and priced
+// in the ⓘ instead, so the omission is explained somewhere a curious reader can
+// find it rather than being silent. They return when panels can be served from
+// stored results instead of live scans.
+export const WITHHELD_REFRESH_SECONDS = [15, 30]
 
 interface DashboardState {
   range: TimeRange

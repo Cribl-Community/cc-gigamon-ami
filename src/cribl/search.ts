@@ -93,18 +93,61 @@ function windowSpanSeconds(earliest: string | number): number {
   return Number(m[1]) * unit
 }
 
+/** A window this long or shorter gets this running-time cap. */
+export interface CapTier {
+  upToSeconds: number
+  capSeconds: number
+}
+
 /**
  * Server-side running-time cap for a live query, scaled by the window it reads:
  * up to 1 h → 120 s, 4 h → 300 s, 24 h → 600 s, longer (Data Flow's pinned
- * 30 days) → 900 s. A flat 120 s would cut off `-24h` panels on a tenant with a
- * larger feed; the values are checked against measured wall time per range.
+ * 30 days) → 900 s. A flat cap is wrong in both directions — low enough to
+ * protect a `-15m` panel and it cuts off the 30-day total; high enough for
+ * 30 days and a runaway 15-minute query bills for a quarter of an hour.
+ *
+ * **These seconds are sized against the demo feed, and are the weakest numbers
+ * in this file.** The same query on a production tenant reads more data in the
+ * same wall time, so a cap this table thinks is generous can stop a panel that
+ * was working fine — and a stopped panel reads to the customer as a broken app,
+ * not as a budget decision. An installer therefore has to be able to raise them
+ * without a code change: `setCapTiers` is that seam, and slice 1.3 puts a
+ * settings surface on it once the KV store it needs exists and is verified.
+ * Until then this table is the one place the numbers live.
  */
+export const DEFAULT_CAP_TIERS: readonly CapTier[] = [
+  { upToSeconds: 3600, capSeconds: 120 },
+  { upToSeconds: 4 * 3600, capSeconds: 300 },
+  { upToSeconds: 86400, capSeconds: 600 },
+  { upToSeconds: Infinity, capSeconds: 900 },
+]
+
+let capTiers: readonly CapTier[] = DEFAULT_CAP_TIERS
+
+/**
+ * Replace the cap table — for slice 1.3's settings surface, and for tests.
+ * Tiers are sorted here, so a caller may pass them in any order. An empty or
+ * malformed table is refused rather than accepted, because the failure mode of
+ * losing the caps is an unbounded bill, which is the thing they exist to stop.
+ */
+export function setCapTiers(tiers: readonly CapTier[]): void {
+  const valid = tiers.filter((t) => t.capSeconds > 0 && t.upToSeconds > 0)
+  if (!valid.length) {
+    console.warn('Cribl Search: ignoring an empty running-time cap table; keeping the one in force')
+    return
+  }
+  capTiers = [...valid].sort((a, b) => a.upToSeconds - b.upToSeconds)
+}
+
+/** The table in force — for the settings UI to show, and for tests to restore. */
+export function capTiersInForce(): readonly CapTier[] {
+  return capTiers
+}
+
 export function capSecondsFor(earliest: string | number): number {
   const span = windowSpanSeconds(earliest)
-  if (span <= 3600) return 120
-  if (span <= 4 * 3600) return 300
-  if (span <= 86400) return 600
-  return 900
+  // Past the widest tier, take the widest cap rather than running uncapped.
+  return (capTiers.find((t) => span <= t.upToSeconds) ?? capTiers[capTiers.length - 1]).capSeconds
 }
 
 /** How long the client waits before giving up and cancelling: 30 s past the
