@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
+import { nodesQuery, edgesQuery, srcQuery, buildDomainsQuery, buildTrendQuery } from '../queries/serviceMap'
 import { Panel } from '../components/Panel'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { TimeChart, type Series } from '../components/TimeChart'
@@ -46,15 +46,8 @@ export function ServiceMap() {
   const [sel, setSel] = useState<string | null>(null)
   const [snOpen, setSnOpen] = useState(false)
 
-  const nodesQuery = q('dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12')
   const nodesQ = useSearch(nodesQuery)
-  const edgesQ = useSearch(
-    q('src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40'),
-  )
-  // Total outbound per source service: surfaces client-only services the
-  // destination-grouped node query misses, and lets us derive how much of each
-  // service's traffic goes to peers carrying no AWS name tag.
-  const srcQuery = q('src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20')
+  const edgesQ = useSearch(edgesQuery)
   const srcQ = useSearch(srcQuery)
 
   const { nodes, edges, extEdges, external, extTotal } = useMemo(() => {
@@ -188,10 +181,9 @@ export function ServiceMap() {
 }
 
 function LatencyDomains({ service, onIncident, onBack }: { service: string; onIncident: () => void; onBack: () => void }) {
-  const filter = `dst_aws_flat_tags_name="${service}"`
-  const domainsQuery = q(`${filter} | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()`)
+  const domainsQuery = buildDomainsQuery(service)
   const domains = useSearch(domainsQuery, { deps: [service] })
-  const trendQuery = q(`${filter} | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc`)
+  const trendQuery = buildTrendQuery(service)
   const trend = useSearch(trendQuery, { deps: [service] })
 
   const d = domains.rows[0] ?? {}

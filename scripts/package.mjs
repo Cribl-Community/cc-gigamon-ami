@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createAppPack, runNpmBuild } from './pkgutil.mjs';
+import { createAppPack, runNpmBuild, runNpmScript } from './pkgutil.mjs';
 
 const rootDir = join(import.meta.dirname, '..');
 const buildOutDir = join(rootDir, 'build');
@@ -63,6 +63,12 @@ function nextVersion(currentVersion) {
   }
   return formatVersion({ major: version.major, minor: version.minor, patch: version.patch + 1 });
 }
+
+// Test first, before anything is written: the version bump below lands on disk
+// immediately, and the build gate further down runs after it. A failing test
+// must not leave a bumped version behind for someone to commit by accident.
+console.log('Running tests...');
+await runNpmScript(rootDir, 'test');
 
 const packageInfo = JSON.parse(await readFile(packageJsonPath, 'utf8'));
 packageInfo.version = nextVersion(packageInfo.version || '0.0.0');

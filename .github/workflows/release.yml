@@ -26,6 +26,7 @@ jobs:
 
       - run: npm ci
       - run: npm run lint
+      - run: npm test
       - run: npm run package -- --version "$(echo ${GITHUB_REF_NAME#v} | sed s/-staging$//)"
 
       - name: Publish pack layout for Git install

@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -9,16 +8,7 @@ import { QueryBoundary } from '../components/QueryBoundary'
 import { BarList, type BarItem } from '../components/BarList'
 import { TimeChart, type Series } from '../components/TimeChart'
 import { toNum, str, fmtCount, fmtMs, fmtPct } from '../lib/format'
-
-const KPI = q(
-  '| summarize txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), ' +
-  'server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)',
-)
-const CODES = q('http_code=* | summarize n=count() by http_code | sort by n desc | limit 12')
-const HOSTS = q('http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12')
-const SLOW = q('http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10')
-const TREND = q('http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc')
-const H2 = q('http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10')
+import { KPI, CODES, HOSTS, SLOW, TREND, H2, ERRORS_DRILL } from '../queries/webApiHealth'
 
 export function WebApiHealth() {
   const { range } = useDashboard()
@@ -134,7 +124,7 @@ export function WebApiHealth() {
 
       <p className="tab-sub">
         Chasing a specific status code?{' '}
-        <a href={searchUiUrl(q('http_code>=400 | limit 200'), range.earliest)} target="_blank" rel="noopener noreferrer">
+        <a href={searchUiUrl(ERRORS_DRILL, range.earliest)} target="_blank" rel="noopener noreferrer">
           Open all 4xx/5xx responses in Cribl Search ↗
         </a>
       </p>
