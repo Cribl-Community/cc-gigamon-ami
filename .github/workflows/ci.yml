@@ -1,0 +1,42 @@
+# Runs on every push and pull request.
+#
+# release.yml runs the same gates, but only on a `v*` tag — so without this the
+# checks block a RELEASE, never a MERGE. That is backwards for what they guard:
+# they are what makes a refactor reviewable, and a reviewer needs them red
+# before approving, not weeks later at publish time.
+#
+# This lives at the base of the PR stack on purpose. A workflow only runs for a
+# branch that contains it, so one added higher up leaves every PR below it with
+# no checks at all.
+#
+# Nothing here bumps a version or packages anything — `npm run package` writes
+# the new version to package.json as its first act, and publishing is the tag
+# workflow's job alone.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      # --if-present because the test suite arrives partway up this stack; once
+      # it exists this is also the ⓘ freeze, which fails if any query string,
+      # the ⓘ prose, or the query a panel points at has moved.
+      - run: npm test --if-present
