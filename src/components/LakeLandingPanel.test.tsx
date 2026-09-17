@@ -52,10 +52,12 @@ import { resetDenials } from '../cribl/authz'
 import { DashboardProvider } from '../app/DashboardContext'
 import { DEPLOY_CONSEQUENCES, FLUSH_PRESETS, LANDING_TERMS, retentionChange } from '../cribl/landing'
 import { LANDING_PROFILE_KEY } from '../cribl/lakeLanding'
+import { LakeLandingPanel } from './LakeLandingPanel'
+// The words and the units, separately from the screen that renders them. Half
+// the assertions in this file never mount anything — see lakeLandingCopy.ts.
 import {
   INGEST_ANCHOR_ID,
   LAG_CPU_SECONDS,
-  LakeLandingPanel,
   PARTITION_CPU_SECONDS,
   PARTITION_GATE,
   READER_GATE,
@@ -69,7 +71,7 @@ import {
   printValue,
   relativeAge,
   sizeSentence,
-} from './LakeLandingPanel'
+} from './lakeLandingCopy'
 import { GuidedSetup } from '../tabs/GuidedSetup'
 
 const BASE = '/capi'
@@ -710,7 +712,7 @@ describe('nothing writes, and nothing spends, on load', () => {
     await mount()
     // The class is what is assertable here; what it resolves to is
     // contrast.test.ts's, and whether it reads as "older" is Preview 7.6.
-    const muted = document.body.querySelector('.ac-health-unknown')
+    const muted = document.body.querySelector('.ll-stale')
     expect(muted?.textContent).toBe('12 s')
     // The age is a WORD as well as an ink — colour is never the only signal.
     expect(bodyText()).toContain('measured 1 hour ago')

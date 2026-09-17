@@ -249,6 +249,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const bodyId = useId()
   const requirementId = useId()
+  const irreversibleId = useId()
   const bodyRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [typed, setTyped] = useState('')
@@ -339,7 +340,7 @@ export function ConfirmDialog({
             draws it below the described-by rule, and this is the one place that
             reading is widened rather than followed. */}
         {irreversible && (
-          <p className="cdlg-warn">
+          <p className="cdlg-warn" id={irreversibleId}>
             <strong>This cannot be undone.</strong> {irreversible.why}
           </p>
         )}
@@ -405,6 +406,22 @@ export function ConfirmDialog({
             spellCheck={false}
             appearance={attempted && !matched ? 'danger' : 'default'}
             aria-invalid={attempted && !matched ? 'true' : undefined}
+            // BOTH sentences, in this order, and the irreversibility one first.
+            // `.cdlg-ttc` sits OUTSIDE `.cdlg`, so the dialog's own
+            // `aria-describedby` does not reach it — a deliberate decision
+            // argued in App.css, on the grounds that a labelled control
+            // announces itself on focus and repeating the whole body would
+            // lengthen what is read on open. The cost of that decision is that
+            // somebody who tabs straight to this field hears the requirement and
+            // not the fact that what they are about to confirm DELETES DATA,
+            // which is the one sentence this field exists to slow them down for.
+            // Wired in the Phase 3 settling pass; two handoffs in a row recorded
+            // it as not done because nobody had checked whether Capra's
+            // TextField forwards the attribute. It does — it spreads the rest of
+            // an `input`'s props — and ConfirmDialog.test.tsx now asserts the
+            // attribute is on the real <input>, so this stops being true the
+            // moment that changes rather than the next time somebody reads it.
+            aria-describedby={irreversible ? `${irreversibleId} ${requirementId}` : requirementId}
           />
         </div>
       )}

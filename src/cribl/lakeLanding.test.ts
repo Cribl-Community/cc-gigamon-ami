@@ -517,6 +517,40 @@ describe('commitAndDeployDestination', () => {
     expect((await commitAndDeployDestination(GROUP, [], 'm'))[0].status).toBe('skipped')
     expect(writes(calls)).toEqual([])
   })
+
+  // The panel's "Retry failed only" is its own intent — the PATCH landed, the
+  // commit was refused, and nothing else is writing a trail entry for the
+  // recovery. Silent by default so `updateDestination`, which records these same
+  // steps inside its own entry, does not report one press twice.
+  it('writes no trail entry of its own unless it is asked to', async () => {
+    const calls = stubWorld()
+    await commitAndDeployDestination(GROUP, [OUTPUTS_YML], 'm')
+    await Promise.resolve()
+    expect(calls.filter((c) => c.path.startsWith('/kvstore/') && c.method !== 'GET')).toEqual([])
+  })
+
+  it('records the retry in the audit trail when it is the whole intent', async () => {
+    const calls = stubWorld()
+    await commitAndDeployDestination(GROUP, [OUTPUTS_YML], 'm', {}, true)
+    // `audit` is fire-and-forget on purpose — a lost trail entry must not turn a
+    // successful deploy into a reported failure — so the write lands a microtask
+    // or two after the steps come back.
+    await new Promise((r) => setTimeout(r, 0))
+    const logged = calls.filter((c) => c.path.startsWith('/kvstore/') && c.method !== 'GET')
+    expect(logged.length).toBe(1)
+    expect(logged[0].path).toMatch(/gigamon\/log\//)
+  })
+
+  // A refusal is the reason this button was pressed; an entry that only appears
+  // when the retry WORKED is a trail of successes, which is the one thing an
+  // audit trail is not for.
+  it('records the retry even when the commit is refused again', async () => {
+    const calls = stubWorld({ answers: { 'POST /version/commit': [403, {}] } })
+    const steps = await commitAndDeployDestination(GROUP, [OUTPUTS_YML], 'm', {}, true)
+    expect(steps[0].status).toBe('error')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls.filter((c) => c.path.startsWith('/kvstore/') && c.method !== 'GET').length).toBe(1)
+  })
 })
 
 describe('destinationCommitFiles', () => {

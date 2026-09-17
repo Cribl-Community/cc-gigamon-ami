@@ -18,7 +18,10 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DiffTable, diffState, type DiffRow } from './DiffTable'
+import { DiffTable, type DiffRow } from './DiffTable'
+// The classification, read directly rather than through rendered text — see
+// diffRow.ts's header for why it is not in the component file.
+import { diffState } from './diffRow'
 
 let container: HTMLDivElement
 let root: Root

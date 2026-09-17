@@ -391,6 +391,34 @@ describe('ConfirmDialog — type to confirm', () => {
     expect(label!.textContent, 'the label does not say WHAT to type').toContain('default')
   })
 
+  // Preview check 4.3, and it was recorded as "not met" through two handoffs
+  // because nobody had established whether Capra's TextField forwards the
+  // attribute at all. These two assertions are what settle it: if a Capra
+  // upgrade stops spreading `input` props, this goes red instead of the
+  // irreversibility sentence quietly stopping being announced.
+  it('points the field at the requirement, and at the irreversibility sentence when there is one', async () => {
+    await open({
+      run: noop,
+      typeToConfirm: TTC,
+      irreversible: { why: 'Cribl Lake deletes everything older than the new window and there is no commit to revert.' },
+    })
+    const described = (input().getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
+    expect(described.length, 'the field describes itself with nothing').toBe(2)
+    const text = described.map((id) => document.getElementById(id)?.textContent ?? '')
+    // Order matters and is asserted: "this cannot be undone" before "type the
+    // id". A reader who hears the form requirement first has been told how to
+    // proceed before being told what proceeding costs.
+    expect(text[0]).toContain('This cannot be undone.')
+    expect(text[1]).toContain('default')
+  })
+
+  it('describes the field with the requirement alone when the write is reversible', async () => {
+    await open({ run: noop, typeToConfirm: TTC })
+    const described = (input().getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
+    expect(described.length).toBe(1)
+    expect(document.getElementById(described[0])?.textContent).toContain('default')
+  })
+
   it('keeps the confirm button reachable while it is blocked', async () => {
     await open({ run: noop, typeToConfirm: TTC })
     const b = confirmBtn()
@@ -516,11 +544,23 @@ function type(value: string) {
 //     7.4 reads the tree. Nor does anything here check that four columns of
 //     configuration values fit inside Capra's Modal at ~400 px — no layout.
 //   * THAT `irreversible` AND `typeToConfirm` COMPOSE INTO A HARDER
-//     CONFIRMATION. They are two independent props: nothing requires the one
-//     that says "this cannot be undone" to also demand the literal, and the
-//     type-to-confirm field sits OUTSIDE the described-by region by design
-//     (App.css says why), so it does not point at the irreversibility sentence
-//     either. Preview check 4.3 wants that `aria-describedby`; it is not wired,
-//     and a retention decrease being "confirmed harder than the others" is at
-//     present a property of what its caller passes, not one this component
-//     enforces.
+//     CONFIRMATION. Half of this is now settled and half is deliberately left
+//     to the caller, so read both halves before quoting either.
+//     SETTLED: when both props are present the field describes itself with the
+//     irreversibility sentence first and the requirement second, asserted two
+//     tests above. That is Preview check 4.3, and it is met — Capra's TextField
+//     does spread an `input`'s props, which is what two earlier handoffs could
+//     not establish and therefore recorded as not done.
+//     NOT ENFORCED, ON PURPOSE: nothing makes `irreversible` demand
+//     `typeToConfirm`, and nothing checks the literal is the resource id
+//     (§1.5 rule 3). The obvious fix — folding the literal into `irreversible`
+//     as `{ why, confirmWith }` — is wrong for the three callers that already
+//     pass `irreversible` alone: removing a scheduled search, cancelling a
+//     running job and tearing down the syslog stack are all unrecoverable and
+//     none of them destroys data, and making each of them demand a typed
+//     literal would spend the one gesture that still means "stop and read" on
+//     writes that do not warrant it. A gate everything trips is a gate nobody
+//     reads. So "a retention decrease is confirmed harder than the others"
+//     remains a property of what LakeLandingPanel passes — which its own test
+//     asserts in both directions, decrease and increase, because Preview check
+//     4.5 is otherwise the only thing that would catch it.

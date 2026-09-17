@@ -41,20 +41,13 @@
 // not re-derived here. The one departure — a VISIBLE caption — is argued in
 // App.css beside the rule.
 
-export interface DiffRow {
-  /** The configuration key, spelled exactly as Cribl spells it. */
-  key: string
-  /**
-   * Its value now, already rendered as the string a reader should see.
-   * `null`/absent means the key is not on the object today.
-   */
-  before?: string | null
-  /** What it becomes, same terms. `null`/absent means the key goes away. */
-  after?: string | null
-}
-
-/** What this write does to one key. Derived from the pair — see `diffState`. */
-export type DiffState = 'added' | 'removed' | 'changed' | 'unchanged'
+// `DiffRow`, `DiffState` and `diffState` live in ./diffRow.ts — the pair and
+// what it means, with no DOM. Re-exported as TYPES so every existing importer
+// of `DiffRow` from this file keeps working; `diffState` is imported from
+// there directly, because re-exporting the function would put the
+// only-export-components warning straight back.
+import { diffState, type DiffRow, type DiffState } from './diffRow'
+export type { DiffRow, DiffState } from './diffRow'
 
 export interface DiffTableProps {
   /**
@@ -85,25 +78,6 @@ const GLYPH: Record<DiffState, string> = {
   removed: '−',
   changed: '→',
   unchanged: '=',
-}
-
-/**
- * What happened to one key, read off the two values.
- *
- * `unchanged` is here even though a diff is supposed to carry only the keys that
- * moved: a caller computing one from a live GET can hand over a pair that turned
- * out to be equal — a retention Apply where only the description changed, say —
- * and rendering that row as `changed` would be the table telling a customer
- * something is about to happen to a field nothing is about to happen to. It
- * costs one line here and one word on screen.
- */
-export function diffState(row: DiffRow): DiffState {
-  const before = row.before ?? null
-  const after = row.after ?? null
-  if (before === after) return 'unchanged'
-  if (before === null) return 'added'
-  if (after === null) return 'removed'
-  return 'changed'
 }
 
 /**

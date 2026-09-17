@@ -72,6 +72,24 @@ export const LANDING_LAG_QUERY = q('| summarize newest=max(_time), n=count() | e
  */
 export const LANDING_LAG_EARLIEST = '-5m'
 
+/**
+ * What each measurement costs, in billable CPU-seconds.
+ *
+ * HERE, BESIDE THE QUERY, AND NOT IN THE PANEL. The panel transcribed these from
+ * the two docblocks above until the Phase 3 settling pass, which meant editing a
+ * query without editing a number in another file produced a cost label that was
+ * quietly wrong. Exported from the module that owns the KQL, they move when it
+ * moves, and the freeze snapshot carries them, so a change to either shows up in
+ * the display-freeze diff beside the query string it is a claim about.
+ *
+ * DEMO-FEED FIGURES, NOT A CONTRACT. `-5m` on a workspace with real volume costs
+ * more than 35 CPU-s. They exist to compute the button's "under 0.1 credits"
+ * label through `formatCost`, never to be printed as literals (I-D20), and a
+ * cost printed by hand is the version of that mistake nobody re-checks.
+ */
+export const LAG_CPU_SECONDS = 35
+export const PARTITION_CPU_SECONDS = 100
+
 // ── 2. Partition candidates ─────────────────────────────────────────────────
 
 /**

@@ -354,19 +354,58 @@ body {
   cursor: pointer;
   transition: filter 0.15s, background 0.15s;
 }
-.btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
+.btn:hover:not(:disabled):not([aria-disabled='true']) { background: token('color.background.neutral.hover'); }
 .btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ---------- The blocked state, which is NOT the disabled state ----------
+   Since 2026-09-17 <GatedControl> uses the HTML `disabled` attribute for exactly
+   one thing — this control's own write in flight — and expresses every reason
+   that stops a click as `aria-disabled` on a still-tabbable button with the
+   reason on screen beside it. Until this rule existed, a button a policy had
+   refused painted and hovered exactly like a live one; the fix shipped three
+   times in a row as "still has no rule in App.css", so here it is.
+
+   THE DECISION THE HANDOFF ASKED FOR, MADE RATHER THAN COPIED. `.btn:disabled`
+   fades to 0.5 opacity and contrast.test.ts excuses it under SC 1.4.3, which
+   exempts an INACTIVE control from the contrast minimum. An `aria-disabled`
+   button here is not inactive: it takes focus, it takes a press, and the press
+   does something (GatedControl sends it to whichever stop has somewhere to go).
+   A control that acts on a press has no claim on that exemption, so this state
+   takes NO opacity and dims no text. It is `.ac-preset-off`'s argument applied
+   to a button: dim the chrome, keep the reason at full strength.
+
+   WHAT CHANGES INSTEAD. The hover fill goes — a fill that answers the pointer is
+   a promise about what the click will do — and the border goes dashed, the same
+   provisional device `.btn-danger-text` already wears. The two filled variants
+   drop back to the secondary button's own fill and ink, because a solid accent
+   rectangle argues "press me" louder than any sentence underneath it can argue
+   back, and because #fff on --gm-panel-2 would be unreadable.
+
+   NO NEW COLOUR PAIRINGS. Everything painted here is --gm-fg and --gm-border on
+   --gm-panel-2, which is the plain `.btn`, already measured — see the
+   aria-disabled row in contrast.test.ts's BUTTON_PAIRS, which exists to record
+   that this state is measured deliberately rather than exempted by default. */
+.btn[aria-disabled='true'] {
+  cursor: default;
+  border-style: dashed;
+}
+.btn-primary[aria-disabled='true'],
+.btn-danger[aria-disabled='true'] {
+  background: var(--gm-panel-2);
+  color: var(--gm-fg);
+  border-color: var(--gm-border);
+}
 
 /* The two filled variants. Each restates its own background in `:hover` because
    the base hover is one selector more specific — see "TWO REAL BUGS" above. */
 .btn-primary {
   background: var(--gm-btn-primary); color: #fff; border-color: transparent;
 }
-.btn-primary:hover:not(:disabled) { background: var(--gm-btn-primary); filter: brightness(1.08); }
+.btn-primary:hover:not(:disabled):not([aria-disabled='true']) { background: var(--gm-btn-primary); filter: brightness(1.08); }
 .btn-danger {
   background: var(--gm-btn-danger); color: #fff; border-color: transparent;
 }
-.btn-danger:hover:not(:disabled) { background: var(--gm-btn-danger); filter: brightness(1.08); }
+.btn-danger:hover:not(:disabled):not([aria-disabled='true']) { background: var(--gm-btn-danger); filter: brightness(1.08); }
 
 /* No fill until hovered. The base hover is what gives it one, which is the
    behaviour `.gs-btn-ghost` already had — it never overrode the hover either. */
@@ -1377,7 +1416,13 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* The type-to-confirm field sits OUTSIDE .cdlg, and therefore outside the
    dialog's aria-describedby: it is a labelled control that announces itself on
    focus, and repeating it in the description would make the thing read on open
-   longer without saying anything new. */
+   longer without saying anything new.
+   THAT DECISION HAS ONE EXCEPTION SINCE PHASE 3, and it is in ConfirmDialog.tsx
+   rather than here: the field carries its own `aria-describedby` naming the
+   requirement and, when the write is irreversible, the "This cannot be undone"
+   sentence first. Being outside the region is right for length; it is wrong for
+   somebody who tabs straight to the field on the one dialog whose write deletes
+   a customer's data. Two ids, not the whole body. */
 .cdlg-ttc { display: flex; flex-direction: column; gap: var(--gm-sp-8); margin-top: var(--gm-sp-16); padding-top: var(--gm-sp-12); border-top: 1px solid var(--gm-border); }
 .cdlg-req { margin: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
 
@@ -1973,7 +2018,13 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .ac-preset-off .ac-preset-name { color: var(--gm-fg-subtle); }
 .ac-preset-off input { opacity: 0.5; }
 
-.ac-tablewrap { overflow-x: auto; }
+/* Guided Setup's two data tables — Acceleration's schedules and the Lake landing
+   read map — scroll inside their own box rather than the page. Named `.gs-` and
+   not `.ac-` since Phase 3: it was born in the Acceleration panel and the landing
+   panel adopted it verbatim, and a second panel using a rule whose prefix names
+   the first is how a reader learns to distrust the prefixes. Both call sites
+   moved with it; `ac-tablewrap` is in retiredClasses.test.ts. */
+.gs-tablewrap { overflow-x: auto; }
 /* The identity cell stacks the panel it serves over the search id, so the id is
    present for anyone quoting it without being the thing the eye lands on. */
 .ac-serves { display: flex; flex-direction: column; gap: var(--gm-sp-2); }
@@ -1988,10 +2039,21 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .ac-health-warn { color: var(--gm-st-warning); }
 .ac-health-bad { color: var(--gm-st-danger); }
 .ac-health-unknown { color: var(--gm-fg-subtle); }
+/* A measurement that has stopped being a claim about now (LakeLandingPanel's
+   STALE_AFTER_MS, one hour). Same ink as `unknown` above and for the same
+   reason — "this was true an hour ago" is not a severity either — but its own
+   name, because the landing panel borrowing a HEALTH class for an AGE is a
+   coincidence of colour, and the next person to retune health would have taken
+   this with it. --gm-fg-subtle on --gm-panel is already measured in
+   app/contrast.test.ts, so this needs no row of its own. */
+.ll-stale { color: var(--gm-fg-subtle); }
 .ac-noaction { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
-/* The per-row sentence. `.dtable` sets `white-space: nowrap` on every cell, so
-   this row has to put it back or a two-clause explanation scrolls the table. */
-.ac-noterow td {
+/* The per-row sentence, under the row it is about. `.dtable` sets
+   `white-space: nowrap` on every cell, so this row has to put it back or a
+   two-clause explanation scrolls the table instead of wrapping. `.gs-` and not
+   `.ac-` for the same reason as `.gs-tablewrap` above: both Guided Setup tables
+   use it, and `ac-noterow` is in retiredClasses.test.ts. */
+.gs-noterow td {
   white-space: normal; padding-top: 0; padding-left: 0;
   font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); line-height: 1.45;
 }

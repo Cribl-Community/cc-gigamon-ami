@@ -14,7 +14,10 @@
 // already standing on it — not because it has anything to do with setup.
 
 import { AccelPanel } from '../components/AccelPanel'
-import { INGEST_ANCHOR_ID, LakeLandingPanel } from '../components/LakeLandingPanel'
+import { LakeLandingPanel } from '../components/LakeLandingPanel'
+// The anchor id lives beside the panel's other pure constants, not in the
+// component file — src/components/lakeLandingCopy.ts.
+import { INGEST_ANCHOR_ID } from '../components/lakeLandingCopy'
 import { Panel } from '../components/Panel'
 import { ProvisionPanel } from '../components/ProvisionPanel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'

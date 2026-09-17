@@ -535,24 +535,42 @@ export async function updateDestination(
  * ALWAYS AN EXPLICIT FILE LIST. Cribl's commit API commits every pending change
  * in the repository when given none, so an empty list would sweep up whatever
  * else anybody had left uncommitted, anywhere.
+ *
+ * `trail` IS OFF BY DEFAULT AND THE RETRY PATH TURNS IT ON. Called from
+ * `updateDestination` this is one leg of an intent that writes its own entry
+ * carrying these very steps, and a second entry would report one press twice.
+ * Called on its own — the panel's "Retry failed only", which exists precisely
+ * because the PATCH landed and the commit did not — nothing else is recording
+ * anything, and that half-applied state is the one §1.5 rule 9 most wants a
+ * trail of. It was missing until the Phase 3 settling pass: the recovery from
+ * the phase's likeliest real failure left no record that it had been attempted.
  */
 export async function commitAndDeployDestination(
   group: string,
   files: string[],
   message: string,
   init: CapiInit = {},
+  trail = false,
 ): Promise<WriteStep[]> {
+  const record = (steps: WriteStep[]): WriteStep[] => {
+    if (trail) void audit('lake_landing.destination.retry', { group, destination: DESTINATION_ID, files, steps })
+    return steps
+  }
   if (files.length === 0) {
-    return [{ key: 'commit', status: 'skipped', detail: 'Cribl reports no pending change to this group’s outputs.yml.' }]
+    return record([
+      { key: 'commit', status: 'skipped', detail: 'Cribl reports no pending change to this group’s outputs.yml.' },
+    ])
   }
 
   const commit = await capi('POST', '/version/commit', { message, files }, init)
-  if (!isOk(commit.status)) return [{ key: 'commit', status: 'error', detail: errText(commit) }]
+  if (!isOk(commit.status)) return record([{ key: 'commit', status: 'error', detail: errText(commit) }])
 
   const body = commit.body as { items?: Array<{ commit?: string }>; commit?: string }
   const hash = body?.items?.[0]?.commit ?? body?.commit
   if (!hash) {
-    return [{ key: 'commit', status: 'skipped', detail: 'Cribl committed nothing — there was no net change to write.' }]
+    return record([
+      { key: 'commit', status: 'skipped', detail: 'Cribl committed nothing — there was no net change to write.' },
+    ])
   }
   const steps: WriteStep[] = [{ key: 'commit', status: 'applied', detail: `${files.length} file${files.length === 1 ? '' : 's'} · ${hash.slice(0, 10)}` }]
 
@@ -562,7 +580,7 @@ export async function commitAndDeployDestination(
       ? { key: 'deploy', status: 'applied', detail: hash.slice(0, 10) }
       : { key: 'deploy', status: 'error', detail: errText(deployed) },
   )
-  return steps
+  return record(steps)
 }
 
 /**

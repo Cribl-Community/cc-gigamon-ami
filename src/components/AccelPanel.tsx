@@ -384,7 +384,7 @@ export function AccelPanel() {
         </p>
       )}
 
-      <div className="ac-tablewrap">
+      <div className="gs-tablewrap">
         <table className="dtable ac-table">
           <caption className="sr-only">
             The scheduled searches this app owns: which panel each one feeds, whether it exists, whether it
@@ -717,7 +717,7 @@ function ScheduleRows({ row, status, health, action, note, ownerName, withOwner,
         </td>
       </tr>
       {note && (
-        <tr className="ac-noterow">
+        <tr className="gs-noterow">
           <td colSpan={columns}>{note}</td>
         </tr>
       )}

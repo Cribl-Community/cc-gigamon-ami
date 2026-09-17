@@ -230,8 +230,14 @@ export function SearchLimitsPanel() {
         <button type="button" className="btn btn-ghost" onClick={onReset} disabled={saving}>
           Reset to defaults
         </button>
+        {/* The standing explanation, and ONLY that. Since <GatedControl> started
+            rendering `unavailable` as a visible sentence under the button
+            (2026-09-17), this line printing the out-of-range reason as well put
+            the same sentence on screen twice, a few pixels apart, about the same
+            button. The reason belongs under the control it is about; this says
+            the thing that is true whether or not the numbers are valid. */}
         <span className="sl-actions-note">
-          {blocked ? `Each limit must be ${CAP_RANGE_TEXT}.` : 'Applies to every viewer of this app. Reset only fills the boxes in — nothing is saved until you press Save.'}
+          Applies to every viewer of this app. Reset only fills the boxes in — nothing is saved until you press Save.
         </span>
       </div>
 

@@ -334,6 +334,16 @@ const BANNER_PAIRS: Pair[] = [
  * NOT here: the disabled state. `.btn:disabled` is 0.5 opacity, and SC 1.4.3
  * exempts an inactive control from the contrast minimum — listing it would be
  * asserting a threshold the standard does not set.
+ *
+ * HERE, AND DELIBERATELY: the BLOCKED state. Since 2026-09-17 <GatedControl>
+ * keeps `disabled` for one thing only — its own write in flight — and every
+ * reason that stops a click is `aria-disabled` on a button that still takes
+ * focus and still acts on a press. That control is not inactive, so it has no
+ * claim on 1.4.3's exemption, and the App.css rule gives it no opacity: it dims
+ * the chrome (dashed border, no hover fill) and drops the filled variants back
+ * to the secondary button's own ink. The row below asserts the number that
+ * follows from that, so the day somebody reaches for `opacity: 0.5` to make a
+ * blocked button "look disabled", this fails and says why.
  */
 const BUTTON_PAIRS: Pair[] = [
   {
@@ -356,6 +366,14 @@ const BUTTON_PAIRS: Pair[] = [
     bg: ['var(--gm-panel-2)', PAGE],
     threshold: 4.5,
     where: '.btn (13px medium) — the header Refresh, the tour strip, Re-check, Reset to defaults',
+  },
+  {
+    what: 'the label on a button a policy or a form requirement has blocked',
+    fg: 'var(--gm-fg)',
+    bg: ['var(--gm-panel-2)', 'var(--gm-panel)', PAGE],
+    threshold: 4.5,
+    where:
+      '.btn[aria-disabled="true"] — Guided Setup’s Apply, Change… and Deploy before anything has changed, and every control a 403 has latched closed. Measured on a panel, which is where all of them are drawn.',
   },
   {
     what: 'the label on the secondary button, hovered',

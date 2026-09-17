@@ -4,9 +4,10 @@
 // THERE IS NO SECTION SHELL AND NO `/setup/<section>` ROUTE. The owner withdrew
 // the four-section design on 2026-09-17 (I-D2), so the dataset-absent state
 // points at the ingest panel ABOVE THIS ONE ON THE SAME PAGE, through an
-// in-page anchor this file owns the id of (`INGEST_ANCHOR_ID`, put on the
-// wrapper in src/tabs/GuidedSetup.tsx). A link to `/setup/storage` is a rejected
-// design leaking back in, and Preview check 1.8 reads for exactly that.
+// in-page anchor whose id is one string — `INGEST_ANCHOR_ID` in
+// lakeLandingCopy.ts, put on the wrapper in src/tabs/GuidedSetup.tsx. A link to
+// `/setup/storage` is a rejected design leaking back in, and Preview check 1.8
+// reads for exactly that.
 //
 // ── WHAT THIS PANEL IS FOR, AND WHY IT IS THE MOST DANGEROUS ONE IN THE APP ──
 // It PATCHes the live Cribl Lake dataset every dashboard here reads, PATCHes the
@@ -55,26 +56,44 @@
 // voice. `SPIKE_GATED` in cribl/landing.ts is the single source of those
 // sentences, so the panel and the module cannot drift.
 //
-// ── CSS: EVERY CLASS HERE ALREADY EXISTS ────────────────────────────────────
-// src/App.css was owned by another agent for this run, so this file invents no
-// class name. An unstyled class is markup rendering with nothing to say so —
-// the defect src/app/retiredClasses.test.ts exists to catch — and a working
-// borrowed class beats a broken new one. Two borrowings are worth knowing
-// about: `.ac-tablewrap` (overflow-x, so the table scrolls in its own container
-// rather than the page — Preview 7.7) and `.ac-health-unknown` (subtle ink,
-// whose own comment reads "this app cannot tell is not a severity", which is
-// exactly what a measurement older than an hour is). Both want a rename; the
-// build report carries the request.
+// ── CSS: EVERY CLASS HERE HAS A RULE ────────────────────────────────────────
+// This file was written while another agent owned src/App.css, so it invented no
+// class name and borrowed three whose `.ac-` prefix named a panel it is not. The
+// settling pass took the rename the handoff asked for: `.ac-tablewrap` and
+// `.ac-noterow` are now `.gs-tablewrap` and `.gs-noterow` (both Guided Setup
+// tables use them, and both are listed in src/app/retiredClasses.test.ts), and
+// the stale-measurement ink is its own `.ll-stale` rather than a HEALTH class
+// that happened to be the right grey. What has not changed is the rule that
+// produced the borrowing: an unstyled class is markup rendering with nothing to
+// say so, which is the defect retiredClasses.test.ts exists to catch.
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Checkbox, Collapse, NumberField, RadioGroup, RadioTile, Skeleton, TextField } from '@capra/core'
-import { ConfirmDialog, type ConfirmResource, type DiffEntry } from './ConfirmDialog'
+import { ConfirmDialog, type DiffEntry } from './ConfirmDialog'
 import { GateNote, GatedControl } from './GatedControl'
 import { InfoTip } from './InfoTip'
 import { Panel } from './Panel'
 import { pushToast } from './Toast'
-import { CPU_SECONDS_PER_CREDIT } from '../cribl/jobCost'
-import { fmtBytes, formatCost, toNum } from '../lib/format'
+// Every word and unit this panel prints lives next door, pure and DOM-free, so a
+// test can read a sentence without rendering a screen — see that file's header.
+import {
+  INGEST_ANCHOR_ID,
+  LAG_CPU_SECONDS,
+  PARTITION_CPU_SECONDS,
+  PARTITION_GATE,
+  READER_GATE,
+  STALE_AFTER_MS,
+  costLabel,
+  destinationConsequences,
+  destinationResources,
+  flushOf,
+  flushWords,
+  formatLag,
+  printValue,
+  relativeAge,
+  sizeSentence,
+} from './lakeLandingCopy'
+import { fmtBytes, toNum } from '../lib/format'
 import { runSearch } from '../cribl/search'
 import {
   LANDING_LAG_EARLIEST,
@@ -92,7 +111,6 @@ import {
   MIN_RETENTION_DAYS,
   NO_CHANGE_NOTE,
   PREP_PIPELINE_ID,
-  SPIKE_GATED,
   destinationSpec,
   flushPresetOf,
   partitionStats,
@@ -100,7 +118,6 @@ import {
   spikeGateNote,
   type DiffRow as LandingDiffRow,
   type FlushPresetId,
-  type FlushSettings,
   type LandingFormat,
   type LandingProfile,
   type Measurement,
@@ -116,7 +133,6 @@ import {
   listInputs,
   listRoutes,
   listStreamGroupsCurrent,
-  type LakeDestination,
   type ReadResult,
 } from '../cribl/lake'
 import {
@@ -150,136 +166,6 @@ import { getDoc, listKeys, type LoggedEntry } from '../cribl/kv'
 
 const DATASET_ID = 'gigamon_ami'
 const DESTINATION_ID = 'gigamon_lake'
-
-/**
- * The id of the wrapper around <ProvisionPanel> in src/tabs/GuidedSetup.tsx.
- *
- * Exported so the anchor and its target are one string. The dataset-absent state
- * links here — an in-page anchor to the panel that creates the dataset, because
- * there is no route to send anybody to (I-D2).
- */
-export const INGEST_ANCHOR_ID = 'gs-ingest-panel'
-
-/** Past this, a measurement renders muted: it has stopped being a claim about
- *  now, and the relative age beside it says so in words as well. */
-export const STALE_AFTER_MS = 60 * 60 * 1000
-
-/**
- * What each measurement costs, in billable CPU-seconds.
- *
- * TRANSCRIBED from the header of src/queries/lakeLanding.ts, which records ≈35
- * for the lag query (one third of the 102 CPU-s a 15-minute count measured, LIVE
- * §7 job 2) and ≈100 for the partition-candidate pair. They are demo-feed
- * figures. They are copied rather than imported because that module exports only
- * strings; exporting them from beside the queries they describe would make this
- * a pin instead of a copy, and is a one-line change to a file this session did
- * not own. The button labels are COMPUTED from these through `formatCost`, never
- * written out: I-D20 says no measured value ships as a literal, and a cost
- * printed by hand is the version of that mistake nobody re-checks.
- */
-export const LAG_CPU_SECONDS = 35
-export const PARTITION_CPU_SECONDS = 100
-
-/** A measurement's price as a customer reads it. Both of these land under the
- *  0.1-credit floor `formatCost` refuses to print more precision than. */
-export const costLabel = (cpuSeconds: number): string => formatCost(cpuSeconds / CPU_SECONDS_PER_CREDIT)
-
-/**
- * The two controls this phase refused to build, found by the spike that gates
- * each rather than by position or by matching the control's prose.
- *
- * `P-S7` appears only on the reader row and `P-S9` only on the partitions row,
- * so these two lookups stay correct if somebody reorders SPIKE_GATED or rewords
- * a control. The test asserts both resolve; a silent `undefined` here would
- * render a spike-gated row with no explanation, which is the one thing worse
- * than not building the control.
- */
-export const READER_GATE = SPIKE_GATED.find((g) => g.spikes.includes('P-S7'))
-export const PARTITION_GATE = SPIKE_GATED.find((g) => g.spikes.includes('P-S9'))
-
-// ── Small formatters, exported so a test can read them without a DOM ────────
-
-/**
- * One value cell of a destination diff, as the string a reader should see.
- *
- * <DiffTable>'s handoff expected `diffDestination()` to hand over strings
- * already — "the module that computed the diff is the one that knows what the
- * field means". It does not: `landing.ts`'s `DiffRow` carries `unknown` on both
- * sides, so the formatting lands here. `undefined` becomes `null` deliberately,
- * because that is what <DiffTable> prints as the words "not set"; `String(
- * undefined)` would put the text "undefined" in front of a customer.
- */
-export function printValue(v: unknown): string | null {
-  if (v === undefined) return null
-  if (v === null) return 'null'
-  if (typeof v === 'string') return v
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  try {
-    return JSON.stringify(v) ?? null
-  } catch {
-    // A body with a cycle in it is not something this app can render, and a
-    // dialog that threw while explaining a write is worse than a named gap.
-    return '(this value cannot be displayed)'
-  }
-}
-
-/**
- * How long ago, in words, for the line beside a measured value.
- *
- * Coarse on purpose. The point of an age is to answer "can I still believe
- * this?", and a second-by-second countdown implies a precision that a single
- * sample taken at the instant of a press does not have.
- */
-export function relativeAge(at: number, now: number): string {
-  const seconds = Math.max(0, Math.round((now - at) / 1000))
-  if (seconds < 60) return 'just now'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`
-  return `${Math.round(hours / 24)} days ago`
-}
-
-/**
- * A landing lag as a duration.
- *
- * THE UNIT IS THE QUERY'S, NOT THIS APP'S. `lag_s` is `now()-newest` in
- * LANDING_LAG_QUERY, and `_time` on a Cribl Lake dataset is epoch seconds, so
- * the difference is seconds. Nobody has run that query — it is a Preview check
- * (2.2) — so if the first real measurement comes back three orders of magnitude
- * out, this is not the line to patch: the query is, and the name `lag_s` with
- * it.
- */
-export function formatLag(seconds: number): string {
-  if (!Number.isFinite(seconds)) return 'not a number'
-  const s = Math.max(0, seconds)
-  if (s < 90) return `${s < 10 ? s.toFixed(1) : Math.round(s)} s`
-  const minutes = s / 60
-  if (minutes < 90) return `${minutes.toFixed(1)} min`
-  return `${(minutes / 60).toFixed(1)} h`
-}
-
-/** The flush settings a live destination body is actually on, or null when the
- *  body did not carry all three — in which case this app will not guess one. */
-export function flushOf(dest: LakeDestination | null): FlushSettings | null {
-  const raw = dest?.raw as Record<string, unknown> | undefined
-  if (!raw) return null
-  const n = (k: string) => (typeof raw[k] === 'number' && Number.isFinite(raw[k]) ? (raw[k] as number) : null)
-  const size = n('maxFileSizeMB')
-  const open = n('maxFileOpenTimeSec')
-  const idle = n('maxFileIdleTimeSec')
-  if (size === null || open === null || idle === null) return null
-  return { maxFileSizeMB: size, maxFileOpenTimeSec: open, maxFileIdleTimeSec: idle }
-}
-
-/** How a flush setting reads on the row: the preset's name AND the three
- *  numbers, because `custom` is a real answer and a preset name alone would let
- *  a hand-tuned destination pass as one of ours. */
-export function flushWords(settings: FlushSettings): string {
-  const id = flushPresetOf(settings)
-  const numbers = `${settings.maxFileSizeMB} MB · ${settings.maxFileOpenTimeSec} s open · ${settings.maxFileIdleTimeSec} s idle`
-  return id === 'custom' ? `Custom — ${numbers}` : `${FLUSH_PRESETS[id].label} — ${numbers}`
-}
 
 // ── Per-row retry ───────────────────────────────────────────────────────────
 
@@ -377,7 +263,7 @@ function LandingRowView({
         </td>
       </tr>
       {(note || extraNote) && (
-        <tr className="ac-noterow">
+        <tr className="gs-noterow">
           <td colSpan={3}>
             {note}
             {note && extraNote ? ' ' : null}
@@ -640,7 +526,11 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
         setSteps((prev) => [...prev, { key: 'commit', status: 'cancelled' }])
         return
       }
-      const next = await commitAndDeployDestination(group, files, destinationCommitMessage(group, lastDiff))
+      // `trail` on: this call is its own intent, so nothing else writes the
+      // audit entry for it. The whole reason this button exists is that the
+      // PATCH landed and the commit did not, which is the state most worth a
+      // record — see commitAndDeployDestination's header.
+      const next = await commitAndDeployDestination(group, files, destinationCommitMessage(group, lastDiff), {}, true)
       await afterWrite('The commit and deploy', {
         ok: next.every((s) => s.status === 'applied' || s.status === 'skipped'),
         cancelled: false,
@@ -812,7 +702,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
         />
       )}
 
-      <div className="ac-tablewrap">
+      <div className="gs-tablewrap">
         <table className="dtable">
           <caption className="sr-only">
             How the {DATASET_ID} dataset and the {DESTINATION_ID} destination are configured — one row
@@ -974,7 +864,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
                     <span>
                       {' '}
                       Candidates, measured{' '}
-                      <span className={partitionsStale ? 'ac-health-unknown' : undefined}>
+                      <span className={partitionsStale ? 'll-stale' : undefined}>
                         {relativeAge(partitionStatsMeasured.at, now)}
                       </span>
                       :{' '}
@@ -1059,7 +949,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
                   <span className="ac-noaction">not measured</span>
                 ) : (
                   <span className="ac-serves">
-                    <span className={lagStale ? 'ac-health-unknown' : 'ac-serves-name'}>{formatLag(lag.value)}</span>
+                    <span className={lagStale ? 'll-stale' : 'ac-serves-name'}>{formatLag(lag.value)}</span>
                     <span className="ac-serves-id">measured {relativeAge(lag.at, now)}</span>
                   </span>
                 )
@@ -1445,63 +1335,6 @@ function RetentionDialog({
   )
 }
 
-/**
- * How much data a decrease is about, in this tenant's own terms.
- *
- * From the live read, never a literal (I-D20). The size Cribl Lake reports is
- * computed on a DAY rather than live, so the date rides with it — a size quoted
- * without one is a claim about right now that the number cannot make.
- */
-export function sizeSentence(ctx: RetentionConfirmContext): string {
-  if (ctx.sizeBytes === null) {
-    return 'Cribl Lake did not report a size for this dataset, so nothing here can say how much data the decrease removes.'
-  }
-  const when = ctx.metricsDate ? ` when Cribl last measured it, on ${ctx.metricsDate}` : ', at Cribl’s last measurement'
-  return `This dataset held ${fmtBytes(ctx.sizeBytes)}${when}. The decrease removes everything in it older than ${ctx.change.to} days.`
-}
-
-/** The objects a destination change touches, in dependency order: the object
- *  itself, then the deploy that makes it real on the Workers. */
-export function destinationResources(ctx: DestinationConfirmContext): ConfirmResource[] {
-  return [
-    {
-      action: 'replace',
-      kind: 'Cribl Lake destination',
-      id: ctx.destinationId,
-      group: ctx.group,
-      detail:
-        'The live body is re-read and sent back with only the keys below changed. This app did not create this destination on most tenants, and the only way back is this same editor or the group’s Git history.',
-    },
-    {
-      action: 'deploy',
-      kind: 'Cribl worker group',
-      id: ctx.group,
-      detail: 'The change is committed on the Leader and pushed to this group’s running Workers.',
-    },
-  ]
-}
-
-/**
- * Everything a destination change causes that is not in the diff.
- *
- * The feed list first, because it answers "what am I about to interrupt?"; then
- * how much of somebody else's work rides along in the commit; then
- * DEPLOY_CONSEQUENCES verbatim from cribl/landing.ts — including the Worker
- * Process restart, which is the sentence an admin who runs this at 11 a.m. on a
- * Tuesday will wish they had been shown.
- */
-export function destinationConsequences(ctx: DestinationConfirmContext): string[] {
-  const feeds =
-    ctx.feeds.length === 0
-      ? 'Nothing that this app could see currently writes through this destination.'
-      : `Everything that writes through it moves with it: ${ctx.feeds.map((f) => f.label).join(', ')}.`
-  const complete = ctx.feedsComplete ? '' : ' One of the two reads behind that list was refused, so the list may be short.'
-  const pending =
-    ctx.pendingFiles.length === 0
-      ? 'Cribl reports no pending change to this group’s configuration, so the commit carries only this edit.'
-      : `The commit carries ${ctx.pendingFiles.length} pending file${ctx.pendingFiles.length === 1 ? '' : 's'} — including anybody else’s unfinished work in them: ${ctx.pendingFiles.join(', ')}.`
-  return [feeds + complete, pending, ...DEPLOY_CONSEQUENCES]
-}
 
 // ── Create mode ─────────────────────────────────────────────────────────────
 
