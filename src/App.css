@@ -1156,8 +1156,27 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   overflow-x: auto;
 }
 /* Floor the scale so the composition stays legible, and let the canvas scroll
-   rather than crushing 1580 units of diagram into a narrow window. */
-.dop-svg { display: block; width: 100%; min-width: 1120px; height: auto; }
+   rather than crushing the diagram into a narrow window. The stage carries the
+   floor so the ⓘ overlay and the SVG share one box. */
+.dop-stage { position: relative; min-width: 1120px; }
+.dop-svg { display: block; width: 100%; height: auto; }
+
+/* ⓘ overlay. Anchored in percentages of the viewBox so the icons track the
+   artwork at any scale, but rendered as normal HTML at a fixed size — inside a
+   foreignObject they would scale with the diagram and their fixed-position
+   popovers would mis-place. */
+.dop-info-layer { position: absolute; inset: 0; pointer-events: none; }
+/* Centred with negative margins, never `transform`: a transformed ancestor
+   becomes the containing block for `position: fixed`, which would resolve
+   PanelInfo's popover against this 17px span instead of the viewport. */
+.dop-info-anchor { position: absolute; margin: -9px 0 0 -9px; pointer-events: auto; line-height: 0; }
+.dop-info-anchor .pinfo { margin-left: 0; }
+.dop-info-dark .pinfo-btn { color: var(--cribl-ink-sub); }
+.dop-info-dark .pinfo-btn:hover, .dop-info-dark .pinfo-btn-on { color: #fff; }
+.dop-info-light .pinfo-btn { color: #5a636e; }
+.dop-info-light .pinfo-btn:hover, .dop-info-light .pinfo-btn-on { color: #1d2430; }
+.dop-info-canvas .pinfo-btn { color: var(--dop-ink-sub); }
+.dop-info-canvas .pinfo-btn:hover, .dop-info-canvas .pinfo-btn-on { color: var(--dop-ink); }
 
 /* --- left rail --- */
 .dop-origin-icon { color: var(--dop-ink-sub); }
