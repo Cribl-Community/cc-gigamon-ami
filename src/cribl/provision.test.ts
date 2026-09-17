@@ -1,4 +1,4 @@
-// The three things about provisioning that are expensive to get wrong.
+// The five things about provisioning that are expensive to get wrong.
 //
 // This is the only module in the app that writes customer configuration, and it
 // has no dry run: the way to find out whether a change is right is to point it
@@ -23,15 +23,31 @@
 //   if it does NOT also fire when the group is genuinely up to date, so both
 //   directions are here.
 //
+//   THE NO-OP RE-APPLY (added in Phase 3). `ensurePipeline` and `ensureSource`
+//   used to PATCH whenever the object existed, so pressing Re-apply on a settled
+//   stack wrote twice, reported both `updated`, committed, and deployed — and a
+//   deploy restarts that group's Worker Processes. `ensureRoute` never did this.
+//   The tests below assert the ABSENCE of a request, which is the only way to
+//   assert a no-op: a green "it still works" says nothing about what it sent.
+//
+//   THE CONFIRMATION SEAM (Phase 3). Every ensure* now asks before it writes, and
+//   must not ask about an object that already matches. Both halves are here,
+//   because a confirmation that fires for a change that is not happening trains
+//   people to click through the ones that are.
+//
 // Stubbed at `fetch` rather than at `capi`, so what these assertions read is the
 // request the platform would have received — the method, the path, and the exact
 // body. The fake Leader below answers; anything it does that a real Leader does
-// not is a bug in this file.
+// not is a bug in this file. There is a list at the bottom of what that means
+// these tests cannot tell you.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
   deployAll, pendingDeploy, removeSyslogStack,
-  ROUTE_SPEC, SYSLOG_ROUTE_ID, DEFAULT_STREAM_GROUP, type StepResult,
+  ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
+  SYSLOG_ROUTE_ID, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, DEFAULT_STREAM_GROUP,
+  type PendingChange, type StepResult,
 } from './provision'
 
 const GROUP = DEFAULT_STREAM_GROUP
@@ -62,6 +78,12 @@ interface LeaderOpts {
   head?: string
   /** Files `/version/files` reports as changed since `configVersion`. */
   changedSince?: string[]
+  /** The live pipeline object, as `GET /m/<g>/pipelines/<id>` returns it. `null`
+   *  keeps the old default: a 200 whose `items` this file cannot read, which is
+   *  deliberately still treated as "needs writing". */
+  pipeline?: Record<string, unknown> | null
+  /** The live syslog source, likewise. */
+  source?: Record<string, unknown> | null
 }
 
 const catchAll = { id: 'default', name: 'default', filter: 'true', final: false, pipeline: 'main' }
@@ -83,6 +105,7 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
   const {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
     configVersion = HEAD, head = HEAD, changedSince = [],
+    pipeline = null, source = null,
   } = opts
   const calls: Call[] = []
 
@@ -122,6 +145,12 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     if (at('GET', `/m/${GROUP}/routes`)) return reply(200, { items: [{ id: 'default', ...table, routes }] })
     if (at('PATCH', ROUTES_PATCH)) return reply(200, { items: [] })
     if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
+
+    // The two objects whose no-op check Phase 3 added. Answering with a real
+    // body is what lets a test say "already correct" at all — the catch-all
+    // below answers `{ items: [] }`, which reads as unreadable and still writes.
+    if (at('GET', `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)) return reply(200, { items: pipeline ? [pipeline] : [] })
+    if (at('GET', `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)) return reply(200, { items: source ? [source] : [] })
     // Everything else in the group already exists and takes whatever is sent.
     // A re-apply therefore PATCHes the pipeline and the source every time and
     // reports them `updated` — which is exactly what a real Leader does, and why
@@ -148,6 +177,14 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
 }
 
 const run = () => new Promise<StepResult[]>((resolve) => { void deployAll(() => {}, GROUP).then(resolve) })
+const runWith = (opts: Parameters<typeof deployAll>[3]) =>
+  new Promise<StepResult[]>((resolve) => { void deployAll(() => {}, GROUP, undefined, opts).then(resolve) })
+
+/** Everything the run sent to Cribl that was not a read. The app's own KV store
+ *  is dropped: the audit trail is a write, it is not a write to the customer's
+ *  configuration, and these assertions are about the latter. */
+const writes = (calls: Call[]) =>
+  calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore/')).map((c) => `${c.method} ${c.path}`)
 const patched = (calls: Call[]) => calls.find((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)
 const routesSent = (calls: Call[]) => (patched(calls)?.body as { routes: Array<Record<string, unknown>> } | undefined)?.routes
 const step = (steps: StepResult[], key: string) => steps.find((s) => s.key === key)
@@ -219,6 +256,172 @@ describe('ensureRoute', () => {
 
     expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'b', 'default'])
     expect((patched(calls)!.body as { comments?: unknown }).comments).toEqual([{ text: 'keep me' }])
+  })
+})
+
+describe('a re-apply that has nothing to apply', () => {
+  // The whole stack present and already saying what the spec says — the state a
+  // customer's workspace is in every time after the first, and the one the
+  // Re-apply button is pressed from.
+  const settled = {
+    routes: [{ ...ROUTE_SPEC }, catchAll],
+    // Both live objects carry fields this app never set, which is the normal
+    // case and the reason the comparison is a subset test: a live source has
+    // thirty fields, and somebody may have renamed the pipeline in the UI.
+    pipeline: { ...PIPELINE_SPEC, description: 'renamed in the Cribl UI' },
+    source: { ...SOURCE_SPEC, environment: 'prod', pqEnabled: false },
+  }
+
+  it('sends no write at all — not even the PATCH that used to dirty Git and deploy', async () => {
+    // The defect this closes: two unconditional PATCHes reported `updated`, both
+    // entered touchedKeys, and the run carried on into commit and deploy — and a
+    // deploy restarts that worker group's Worker Processes.
+    const calls = stubLeader(settled)
+    const steps = await run()
+
+    expect(writes(calls), 'a settled stack was written to anyway').toEqual([])
+    expect(['dataset', 'destination', 'pipeline', 'source', 'route'].map((k) => step(steps, k)?.action))
+      .toEqual(['exists', 'exists', 'exists', 'exists', 'exists'])
+    expect(step(steps, 'commit')?.detail).toBe('no changes to commit')
+    expect(step(steps, 'deploy'), 'a zero-change re-apply restarted the group’s Worker Processes').toBeUndefined()
+  })
+
+  it('still writes when one field has drifted, and says which one', async () => {
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const steps = await run()
+
+    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)
+    expect(step(steps, 'source')?.action).toBe('updated')
+    expect(step(steps, 'source')?.detail, 'the step named no field, so the log says a write happened and not what it was').toContain('tcpPort')
+    // And the pipeline, which did not drift, is still left alone.
+    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+  })
+
+  it('counts an extra function somebody added as a change, because sending ours would delete it', async () => {
+    const extra = { id: 'eval', filter: 'true', disabled: false, description: 'theirs', conf: { add: [] } }
+    const calls = stubLeader({
+      ...settled,
+      pipeline: { ...PIPELINE_SPEC, conf: { functions: [...PIPELINE_SPEC.conf.functions, extra] } },
+    })
+    const steps = await run()
+
+    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+    expect(step(steps, 'pipeline')?.detail).toContain('conf')
+  })
+
+  it('writes when the live object cannot be read, because "I could not see it" is not "it is right"', async () => {
+    // A 200 whose body this file does not understand. The old behaviour — PATCH
+    // regardless — is the correct one here and is deliberately kept.
+    const calls = stubLeader({ ...settled, pipeline: null, source: null })
+    await run()
+    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)
+  })
+})
+
+describe('the confirmation seam', () => {
+  const settled = {
+    routes: [{ ...ROUTE_SPEC }, catchAll],
+    pipeline: { ...PIPELINE_SPEC },
+    source: { ...SOURCE_SPEC },
+  }
+
+  it('is never asked about an object that already matches', async () => {
+    // A confirmation that fires for a change that is not happening is how people
+    // learn to click through the ones that are.
+    const asked: PendingChange[] = []
+    stubLeader(settled)
+    await runWith({ confirm: (c) => { asked.push(c); return true } })
+    expect(asked, 'the dialog was offered a change nothing was going to make').toEqual([])
+  })
+
+  it('is asked once, with the diff, for the one object that drifted', async () => {
+    const asked: PendingChange[] = []
+    stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    await runWith({ confirm: (c) => { asked.push(c); return true } })
+
+    expect(asked.map((c) => `${c.key}:${c.action}`)).toEqual(['source:overwrite'])
+    expect(asked[0].object, 'the change did not name the Cribl object').toContain(SYSLOG_SOURCE_ID)
+    expect(asked[0].diff.map((d) => [d.key, d.before, d.after])).toEqual([['tcpPort', 9999, SOURCE_SPEC.tcpPort]])
+  })
+
+  it('writes nothing when the answer is no, and commits nothing either', async () => {
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const steps = await runWith({ confirm: () => false })
+
+    expect(writes(calls), 'the write went out after the confirmation said no').toEqual([])
+    expect(step(steps, 'source')?.action).toBe('skipped')
+    expect(step(steps, 'source')?.detail).toContain('not confirmed')
+    // The steps below it depend on it, so they are reported as not reached —
+    // named, rather than left looking absent.
+    expect(step(steps, 'route')?.detail).toContain('not confirmed')
+    expect(steps.some((s) => s.key === 'commit'), 'a refused run went on to commit').toBe(false)
+  })
+
+  it('treats a confirmation that throws as a no, not as a yes', async () => {
+    // A dialog that unmounted, a rejected promise, a caller that threw: all of
+    // them are "this was not agreed to", and the only dangerous reading is the
+    // optimistic one.
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const steps = await runWith({ confirm: () => { throw new Error('the dialog went away') } })
+    expect(writes(calls)).toEqual([])
+    expect(step(steps, 'source')?.action).toBe('skipped')
+  })
+
+  it('reports a refusal as a refusal rather than as a failure', async () => {
+    // `error` means Cribl said no; `skipped` means the person did. Rendering the
+    // second as the first sends somebody to look for a fault they caused.
+    stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const steps = await runWith({ confirm: () => false })
+    expect(steps.some((s) => s.action === 'error')).toBe(false)
+  })
+})
+
+describe('the two Lake specs', () => {
+  // These used to be two hand-written copies of the same numbers — one here and
+  // one in landing.ts's `nearLive` preset — with a comment between them naming a
+  // line number. This is the pin that replaced the comment.
+
+  it('are the landing profile this release ships, not a second set of literals', () => {
+    expect(DATASET_SPEC).toEqual(datasetSpec(DEFAULT_PROFILE))
+    expect(DESTINATION_SPEC).toEqual({ id: 'gigamon_lake', type: 'cribl_lake', ...destinationSpec(DEFAULT_PROFILE).set })
+  })
+
+  it('still describes exactly what this app has always provisioned', () => {
+    // The point of parameterising is that the DEFAULT is unchanged. If this
+    // fails, Phase 3 changed a customer's landing, which it is explicitly not
+    // allowed to do — the format migration is Phase 4's, behind P-S1 and P-S5.
+    expect(DATASET_SPEC).toEqual({
+      id: 'gigamon_ami',
+      description: 'Gigamon Application Metadata Intelligence (AMI) flow records',
+      retentionPeriodInDays: 30,
+      format: 'json',
+    })
+    expect(DESTINATION_SPEC).toEqual({
+      id: 'gigamon_lake',
+      type: 'cribl_lake',
+      destPath: 'gigamon_ami',
+      format: 'json',
+      storageLocationId: 'cribl_lake',
+      maxFileSizeMB: 5,
+      maxFileOpenTimeSec: 60,
+      maxFileIdleTimeSec: 15,
+      compress: 'gzip',
+      onBackpressure: 'block',
+    })
+  })
+
+  it('is the preset landing.ts calls "near-live" — the two cannot drift now', () => {
+    const { maxFileSizeMB, maxFileOpenTimeSec, maxFileIdleTimeSec } = FLUSH_PRESETS.nearLive
+    expect(DESTINATION_SPEC).toMatchObject({ maxFileSizeMB, maxFileOpenTimeSec, maxFileIdleTimeSec })
+  })
+
+  it('takes a different profile without touching the identity keys', () => {
+    // The seam §2.4 asks for. `id` and `type` are what the object IS; everything
+    // else is what it was asked to be.
+    const balanced = { ...DEFAULT_PROFILE, flush: FLUSH_PRESETS.balanced }
+    const spec = destinationSpecFor(balanced)
+    expect(spec).toMatchObject({ id: 'gigamon_lake', type: 'cribl_lake', maxFileSizeMB: 32, maxFileOpenTimeSec: 120 })
   })
 })
 
@@ -359,3 +562,35 @@ describe('an undeployed commit', () => {
     expect(await pendingDeploy(GROUP)).toBe(HEAD)
   })
 })
+
+// ── What these tests could not assert, and why ──────────────────────────────
+//
+// Read this before reporting a green run as a result. The fake Leader above is
+// transcribed from the API spec and from one measured workspace; every status in
+// it is a decision this file made.
+//
+//   * WHETHER A REAL LEADER DIRTIES A CONFIG FILE FOR AN IDENTICAL-BODY PATCH.
+//     This is the question that decides how bad the defect fixed here actually
+//     was: if Cribl reports no pending file for a no-change PATCH, the old code
+//     stopped at "no changes to commit"; if it does report one, a zero-change
+//     re-apply committed and restarted that group's Worker Processes. The stub
+//     answers `/version/status` from `pending`, which is to say this file decides
+//     the answer. It needs a live Leader, and it is a Preview check.
+//
+//   * WHETHER A LIVE OBJECT LOOKS LIKE THE ONE STUBBED HERE. `covered` is a
+//     subset test precisely because a live source carries fields this app never
+//     names — but which fields, and whether Cribl normalises a value on the way
+//     in (a port as a string, a `filter` it rewrote), is unmeasured. If it does,
+//     the spec will never look satisfied and the PATCH goes out on every
+//     re-apply again — the old behaviour, safely, but the fix would be doing
+//     nothing. The way to find out is one re-apply on a settled stack with the
+//     network tab open.
+//
+//   * THAT THE CONFIRMATION A CUSTOMER SEES IS THE ONE THESE TESTS PASS. They
+//     assert that the writers ASK and obey the answer. What components/
+//     ProvisionPanel.tsx does with a `PendingChange` — whether it renders the
+//     diff at all — is that file's, and nothing here can see it.
+//
+//   * ANY REFUSAL. Every 401/403 in this suite is fabricated. The gate is
+//     retrospective and this workspace's callers are all admins, so no
+//     permission has ever actually been enforced against this code (V-S11).

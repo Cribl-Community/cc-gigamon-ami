@@ -235,13 +235,13 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/provision.ts#ensurePipeline',
     gates: ['syslog_stack.apply'],
     surface: 'config',
-    why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply.',
+    why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply — but only when the live list does not already say what the spec says. Until Phase 3 it PATCHed whenever the object existed, so a re-apply of a settled stack wrote twice, dirtied the group\'s Git status and carried the run on into a deploy that restarts Worker Processes.',
   },
   {
     at: 'cribl/provision.ts#ensureSource',
     gates: ['syslog_stack.apply'],
     surface: 'config',
-    why: 'POST creates the Syslog source; PATCH overwrites its settings on a re-apply — the call slice 1.3 shipped undeclared.',
+    why: 'POST creates the Syslog source; PATCH overwrites its settings on a re-apply — the call slice 1.3 shipped undeclared, and since Phase 3 one that is sent only when the live source differs. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function now takes, which is where a caller can be shown what is about to change rather than only which object.',
   },
   {
     at: 'cribl/provision.ts#ensureRoute',
