@@ -45,7 +45,9 @@ export async function loadCommitMemory(): Promise<CommitMemory> {
     const res = await fetch(`${API_BASE}/kvstore/${KV_KEY}`)
     if (!res.ok) return {}
     const text = await res.text()
-    if (!text) return {}
+    // Before the text/plain fix below, the store kept the literal
+    // "[object Object]" for this key. That is not data — treat it as first run.
+    if (!text || text === '[object Object]') return {}
     return coerce(JSON.parse(text))
   } catch {
     return {}
@@ -56,9 +58,12 @@ export async function loadCommitMemory(): Promise<CommitMemory> {
  *  are swallowed so provisioning is never blocked by a persistence hiccup. */
 export async function saveCommitMemory(mem: CommitMemory): Promise<void> {
   try {
+    // text/plain, not application/json: given a JSON content type the store
+    // parses the body and persists String(obj) — the literal "[object Object]" —
+    // while still answering 200.
     await fetch(`${API_BASE}/kvstore/${KV_KEY}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(mem),
     })
   } catch {
