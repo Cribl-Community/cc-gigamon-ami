@@ -184,12 +184,21 @@ const flat = (s) => s.replace(/\s+/g, ' ').trim()
 const rel = (p) => relative(ROOT, p).split(sep).join('/')
 // Line endings are normalised before hashing, and this is not a nicety.
 // A digest of a function is a digest of its SOURCE TEXT (Function.prototype
-// .toString returns the characters as checked out), and this repo has
-// core.autocrlf=true with no .gitattributes — so the same committed file is
+// .toString returns the characters as checked out). This repo used to run
+// core.autocrlf=true with no .gitattributes, so the same committed file was
 // CRLF in a Windows working tree and LF in the object store that Linux CI
-// checks out. Without this the snapshot passed on the author's machine and
-// failed every CI run, which is the worst way for a gate to fail: it looks
-// like the gate caught something when all it caught was a checkout.
+// checks out. Without this line the snapshot passed on the author's machine
+// and failed every CI run — six of them — which is the worst way for a gate
+// to fail: it looks like the gate caught something when all it caught was a
+// checkout.
+//
+// `.gitattributes` now pins `* text=auto eol=lf`, so every checkout agrees
+// and this normalisation is belt AND braces. KEEP IT ANYWAY. It costs one
+// string replace per digest, and it is what makes this file's output depend
+// on the source's CHARACTERS rather than on how a given machine happens to
+// be configured — which is a property worth holding directly rather than
+// borrowing from a config file three directories up that a future checkout,
+// a zip download or an editor's "save with CRLF" can quietly stop honouring.
 const sha = (s) => createHash('sha256').update(String(s).replace(/\r\n/g, '\n')).digest('hex').slice(0, 16)
 
 /**
