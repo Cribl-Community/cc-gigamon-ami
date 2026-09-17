@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { usePref } from '../cribl/prefs'
 import { PERSONAS, type Persona, type TourStep } from './tour'
 
-const SEEN_KEY = 'gigamon-npm-tour-seen'
 /**
  * Marked with an ATTRIBUTE, not a class: React owns `className` on these panels,
  * so a re-render (every panel re-renders when its search resolves) silently
@@ -15,8 +15,13 @@ interface TourState {
   persona: Persona | null
   index: number
   step: TourStep | null
-  /** True once the user has completed or dismissed a tour at least once. */
-  seen: boolean
+  /**
+   * Whether the first-run nudge should offer itself. False once this viewer has
+   * completed or dismissed a tour — and false while that is still unknown, so
+   * the nudge appears once rather than flashing on every load. See
+   * cribl/prefs.ts for why the preference has a third state at all.
+   */
+  offerNudge: boolean
   pickerOpen: boolean
   start: (id: string) => void
   openPicker: () => void
@@ -29,36 +34,25 @@ interface TourState {
 
 const Ctx = createContext<TourState | null>(null)
 
-function readSeen(): boolean {
-  try {
-    return localStorage.getItem(SEEN_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function writeSeen(): void {
-  try {
-    localStorage.setItem(SEEN_KEY, '1')
-  } catch {
-    // Non-fatal — the tour still works, it just may offer itself again.
-  }
-}
-
 export function TourProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const [persona, setPersona] = useState<Persona | null>(null)
   const [index, setIndex] = useState(0)
-  const [seen, setSeen] = useState(readSeen)
+  // Per-viewer, in the app-scoped Cribl KV store rather than in localStorage,
+  // which this sandbox is entitled to partition or clear and which never
+  // follows anyone to a second browser (AGENTS.md).
+  const [tourSeen, setTourSeen] = usePref('tourSeen')
   const [pickerOpen, setPickerOpen] = useState(false)
   const cleanupRef = useRef<(() => void) | null>(null)
 
   const step = persona ? (persona.steps[index] ?? null) : null
 
-  const markSeen = useCallback(() => {
-    setSeen(true)
-    writeSeen()
-  }, [])
+  // Only a definite "not seen" earns a nudge. `undefined` is the store not
+  // having answered yet, and a nudge that cannot say the tour was skipped does
+  // not interrupt anyone.
+  const offerNudge = tourSeen === false
+
+  const markSeen = useCallback(() => setTourSeen(true), [setTourSeen])
 
   const exit = useCallback(() => {
     setPersona(null)
@@ -74,18 +68,20 @@ export function TourProvider({ children }: { children: ReactNode }) {
     setPickerOpen(false)
   }, [])
 
+  // Computed from `index` rather than inside a setIndex updater. Remembering
+  // the tour is now a KV write, and a state updater has to be pure — React may
+  // run it twice, which would be two writes for one "Finish".
   const next = useCallback(() => {
-    setIndex((i) => {
-      if (!persona) return i
-      if (i + 1 >= persona.steps.length) {
-        // Finished — close out and remember, so it stays hidden by default.
-        setPersona(null)
-        markSeen()
-        return 0
-      }
-      return i + 1
-    })
-  }, [persona, markSeen])
+    if (!persona) return
+    if (index + 1 >= persona.steps.length) {
+      // Finished — close out and remember, so it stays hidden by default.
+      setPersona(null)
+      setIndex(0)
+      markSeen()
+      return
+    }
+    setIndex(index + 1)
+  }, [persona, index, markSeen])
 
   const back = useCallback(() => setIndex((i) => Math.max(0, i - 1)), [])
 
@@ -133,11 +129,11 @@ export function TourProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<TourState>(
     () => ({
-      persona, index, step, seen, pickerOpen,
+      persona, index, step, offerNudge, pickerOpen,
       start, openPicker: () => setPickerOpen(true), closePicker: () => setPickerOpen(false),
       next, back, exit, markSeen,
     }),
-    [persona, index, step, seen, pickerOpen, start, next, back, exit, markSeen],
+    [persona, index, step, offerNudge, pickerOpen, start, next, back, exit, markSeen],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

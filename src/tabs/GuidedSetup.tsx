@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Panel } from '../components/Panel'
+import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
 import { IS_INSTALLED } from '../cribl/config'
 import {
-  checkStatus, deployAll, removeSyslogStack, suggestedSyslogHost,
+  checkStatus, deployAll, removeSyslogStack, suggestedSyslogHost, pendingDeploy,
   listStreamGroups, DEFAULT_STREAM_GROUP, STEP_LABELS,
   type SetupStatus, type StepResult, type ResourceKey, type StreamGroup, type Phase,
   SYSLOG_SOURCE_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID,
   LAKE_DESTINATION_ID, LAKE_DATASET_ID, SYSLOG_PORT,
 } from '../cribl/provision'
-import { loadCommitMemory, saveCommitMemory, type CommitMemory } from '../cribl/setupMemory'
+import {
+  loadCommitMemory, saveCommitMemory, loadSetupGroup, saveSetupGroup, type CommitMemory,
+} from '../cribl/setupMemory'
 
 interface ResourceMeta { key: ResourceKey; label: string; detail: string }
 const RESOURCES: ResourceMeta[] = [
@@ -29,10 +32,26 @@ export function GuidedSetup() {
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState<'deploy' | 'remove' | null>(null)
+  // Both volatile actions on this screen are gated behind one of these. Deploy
+  // creates and OVERWRITES configuration in a live worker group and then
+  // restarts its workers; remove deletes. AGENTS.md ("Confirming Destructive
+  // Operations") requires a deliberate click and a prompt naming exactly what is
+  // affected before either runs, and forbids reaching them from load, render or
+  // a timer — so nothing sets these except a button, and nothing calls deployAll
+  // or removeSyslogStack except the confirm inside them.
+  const [confirmDeploy, setConfirmDeploy] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  // A commit this group has not deployed — what an earlier run's failed deploy
+  // left behind. Read-only, and null when there is none or when it could not be
+  // determined.
+  const [pending, setPending] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [group, setGroup] = useState<string>(DEFAULT_STREAM_GROUP)
   const [groups, setGroups] = useState<StreamGroup[]>([{ id: DEFAULT_STREAM_GROUP, name: DEFAULT_STREAM_GROUP }])
+  // Whether the viewer's remembered group has been read yet. The first status
+  // check waits on it, so the page checks the group the user actually works in
+  // instead of checking `default` and then checking again.
+  const [groupReady, setGroupReady] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
   const toastId = useRef(0)
 
@@ -59,6 +78,15 @@ export function GuidedSetup() {
     })
   }, [])
 
+  // Transient status pop-up. Errors linger longer so they can be read; the
+  // terminal "done" toast and progress toasts auto-dismiss.
+  const pushToast = useCallback((p: Phase) => {
+    const id = ++toastId.current
+    setToasts((prev) => [...prev, { id, kind: p.kind, text: p.text }])
+    const ttl = p.kind === 'error' ? 6000 : p.kind === 'done' ? 4000 : 2600
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), ttl)
+  }, [])
+
   // The last commit that touched each artifact, per group — persisted in the
   // app-scoped KV store so it survives reloads and is shown on each resource row
   // until a newer commit for that same artifact replaces it. A single commit
@@ -73,8 +101,13 @@ export function GuidedSetup() {
   const applyCommits = useCallback(async (next: CommitMemory) => {
     commitsRef.current = next
     setCommits(next)
-    await saveCommitMemory(next) // KV is authoritative; write before any re-read
-  }, [])
+    // KV is authoritative; write before any re-read. A refused write means this
+    // page is the only place the note exists, so say so — otherwise the screen
+    // shows a commit ref that the next reload quietly removes.
+    if (!(await saveCommitMemory(next))) {
+      pushToast({ kind: 'error', text: 'Could not save the commit note to the app store — it will be gone after a reload.' })
+    }
+  }, [pushToast])
   const recordCommit = useCallback((gid: string, keys: ResourceKey[], hash: string, message: string) => {
     if (!keys.length) return Promise.resolve()
     const forGroup = { ...(commitsRef.current[gid] ?? {}) }
@@ -88,15 +121,6 @@ export function GuidedSetup() {
     return applyCommits({ ...commitsRef.current, [gid]: forGroup })
   }, [applyCommits])
 
-  // Transient status pop-up. Errors linger longer so they can be read; the
-  // terminal "done" toast and progress toasts auto-dismiss.
-  const pushToast = useCallback((p: Phase) => {
-    const id = ++toastId.current
-    setToasts((prev) => [...prev, { id, kind: p.kind, text: p.text }])
-    const ttl = p.kind === 'error' ? 6000 : p.kind === 'done' ? 4000 : 2600
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), ttl)
-  }, [])
-
   // Load the selectable worker groups once. Best-effort: on failure we keep the
   // default group so the page still works.
   useEffect(() => {
@@ -107,13 +131,51 @@ export function GuidedSetup() {
     return () => { alive = false }
   }, [])
 
+  // Read the group this viewer last picked, once, on mount. A READ only —
+  // nothing here writes on load, render or a timer (AGENTS.md). Whatever comes
+  // back, `groupReady` flips: a slow or absent KV store leaving the screen stuck
+  // on "Checking…" would be a worse bug than a forgotten picker.
+  useEffect(() => {
+    let alive = true
+    const apply = (saved: string | null) => {
+      if (!alive) return
+      if (saved) setGroup(saved)
+      setGroupReady(true)
+    }
+    void loadSetupGroup().then(apply, () => apply(null))
+    return () => { alive = false }
+  }, [])
+
+  // Picking a group is a deliberate user action, which is what makes it the
+  // place this screen is allowed to write from. It stores one field of this
+  // viewer's own preferences — no customer configuration is touched — and a
+  // refused write is reported rather than swallowed, because the symptom
+  // otherwise arrives a reload later with no explanation.
+  const pickGroup = useCallback(async (gid: string) => {
+    setGroup(gid)
+    if (await saveSetupGroup(gid)) return
+    pushToast({
+      kind: 'error',
+      text: `Could not remember ${gid} as your worker group — this tab will open on ${DEFAULT_STREAM_GROUP} next time.`,
+    })
+  }, [pushToast])
+
   // Re-check the live resource status for the current group. A successful
   // re-check leaves any lingering deploy/remove outcome for this group untouched
   // — it clears only when the user next deploys or removes.
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      setStatus(await checkStatus(group))
+      // The undeployed-commit check is a side question — three GETs that answer
+      // "is there something this group committed but never ran". It rides along
+      // with the status check, and its own failure must not blank the resource
+      // rows, so it swallows rather than rejects.
+      const [live, undeployed] = await Promise.all([
+        checkStatus(group),
+        pendingDeploy(group).catch(() => null),
+      ])
+      setStatus(live)
+      setPending(undeployed)
     } catch (e) {
       setGroupErr(group, (e as Error).message)
     } finally {
@@ -133,9 +195,18 @@ export function GuidedSetup() {
     await refresh()
   }, [refresh])
 
-  // Populate whenever the target group changes (and on mount). The per-group step
-  // log is NOT cleared here — switching groups shows that group's last outcome.
-  useEffect(() => { setConfirmRemove(false); void populate() }, [populate])
+  // Populate whenever the target group changes, and once the remembered group
+  // has landed. The per-group step log is NOT cleared here — switching groups
+  // shows that group's last outcome.
+  useEffect(() => {
+    if (!groupReady) return
+    // A confirmation names one group's objects. Switching groups makes it a
+    // prompt about somewhere else, so it closes rather than re-labels.
+    setConfirmDeploy(false)
+    setConfirmRemove(false)
+    setPending(null)
+    void populate()
+  }, [groupReady, populate])
 
   const allPresent = status
     ? RESOURCES.every((r) => status[r.key])
@@ -159,9 +230,14 @@ export function GuidedSetup() {
   const anyRemovable = status ? REMOVABLE_KEYS.some((k) => status[k]) : false
   const partial = anyRemovable && !allPresent
 
+  // Reached only from the "Yes, …" button inside the confirmation below. It
+  // creates the missing resources, PATCHes the pipeline / source / routing table
+  // that already exist, commits, and deploys to the group's running workers —
+  // every one of which AGENTS.md calls volatile.
   const onDeploy = async () => {
     const gid = group
     setRunning('deploy')
+    setConfirmDeploy(false)
     resetOutcome(gid)
     try {
       const results = await deployAll((r) => appendStep(gid, r), gid, pushToast)
@@ -236,9 +312,13 @@ export function GuidedSetup() {
             className="gs-group-select"
             value={group}
             disabled={running !== null}
-            onChange={(e) => setGroup(e.target.value)}
+            onChange={(e) => void pickGroup(e.target.value)}
             title="The Stream worker group the onboarding stack reads, creates, or removes"
           >
+            {/* The remembered group and the group list arrive independently, and
+                a remembered group can outlive the group itself. Either way the
+                picker shows what it is set to rather than going blank. */}
+            {!groups.some((gr) => gr.id === group) && <option value={group}>{group}</option>}
             {groups.map((gr) => (
               <option key={gr.id} value={gr.id}>
                 {gr.name === gr.id ? gr.id : `${gr.name} (${gr.id})`}
@@ -248,6 +328,7 @@ export function GuidedSetup() {
           <span className="gs-group-hint">
             The source, pipeline, route &amp; destination are created here and committed/deployed to this
             group. The Lake dataset <code>{LAKE_DATASET_ID}</code> is shared and group-independent.
+            The group you pick is remembered for you, so this tab opens on it next time.
           </span>
         </div>
 
@@ -285,28 +366,116 @@ export function GuidedSetup() {
             })}
           </div>
 
+          {/* Both confirmations are the `gs-confirm` block this tab already had
+              for teardown, reused rather than generalised: slice 1.7 builds the
+              real ConfirmDialog component, and a second half-built one now would
+              be the thing 1.7 has to delete first. What must NOT move to 1.7 is
+              the naming — AGENTS.md wants the affected resource named before the
+              call, and that is the text below, not the component around it. */}
           <div className="gs-actions">
-            <button type="button" className="gs-btn gs-btn-primary" onClick={() => void onDeploy()} disabled={running !== null || loading}>
-              {running === 'deploy' ? 'Deploying…' : allPresent ? 'Re-apply onboarding stack' : 'Deploy onboarding stack'}
-            </button>
-            <p className="gs-action-note">
-              Creates any missing resources, then commits &amp; deploys to the <code>{group}</code> group.
-            </p>
+            {confirmDeploy ? (
+              <div className="gs-confirm">
+                <span>
+                  Apply the Gigamon AMI onboarding stack to the Cribl Stream worker group{' '}
+                  <code>{group}</code>, then commit and deploy it to that group's Workers?
+                </span>
+                <ul className="gs-confirm-list">
+                  <li>
+                    Syslog source <code>{SYSLOG_SOURCE_ID}</code> (TCP + UDP :{SYSLOG_PORT}) — created, or
+                    its settings <strong>overwritten</strong> if it already exists
+                  </li>
+                  <li>
+                    Pipeline <code>{SYSLOG_PIPELINE_ID}</code> — created, or its function list{' '}
+                    <strong>overwritten</strong> if it already exists
+                  </li>
+                  <li>
+                    The routing table of <code>{group}</code> — route <code>{SYSLOG_ROUTE_ID}</code> added
+                    above the catch-all if it is missing. Existing routes keep their order and are not edited.
+                  </li>
+                  <li>
+                    Cribl Lake destination <code>{LAKE_DESTINATION_ID}</code> and dataset{' '}
+                    <code>{LAKE_DATASET_ID}</code> — created only if missing, never edited
+                  </li>
+                </ul>
+                <span>
+                  Nothing else in <code>{group}</code> is touched, including the demo DataGen source.
+                  Deploying restarts that group's Workers on the new configuration.
+                </span>
+                {pending && (
+                  <span>
+                    It also deploys commit <code>#{pending.slice(0, 10)}</code>, which is committed to{' '}
+                    <code>{group}</code> but was never deployed.
+                  </span>
+                )}
+                <div>
+                  {/* The confirmation can outlive the state it was opened in —
+                      a Re-check started underneath it, say — so the button that
+                      actually writes re-checks that nothing is already running. */}
+                  <button type="button" className="gs-btn gs-btn-primary" onClick={() => void onDeploy()} disabled={running !== null}>
+                    {allPresent ? `Yes, re-apply to ${group}` : `Yes, deploy to ${group}`}
+                  </button>
+                  <button type="button" className="gs-btn gs-btn-ghost" onClick={() => setConfirmDeploy(false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <button type="button" className="gs-btn gs-btn-primary" onClick={() => { setConfirmRemove(false); setConfirmDeploy(true) }} disabled={running !== null || loading}>
+                  {running === 'deploy' ? 'Deploying…' : allPresent ? 'Re-apply onboarding stack' : 'Deploy onboarding stack'}
+                </button>
+                <p className="gs-action-note">
+                  Creates any missing resources, then commits &amp; deploys to the <code>{group}</code> group.
+                  You'll get to review exactly what changes first.
+                </p>
+                {pending && (
+                  <p className="gs-action-note gs-action-warn">
+                    Commit <code>#{pending.slice(0, 10)}</code> is committed to <code>{group}</code> but not
+                    deployed — an earlier deploy did not finish. Deploying will push it.
+                  </p>
+                )}
+              </>
+            )}
             {(allPresent || partial) && (
               confirmRemove ? (
                 <div className="gs-confirm">
                   <span>
                     {partial
-                      ? <>Remove the partially-created syslog resources from <code>{group}</code>? (dataset is kept)</>
-                      : <>Remove the syslog source, pipeline &amp; route from <code>{group}</code>? (dataset is kept)</>}
+                      ? <>Delete the partially-created Gigamon AMI syslog resources from <code>{group}</code>, then commit and deploy the removal?</>
+                      : <>Delete the Gigamon AMI syslog resources from <code>{group}</code>, then commit and deploy the removal?</>}
+                  </span>
+                  {/* Named one by one rather than as "the syslog resources":
+                      whoever clicks this has to be able to check the list against
+                      what they think is in the group. */}
+                  <ul className="gs-confirm-list">
+                    {status?.source && <li>Syslog source <code>{SYSLOG_SOURCE_ID}</code> — deleted</li>}
+                    {status?.pipeline && <li>Pipeline <code>{SYSLOG_PIPELINE_ID}</code> — deleted</li>}
+                    {status?.route && (
+                      <li>
+                        Route <code>{SYSLOG_ROUTE_ID}</code> — removed from the routing table of{' '}
+                        <code>{group}</code>. Every other route keeps its order.
+                      </li>
+                    )}
+                  </ul>
+                  <span>
+                    Cribl Lake destination <code>{LAKE_DESTINATION_ID}</code> and dataset{' '}
+                    <code>{LAKE_DATASET_ID}</code> are <strong>kept</strong> — they are shared, and the
+                    dashboards read that dataset. Deleting a source and a pipeline cannot be undone from
+                    this app; the config is recoverable only from the group's Git history.
                   </span>
                   <div>
-                    <button type="button" className="gs-btn gs-btn-danger" onClick={() => void onRemove()}>Yes, remove</button>
+                    <button type="button" className="gs-btn gs-btn-danger" onClick={() => void onRemove()} disabled={running !== null}>Yes, delete from {group}</button>
                     <button type="button" className="gs-btn gs-btn-ghost" onClick={() => setConfirmRemove(false)}>Cancel</button>
                   </div>
                 </div>
               ) : (
-                <button type="button" className="gs-btn gs-btn-ghost gs-btn-danger-text" onClick={() => setConfirmRemove(true)} disabled={running !== null}>
+                <button
+                  type="button"
+                  className="gs-btn gs-btn-ghost gs-btn-danger-text"
+                  // One confirmation open at a time: two prompts about the same
+                  // group, with opposite answers, is how the wrong button gets
+                  // pressed.
+                  onClick={() => { setConfirmDeploy(false); setConfirmRemove(true) }}
+                  disabled={running !== null}
+                >
                   {partial ? 'Remove partial stack' : 'Remove onboarding stack'}
                 </button>
               )
@@ -386,6 +555,12 @@ export function GuidedSetup() {
           </li>
         </ul>
       </Panel>
+
+      {/* The one install-wide setting the app has. It lives here because this
+          is the tab an installer already opens to set the workspace up, and
+          because raising a cap is the same kind of act as provisioning: it
+          changes what every viewer of this install gets, not just this one. */}
+      <SearchLimitsPanel />
 
       {toasts.length > 0 && (
         <div className="gs-toasts" aria-live="polite">
