@@ -18,6 +18,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "vitest run",
+    "queries:extract": "node scripts/extract-queries.mjs",
     "preview": "vite preview",
     "package": "node scripts/package.mjs"
   },
@@ -35,9 +37,11 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "happy-dom": "^20.14.5",
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",
-    "vite": "^8.1.1"
+    "vite": "^8.1.1",
+    "vitest": "^5.0.1"
   },
   "cribl": {
     "type": "app",

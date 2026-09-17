@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 import { IS_INSTALLED } from '../cribl/config'
 
 interface Props {
-  state: { loading: boolean; error: string | null; rows: readonly unknown[] }
+  /** `errorTitle` names a known cause (e.g. "Search stopped"); without it the heading is "Search failed". */
+  state: { loading: boolean; error: string | null; errorTitle?: string | null; rows: readonly unknown[] }
   children: ReactNode
   /** Message when the query returns no rows. */
   emptyLabel?: string
@@ -21,12 +22,13 @@ export function QueryBoundary({ state, children, emptyLabel = 'No results', comp
     )
   }
   if (state.error) {
-    const hint = !IS_INSTALLED
+    // The dev-proxy hint only helps with an unexplained failure, not a known cause.
+    const hint = !IS_INSTALLED && !state.errorTitle
       ? ' Dev preview needs the Vite proxy + a valid Cribl token (check the terminal).'
       : ''
     return (
       <div className={`qb-center qb-error ${compact ? 'qb-compact' : ''}`}>
-        <span className="qb-error-title">Search failed</span>
+        <span className="qb-error-title">{state.errorTitle ?? 'Search failed'}</span>
         <span className="qb-msg">{state.error}{hint}</span>
       </div>
     )

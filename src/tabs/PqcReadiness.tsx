@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -9,25 +8,9 @@ import { QueryBoundary } from '../components/QueryBoundary'
 import { BarList, type BarItem } from '../components/BarList'
 import { toNum, str, fmtCount, fmtPct } from '../lib/format'
 import {
-  classifyGroup, PQC_GROUP_CODES, sensitivityOf, SENSITIVE, SENSITIVITY_RANK, type Sensitivity,
+  classifyGroup, sensitivityOf, SENSITIVE, SENSITIVITY_RANK, type Sensitivity,
 } from '../data/pqc'
-
-const PQC_IN = `(${PQC_GROUP_CODES.map((c) => `"${c}"`).join(', ')})`
-
-// Per-server capability: sessions, how many were TLS 1.3, how many OFFERED a
-// hybrid ML-KEM group. Grouped with issuer (near-1:1 with SNI; merged in JS).
-const SERVERS_Q = q(
-  'ssl_server_name=* | summarize sessions=count(), ' +
-  'tls13=sum(iif(ssl_server_supported_version=="772",1,0)), ' +
-  `pqc=sum(iif(ssl_ext_ec_supported_groups_type in ${PQC_IN},1,0)) ` +
-  'by ssl_server_name, ssl_issuer | sort by sessions desc | limit 300',
-)
-
-// Which named key-exchange groups appear, and on how many servers.
-const GROUPS_Q = q(
-  'ssl_ext_ec_supported_groups_type=* | summarize sessions=count(), servers=dcount(ssl_server_name) ' +
-  'by ssl_ext_ec_supported_groups_type | sort by sessions desc | limit 40',
-)
+import { drillQuery, GROUPS_Q, serverFilter, SERVERS_Q } from '../queries/pqcReadiness'
 
 const SENS_LABEL: Record<Sensitivity, string> = {
   credential: 'credential', pci: 'pci', financial: 'financial', phi: 'phi', business: 'business', public: 'public',
@@ -105,14 +88,14 @@ export function PqcReadiness() {
   )
   const capable = servers.filter((s) => s.pqc > 0).sort((a, b) => b.pqc / b.sessions - a.pqc / a.sessions)
 
-  const drill = (filter: string) => searchUiUrl(q(`${filter} | limit 200`), range.earliest)
+  const drill = (filter: string) => searchUiUrl(drillQuery(filter), range.earliest)
 
   const worklistRow = (s: ServerRow) => {
     const pct = s.sessions ? (s.pqc / s.sessions) * 100 : 0
     return (
       <li key={s.sni} className={`pqc-row pqc-row-${s.pqc > 0 ? 'ok' : 'bad'}`}>
         <span className="pqc-svc">
-          <a href={drill(`ssl_server_name="${s.sni}"`)} target="_blank" rel="noopener noreferrer" className="pqc-sni">{s.sni} ↗</a>
+          <a href={drill(serverFilter(s.sni))} target="_blank" rel="noopener noreferrer" className="pqc-sni">{s.sni} ↗</a>
           <span className="pqc-issuer">{s.issuer}</span>
         </span>
         <span className="pqc-num">{fmtCount(s.sessions)}</span>
@@ -146,7 +129,7 @@ export function PqcReadiness() {
           info="Share of TLS sessions negotiating TLS 1.3 (ssl_server_supported_version=772). PQC key exchange requires TLS 1.3." query={SERVERS_Q} />
         <KpiTile label="PQC key exchange offered" value={serversQ.loading ? '…' : fmtPct(totals.pqcPct, 1)} accent="warning"
           sub={`${fmtCount(totals.pqc)} sessions offered hybrid ML-KEM`}
-          info="Share of TLS 1.3 sessions whose ClientHello offered a hybrid ML-KEM group (X25519Kyber768 / X25519MLKEM768). Offered, not necessarily negotiated." query={GROUPS_Q} />
+          info="Share of TLS 1.3 sessions whose ClientHello offered a hybrid ML-KEM group (X25519Kyber768 / X25519MLKEM768). Offered, not necessarily negotiated." query={SERVERS_Q} />
         <KpiTile label="Harvest-now exposure" value={serversQ.loading ? '…' : fmtCount(totals.harvest)} accent="danger"
           sub="classical → sensitive destinations"
           info="Classical (non-PQC) sessions reaching a sensitivity-tagged destination (credential / pci / financial / phi). Recordable today, decryptable once a quantum computer exists. Sensitivity is a heuristic on the SNI." query={SERVERS_Q} />

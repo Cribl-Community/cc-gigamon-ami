@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
+import { VOLUME_QUERY, METRICS_QUERY, LAKE_TOTAL_QUERY } from '../queries/dataFlow'
 import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
 import { PanelInfo } from '../components/PanelInfo'
-import { DopDiagram, type DopNode, type HopId, type HopState, type SlotId } from '../components/DopDiagram'
+import { DopDiagram, type DopNode, type HopId, type HopState, type InfoKey, type SlotId } from '../components/DopDiagram'
 import { toNum, fmtCount, fmtBytes, windowSeconds } from '../lib/format'
 
 /** Volume figures for the current window, shared by every stage. */
@@ -29,37 +29,6 @@ interface Volume {
   /** False when the retention query returned no row — not the same as zero. */
   lakeTotalKnown: boolean
 }
-
-/**
- * Real Cribl component telemetry, scoped to THIS data path.
- *
- * cribl_metrics carries the same counter at several aggregation levels, so the
- * namespace/dimension filters matter: without `namespace=="data_insights"` plus
- * the id/from_input/output dimension you double-count (total.in_events with a
- * null namespace reports 2x). Verified against this workspace.
- */
-const METRICS_QUERY =
-  'dataset="cribl_metrics" | summarize ' +
-  'src_events=sum(iif(metric=="pipe.in_events" and namespace=="data_insights" and from_input=="datagen:in_gigamon_datagen", value, 0)), ' +
-  'pipe_events=sum(iif(metric=="pipe.out_events" and namespace=="data_insights" and id=="gigamon_ami", value, 0)), ' +
-  'dst_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
-  'dst_bytes=sum(iif(metric=="total.out_bytes" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
-  'blocked=sum(iif(metric=="blocked.outputs", value, 0)), ' +
-  'backpressure=sum(iif(metric=="backpressure.outputs", value, 0))'
-
-/**
- * What is actually held in the Lake dataset, independent of the page's range —
- * a storage stage should report what it stores, not just the window's inflow.
- *
- * Summing the write counters over the retention period is ~4x faster than
- * counting the dataset directly (17s vs 64s) and agrees within 0.3%
- * (18.24M vs 18.30M). They match only because nothing has aged out yet; once
- * data exceeds 30 days this becomes "written", not "retained".
- */
-const LAKE_TOTAL_QUERY =
-  'dataset="cribl_metrics" | summarize ' +
-  'total_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
-  'total_bytes=sum(iif(metric=="total.out_bytes" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0))'
 
 interface StageLink {
   href: string
@@ -214,6 +183,28 @@ function buildNodes(v: Volume): Record<SlotId, DopNode> {
 }
 
 /**
+ * An ⓘ per node, so "what is this stage and where does it live in Cribl" is one
+ * click away on the diagram itself rather than only on the selected stage below.
+ * Destinations and Cribl Lake are two halves of the same stage, so they share one.
+ */
+function stageInfo(): Partial<Record<InfoKey, ReactNode>> {
+  const of = (id: string) => {
+    const s = STAGES.find((x) => x.id === id)!
+    return <PanelInfo about={s.purpose} aboutHeading="What this stage does" links={s.links} />
+  }
+  return {
+    gigasmart: of('gigasmart'),
+    amx: of('amx'),
+    sources: of('datagen'),
+    stream: of('pipeline'),
+    destinations: of('lake'),
+    lake: of('lake'),
+    search: of('search'),
+    app: of('app'),
+  }
+}
+
+/**
  * State of each connector, so a break shows up on the hop that actually broke
  * rather than dimming the whole diagram.
  */
@@ -235,7 +226,7 @@ export function DataFlow() {
   const [sel, setSel] = useState<string>('datagen')
   const { range, setRange } = useDashboard()
   // Record-derived volume (what the AMI data itself says).
-  const agg = useSearch(q('| summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)'))
+  const agg = useSearch(VOLUME_QUERY)
   // Cribl's own component telemetry for the Cribl stages.
   const met = useSearch(METRICS_QUERY)
   // Lake total is deliberately pinned to the retention period, NOT the page
@@ -310,6 +301,7 @@ export function DataFlow() {
         selected={sel}
         onSelect={setSel}
         loading={loading}
+        info={stageInfo()}
       />
 
       <section className="panel">

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
+import { PIVOTS, pivotFor, buildKpiQuery, buildTalkersQuery, buildAppmixQuery, buildL4Query, type Pivot } from '../queries/capacityTopTalkers'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
@@ -9,13 +9,6 @@ import { BarList, type BarItem } from '../components/BarList'
 import { Donut } from '../components/Donut'
 import { InfoTip } from '../components/InfoTip'
 import { toNum, str, fmtBytes, fmtCount, fmtMs, windowSeconds } from '../lib/format'
-
-const PIVOTS = [
-  { key: 'src_ip', field: 'src_ip', label: 'Source IP', ph: 'e.g. 10.0.0.168', noun: 'talkers' },
-  { key: 'app_name', field: 'app_name', label: 'App', ph: 'e.g. https / dns / openai', noun: 'apps' },
-  { key: 'dst_aws_flat_tags_name', field: 'dst_aws_flat_tags_name', label: 'AWS service', ph: 'e.g. Postgres_Sql_GEM', noun: 'services' },
-] as const
-type Pivot = (typeof PIVOTS)[number]['key']
 
 const LINK_SPEEDS = [1, 10, 100]
 const MIX_COLORS = ['#4dabf7', '#38d9a9', '#ffa94d', '#b197fc', '#ff6b9d', '#63e6be', '#ffd43b', '#74c0fc']
@@ -28,19 +21,18 @@ export function CapacityTopTalkers() {
   const [linkGbps, setLinkGbps] = useState(100)
   const [customGbps, setCustomGbps] = useState('')
 
-  const p = PIVOTS.find((x) => x.key === pivot)!
-  const scope = applied ? `${p.field}="*${applied}*" ` : ''
+  const p = pivotFor(pivot)
   const winSec = windowSeconds(range.earliest)
   const linkBits = linkGbps * 1e9 * winSec
   const pctOfLink = (bytes: number) => (linkBits > 0 ? (bytes * 8 * 100) / linkBits : 0)
 
-  const kpiQuery = q(`${scope}| summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)`)
+  const kpiQuery = buildKpiQuery(pivot, applied)
   const kpis = useSearch(kpiQuery, { deps: [applied, pivot] })
-  const talkersQuery = q(`${scope}${p.field}=* | summarize bytes=sum(total_bytes) by ${p.field} | sort by bytes desc | limit 12`)
+  const talkersQuery = buildTalkersQuery(pivot, applied)
   const talkers = useSearch(talkersQuery, { deps: [pivot, applied] })
-  const appmixQuery = q(`${scope}| summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8`)
+  const appmixQuery = buildAppmixQuery(pivot, applied)
   const appmix = useSearch(appmixQuery, { deps: [applied] })
-  const l4Query = q(`${scope}| summarize bytes=sum(total_bytes) by l4_proto | sort by bytes desc`)
+  const l4Query = buildL4Query(pivot, applied)
   const l4 = useSearch(l4Query, { deps: [applied] })
 
   const k = kpis.rows[0] ?? {}

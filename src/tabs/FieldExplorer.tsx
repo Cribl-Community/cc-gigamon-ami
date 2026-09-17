@@ -1,38 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { runFieldSummaries, runSearch, q, type FieldSummary } from '../cribl/search'
+import { runFieldSummaries, runSearch, SearchTimeLimitError, type FieldSummary } from '../cribl/search'
+import { useCostSlot } from '../cribl/jobCost'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { fmtCount } from '../lib/format'
 import { AMI_CATALOG, AMI_FAMILIES, AMI_USE_CASES, type AmiField } from '../data/amiFields'
+import { CHECK_FIELDS, familyOf, FEED_SAMPLE_QUERY, PRESENCE_QUERY, sectionQuery } from '../queries/fieldExplorer'
 
 const CATALOG_BY_NAME = new Map(AMI_CATALOG.map((f) => [f.name, f]))
 
-// Presence is checked with count(field) over the WHOLE window (accurate for
-// rare fields like ssl_issuer that a sampled field-summaries would miss).
-const CHECK_FIELDS = Array.from(
-  new Set([...AMI_CATALOG.map((f) => f.name), ...AMI_CATALOG.map((f) => f.derivedField).filter((x): x is string => !!x)]),
-)
-const PRESENCE_QUERY = q('| summarize ' + CHECK_FIELDS.map((n, i) => `c${i}=count(${n})`).join(', '))
-
-// The readable presence query behind a section (family / use case) — one
-// count(field) per field. Powers the ⓘ "open in Cribl Search" for the section.
-const sectionQuery = (fields: string[]) => q('| summarize ' + fields.map((n) => `${n}=count(${n})`).join(', '))
-
 const FAMILY_ORDER = ['Core / 5-tuple', 'DNS', 'SNMP', 'SSL / TLS', 'HTTP', 'TCP / UDP', 'AWS enrichment', 'Other protocols']
 
-function familyOf(name: string): string {
-  if (name.startsWith('src_aws') || name.startsWith('dst_aws') || name.endsWith('workload_platform')) return 'AWS enrichment'
-  if (name.startsWith('dns_')) return 'DNS'
-  if (name.startsWith('snmp_')) return 'SNMP'
-  if (name.startsWith('ssl_')) return 'SSL / TLS'
-  if (name.startsWith('http_') || name.startsWith('http2_')) return 'HTTP'
-  if (name.startsWith('tcp_') || name.startsWith('udp_')) return 'TCP / UDP'
-  if (/^(ssh|rtp|rtcp|dhcp|icmp|ntp|krb5|dcerpc|ftp|sip|gtp|whatsapp|upnp)_/.test(name)) return 'Other protocols'
-  return 'Core / 5-tuple'
-}
+/** The error heading for a search stopped by its time limit; null for any other failure. */
+const stoppedTitle = (e: unknown) => (e instanceof SearchTimeLimitError ? 'Search stopped' : null)
 
 type Status = 'present' | 'derived' | 'missing'
 function statusOf(f: AmiField, count: Record<string, number>): Status {
@@ -43,11 +26,11 @@ function statusOf(f: AmiField, count: Record<string, number>): Status {
 
 export function FieldExplorer() {
   const { range, refreshNonce } = useDashboard()
-  const [state, setState] = useState<{ loading: boolean; error: string | null; fields: FieldSummary[]; sampled: number }>({
-    loading: true, error: null, fields: [], sampled: 0,
+  const [state, setState] = useState<{ loading: boolean; error: string | null; errorTitle: string | null; fields: FieldSummary[]; sampled: number }>({
+    loading: true, error: null, errorTitle: null, fields: [], sampled: 0,
   })
-  const [presence, setPresence] = useState<{ loading: boolean; error: string | null; count: Record<string, number> }>({
-    loading: true, error: null, count: {},
+  const [presence, setPresence] = useState<{ loading: boolean; error: string | null; errorTitle: string | null; count: Record<string, number> }>({
+    loading: true, error: null, errorTitle: null, count: {},
   })
   // View is URL-driven (?view=coverage|usecase|feed) so the guided tour — and
   // any shared link — can land directly on a specific view.
@@ -67,37 +50,41 @@ export function FieldExplorer() {
   // Local nonce for per-panel refresh (this tab uses runSearch directly, not useSearch).
   const [nonce, setNonce] = useState(0)
   const refresh = () => setNonce((n) => n + 1)
+  // Both searches follow the global range and refresh, so both count toward
+  // what an auto-refresh tick costs on this tab.
+  const summariesCost = useCostSlot(true)
+  const presenceCost = useCostSlot(true)
 
   // Field-summaries (fill / cardinality / top values) for the "In feed" browser.
   useEffect(() => {
     const ctrl = new AbortController()
-    setState((s) => ({ ...s, loading: true, error: null }))
-    runFieldSummaries(q('| limit 5000'), { earliest: range.earliest, signal: ctrl.signal })
-      .then((res) => setState({ loading: false, error: null, fields: res.fields, sampled: res.sampled }))
+    setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
+    runFieldSummaries(FEED_SAMPLE_QUERY, { earliest: range.earliest, signal: ctrl.signal, costSlot: summariesCost })
+      .then((res) => setState({ loading: false, error: null, errorTitle: null, fields: res.fields, sampled: res.sampled }))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
-        setState((s) => ({ ...s, loading: false, error: (e as Error).message }))
+        setState((s) => ({ ...s, loading: false, error: (e as Error).message, errorTitle: stoppedTitle(e) }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce])
+  }, [range.earliest, refreshNonce, nonce, summariesCost])
 
   // Whole-window presence counts for the AMI coverage view (accurate for rare fields).
   useEffect(() => {
     const ctrl = new AbortController()
-    setPresence((s) => ({ ...s, loading: true, error: null }))
-    runSearch(PRESENCE_QUERY, { earliest: range.earliest, signal: ctrl.signal })
+    setPresence((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
+    runSearch(PRESENCE_QUERY, { earliest: range.earliest, signal: ctrl.signal, costSlot: presenceCost })
       .then((res) => {
         const row = (res.rows[0] ?? {}) as Record<string, unknown>
         const count: Record<string, number> = {}
         CHECK_FIELDS.forEach((n, i) => { count[n] = Number(row[`c${i}`]) || 0 })
-        setPresence({ loading: false, error: null, count })
+        setPresence({ loading: false, error: null, errorTitle: null, count })
       })
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
-        setPresence((s) => ({ ...s, loading: false, error: (e as Error).message }))
+        setPresence((s) => ({ ...s, loading: false, error: (e as Error).message, errorTitle: stoppedTitle(e) }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce])
+  }, [range.earliest, refreshNonce, nonce, presenceCost])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {
@@ -141,7 +128,7 @@ export function FieldExplorer() {
       </div>
 
       {view === 'coverage' ? (
-        <QueryBoundary state={{ loading: presence.loading, error: presence.error, rows: CHECK_FIELDS }} emptyLabel="No data in this window">
+        <QueryBoundary state={{ loading: presence.loading, error: presence.error, errorTitle: presence.errorTitle, rows: CHECK_FIELDS }} emptyLabel="No data in this window">
           <div className="kpi-row kpi-row-3">
             <KpiTile label="Present" value={String(coverage.present)} accent="success"
               sub={`of ${AMI_CATALOG.length} key AMI fields`} info="Documented AMI fields found in this feed by their canonical name." />
@@ -183,7 +170,7 @@ export function FieldExplorer() {
           </p>
         </QueryBoundary>
       ) : view === 'usecase' ? (
-        <QueryBoundary state={{ loading: presence.loading, error: presence.error, rows: CHECK_FIELDS }} emptyLabel="No data in this window">
+        <QueryBoundary state={{ loading: presence.loading, error: presence.error, errorTitle: presence.errorTitle, rows: CHECK_FIELDS }} emptyLabel="No data in this window">
           <p className="uc-lead">
             Each use case lists the AMI fields it draws on and whether this feed carries them —
             the core analytics first, then supporting cuts.
@@ -233,8 +220,8 @@ export function FieldExplorer() {
               ))}
             </div>
           </div>
-          <Panel onRefresh={refresh} refreshing={state.loading} title="Fields" info="The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values." query={q('| limit 5000')} note={`${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`}>
-            <QueryBoundary state={{ loading: state.loading, error: state.error, rows: state.fields }} emptyLabel="No fields in this window">
+          <Panel onRefresh={refresh} refreshing={state.loading} title="Fields" info="The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values." query={FEED_SAMPLE_QUERY} note={`${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`}>
+            <QueryBoundary state={{ loading: state.loading, error: state.error, errorTitle: state.errorTitle, rows: state.fields }} emptyLabel="No fields in this window">
               <ul className="fe-list">
                 {visible.map((f) => {
                   const isOpen = open === f.name

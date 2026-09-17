@@ -44,6 +44,17 @@ export function fmtPct(v: unknown, digits = 1): string {
   return `${toNum(v).toFixed(digits)}%`
 }
 
+/**
+ * A cost in credits as operator copy: always hedged, never more precise than
+ * the estimate behind it. `formatCost(12.7, 'credits/hour')` → "about 13
+ * credits/hour"; anything below 0.1 → "under 0.1 credits/hour".
+ */
+export function formatCost(credits: number, unit = 'credits'): string {
+  if (!Number.isFinite(credits) || credits < 0.1) return `under 0.1 ${unit}`
+  const n = credits < 10 ? credits.toFixed(1) : Math.round(credits).toLocaleString('en-US')
+  return `about ${n} ${unit}`
+}
+
 /** Get a string field from a row, with a fallback. */
 export function str(row: Record<string, unknown>, key: string, fallback = ''): string {
   const v = row[key]

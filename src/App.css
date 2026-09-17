@@ -109,6 +109,11 @@ body {
 .version-chip { font-size: 11px; font-family: var(--gm-mono); color: var(--gm-fg-subtle); padding: 1px 7px; border: 1px solid var(--gm-border); border-radius: token('radius.full'); }
 
 .app-controls { display: flex; align-items: center; gap: 10px; padding-top: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.auto-refresh { display: inline-flex; align-items: center; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .range-label { color: var(--gm-fg-subtle); font-size: 13px; }
 .last-updated { color: var(--gm-fg-subtle); font-size: 12px; font-variant-numeric: tabular-nums; }
 .refresh-ic { display: inline-flex; }
@@ -1156,8 +1161,27 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   overflow-x: auto;
 }
 /* Floor the scale so the composition stays legible, and let the canvas scroll
-   rather than crushing 1580 units of diagram into a narrow window. */
-.dop-svg { display: block; width: 100%; min-width: 1120px; height: auto; }
+   rather than crushing the diagram into a narrow window. The stage carries the
+   floor so the ⓘ overlay and the SVG share one box. */
+.dop-stage { position: relative; min-width: 1120px; }
+.dop-svg { display: block; width: 100%; height: auto; }
+
+/* ⓘ overlay. Anchored in percentages of the viewBox so the icons track the
+   artwork at any scale, but rendered as normal HTML at a fixed size — inside a
+   foreignObject they would scale with the diagram and their fixed-position
+   popovers would mis-place. */
+.dop-info-layer { position: absolute; inset: 0; pointer-events: none; }
+/* Centred with negative margins, never `transform`: a transformed ancestor
+   becomes the containing block for `position: fixed`, which would resolve
+   PanelInfo's popover against this 17px span instead of the viewport. */
+.dop-info-anchor { position: absolute; margin: -9px 0 0 -9px; pointer-events: auto; line-height: 0; }
+.dop-info-anchor .pinfo { margin-left: 0; }
+.dop-info-dark .pinfo-btn { color: var(--cribl-ink-sub); }
+.dop-info-dark .pinfo-btn:hover, .dop-info-dark .pinfo-btn-on { color: #fff; }
+.dop-info-light .pinfo-btn { color: #5a636e; }
+.dop-info-light .pinfo-btn:hover, .dop-info-light .pinfo-btn-on { color: #1d2430; }
+.dop-info-canvas .pinfo-btn { color: var(--dop-ink-sub); }
+.dop-info-canvas .pinfo-btn:hover, .dop-info-canvas .pinfo-btn-on { color: var(--dop-ink); }
 
 /* --- left rail --- */
 .dop-origin-icon { color: var(--dop-ink-sub); }

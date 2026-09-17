@@ -1,30 +1,16 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { str, toNum, fmtCount } from '../lib/format'
-import { PQC_GROUP_CODES } from '../data/pqc'
+import { SERVERS, PQC_BY_SERVER, serverDrill } from '../queries/tlsPosture'
 
 const WEAK = new Set(['TLS_1_0', 'TLS_1_1', 'SSL_3_0', 'SSL_2_0'])
 const KNOWN_CA = ['digicert', 'let', 'globalsign', 'sectigo', 'comodo', 'geotrust', 'amazon', 'google trust',
   'gts', 'entrust', 'isrg', 'cloudflare', 'baltimore', 'microsoft', 'apple', 'godaddy', 'thawte', 'rapidssl']
-
-const PQC_IN = `(${PQC_GROUP_CODES.map((c) => `"${c}"`).join(', ')})`
-
-const SERVERS = q(
-  'ssl_server_name=* | summarize flows=count(), ver=max(ssl_protocol_version), ' +
-    'issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), cn=max(ssl_common_name) ' +
-    'by ssl_server_name | sort by flows desc | limit 60',
-)
-
-// PQC capability is a separate, cheap query — it only touches the sparse set of
-// records that offered a hybrid ML-KEM group, so it stays fast. Folding it into
-// the SERVERS query (5 max() aggregations) timed the search out.
-const PQC_BY_SERVER = q(`ssl_ext_ec_supported_groups_type in ${PQC_IN} | summarize pqc=count() by ssl_server_name | limit 200`)
 
 interface Posture { badge: string; accent: 'success' | 'warning' | 'danger'; daysLeft: number | null }
 
@@ -61,8 +47,7 @@ export function TlsPosture() {
   const pqcMap = new Map(pqcServers.rows.map((r) => [str(r, 'ssl_server_name'), toNum(r.pqc)]))
 
   const drillServer = (server: string) => {
-    const dq = q(`ssl_server_name="${server}" | summarize flows=count(), ver=max(ssl_protocol_version), issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), notbefore=max(ssl_validity_not_before), subject=max(ssl_common_name), cipher=max(ssl_cipher_suite_id) by ssl_server_name`)
-    window.open(searchUiUrl(dq, range.earliest), '_blank', 'noopener')
+    window.open(searchUiUrl(serverDrill(server), range.earliest), '_blank', 'noopener')
   }
 
   const assessed = servers.rows.map((r) => {
@@ -99,9 +84,9 @@ export function TlsPosture() {
         <KpiTile label="Weak protocol" value={servers.loading ? '…' : String(weakCount)}
           accent={weakCount > 0 ? 'danger' : 'success'} sub={`TLS < 1.2 · ${withCert} rows have full certs`}
           info="Servers negotiating TLS 1.1/1.0 or SSL — deprecated and insecure." query={SERVERS} />
-        <KpiTile label="Classical KEX (quantum-unsafe)" value={servers.loading ? '…' : String(classicalKex)}
+        <KpiTile label="Classical KEX (quantum-unsafe)" value={servers.loading || pqcServers.loading ? '…' : String(classicalKex)}
           accent={classicalKex > 0 ? 'warning' : 'success'} sub="no hybrid ML-KEM offered"
-          info="Servers whose sessions only ever offered classical key exchange (x25519 / secp256r1) — vulnerable to harvest-now-decrypt-later. See the PQC Readiness tab for the full migration view." query={SERVERS} />
+          info="Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab." query={PQC_BY_SERVER} />
       </div>
 
       <Panel tourId="tls-servers" title="Servers" info="Each row: server name, issuer (when a cert chain is present), negotiated TLS version, days to expiry, a posture badge, and a key-exchange tag (PQC = offered hybrid ML-KEM; classical = quantum-vulnerable). CA trust is checked against a list of well-known public CAs; anything else is flagged Unknown CA / Self-signed." query={SERVERS} onRefresh={() => { servers.refetch(); pqcServers.refetch() }} refreshing={servers.loading || pqcServers.loading} note={`${shown.length} of ${assessed.length} shown · worst first`}>

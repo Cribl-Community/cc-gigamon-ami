@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { runSearch, type Row } from './search'
+import { runSearch, SearchTimeLimitError, type Row } from './search'
+import { useCostSlot } from './jobCost'
 import { useDashboard } from '../app/DashboardContext'
 
 export interface UseSearchState {
@@ -7,6 +8,8 @@ export interface UseSearchState {
   totalEventCount: number
   loading: boolean
   error: string | null
+  /** Heading for the error when its cause is known (a time-limit stop), else null. */
+  errorTitle: string | null
   /** Milliseconds the last successful query took. */
   elapsedMs: number | null
   /** Re-run just this query (per-panel refresh, no global page refresh). */
@@ -19,17 +22,26 @@ export interface UseSearchOptions {
   /** Extra dependencies that should re-trigger the query. */
   deps?: unknown[]
   limit?: number
-  /** Override the global time range's earliest bound. */
+  /** Pin the query to its own earliest bound instead of the global time range. */
   earliest?: string
 }
 
 /**
  * Run a Cribl Search query, re-running when the query text, the global time
- * range, the global refresh nonce, or any provided deps change.
+ * range, a refresh, or any provided deps change.
+ *
+ * A query pinned to its own `earliest` ignores the global range and
+ * auto-refresh ticks; only an explicit refresh re-runs it. Otherwise Data
+ * Flow's 30-day total — the most expensive query in the app — re-ran on every
+ * range change and every tick without its window changing.
  */
 export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearchState {
   const { enabled = true, deps = [], limit, earliest } = opts
-  const { range, refreshNonce } = useDashboard()
+  const { range, refreshNonce, manualRefreshNonce } = useDashboard()
+  const pinned = earliest !== undefined
+  const effectiveEarliest = earliest ?? range.earliest
+  const refreshKey = pinned ? manualRefreshNonce : refreshNonce
+  const costSlot = useCostSlot(enabled && !pinned)
   // Local nonce for per-panel refresh — bumping it re-runs only this hook.
   const [localNonce, setLocalNonce] = useState(0)
   const refetch = useCallback(() => setLocalNonce((n) => n + 1), [])
@@ -38,6 +50,7 @@ export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearch
     totalEventCount: 0,
     loading: enabled,
     error: null,
+    errorTitle: null,
     elapsedMs: null,
   })
   const reqId = useRef(0)
@@ -49,9 +62,9 @@ export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearch
     }
     const controller = new AbortController()
     const myReq = ++reqId.current
-    setState((s) => ({ ...s, loading: true, error: null }))
+    setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     const t0 = performance.now()
-    runSearch(query, { earliest: earliest ?? range.earliest, limit, signal: controller.signal })
+    runSearch(query, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot })
       .then((res) => {
         if (myReq !== reqId.current) return
         setState({
@@ -59,16 +72,22 @@ export function useSearch(query: string, opts: UseSearchOptions = {}): UseSearch
           totalEventCount: res.totalEventCount,
           loading: false,
           error: null,
+          errorTitle: null,
           elapsedMs: Math.round(performance.now() - t0),
         })
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted || myReq !== reqId.current) return
-        setState((s) => ({ ...s, loading: false, error: (err as Error).message }))
+        setState((s) => ({
+          ...s,
+          loading: false,
+          error: (err as Error).message,
+          errorTitle: err instanceof SearchTimeLimitError ? 'Search stopped' : null,
+        }))
       })
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, enabled, range.earliest, refreshNonce, localNonce, earliest, limit, ...deps])
+  }, [query, enabled, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }

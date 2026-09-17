@@ -11,16 +11,19 @@ import { join, dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
-/** @param {string} cwd */
-export async function runNpmBuild(cwd) {
+/**
+ * @param {string} cwd
+ * @param {string} script - an npm script name, e.g. 'build' or 'test'
+ */
+export async function runNpmScript(cwd, script) {
   return new Promise((resolve, reject) => {
     // Windows: the npm shim is npm.cmd, and Node >= 20 refuses to spawn a .cmd
     // without a shell (EINVAL). Pass the command as one shell string rather than
     // argv — `shell: true` plus an args array triggers Node's DEP0190 warning.
     const isWin = process.platform === 'win32';
     const child = isWin
-      ? spawn('npm run build', { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
-      : spawn('npm', ['run', 'build'], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      ? spawn(`npm run ${script}`, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
+      : spawn('npm', ['run', script], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout?.setEncoding('utf8');
@@ -37,9 +40,14 @@ export async function runNpmBuild(cwd) {
         resolve({ stdout, stderr });
         return;
       }
-      reject(new Error(stderr || stdout || `npm run build exited with code ${code}`));
+      reject(new Error(stderr || stdout || `npm run ${script} exited with code ${code}`));
     });
   });
+}
+
+/** @param {string} cwd */
+export async function runNpmBuild(cwd) {
+  return runNpmScript(cwd, 'build');
 }
 
 let packageInProgress = false;
