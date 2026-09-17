@@ -46,6 +46,30 @@ export interface GatedControlProps {
   /** Performs the write. Expected to report its own outcome; the gate only cares
    *  whether the platform refused something while it ran. */
   run: () => Promise<unknown>
+  /**
+   * A requirement the person has not met YET, stated somewhere on screen —
+   * `<ConfirmDialog>`'s type-to-confirm field is the only caller. Distinct from
+   * `unavailable`, which is the caller saying "not now" about its own state, and
+   * the difference is the HTML: `unavailable` takes the button out of the
+   * keyboard order, and this one must not.
+   *
+   * A `disabled` button is not reachable by keyboard and is not announced, so
+   * somebody using a screen reader tabs to the end of the dialog, finds nothing
+   * after Cancel, and never learns that a button exists or why it will not fire.
+   * `aria-disabled` keeps it reachable, says it is unavailable, and `describedBy`
+   * points at the sentence that says what to do about it; `onActivate` runs when
+   * they press it anyway, which is where the focus moves to the thing they have
+   * to satisfy first.
+   */
+  blockedUntil?: SoftBlock | null
+}
+
+/** @see GatedControlProps.blockedUntil */
+export interface SoftBlock {
+  /** The id of the on-screen element stating what has to happen first. */
+  describedBy: string
+  /** What to do when somebody activates the control regardless. */
+  onActivate: () => void
 }
 
 export function GatedControl({
@@ -55,6 +79,7 @@ export function GatedControl({
   className = 'gs-btn gs-btn-primary',
   unavailable = null,
   run,
+  blockedUntil = null,
 }: GatedControlProps) {
   const gate = useWriteGate(write)
   const [running, setRunning] = useState(false)
@@ -85,8 +110,15 @@ export function GatedControl({
         type="button"
         className={className}
         disabled={running || blocked !== null}
+        // Reachable, announced as unavailable, and pointed at the sentence that
+        // says why — never `disabled`. See `blockedUntil` above.
+        aria-disabled={blockedUntil ? true : undefined}
+        aria-describedby={blockedUntil?.describedBy}
         title={blocked ?? undefined}
-        onClick={() => void attempt()}
+        onClick={() => {
+          if (blockedUntil) { blockedUntil.onActivate(); return }
+          void attempt()
+        }}
       >
         {running ? (busyLabel ?? label) : label}
       </button>

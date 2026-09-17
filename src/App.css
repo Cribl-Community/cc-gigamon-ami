@@ -1196,13 +1196,31 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-action-note { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); margin: 0; line-height: 1.45; }
 .gs-action-note code { font-family: var(--gm-mono); }
 .gs-action-warn { color: var(--gm-st-warning); }
-.gs-confirm { display: flex; flex-direction: column; gap: var(--gm-sp-8); font-size: var(--gm-fs-12); color: var(--gm-fg); padding: var(--gm-sp-10); border: 1px solid var(--gm-st-danger); border-radius: token('radius.md'); }
-.gs-confirm > div { display: flex; gap: var(--gm-sp-8); }
-/* The list of objects a confirmation names. Inherits the confirmation's own
-   type size, so the things about to change do not read as small print. */
-.gs-confirm-list { margin: 0; padding-left: var(--gm-sp-18); display: flex; flex-direction: column; gap: var(--gm-sp-4); }
-.gs-confirm-list li { line-height: 1.45; }
-.gs-confirm code { font-family: var(--gm-mono); }
+/* ConfirmDialog (components/ConfirmDialog.tsx). One family in, one family out:
+   `.gs-confirm*` drew the box, the border and the button row of the inline
+   confirmation this replaces, and Capra's Modal now draws all three — so what is
+   left here is only the body's own type and rhythm. Everything sits on
+   color.background.panel.solid, which is Capra's modal surface and is also this
+   app's `--gm-panel-2`; src/app/contrast.test.ts measures the three inks below
+   and the four action pills against it. */
+.cdlg { display: flex; flex-direction: column; gap: var(--gm-sp-12); font-size: var(--gm-fs-13); line-height: 1.5; color: var(--gm-fg); }
+.cdlg p { margin: 0; max-width: 68ch; }
+.cdlg code { font-family: var(--gm-mono); }
+/* The irreversibility line. Colour is the second signal here, never the first —
+   the sentence opens with the words "This cannot be undone." */
+.cdlg-warn { color: var(--gm-st-danger); }
+.cdlg-head { margin: 0; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.medium'); letter-spacing: 0.06em; text-transform: uppercase; color: var(--gm-fg-subtle); }
+.cdlg-res { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.cdlg-res-row { display: flex; align-items: flex-start; gap: var(--gm-sp-10); }
+.cdlg-res-text { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
+.cdlg-res-detail { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+.cdlg-undo { color: var(--gm-fg-subtle); }
+/* The type-to-confirm field sits OUTSIDE .cdlg, and therefore outside the
+   dialog's aria-describedby: it is a labelled control that announces itself on
+   focus, and repeating it in the description would make the thing read on open
+   longer without saying anything new. */
+.cdlg-ttc { display: flex; flex-direction: column; gap: var(--gm-sp-8); margin-top: var(--gm-sp-16); padding-top: var(--gm-sp-12); border-top: 1px solid var(--gm-border); }
+.cdlg-req { margin: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
 
 /* GatedControl (components/GatedControl.tsx). The wrapper carries no look of its
    own — a gated button has to be indistinguishable from the plain one it

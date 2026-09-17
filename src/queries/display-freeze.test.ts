@@ -272,6 +272,14 @@ describe('frozen display queries', () => {
   // Deliberately separate from the contents check: a surface that quietly
   // disappears leaves the surviving entries identical, so a contents-only
   // comparison would diff clean on a tile that no longer tells anyone anything.
+  // The timeout is not decoration and is not a slow assertion. This is the first
+  // test to call fresh(), so it pays for re-extracting the whole of src/ — about
+  // 2.5s on its own, against vitest's 5s default. Slice 1.7 added a 21st test
+  // file, the extra worker contended for the same cores, and this crossed the
+  // line in roughly one full-suite run in three while passing every time in
+  // isolation. A gate that fails a third of the time stops being read. Raising
+  // it here rather than globally keeps the 5s default on everything else, where
+  // a test that takes five seconds really is a hung one.
   it('still has exactly as many surfaces, call sites, deep links and briefs', () => {
     const before = tally(frozen)
     const after = tally(fresh())
@@ -281,7 +289,7 @@ describe('frozen display queries', () => {
     expect(moved, `The number of customer-visible queries changed.\n  ${moved.join('\n  ')}\n${RERUN}`).toEqual([])
     // The recorded totals are part of the committed file, so they must agree too.
     expect(frozen.counts, 'display.json\'s recorded counts disagree with its own entries.').toEqual(before)
-  })
+  }, 30_000)
 
   it('points every surface at the same query, reading the same number, described the same way', () => {
     const before = rows(frozen)

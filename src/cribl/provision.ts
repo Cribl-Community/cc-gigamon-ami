@@ -19,8 +19,9 @@
 // Operations") requires an explicit confirmation naming exactly those objects
 // before any of it runs, and forbids reaching it from load, render or a timer.
 // Nothing here enforces that, because nothing here can tell a deliberate click
-// from an accidental one: the confirmation lives in tabs/GuidedSetup.tsx, in
-// front of `deployAll` and `removeSyslogStack`, which are the only two entry
+// from an accidental one: the confirmation lives in components/ProvisionPanel.tsx
+// (it moved out of tabs/GuidedSetup.tsx with the rest of the provisioning half),
+// in front of `deployAll` and `removeSyslogStack`, which are the only two entry
 // points that write anything. Every other export is a GET.
 //
 // Calls go through cribl/capi.ts, which is where the auth story lives: the

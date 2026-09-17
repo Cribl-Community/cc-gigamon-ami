@@ -308,6 +308,75 @@ const TABLE_PAIRS: Pair[] = [
 ]
 
 /**
+ * `<ConfirmDialog>` — the dialog in front of every write.
+ *
+ * It is measured separately from PILL_PAIRS above, on a surface no other row
+ * uses, and the reason is worth a sentence: Capra's Modal draws its panel on
+ * `color.background.panel.solid`, which is OPAQUE, where every other row in this
+ * file sits on `--gm-panel` — `color.background.surface`, which is translucent
+ * and therefore takes its real colour from the page beneath it. Same ink, two
+ * different grounds, two different ratios. The app already aliases that token as
+ * `--gm-panel-2`, so the modal surface is written the way App.css writes it; the
+ * scrim between the surface and the page is irrelevant because the surface above
+ * it is opaque.
+ *
+ * The four action words are the dialog's own colour decision and the one thing on
+ * it that a reader could mistake for decoration. They are `Pill variant="outline"`
+ * for the reason StatusPill.tsx documents at length — `bold` fails AA at pill
+ * sizes — and each is rendered as a WORD as well, which is what SC 1.4.1 asks and
+ * what ConfirmDialog.test.tsx asserts. This is the other half: that the word is
+ * legible. All four are listed even though Guided Setup renders three, because
+ * `deploy` is in the type and the first caller to use it should not have to
+ * re-derive whether it passes.
+ */
+const MODAL = ['var(--gm-panel-2)', PAGE]
+
+const DIALOG_PAIRS: Pair[] = [
+  {
+    what: 'ConfirmDialog: the body text of a confirmation',
+    fg: 'var(--gm-fg)',
+    bg: MODAL,
+    threshold: 4.5,
+    where: '.cdlg (13px) — the irreversibility line, the consequences, the object names',
+  },
+  {
+    what: 'ConfirmDialog: the secondary text of a confirmation',
+    fg: 'var(--gm-fg-subtle)',
+    bg: MODAL,
+    threshold: 4.5,
+    where: '.cdlg-head (11px uppercase), .cdlg-res-detail / .cdlg-undo / .cdlg-req (12px)',
+  },
+  {
+    what: 'ConfirmDialog: the action word "create"',
+    fg: "token('color.foreground.success.default')",
+    bg: MODAL,
+    threshold: 4.5,
+    where: '<Pill appearance="success" variant="outline"> in .cdlg-res-row',
+  },
+  {
+    what: 'ConfirmDialog: the action word "replace"',
+    fg: "token('color.foreground.warning.default')",
+    bg: MODAL,
+    threshold: 4.5,
+    where: '<Pill appearance="warning" variant="outline"> — the overwriting half of a deploy',
+  },
+  {
+    what: 'ConfirmDialog: the action word "deploy"',
+    fg: "token('color.foreground.info.default')",
+    bg: MODAL,
+    threshold: 4.5,
+    where: '<Pill appearance="info" variant="outline"> — in the type, no caller yet',
+  },
+  {
+    what: 'ConfirmDialog: the action word "delete"',
+    fg: "token('color.foreground.danger.default')",
+    bg: MODAL,
+    threshold: 4.5,
+    where: '<Pill appearance="danger" variant="outline"> — the three rows of the teardown',
+  },
+]
+
+/**
  * The table. A new pairing is one row.
  *
  * It is not — and is not trying to be — every colour pair in App.css: the file
@@ -381,6 +450,7 @@ const PAIRS: Pair[] = [
   ...PILL_PAIRS,
   ...BANNER_PAIRS,
   ...TABLE_PAIRS,
+  ...DIALOG_PAIRS,
 ]
 
 // ── Everything below is the machinery. The table above is the contract. ──────
