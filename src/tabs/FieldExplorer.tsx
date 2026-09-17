@@ -6,6 +6,7 @@ import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
+import { StatusPill } from '../components/StatusPill'
 import { fmtCount } from '../lib/format'
 import { AMI_CATALOG, AMI_FAMILIES, AMI_USE_CASES, type AmiField } from '../data/amiFields'
 import { CHECK_FIELDS, familyOf, FEED_SAMPLE_QUERY, PRESENCE_QUERY, sectionQuery } from '../queries/fieldExplorer'
@@ -149,7 +150,7 @@ export function FieldExplorer() {
                 <ul className="cov-list">
                   {rows.map(({ f, status }) => (
                     <li key={f.name} className={`cov-row cov-${status}`}>
-                      <span className={`cov-badge cov-badge-${status}`}>{status === 'present' ? 'present' : status === 'derived' ? 'derived' : 'missing'}</span>
+                      <StatusPill state={status} />
                       <span className="cov-name">{f.name}{f.requiresDecrypt && <span className="cov-lock" title="Requires decrypted traffic"> 🔒</span>}</span>
                       <span className="cov-desc">
                         {f.desc} <span className="cov-use">— {f.useCase}</span>
@@ -196,7 +197,7 @@ export function FieldExplorer() {
                 <ul className="cov-list">
                   {rows.map((r) => (
                     <li key={r.name} className={`cov-row cov-${r.status}`}>
-                      <span className={`cov-badge cov-badge-${r.status}`}>{r.status}</span>
+                      <StatusPill state={r.status} />
                       <span className="cov-name">{r.name}</span>
                       <span className="cov-desc">
                         {r.f?.desc ?? '—'}

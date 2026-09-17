@@ -20,27 +20,10 @@ export function TourLauncher() {
   )
 }
 
-/**
- * One-time nudge for first-time users. Never returns once a tour is run or
- * dismissed — and never appears at all until the stored preference says this
- * viewer has not seen it, so it does not flash for the people who already have.
- */
-export function TourNudge() {
-  const { offerNudge, persona, openPicker, markSeen } = useTour()
-  if (!offerNudge || persona) return null
-  return (
-    <div className="tour-nudge" role="note">
-      <span>
-        <strong>First time here?</strong> Take a 5-minute guided tour tailored to your role — NetOps, Security,
-        AI governance or Compliance.
-      </span>
-      <span className="tour-nudge-actions">
-        <button type="button" className="tour-btn tour-btn-primary" onClick={openPicker}>Choose a role</button>
-        <button type="button" className="tour-btn" onClick={markSeen}>Dismiss</button>
-      </span>
-    </div>
-  )
-}
+/* The one-time nudge for first-time users used to live here as `TourNudge`,
+   with its own `.tour-nudge` box. It is now one of the page-level banners
+   `AppBanners` draws — same three-state read of `offerNudge`, same two actions,
+   one banner treatment for the whole app. See components/AppBanners.tsx. */
 
 export function TourPicker() {
   const { pickerOpen, closePicker, start } = useTour()

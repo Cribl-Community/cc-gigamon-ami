@@ -5,12 +5,13 @@ import { APP_VERSION, IS_INSTALLED } from './cribl/config'
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from './app/theme'
 import { useInflight } from './cribl/inflight'
 import { CPU_SECONDS_PER_CREDIT, useMountedSearchCost } from './cribl/jobCost'
-import { formatCost } from './lib/format'
+import { formatCost, formatRecurringCost } from './lib/format'
 import { PanelInfo } from './components/PanelInfo'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { TopProgress } from './components/TopProgress'
 import { TourProvider } from './app/TourContext'
-import { TourLauncher, TourNudge, TourPicker, TourStrip } from './components/Tour'
+import { TourLauncher, TourPicker, TourStrip } from './components/Tour'
+import { AppBanners } from './components/AppBanners'
 import { Findings } from './tabs/Findings'
 import { Security } from './tabs/Security'
 import { WebApiHealth } from './tabs/WebApiHealth'
@@ -117,6 +118,12 @@ function useAutoRefreshCopy(tabName: string) {
   const measured = panels > 0
   const creditsPerHourAt = (seconds: number) => (cpuSeconds / CPU_SECONDS_PER_CREDIT) * (3600 / seconds)
 
+  // PER HOUR, and deliberately not the per-day-and-per-month pair that
+  // formatRecurringCost gives a standing charge. Auto-refresh only spends while
+  // a person is looking at this tab, so an hour is the longest span the figure
+  // is honest over — quoting a month would price a tab nobody leaves open
+  // overnight as if it were a scheduled search. The one figure below that IS
+  // extrapolated to a standing charge says so and uses the pair.
   const optionLabel = (a: (typeof AUTO_REFRESH)[number]) => {
     if (a.seconds === 0) return 'Auto: off'
     return measured ? `Auto: ${a.label} — ${formatCost(creditsPerHourAt(a.seconds), 'credits/hour')}` : `Auto: ${a.label}`
@@ -129,7 +136,8 @@ function useAutoRefreshCopy(tabName: string) {
     ? `Each refresh re-runs the ${plural(panels, 'panel', 'panels')} on ${tabName} that follow the time range: ` +
       `${Math.round(cpuSeconds).toLocaleString('en-US')} billable CPU-seconds at their last run, so every 1 minute costs ` +
       `${formatCost(creditsPerHourAt(60), 'credits/hour')}. ` +
-      `Faster intervals are not offered: at ${fastestOff} s this tab would cost ${formatCost(creditsPerHourAt(fastestOff) * 24, 'credits a day')}, ` +
+      `Faster intervals are not offered: left running at ${fastestOff} s this tab would cost ` +
+      `${formatRecurringCost(creditsPerHourAt(fastestOff) * 24)}, ` +
       'and this feed lands in minutes, so they would show nothing new.'
     : 'Faster intervals than 1 minute are not offered: every refresh re-runs each panel as a full Lake scan, ' +
       'and this feed lands in minutes. The cost of 1 minute appears here once this tab’s panels have run.'
@@ -208,7 +216,9 @@ export default function App() {
         <TopProgress />
         <Header tabName={tabName} />
         <TabBar />
-        <TourNudge />
+        {/* Below the tab bar and never sticky, so a banner can never stop
+            someone leaving the page it is complaining about. */}
+        <AppBanners />
         <main className="app-main">
           <ErrorBoundary resetKey={location.pathname}>
             <Routes>

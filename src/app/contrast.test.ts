@@ -96,6 +96,218 @@ const SURFACES: Array<[string, string[]]> = [
 const FOCUS_RING = "token('color.background.info.solid.default')"
 
 /**
+ * `<StatusPill>` — every appearance it can render, in both themes, on every
+ * surface it is actually drawn on. This is the table the component's design
+ * argument rests on, so it is written out rather than cross-produced: a pairing
+ * listed here is one the app paints.
+ *
+ * The pill is Capra's `Pill` at `variant="outline"`, which is transparent — so
+ * the ink sits directly on whatever is under the row, and these rows carry no
+ * pill background of their own. Capra draws a Pill at 12px normal weight, well
+ * under the 18.66px-bold / 24px that would earn the 3:1 large-text threshold, so
+ * every one of them owes 4.5:1.
+ *
+ * Two surfaces, because two lists tint the whole row when it is bad: `.find-row`
+ * gains `.find-critical` and `.cov-row` gains `.cov-missing`, both
+ * `background.danger.subtle`. Only a danger pill ever lands on those, which is
+ * why success and warning are measured on the plain panel alone.
+ */
+const PANEL = ['var(--gm-panel)', PAGE]
+const FLAGGED_ROW = ["token('color.background.danger.subtle')", 'var(--gm-panel)', PAGE]
+
+const PILL_PAIRS: Pair[] = [
+  {
+    what: 'StatusPill: success',
+    fg: "token('color.foreground.success.default')",
+    bg: PANEL,
+    threshold: 4.5,
+    where: '<StatusPill state="present">',
+  },
+  {
+    what: 'StatusPill: warning',
+    fg: "token('color.foreground.warning.default')",
+    bg: PANEL,
+    threshold: 4.5,
+    where: '<StatusPill> for skipped / unreadable / derived / high',
+  },
+  {
+    what: 'StatusPill: danger',
+    fg: "token('color.foreground.danger.default')",
+    bg: PANEL,
+    threshold: 4.5,
+    where: '<StatusPill> for failed / missing / critical',
+  },
+  {
+    what: 'StatusPill: danger, on a row already tinted danger',
+    fg: "token('color.foreground.danger.default')",
+    bg: FLAGGED_ROW,
+    threshold: 4.5,
+    where: '<StatusPill state="critical"> inside .find-critical, state="missing" inside .cov-missing',
+  },
+  {
+    what: 'StatusPill: info',
+    fg: "token('color.foreground.info.default')",
+    bg: PANEL,
+    threshold: 4.5,
+    where: '<StatusPill state="medium">',
+  },
+  {
+    what: 'StatusPill: default',
+    fg: "token('color.foreground.default')",
+    bg: PANEL,
+    threshold: 4.5,
+    where: '<StatusPill> for absent / checking / low',
+  },
+]
+
+/**
+ * The two variants `<StatusPill>` does NOT use, and the reason. Asserted as
+ * failures on purpose: they are Capra's own pairings, they are what the UX spec
+ * and Capra's default both reach for, and without a measurement here the next
+ * person to open StatusPill.tsx has only a comment telling them not to.
+ *
+ * `bold` is `foreground.<kind>.contrast` on `background.<kind>.solid.default` —
+ * a fixed white-on-solid in both themes. `muted` adds `background.<kind>.subtle`
+ * under the same ink the outline variant uses, and the tint costs the margin.
+ */
+const REJECTED: Array<{ what: string; fg: string; bg: string[]; themes?: Theme[] }> = [
+  {
+    what: 'a bold pill: white on the solid info fill',
+    fg: "token('color.foreground.info.contrast')",
+    bg: ["token('color.background.info.solid.default')", 'var(--gm-panel)', PAGE],
+  },
+  {
+    what: 'a bold pill: white on the solid success fill',
+    fg: "token('color.foreground.success.contrast')",
+    bg: ["token('color.background.success.solid.default')", 'var(--gm-panel)', PAGE],
+  },
+  {
+    what: 'a bold pill: white on the solid danger fill',
+    fg: "token('color.foreground.danger.contrast')",
+    bg: ["token('color.background.danger.solid.default')", 'var(--gm-panel)', PAGE],
+  },
+  {
+    what: 'a muted pill: info ink on the info tint',
+    fg: "token('color.foreground.info.default')",
+    bg: ["token('color.background.info.subtle')", 'var(--gm-panel)', PAGE],
+    themes: ['light'],
+  },
+  {
+    what: 'a muted pill: warning ink on the warning tint',
+    fg: "token('color.foreground.warning.default')",
+    bg: ["token('color.background.warning.subtle')", 'var(--gm-panel)', PAGE],
+    themes: ['light'],
+  },
+]
+
+/**
+ * `<AppBanners>` — the page-level banner slot, which is Capra's `Alert` at
+ * `layout="section"` and therefore Capra's colours rather than ours.
+ *
+ * It is measured here for one reason: the same package's `Pill` fails at these
+ * sizes, and the REJECTED table above is the proof. The Alert does not, and it
+ * is worth knowing why rather than being lucky — it puts `foreground.default`
+ * on a `subtle` tint, which is ordinary body ink on a nearly-white (nearly
+ * -black) ground, where the pill's `bold` variant puts white on a solid fill.
+ * The measurement is 15:1, not 4.6:1: it is not a near miss that a Capra patch
+ * could turn into a failure.
+ *
+ * The icons owe 3:1, not 4.5:1 (SC 1.4.11): each is a graphical object beside a
+ * title and a body that already say which severity this is. That matters in
+ * light, where the warning icon measures 4.46:1 — the same pairing REJECTED
+ * lists as a failing muted pill, and correctly, because there the tinted text
+ * IS the message.
+ *
+ * `warning` and `danger` have no banner yet — both of today's are info, because
+ * neither is telling anyone that something is wrong. They are listed because
+ * the severity order reserves them and the first banner to need one should not
+ * have to re-derive this. The warning icon's 4.46:1 is the reason to check
+ * rather than assume.
+ *
+ * The banner sits directly on the page, below the tab bar — never on a panel.
+ */
+const BANNER = (kind: string) => [`token('color.background.${kind}.subtle')`, PAGE]
+
+const BANNER_PAIRS: Pair[] = [
+  {
+    what: 'a banner: body text on the info tint',
+    fg: "token('color.foreground.default')",
+    bg: BANNER('info'),
+    threshold: 4.5,
+    where: '<AppBanners> → Alert appearance="info" — the tour nudge and the dataset-intelligence offer',
+  },
+  {
+    what: 'a banner: body text on the warning tint',
+    fg: "token('color.foreground.default')",
+    bg: BANNER('warning'),
+    threshold: 4.5,
+    where: '<AppBanners> → Alert appearance="warning" — reserved, no caller yet',
+  },
+  {
+    what: 'a banner: body text on the danger tint',
+    fg: "token('color.foreground.default')",
+    bg: BANNER('danger'),
+    threshold: 4.5,
+    where: '<AppBanners> → Alert appearance="danger" — reserved, no caller yet',
+  },
+  {
+    what: 'a banner: the info severity icon',
+    fg: "token('color.foreground.info.default')",
+    bg: BANNER('info'),
+    threshold: 3,
+    where: "Alert's own icon (a graphical object beside the title, SC 1.4.11)",
+  },
+  {
+    what: 'a banner: the warning severity icon',
+    fg: "token('color.foreground.warning.default')",
+    bg: BANNER('warning'),
+    threshold: 3,
+    where: "Alert's own icon — 4.46:1 in light, which is why the word is never dropped",
+  },
+  {
+    what: 'a banner: the danger severity icon',
+    fg: "token('color.foreground.danger.default')",
+    bg: BANNER('danger'),
+    threshold: 3,
+    where: "Alert's own icon",
+  },
+  {
+    // The button is opaque, so the tint under it never reaches the ink — but the
+    // stack is written as it is painted, because the day someone makes a house
+    // button translucent this row should be the thing that notices.
+    what: 'a banner: the label on its action button',
+    fg: 'var(--gm-fg)',
+    bg: ['var(--gm-panel-2)', ...BANNER('info')],
+    threshold: 4.5,
+    where: '.gs-btn in Alert’s action slot — "Choose a role", and GatedControl’s "Generate"',
+  },
+]
+
+/**
+ * `.dtable` — the one data table.
+ *
+ * One row, because one pairing in it is close to the line: the column head is
+ * `--gm-fg-subtle` at 10px, which is small text and owes 4.5:1 with no
+ * large-text relief. Everything else in the table is ordinary body ink.
+ *
+ * NOT here, and deliberately: the row rule, `--gm-border` on a panel, which
+ * measures 1.57:1 in light. That is the app's one border colour, used by all 55
+ * border sites since slice 1.5, and a table rule is a separator between rows
+ * rather than a graphical object needed to understand them — the row's meaning
+ * survives the rule being invisible. Listing it here would make this file a
+ * ledger of one known-failing app-wide decision rather than a gate.
+ */
+const TABLE_PAIRS: Pair[] = [
+  {
+    what: 'the column head of the one data table',
+    fg: 'var(--gm-fg-subtle)',
+    bg: PANEL,
+    threshold: 4.5,
+    where: '.dtable thead th (10px uppercase) — Service Map triage, the three drill-downs',
+  },
+]
+
+/**
  * The table. A new pairing is one row.
  *
  * It is not — and is not trying to be — every colour pair in App.css: the file
@@ -104,8 +316,10 @@ const FOCUS_RING = "token('color.background.info.solid.default')"
  * colours) fail 4.5:1 today in one theme or both. Those are a palette decision
  * with an owner, not a token fix, and listing them here as expected-to-fail
  * would make this file lie. What IS here is every pairing the --gm-st-* status
- * family draws, the ink that family puts on a filled pill, and the focus ring —
- * the surfaces this slice changed or introduced.
+ * family draws, every appearance `<StatusPill>` can render, both severities the
+ * page-level banner slot paints and the one close pairing in the shared data
+ * table, plus the focus ring — the surfaces the last two slices changed or
+ * introduced.
  */
 const PAIRS: Pair[] = [
   {
@@ -113,60 +327,49 @@ const PAIRS: Pair[] = [
     fg: 'var(--gm-st-success)',
     bg: ['var(--gm-panel)', PAGE],
     threshold: 4.5,
-    where: '.svc-status-success (11.5px), .gs-ok (11px), .gs-step-ok (12.5px), .gs-res-commit code (11px)',
+    where: '.svc-status-success (11.5px), .gs-step-ok (12.5px), .gs-res-commit code (11px)',
   },
   {
     what: 'status: success, on the solid panel',
     fg: 'var(--gm-st-success)',
     bg: ['var(--gm-panel-2)', PAGE],
     threshold: 4.5,
-    where: '.gs-ok inside .gs-checklist-head / .gs-endpoint-main',
+    where: '.gs-endpoint-main',
   },
   {
     what: 'status: warning',
     fg: 'var(--gm-st-warning)',
     bg: ['var(--gm-panel)', PAGE],
     threshold: 4.5,
-    where: '.svc-status-warning (11.5px), .gs-skip (11px), .gs-res-skip (11.5px), .gs-step-skip (12.5px)',
+    where: '.svc-status-warning (11.5px), .gs-res-skip (11.5px), .gs-step-skip (12.5px)',
   },
   {
     what: 'status: warning, on the solid panel',
     fg: 'var(--gm-st-warning)',
     bg: ['var(--gm-panel-2)', PAGE],
     threshold: 4.5,
-    where: '.gs-skip inside .gs-checklist-head',
+    where: '.gs-checklist-head',
   },
   {
     what: 'status: danger',
     fg: 'var(--gm-st-danger)',
     bg: ['var(--gm-panel)', PAGE],
     threshold: 4.5,
-    where: '.svc-status-danger, .gs-missing, .gs-res-error, .gs-step-err, .gs-btn-danger-text',
+    where: '.svc-status-danger, .gs-res-error, .gs-step-err, .gs-btn-danger-text',
   },
   {
     what: 'status: danger, on the solid panel',
     fg: 'var(--gm-st-danger)',
     bg: ['var(--gm-panel-2)', PAGE],
     threshold: 4.5,
-    where: '.gs-missing inside .gs-checklist-head',
+    where: '.gs-checklist-head',
   },
   {
     what: 'status: unknown',
     fg: 'var(--gm-st-unknown)',
     bg: ['var(--gm-panel)', PAGE],
     threshold: 4.5,
-    where: '.svc-status-unknown, .gs-unknown, .tab-sub .d-grey',
-  },
-  {
-    // The one member of the family used as a FILL rather than as ink, which is
-    // why it needs its own ink. White works on the light red and is 2.32:1 on
-    // the dark one, and Capra's color.foreground.danger.contrast is white in
-    // both modes — so no token swap repairs this pairing; only a per-mode ink.
-    what: 'the ink on the filled danger pill',
-    fg: 'var(--gm-st-danger-contrast)',
-    bg: ['var(--gm-st-danger)', PAGE],
-    threshold: 4.5,
-    where: '.gs-err',
+    where: '.svc-status-unknown, .tab-sub .d-grey',
   },
   {
     what: 'the live throughput figure on the diagram canvas',
@@ -175,13 +378,9 @@ const PAIRS: Pair[] = [
     threshold: 4.5,
     where: '.dop-flow-value (14px semibold — under 18.66px, so AA wants 4.5 not 3)',
   },
-  {
-    what: 'the commit toast’s left rail',
-    fg: 'var(--gm-st-info)',
-    bg: ['var(--gm-panel)', PAGE],
-    threshold: 3,
-    where: '.gs-toast-commit (a 3px rail — a graphical object, SC 1.4.11)',
-  },
+  ...PILL_PAIRS,
+  ...BANNER_PAIRS,
+  ...TABLE_PAIRS,
 ]
 
 // ── Everything below is the machinery. The table above is the contract. ──────
@@ -430,6 +629,28 @@ describe('contrast of the colours App.css decides', () => {
               `  surface     ${layers.join(' over ')}  →  ${toHex(bg)}\n` +
               '  Capra’s own color.border.focus is NOT a fix: it measures 2.33:1 on the light page.',
           ).toBeGreaterThanOrEqual(3)
+        })
+      }
+
+      for (const r of REJECTED) {
+        if (r.themes && !r.themes.includes(theme)) continue
+        it(`${r.what} still fails 4.5:1, which is why StatusPill does not use it`, () => {
+          const map = maps[theme]
+          const label = `${r.what} (${theme})`
+          const fg = colorOf(map, r.fg, label)
+          const bg = flatten(map, r.bg, label)
+          const painted = fg.a < 1 ? composite(fg, bg) : fg
+          const ratio = contrastRatio(painted, bg)
+          expect(
+            Number(ratio.toFixed(2)),
+            `${r.what} — ${theme} theme — now measures ${ratio.toFixed(2)}:1, at or above the 4.5:1 ` +
+              'it failed when <StatusPill> was designed.\n' +
+              `  foreground  ${r.fg}  →  ${toHex(painted)}\n` +
+              `  background  ${r.bg.join(' over ')}  →  ${toHex(bg)}\n` +
+              '  This is GOOD NEWS, not a defect: Capra has fixed the pairing. Re-read the header of\n' +
+              '  src/components/StatusPill.tsx, which rejects this variant on the old number, and either\n' +
+              '  adopt it or delete this row. Do not silently widen the assertion.',
+          ).toBeLessThan(4.5)
         })
       }
     })

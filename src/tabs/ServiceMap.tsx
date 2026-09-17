@@ -286,22 +286,35 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
           <Panel onRefresh={domains.refetch} refreshing={domains.loading} title={`Triage · ${label} — where is the time, and is it the network?`} info="id-join + packet evidence: p95 across all flows to this service, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_server_ms vs dns_response_time), plus packet-health counters that exonerate or implicate the network." query={domainsQuery} note="id-join + packet evidence">
             <div className="triage-scope">SCOPE <code>{label}</code> · p95 across all flows · joined per id, scored by domain</div>
             <div className="triage-wrap">
-              <table className="triage2">
+              <table className="dtable dtable-mono">
+                <caption className="sr-only">
+                  Triage evidence for {label}: one row per AMI record, with the key field, its p95 value,
+                  the domain it belongs to and what that reads as, followed by the verdict.
+                </caption>
                 <thead>
-                  <tr><th>AMI record</th><th>Key field</th><th>Value</th><th>Domain</th><th>Reads as</th></tr>
+                  <tr>
+                    <th scope="col">AMI record</th>
+                    <th scope="col">Key field</th>
+                    <th scope="col">Value</th>
+                    <th scope="col">Domain</th>
+                    <th scope="col">Reads as</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {rows.map((r, i) => (
                     <tr key={i} className={`tri-rec-${r.rec}`}>
-                      <td className="tri-rec">{r.rec}</td>
+                      {/* The record kind names the row for a reader moving cell
+                          by cell — "evidence · Value · 12 ms" rather than a
+                          measurement with nothing attached to it. */}
+                      <th scope="row" className="dtable-id tri-rec">{r.rec}</th>
                       <td className="tri-field">{r.field}</td>
-                      <td className="tri-val">{r.value}</td>
+                      <td className="tri-val dtable-num">{r.value}</td>
                       <td className={`tri-domain ${r.dcls}`}>{r.domain}</td>
                       <td className={r.rcls}>{r.reads}</td>
                     </tr>
                   ))}
                   <tr className="tri-verdict-row">
-                    <td className="tri-rec">verdict</td>
+                    <th scope="row" className="dtable-id tri-rec">verdict</th>
                     <td colSpan={4} className="tri-verdict-cell">{worst} — {worstD.phrase}</td>
                   </tr>
                 </tbody>

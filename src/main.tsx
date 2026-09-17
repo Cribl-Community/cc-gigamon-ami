@@ -5,6 +5,7 @@ import '@capra/theme/base.css'
 import '@capra/core/styles.css'
 import '@capra/icons/styles.css'
 import App from './App'
+import { ToastProvider } from './components/Toast'
 import './App.css'
 import { BASE_PATH } from './cribl/config'
 import { DashboardProvider } from './app/DashboardContext'
@@ -30,6 +31,13 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter basename={BASE_PATH}>
       <DashboardProvider>
         <App />
+        {/* Mounted once, at the root, and NOT inside the tab that pushes toasts
+            — a toast reporting a write has to outlive a route change, and
+            `pushToast` is a plain module function with no component to live in.
+            It portals its container to document.body, so it draws nothing here.
+            Why it is Capra's and not the hand-rolled stack it replaces:
+            src/components/Toast.tsx. */}
+        <ToastProvider />
       </DashboardProvider>
     </BrowserRouter>
   </StrictMode>,

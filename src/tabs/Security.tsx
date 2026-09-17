@@ -148,16 +148,25 @@ export function Security() {
           {sel.kind === 'flow' ? (
             <QueryBoundary state={drill} emptyLabel="No flows for this technique in the window">
               <div className="tcp-drill-scroll">
-                <table className="tcp-drill-tbl">
-                  <thead><tr><th>Source</th><th>Destination</th><th>App</th><th className="num">Port</th><th className="num">Flows</th></tr></thead>
+                <table className="dtable dtable-sticky">
+                  <caption className="sr-only">Flows matching {sel.id} {sel.name}, one row per source and destination pair.</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Source</th>
+                      <th scope="col">Destination</th>
+                      <th scope="col">App</th>
+                      <th scope="col" className="dtable-num">Port</th>
+                      <th scope="col" className="dtable-num">Flows</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {drill.rows.map((r, i) => (
                       <tr key={i}>
-                        <td className="mono">{str(r, 'src_ip', '—')}</td>
-                        <td className="mono">{str(r, 'dst_ip', '—')}</td>
+                        <th scope="row" className="dtable-id dtable-mono">{str(r, 'src_ip', '—')}</th>
+                        <td className="dtable-mono">{str(r, 'dst_ip', '—')}</td>
                         <td>{str(r, 'app_name', '—')}</td>
-                        <td className="num mono">{str(r, 'dst_port', '—')}</td>
-                        <td className="num">{fmtCount(r.flows)}</td>
+                        <td className="dtable-num dtable-mono">{str(r, 'dst_port', '—')}</td>
+                        <td className="dtable-num">{fmtCount(r.flows)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -167,15 +176,23 @@ export function Security() {
           ) : (
             <div className="tcp-drill-scroll">
               <div className="tcp-drill-summary"><span><strong>{fmtCount(behaviourRows.length)}</strong> sources match ({sel.behaviour!.metric} ≥ {sel.behaviour!.min}{sel.behaviour!.internalOnly ? ', internal' : ''})</span></div>
-              <table className="tcp-drill-tbl">
-                <thead><tr><th>Source IP</th><th className="num">Distinct ports</th><th className="num">Distinct dsts</th><th className="num">Flows</th></tr></thead>
+              <table className="dtable dtable-sticky">
+                <caption className="sr-only">Sources matching {sel.id} {sel.name}, one row per source IP.</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Source IP</th>
+                    <th scope="col" className="dtable-num">Distinct ports</th>
+                    <th scope="col" className="dtable-num">Distinct dsts</th>
+                    <th scope="col" className="dtable-num">Flows</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {behaviourRows.sort((a, b) => b[sel.behaviour!.metric] - a[sel.behaviour!.metric]).map((s, i) => (
                     <tr key={i} className={s[sel.behaviour!.metric] >= sel.behaviour!.min * 1.5 ? 'tcp-drill-bad' : ''}>
-                      <td className="mono">{s.ip}{isInternal(s.ip) ? '' : ' (ext)'}</td>
-                      <td className="num">{fmtCount(s.ports)}</td>
-                      <td className="num">{fmtCount(s.dsts)}</td>
-                      <td className="num">{fmtCount(s.flows)}</td>
+                      <th scope="row" className="dtable-id dtable-mono">{s.ip}{isInternal(s.ip) ? '' : ' (ext)'}</th>
+                      <td className="dtable-num">{fmtCount(s.ports)}</td>
+                      <td className="dtable-num">{fmtCount(s.dsts)}</td>
+                      <td className="dtable-num">{fmtCount(s.flows)}</td>
                     </tr>
                   ))}
                 </tbody>

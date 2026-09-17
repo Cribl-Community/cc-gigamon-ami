@@ -3,6 +3,7 @@ import { useWriteGate } from '../cribl/authz'
 import { LAKE_DATASET } from '../cribl/config'
 import { aiEnabled, generateDatasetIntel, getDatasetIntel, type IntelStatus } from '../cribl/datasetIntel'
 import { usePref } from '../cribl/prefs'
+import type { AppBanner } from './AppBanners'
 import { GatedControl } from './GatedControl'
 
 /**
@@ -10,12 +11,24 @@ import { GatedControl } from './GatedControl'
  * "AI investigate" action lands on a grounded agent instead of one that has to
  * rediscover a 319-field schema first.
  *
- * Deliberately quiet: it renders nothing unless the tenant has AI enabled AND
+ * Deliberately quiet: it says nothing unless the tenant has AI enabled AND
  * intelligence is genuinely missing or failed. Once generated (or dismissed) it
  * never comes back for that viewer — the dismissal is per-user and lives in the
  * app-scoped Cribl KV store, so it survives a reload and a change of browser.
+ *
+ * WHY IT IS A HOOK AND NOT A COMPONENT. It used to render its own `.intel-note`
+ * inside the Findings tab, which is where ✦ AI investigate lives. It now
+ * describes a banner and `AppBanners` draws it, in the one page-level slot
+ * under the tab bar — so the app has one banner treatment rather than two, and
+ * the offer reaches an admin who never opens Findings. See AppBanners.tsx for
+ * why the sources describe rather than render.
+ *
+ * WHAT THAT COST, and why it is paid here: the probe now runs on every load
+ * rather than only on Findings. So it is gated on the dismissal instead of
+ * racing it — a viewer who has said no costs the platform nothing at all, and
+ * an undismissed one costs the same two GETs it always did.
  */
-export function DatasetIntelPrompt() {
+export function useDatasetIntelBanner(): AppBanner | null {
   const [status, setStatus] = useState<IntelStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dismissed, setDismissed] = usePref('intelPromptDismissed')
@@ -27,6 +40,11 @@ export function DatasetIntelPrompt() {
   const gate = useWriteGate('dataset_intel.generate')
 
   useEffect(() => {
+    // `undefined` is the preference still in flight and `true` is a viewer who
+    // has already said no — neither is a reason to ask Cribl anything. Only a
+    // definite `false` starts the probe, and flipping to `true` on the dismissal
+    // aborts whatever it had in the air.
+    if (dismissed !== false) return
     const ctrl = new AbortController()
     let cancelled = false
     void (async () => {
@@ -36,11 +54,11 @@ export function DatasetIntelPrompt() {
         const intel = await getDatasetIntel(ctrl.signal)
         if (!cancelled) setStatus(intel.status)
       } catch {
-        /* not fatal — the prompt simply stays hidden */
+        /* not fatal — the banner simply stays hidden */
       }
     })()
     return () => { cancelled = true; ctrl.abort(); if (poll.current) window.clearInterval(poll.current) }
-  }, [])
+  }, [dismissed])
 
   // While generating, poll until the agent settles.
   useEffect(() => {
@@ -65,42 +83,59 @@ export function DatasetIntelPrompt() {
   }
 
   // `dismissed` is three-valued: undefined until the stored preference lands
-  // (cribl/prefs.ts). Only a definite `false` shows the note, so a viewer who
+  // (cribl/prefs.ts). Only a definite `false` shows the banner, so a viewer who
   // dismissed it once does not watch it appear and vanish on every load.
   if (dismissed !== false || status === null) return null
   if (status === 'complete' || status === 'partial' || status === 'unknown') return null
 
   if (status === 'processing') {
-    return (
-      <div className="intel-note intel-working" role="status">
-        <span className="spinner spinner-sm" aria-hidden />
-        <span>
-          <strong>Generating dataset intelligence for <code>{LAKE_DATASET}</code>…</strong> This takes a few
-          minutes. AI investigations started before it finishes still work — they just spend a step discovering
-          the schema themselves.
-        </span>
-      </div>
-    )
+    // No dismissal on purpose: this is the receipt for a generation this viewer
+    // started, and it clears itself within one 15-second poll of Cribl
+    // finishing. A dismissal here would also hide the failure if it failed.
+    return {
+      id: 'dataset-intel',
+      appearance: 'info',
+      title: `Generating dataset intelligence for ${LAKE_DATASET}…`,
+      body: 'This takes a few minutes. AI investigations started before it finishes still work — they just spend a step discovering the schema themselves.',
+    }
   }
 
-  return (
-    <div className="intel-note" role="note">
-      <span>
-        <strong>AI investigations aren’t grounded yet.</strong> Cribl has no dataset intelligence for{' '}
-        <code>{LAKE_DATASET}</code>, so Copilot rediscovers this 319-field schema on every investigation before it
-        can start. Generating it once makes every <strong>✦ AI investigate</strong> faster and better grounded.
-        {error && !gate.denied && <span className="intel-err"> — {error}</span>}
-      </span>
-      <span className="intel-actions">
-        <GatedControl
-          write="dataset_intel.generate"
-          label="Generate"
-          busyLabel="Starting…"
-          className="tour-btn tour-btn-primary"
-          run={start}
-        />
-        <button type="button" className="tour-btn" onClick={() => setDismissed(true)}>Dismiss</button>
-      </span>
-    </div>
-  )
+  // INFO, THOUGH `.intel-note` WAS AMBER, and the change is deliberate twice
+  // over. Nothing here is wrong: dataset intelligence has simply never been
+  // generated, and this is an offer to improve something, which is Capra's
+  // definition of info and not of warning. And Capra derives the ARIA role from
+  // the appearance and does not let a caller override it — warning and danger
+  // are `role="alert"` with `aria-live="assertive"`. This banner is inserted
+  // after load, on every load, for every viewer who has neither dismissed it
+  // nor generated the thing; as a warning it would interrupt a screen-reader
+  // user each time, where the `.intel-note` it replaces was `role="note"` and
+  // announced nothing at all. Info is `role="status"`, polite, which is what an
+  // offer is owed. Change the word here and that changes with it.
+  return {
+    id: 'dataset-intel',
+    appearance: 'info',
+    title: 'AI investigations aren’t grounded yet',
+    body: (
+      <>
+        Cribl has no dataset intelligence for <code>{LAKE_DATASET}</code>, so Copilot rediscovers this 319-field
+        schema on every investigation before it can start. Generating it once makes every{' '}
+        <strong>✦ AI investigate</strong> faster and better grounded.
+        {error && !gate.denied && <> — {error}</>}
+      </>
+    ),
+    // The gate stays: generation is a write, Cribl can refuse it, and the
+    // refusal has to be readable at the button that was refused (slice 1.4).
+    // `gs-btn` and not `gs-btn-primary`: the primary is white on a solid accent,
+    // which measures 3.26:1 and does not clear AA at this size.
+    action: (
+      <GatedControl
+        write="dataset_intel.generate"
+        label="Generate"
+        busyLabel="Starting…"
+        className="gs-btn"
+        run={start}
+      />
+    ),
+    onDismiss: () => setDismissed(true),
+  }
 }

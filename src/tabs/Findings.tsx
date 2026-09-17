@@ -5,7 +5,7 @@ import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
-import { DatasetIntelPrompt } from '../components/DatasetIntelPrompt'
+import { StatusPill } from '../components/StatusPill'
 import { toNum, fmtCount, fmtPct } from '../lib/format'
 import { FINDINGS, type Finding, type Severity } from '../data/findings'
 import { FINDINGS_QUERY, findingFlowsQuery } from '../queries/findings'
@@ -56,7 +56,10 @@ export function Findings() {
         </p>
       </div>
 
-      <DatasetIntelPrompt />
+      {/* The dataset-intelligence offer used to sit here, in its own `.intel-note`
+          box. It is now one of the page-level banners under the tab bar, so the
+          app has one banner treatment and an admin who never opens this tab is
+          still offered it. See components/AppBanners.tsx. */}
 
       <div className="kpi-row kpi-row-4">
         <KpiTile label="Critical" value={res.loading ? '…' : String(bySev('critical'))} accent="danger"
@@ -76,7 +79,7 @@ export function Findings() {
           <ul className="find-list">
             {hits.map((f) => (
               <li key={f.id} className={`find-row find-${f.severity}`}>
-                <span className={`find-sev find-sev-${f.severity}`}>{f.severity}</span>
+                <StatusPill state={f.severity} />
                 <span className="find-main">
                   <span className="find-title">{f.title}</span>
                   <span className="find-why">{f.why}</span>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtBytes, fmtCount, fmtMs, fmtPct, formatCost, str, toNum, windowSeconds } from './format'
+import { fmtBytes, fmtCount, fmtMs, fmtPct, formatCost, formatRecurringCost, str, toNum, windowSeconds } from './format'
 
 // Smoke test for the Vitest harness itself: a real module, real assertions, and
 // one DOM assertion so a broken `environment: 'happy-dom'` fails loudly here
@@ -14,13 +14,25 @@ import { fmtBytes, fmtCount, fmtMs, fmtPct, formatCost, str, toNum, windowSecond
 describe('formatCost', () => {
   it('hedges and drops precision the estimate does not have', () => {
     expect(formatCost(12.7, 'credits/hour')).toBe('about 13 credits/hour')
-    expect(formatCost(1234.5)).toBe('about 1,235 credits')
+    // Two significant figures, not four. Every figure reaching here is a model
+    // over measured CPU-seconds, and "about 1,235 credits" claimed a precision
+    // the model does not have — a customer could hold us to those last two
+    // digits. 1,200 is the same estimate, stated honestly.
+    expect(formatCost(1234.5)).toBe('about 1,200 credits')
   })
 
-  it('keeps one decimal below 10 and rounds to a grouped integer above it', () => {
+  it('picks the form from the ROUNDED value, so the seam at 10 reads right', () => {
     expect(formatCost(5)).toBe('about 5.0 credits')
-    // The seam at 10: still one decimal, so 9.99 reads "10.0", not "10".
-    expect(formatCost(9.99)).toBe('about 10.0 credits')
+    // 9.99 rounds to two figures as 10, and "10.0" would be three again.
+    expect(formatCost(9.99)).toBe('about 10 credits')
+    expect(formatCost(99.6)).toBe('about 100 credits')
+  })
+
+  it('keeps the second figure below 1, where one decimal would lose it', () => {
+    // 0.1 is the floor and 0.15 is above it — rounding this to "0.2" would be
+    // a 33% error on the only number in the sentence.
+    expect(formatCost(0.15)).toBe('about 0.15 credits')
+    expect(formatCost(0.999)).toBe('about 1.0 credits')
   })
 
   it('floors anything too small or not a number at "under 0.1"', () => {
@@ -29,6 +41,24 @@ describe('formatCost', () => {
     expect(formatCost(-3)).toBe('under 0.1 credits')
     // 0.1 itself is above the floor.
     expect(formatCost(0.1)).toBe('about 0.1 credits')
+  })
+})
+
+describe('formatRecurringCost', () => {
+  it('states a standing cost per day and per month in one breath', () => {
+    // A month is a fixed 30 days: a figure that moved in February would read as
+    // a price change rather than as a shorter month.
+    expect(formatRecurringCost(52)).toBe('about 52 credits/day (about 1,600 credits a month)')
+  })
+
+  it('carries a sub-floor daily cost up to a scale where it is visible', () => {
+    // This is the case the rule exists for. On its own "under 0.1 credits/day"
+    // reads as free; the same measurement over a month does not.
+    expect(formatRecurringCost(0.05)).toBe('under 0.1 credits/day (about 1.5 credits a month)')
+  })
+
+  it('floors both halves when there is no number to state', () => {
+    expect(formatRecurringCost(Number.NaN)).toBe('under 0.1 credits/day (under 0.1 credits a month)')
   })
 })
 

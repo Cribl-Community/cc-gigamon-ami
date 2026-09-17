@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { GateNote, GatedControl } from '../components/GatedControl'
 import { Panel } from '../components/Panel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
+import { StatusPill, type StatusState } from '../components/StatusPill'
+import { pushToast } from '../components/Toast'
 import { useWriteGate } from '../cribl/authz'
 import { IS_INSTALLED } from '../cribl/config'
 import {
   checkStatus, deployAll, removeSyslogStack, suggestedSyslogHost, pendingDeploy,
   listStreamGroups, DEFAULT_STREAM_GROUP, STEP_LABELS,
-  type SetupStatus, type StepResult, type ResourceKey, type StreamGroup, type Phase,
+  type SetupStatus, type StepResult, type ResourceKey, type StreamGroup,
   SYSLOG_SOURCE_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID,
   LAKE_DESTINATION_ID, LAKE_DATASET_ID, SYSLOG_PORT,
 } from '../cribl/provision'
@@ -27,8 +29,6 @@ const RESOURCES: ResourceMeta[] = [
 const ACTION_TXT: Record<string, string> = {
   created: 'created', updated: 'updated', exists: 'already present', error: 'failed', skipped: 'skipped',
 }
-
-interface Toast { id: number; kind: Phase['kind']; text: string }
 
 export function GuidedSetup() {
   const [status, setStatus] = useState<SetupStatus | null>(null)
@@ -54,8 +54,6 @@ export function GuidedSetup() {
   // check waits on it, so the page checks the group the user actually works in
   // instead of checking `default` and then checking again.
   const [groupReady, setGroupReady] = useState(false)
-  const [toasts, setToasts] = useState<Toast[]>([])
-  const toastId = useRef(0)
   // Both writes on this screen are two-stage: an outer button that opens a
   // confirmation, and a "Yes, …" inside it that actually writes. `<GatedControl>`
   // owns the inner one. These read the same gate so the OUTER button closes too
@@ -87,15 +85,6 @@ export function GuidedSetup() {
     })
   }, [])
 
-  // Transient status pop-up. Errors linger longer so they can be read; the
-  // terminal "done" toast and progress toasts auto-dismiss.
-  const pushToast = useCallback((p: Phase) => {
-    const id = ++toastId.current
-    setToasts((prev) => [...prev, { id, kind: p.kind, text: p.text }])
-    const ttl = p.kind === 'error' ? 6000 : p.kind === 'done' ? 4000 : 2600
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), ttl)
-  }, [])
-
   // The last commit that touched each artifact, per group — persisted in the
   // app-scoped KV store so it survives reloads and is shown on each resource row
   // until a newer commit for that same artifact replaces it. A single commit
@@ -116,7 +105,7 @@ export function GuidedSetup() {
     if (!(await saveCommitMemory(next))) {
       pushToast({ kind: 'error', text: 'Could not save the commit note to the app store — it will be gone after a reload.' })
     }
-  }, [pushToast])
+  }, [])
   const recordCommit = useCallback((gid: string, keys: ResourceKey[], hash: string, message: string) => {
     if (!keys.length) return Promise.resolve()
     const forGroup = { ...(commitsRef.current[gid] ?? {}) }
@@ -167,7 +156,7 @@ export function GuidedSetup() {
       kind: 'error',
       text: `Could not remember ${gid} as your worker group — this tab will open on ${DEFAULT_STREAM_GROUP} next time.`,
     })
-  }, [pushToast])
+  }, [])
 
   // Re-check the live resource status for the current group. A successful
   // re-check leaves any lingering deploy/remove outcome for this group untouched
@@ -363,11 +352,19 @@ export function GuidedSetup() {
               const rowErr = !present ? errorByKey[r.key] : undefined
               const rowSkip = !present && !rowErr ? skippedByKey[r.key] : undefined
               const rc = commitByKey[r.key]
+              // The same ladder the class list used to encode, now naming the
+              // state rather than the colour. Order matters: a resource that IS
+              // present is present even if an earlier step for it errored.
+              const state: StatusState =
+                present ? 'present'
+                  : rowErr ? 'failed'
+                    : unread ? 'unreadable'
+                      : rowSkip ? 'skipped'
+                        : loading ? 'checking'
+                          : 'absent'
               return (
                 <div key={r.key} className="gs-res-row">
-                  <span className={`gs-pill ${present ? 'gs-ok' : rowErr ? 'gs-err' : unread ? 'gs-skip' : rowSkip ? 'gs-skip' : loading ? 'gs-unknown' : 'gs-missing'}`}>
-                    {present ? '✓ present' : rowErr ? '✕ failed' : unread ? '? unreadable' : rowSkip ? '⤼ skipped' : loading ? '…' : '— absent'}
-                  </span>
+                  <StatusPill state={state} />
                   <div className="gs-res-text">
                     <span className="gs-res-label">{r.label}</span>
                     <span className="gs-res-detail"><code>{r.detail}</code></span>
@@ -624,18 +621,12 @@ export function GuidedSetup() {
           changes what every viewer of this install gets, not just this one. */}
       <SearchLimitsPanel />
 
-      {toasts.length > 0 && (
-        <div className="gs-toasts" aria-live="polite">
-          {toasts.map((t) => (
-            <div key={t.id} className={`gs-toast gs-toast-${t.kind}`}>
-              <span className="gs-toast-icon">
-                {t.kind === 'error' ? '✕' : t.kind === 'done' ? '✓' : '●'}
-              </span>
-              <span className="gs-toast-text">{t.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* The toast stack that used to be rendered here now lives at the app root
+          and is Capra's — an `aria-live` container that appeared together with
+          its first message was announcing a failed deploy by luck, and a toast
+          about a write should outlive a route change anyway.
+          src/components/Toast.tsx carries the argument. `pushToast` is the same
+          call it always was. */}
     </div>
   )
 }

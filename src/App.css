@@ -88,15 +88,17 @@
   --gm-st-success: #287f39;   /* was Open Color green-9 #2b8a3e — 4.37:1 on white, needs 4.5. Now 5.02:1. */
   --gm-st-warning: #ac5900;   /* was Open Color orange-9 #e67700 — 3.00:1 on white. Now 5.02:1. */
   --gm-st-danger: #c92a2a;    /* red-9, 5.46:1 */
-  --gm-st-info: #1864ab;      /* blue-9, 6.09:1. Referenced by .gs-toast-commit since it shipped and
-                                 never declared, so that toast was the one with no left rail at all. */
   --gm-st-unknown: #5c6773;   /* 5.76:1 */
-  /* Ink for text drawn ON --gm-st-danger, which is a fill in .gs-err. White
-     works on the light red-9 (5.46:1) and fails hard on the dark red-4
-     (2.32:1), and Capra's own color.foreground.danger.contrast is white in
-     both modes, so no token swap repairs it — the dark mode needs a dark ink.
-     Same idea as .exon-ok/.exon-warn's #05130c and #1a1200. */
-  --gm-st-danger-contrast: #ffffff;
+  /* --gm-st-info and --gm-st-danger-contrast were here. The first was drawn only
+     by .gs-toast-commit's left rail and the second only by the filled .gs-err
+     pill; slice 1.6 replaced both surfaces with Capra components, so both
+     variables had no consumer left and their rows in src/app/contrast.test.ts
+     had no rule to name. The finding behind the second one is worth keeping and
+     moved to src/components/StatusPill.tsx: white ink on a status FILL is
+     2.32:1 on the dark red and Capra's own foreground.danger.contrast is white
+     in both modes, so a filled status pill cannot be repaired by swapping
+     tokens. Anything that fills with a status colour again needs its own ink,
+     and a row here to prove it. */
   --gm-flow-idle: #c5cbd4;
   /* The same green as --gm-st-success and moved with it: it prints the live
      throughput figure in .dop-flow-value at 14px, and the old #2b8a3e measured
@@ -110,10 +112,7 @@
   --gm-st-success: #69db7c;   /* 11.12:1 on the panel */
   --gm-st-warning: #ffd43b;   /* 13.63:1 */
   --gm-st-danger: #ff8787;    /*  8.39:1 as text */
-  --gm-st-info: #4dabf7;      /*  7.85:1 — blue-4, matching the 4 step the rest of this block uses */
   --gm-st-unknown: #909cae;   /*  6.99:1 */
-  /* White on the dark red-4 fill is 2.32:1. A dark ink on it is 8.10:1. */
-  --gm-st-danger-contrast: #1a0f0f;
   --gm-flow-idle: #4a5160;
   --gm-flow-metric: #51cf66;
 }
@@ -671,22 +670,77 @@ body {
 .verdict-label { font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.bold'); color: token('color.foreground.danger.default'); font-family: var(--gm-mono); }
 .verdict-text { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); }
 
-/* ---------- Enriched triage table ---------- */
+/* ---------- The one data table ----------------------------------------------
+   Generalised from `.triage2`, which was one of two near-identical table
+   treatments: `.triage2` (mono, flush left — the Service Map triage evidence)
+   and `.tcp-drill-tbl` (proportional, sticky head — three drill-downs across
+   Security and TCP Health). What actually differed between them was the type
+   face and four pixels of padding. Each had also grown its own numeric-cell
+   class, so the app had two ways to right-align a figure.
+
+   Out of scope, and deliberately: `.heatmap`, which is a grid of coloured
+   buttons in a <table> — a picture with axes, not rows of data — and the
+   list-shaped pseudo-tables (`.find-row`, `.cov-row`, `.pqc-row`, `.gs-res-row`,
+   `.sl-row`), which are stacks of cards with no column headers; giving them
+   this class would be a semantics change, not a styling one.
+
+   THE CONTRACT, which is why this is a family and not a rename. Every table
+   using it carries a `<caption class="sr-only">` naming what it lists,
+   `scope="col"` on every column head, and `scope="row"` on the cell a reader
+   would use to name the row. None of the tables it replaces had any of the
+   three. A per-row control belongs in `.dtable-actions` and carries the row's
+   id in its accessible name, so "Remove" is never the whole announcement.
+
+   Members defined here: `-head` (a column head outside `<thead>`), `-id` (the
+   row's identity cell), `-num` (right-aligned tabular figures), `-actions`
+   (the per-row control cell). Modifiers: `-mono` on the table or on one cell,
+   `-sticky` for a table inside a scrolling container. A row that needs marking
+   uses a content class — there is no `-row` rule, because a member with no
+   declaration is decoration and the next reader would have to grep to find
+   that out. */
+.dtable { width: 100%; border-collapse: collapse; font-size: var(--gm-fs-12); }
+.dtable th, .dtable td {
+  text-align: left; font-weight: token('core.fontWeight.normal'); white-space: nowrap;
+  padding: var(--gm-sp-6) var(--gm-sp-10); border-bottom: 1px solid var(--gm-border);
+}
+/* Flush with the panel's own text column, which is the look `.triage2` had and
+   the reason the first column does not read as indented from the prose above. */
+.dtable th:first-child, .dtable td:first-child { padding-left: 0; }
+.dtable thead th, .dtable-head {
+  text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: var(--gm-fs-10); color: var(--gm-fg-subtle);
+}
+/* The identity cell is the one piece of a row a reader quotes back, so it keeps
+   full-strength ink even where the rest of the row is dimmed. */
+.dtable-id { color: var(--gm-fg); }
+/* Qualified by element: the `.dtable th, .dtable td` rule above is (0,1,1) and
+   would otherwise outrank a bare (0,1,0) class, silently left-aligning every
+   numeric column the slice converted. */
+.dtable th.dtable-num, .dtable td.dtable-num { text-align: right; font-variant-numeric: tabular-nums; }
+.dtable th.dtable-actions, .dtable td.dtable-actions { text-align: right; }
+.dtable-mono { font-family: var(--gm-mono); }
+/* A sticky head needs an opaque backdrop of its own, or the rows scroll
+   through it. --gm-panel, because every scrolling table here is inside one. */
+/* An OPAQUE backdrop. --gm-panel is color.background.surface, which ships
+   translucent (85% light, 25% dark), so rows scrolled under a sticky head
+   showed through it — measured at 1.02:1 between the head label and the body
+   ink ghosting behind it, i.e. illegible. */
+.dtable-sticky thead th { position: sticky; top: 0; background: var(--gm-panel-2); z-index: 1; }
+
+/* ---------- Enriched triage table (content classes) ---------- */
 .triage-scope { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); margin-bottom: var(--gm-sp-10); }
 .triage-scope code { color: token('color.foreground.info.default'); }
 .triage-wrap { overflow-x: auto; }
-.triage2 { width: 100%; border-collapse: collapse; font-family: var(--gm-mono); font-size: var(--gm-fs-12); }
-.triage2 th { text-align: left; font-weight: token('core.fontWeight.normal'); text-transform: uppercase; letter-spacing: 0.05em; font-size: var(--gm-fs-10); color: var(--gm-fg-subtle); padding: var(--gm-sp-4) var(--gm-sp-10) var(--gm-sp-8) 0; border-bottom: 1px solid var(--gm-border); white-space: nowrap; }
-.triage2 td { padding: var(--gm-sp-6) var(--gm-sp-10) var(--gm-sp-6) 0; border-bottom: 1px solid var(--gm-border); white-space: nowrap; }
 .tri-rec { color: var(--gm-fg-subtle); font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.04em; }
 .tri-field { color: var(--gm-fg); }
-.tri-val { color: var(--gm-fg-subtle); text-align: right; }
+.tri-val { color: var(--gm-fg-subtle); }
 .tri-domain { font-size: var(--gm-fs-11); }
 .d-app { color: #ffa94d; } .d-net { color: #4dabf7; } .d-srv { color: #f783ac; } .d-dns { color: #63e6be; } .d-none { color: var(--gm-fg-subtle); }
 .tri-rec-identity .tri-field { color: token('color.foreground.info.default'); }
-.tri-rec-evidence td { opacity: 0.92; }
+/* Both selectors, because the record cell is now a `<th scope="row">`. */
+.tri-rec-evidence th, .tri-rec-evidence td { opacity: 0.92; }
 .tri-dim { color: var(--gm-fg-subtle); }
-.tri-verdict-row td { border-bottom: none; padding-top: var(--gm-sp-10); }
+.tri-verdict-row th, .tri-verdict-row td { border-bottom: none; padding-top: var(--gm-sp-10); }
 .tri-verdict-row .tri-rec { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.bold'); }
 .tri-verdict-cell { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.bold'); font-size: var(--gm-fs-13); letter-spacing: 0.02em; }
 
@@ -766,16 +820,16 @@ body {
 /* ---------- AMI coverage (expected vs present) ---------- */
 .cov-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .cov-row {
-  display: grid; grid-template-columns: 74px minmax(150px, 240px) 1fr; align-items: baseline; gap: var(--gm-sp-12);
+  display: grid; grid-template-columns: 92px minmax(150px, 240px) 1fr; align-items: baseline; gap: var(--gm-sp-12);
   padding: var(--gm-sp-8) var(--gm-sp-4); border-bottom: 1px solid var(--gm-border);
 }
 .cov-row:last-child { border-bottom: none; }
 .cov-missing { background: token('color.background.danger.subtle'); }
 .cov-missing .cov-name { color: token('color.foreground.danger.default'); }
-.cov-badge { justify-self: start; font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold'); padding: var(--gm-sp-2) var(--gm-sp-6); border-radius: token('radius.full'); }
-.cov-badge-present { background: token('color.background.success.subtle'); color: token('color.foreground.success.default'); }
-.cov-badge-derived { background: token('color.background.warning.subtle'); color: token('color.foreground.warning.default'); }
-.cov-badge-missing { background: token('color.background.danger.subtle'); color: token('color.foreground.danger.default'); }
+/* `.cov-badge*` is gone — the status column is <StatusPill>. The track above
+   grew from 74px because a Capra Pill draws its word at 12px and puts a 16px
+   icon in front of it inside 8px of padding either side, where the old badge was
+   10px caps with no icon. The widest word here is "present". */
 .cov-name { font-family: var(--gm-mono); font-size: var(--gm-fs-12); overflow-wrap: anywhere; }
 .cov-desc { font-size: var(--gm-fs-12); color: var(--gm-fg); line-height: 1.45; }
 .cov-use { color: var(--gm-fg-subtle); }
@@ -791,7 +845,10 @@ body {
 .uc-seg-derived { background: token('color.background.warning.solid.default'); }
 .uc-seg-missing { background: token('color.background.danger.solid.default'); }
 .uc-lead { font-size: var(--gm-fs-13); color: var(--gm-fg-subtle); line-height: 1.55; margin: 0 0 var(--gm-sp-14); max-width: 900px; }
-@media (max-width: 720px) { .cov-row { grid-template-columns: 64px 1fr; } .cov-desc { grid-column: 1 / -1; } }
+/* 92px to match the wider track above: a Capra Pill draws its word at 12px
+   behind a 16px icon, so the narrow-screen column has to grow with it or the
+   pill is clipped on exactly the screens with least room. */
+@media (max-width: 720px) { .cov-row { grid-template-columns: 92px 1fr; } .cov-desc { grid-column: 1 / -1; } }
 
 /* ---------- InfoTip ---------- */
 .infotip { position: relative; display: inline-flex; align-items: center; margin-left: var(--gm-sp-4); color: var(--gm-fg-subtle); cursor: help; vertical-align: middle; }
@@ -852,14 +909,9 @@ body {
 .btn-tour { gap: var(--gm-sp-6); padding: var(--gm-sp-6) var(--gm-sp-12); font-size: var(--gm-fs-13); }
 .btn-tour-txt { font-weight: token('core.fontWeight.medium'); }
 
-.tour-nudge {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--gm-sp-16); flex-wrap: wrap;
-  margin: -6px 0 var(--gm-sp-18); padding: var(--gm-sp-10) var(--gm-sp-14);
-  background: token('color.background.info.subtle');
-  border: 1px solid token('color.background.info.solid.default');
-  border-radius: token('radius.md'); font-size: var(--gm-fs-13); line-height: 1.5;
-}
-.tour-nudge-actions { display: inline-flex; gap: var(--gm-sp-8); flex: none; }
+/* `.tour-nudge` was here. The first-run nudge is now one of the page-level
+   banners in `.appbanners`, drawn by Capra's Alert — see components/AppBanners
+   .tsx and the `.appbanners` rule below. */
 
 .tour-btn {
   background: var(--gm-panel-2); color: var(--gm-fg);
@@ -933,18 +985,12 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* ---------- Findings ---------- */
 .find-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .find-row {
-  display: grid; grid-template-columns: 84px 1fr auto; align-items: start; gap: var(--gm-sp-14);
+  display: grid; grid-template-columns: 96px 1fr auto; align-items: start; gap: var(--gm-sp-14);
   padding: var(--gm-sp-12) var(--gm-sp-4); border-bottom: 1px solid var(--gm-border);
 }
 .find-row:last-child { border-bottom: none; }
-.find-sev {
-  justify-self: start; font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.06em;
-  font-weight: token('core.fontWeight.semibold'); padding: var(--gm-sp-2) var(--gm-sp-8); border-radius: token('radius.full');
-}
-.find-sev-critical { background: token('color.background.danger.subtle'); color: token('color.foreground.danger.default'); }
-.find-sev-high { background: token('color.background.warning.subtle'); color: token('color.foreground.warning.default'); }
-.find-sev-medium { background: token('color.background.info.subtle'); color: token('color.foreground.info.default'); }
-.find-sev-low { background: token('color.background.neutral.subtle'); color: var(--gm-fg-subtle); }
+/* `.find-sev*` is gone — severity is a <StatusPill>, the same one Guided Setup
+   and the coverage list use. The severity track above widened with it. */
 .find-main { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
 .find-title { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); }
 .find-why { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; }
@@ -969,19 +1015,18 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 }
 .find-ai:hover { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); }
 
-/* ---------- Dataset intelligence prompt ---------- */
-.intel-note {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--gm-sp-16); flex-wrap: wrap;
-  padding: var(--gm-sp-10) var(--gm-sp-14); border-radius: token('radius.md'); font-size: var(--gm-fs-13); line-height: 1.5;
-  background: token('color.background.warning.subtle');
-  border: 1px solid token('color.background.warning.solid.default');
-}
-.intel-working {
-  background: token('color.background.info.subtle');
-  border-color: token('color.background.info.solid.default');
-}
-.intel-actions { display: inline-flex; gap: var(--gm-sp-8); flex: none; }
-.intel-err { color: token('color.foreground.danger.default'); }
+/* ---------- Page-level banners ----------------------------------------------
+   The ONE slot a page-level banner may appear in: one stack, below the tab bar,
+   never sticky. `.tour-nudge` and `.intel-note` were two hand-built boxes that
+   differed only in tint; both are now descriptions rendered by Capra's Alert,
+   which owns the tint, the icon, the role, the live region and the close
+   button. This rule is therefore only the SLOT — position and rhythm — and
+   there is deliberately nothing here that paints a banner.
+
+   The margins are the ones `.tour-nudge` carried, so the vertical rhythm under
+   the tab bar is unchanged: -6px closes the gap the tab bar's own 20px leaves,
+   and 18px separates the stack from the tab content. */
+.appbanners { display: flex; flex-direction: column; gap: var(--gm-sp-8); margin: -6px 0 var(--gm-sp-18); }
 
 /* ---------- TCP endpoint drill ---------- */
 .heat-btn-sel { outline: 3px solid token('color.foreground.default'); outline-offset: -3px; z-index: 1; position: relative; }
@@ -996,13 +1041,12 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .tcp-drill-summary { display: flex; flex-wrap: wrap; gap: var(--gm-sp-18); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); margin-bottom: var(--gm-sp-12); }
 .tcp-drill-summary strong { color: var(--gm-fg); font-variant-numeric: tabular-nums; }
 .tcp-drill-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
-.tcp-drill-tbl { width: 100%; border-collapse: collapse; font-size: var(--gm-fs-12); }
-.tcp-drill-tbl th, .tcp-drill-tbl td { padding: var(--gm-sp-6) var(--gm-sp-10); text-align: left; border-bottom: 1px solid var(--gm-border); white-space: nowrap; }
-.tcp-drill-tbl th { position: sticky; top: 0; background: var(--gm-panel); color: var(--gm-fg-subtle); font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; z-index: 1; }
-.tcp-drill-tbl td.num, .tcp-drill-tbl th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.tcp-drill-tbl td.mono { font-family: var(--gm-mono); font-size: var(--gm-fs-12); }
-.tcp-drill-tbl .tcp-zero { color: var(--gm-fg-subtle); opacity: 0.5; }
-.tcp-drill-tbl tr.tcp-drill-bad td.mono { font-weight: token('core.fontWeight.semibold'); }
+/* The three drill-down tables are `.dtable .dtable-sticky` now — see the family
+   near `.triage-scope`. What is left here is what is about THESE tables: a zero
+   that should recede rather than be read, and the endpoint pair on a row that
+   saw resets or CRC errors. */
+.tcp-zero { color: var(--gm-fg-subtle); opacity: 0.5; }
+.tcp-drill-bad .dtable-mono { font-weight: token('core.fontWeight.semibold'); }
 
 /* ---------- PQC readiness ---------- */
 .pqc-worklist { display: flex; flex-direction: column; gap: var(--gm-sp-6); }
@@ -1112,20 +1156,19 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg-subtle);
   text-transform: uppercase; letter-spacing: 0.04em;
 }
-.gs-res-row { display: flex; align-items: center; gap: var(--gm-sp-12); padding: var(--gm-sp-10) var(--gm-sp-12); border-bottom: 1px solid var(--gm-border); }
-.gs-res-row:last-child { border-bottom: none; }
-.gs-pill {
-  flex: none; min-width: 74px; text-align: center; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.semibold');
-  font-family: var(--gm-mono); padding: var(--gm-sp-2) var(--gm-sp-8); border-radius: token('radius.full'); border: 1px solid transparent;
+/* Grid, not flex: `.gs-pill` used to hold the status column open with
+   `min-width: 74px`, and a Capra Pill is `width: fit-content`, so without a
+   track the five labels beside it would no longer line up. 112px is the widest
+   word this list can show — "unreadable" — plus the Pill's icon and padding. */
+.gs-res-row {
+  display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: var(--gm-sp-12);
+  padding: var(--gm-sp-10) var(--gm-sp-12); border-bottom: 1px solid var(--gm-border);
 }
-.gs-ok { color: var(--gm-st-success); border-color: var(--gm-st-success); }
-.gs-missing { color: var(--gm-st-danger); border-color: var(--gm-st-danger); }
-.gs-unknown { color: var(--gm-st-unknown); border-color: var(--gm-border); }
-/* The one pill in this set that FILLS with the status colour rather than
-   outlining in it, so its ink has to be chosen per mode — see
-   --gm-st-danger-contrast. */
-.gs-err { color: var(--gm-st-danger-contrast); background: var(--gm-st-danger); border-color: var(--gm-st-danger); }
-.gs-skip { color: var(--gm-st-warning); border-color: var(--gm-st-warning); }
+.gs-res-row:last-child { border-bottom: none; }
+/* `.gs-pill` + `.gs-ok|missing|unknown|err|skip` are gone — <StatusPill>. The
+   filled danger pill went with them, and took --gm-st-danger-contrast out of use
+   with it; see the note where that variable used to be declared, at the top of
+   this file. */
 .gs-res-text { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
 .gs-res-label { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium'); color: var(--gm-fg); }
 .gs-res-detail code { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
@@ -1200,29 +1243,13 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-facts li { font-size: var(--gm-fs-13); line-height: 1.55; color: var(--gm-fg); }
 .gs-facts code { font-family: var(--gm-mono); font-size: var(--gm-fs-12); background: var(--gm-panel-2); padding: var(--gm-sp-2) var(--gm-sp-4); border-radius: token('radius.md'); }
 
-/* Transient status pop-ups (commit / deploy / confirmation) */
-.gs-toasts {
-  position: fixed; right: 20px; bottom: 20px; z-index: 60;
-  display: flex; flex-direction: column; gap: var(--gm-sp-8); max-width: min(380px, 90vw);
-}
-.gs-toast {
-  display: flex; align-items: center; gap: var(--gm-sp-8);
-  padding: var(--gm-sp-10) var(--gm-sp-12); border-radius: token('radius.md');
-  background: var(--gm-panel); border: 1px solid var(--gm-border);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
-  font-size: var(--gm-fs-12); color: var(--gm-fg);
-  animation: gs-toast-in 0.16s ease-out;
-}
-.gs-toast-icon { flex: none; width: 14px; text-align: center; font-size: var(--gm-fs-12); }
-.gs-toast-text { min-width: 0; line-height: 1.4; }
-.gs-toast-commit { border-left: 3px solid var(--gm-st-info); }
-.gs-toast-deploy { border-left: 3px solid var(--gm-st-warning); }
-.gs-toast-provision { border-left: 3px solid var(--gm-border); }
-.gs-toast-done { border-left: 3px solid var(--gm-st-success); }
-.gs-toast-done .gs-toast-icon { color: var(--gm-st-success); }
-.gs-toast-error { border-left: 3px solid var(--gm-st-danger); }
-.gs-toast-error .gs-toast-icon { color: var(--gm-st-danger); }
-@keyframes gs-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+/* The transient status pop-ups (`.gs-toasts`, `.gs-toast*`, `@keyframes
+   gs-toast-in`) are gone. They are Capra's Toast now — mounted at the root, not
+   inside this tab, because the old container was the live region AND its first
+   message in the same commit. src/components/Toast.tsx carries the reasoning.
+   Nothing here styles them: Capra's own animation is already covered by the
+   prefers-reduced-motion reset at the foot of this file, which matches on
+   property rather than on class. */
 
 /* ---------- Deep Observability Pipeline diagram (Data Flow tab) -------------
    Brand composition of the Gigamon x Cribl architecture slide. Gigamon orange
