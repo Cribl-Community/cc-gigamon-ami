@@ -17,9 +17,11 @@
 // when it fails — so it is a property of the SET, not of anybody's position in
 // the markup. A collected list can be sorted; a tree of siblings cannot be.
 //
-// Both banners here happen to be info today, so nothing is currently reordered.
-// That is not a reason to take the sort out: the first banner that is not info
-// would then land wherever its import happened to sit.
+// The first two sources are both info, so for two slices the sort did nothing.
+// The third — a long-running search of the viewer's own, slice 1.8 — is a
+// `warning`, and it is the one that proves the point: it goes above an offer of
+// a guided tour no matter where its `useJobWatchdogBanner()` call happens to sit
+// in the list below.
 //
 // INDEPENDENCE IS THE POINT, and it is the thing to preserve when adding a
 // banner here. Every source answers for itself and answers `null` when it has
@@ -43,6 +45,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { Alert } from '@capra/core'
 import { useTour } from '../app/TourContext'
 import { useDatasetIntelBanner } from './DatasetIntelPrompt'
+import { useJobWatchdogBanner } from './JobWatchdog'
 
 /**
  * One page-level banner, as its source describes it.
@@ -119,7 +122,11 @@ export function AppBanners() {
   // order — they are hooks, and a source that stopped being called because an
   // earlier one had something to say would break the rules of hooks and lose
   // its own state at the same time.
-  const banners = collectBanners([useTourNudgeBanner(), useDatasetIntelBanner()])
+  // The watchdog's is the first banner in this slot that is not `info`, so it is
+  // also the first time the sort does anything: a long-running search of the
+  // viewer's own goes above an offer of a guided tour, whatever order the
+  // sources are listed in here.
+  const banners = collectBanners([useTourNudgeBanner(), useDatasetIntelBanner(), useJobWatchdogBanner()])
   if (banners.length === 0) return null
   return (
     <div className="appbanners">

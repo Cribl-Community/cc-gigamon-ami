@@ -16,10 +16,10 @@
     "searches": 37,
     "links": 23,
     "briefs": 17,
-    "prose": 14,
+    "prose": 15,
     "modules": 129,
     "catalogs": 13,
-    "states": 24,
+    "states": 26,
     "passthrough": 3,
     "unbound": 21
   },
@@ -80,6 +80,10 @@
     }
   },
   "states": {
+    "src/components/JobWatchdog.tsx": {
+      "announcement": "''",
+      "confirming": "null"
+    },
     "src/components/SearchLimitsPanel.tsx": {
       "inForce": "null",
       "note": "null",
@@ -310,6 +314,20 @@
           "about": "(unbound)",
           "aboutHeading": "What auto-refresh costs",
           "label": "What auto-refresh costs on this tab"
+        }
+      }
+    },
+    "src/components/JobWatchdog.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "PanelInfo · \"It reads Cribl's list of running jobs: one ordinary GET. It submits no search, bills nothing, and takes no place in the workspace's 1,000-job search history. The design this replaced polled with a dataset=$vt_jobs search instead, which measured 2.534 billable CPU-seconds per poll — about 730 a day for every open session — and added 288 jobs a day to that history, evicting the very searches you would use to investigate what it found. A job is listed once it has been running for twice the longest time this app ever allows one of its own queries, which is the figure in the sentence above. The doubling is there so that a query still being wound up at its own time limit is never reported as a hang, and it costs nothing: across 725 completed gigamon_ami searches in this workspace the median was 5.1 seconds and the slowest that ever finished took 51, while the searches this was built for had been running between ten and nineteen hours. There is no cost column because Cribl reports 0 billable CPU-seconds while a job is still running — elapsed time is the figure that can honestly be shown.\"": {
+          "ref": "\"It reads Cribl's list of running jobs: one ordinary GET. It submits no search, bills nothing, and takes no place in the workspace's 1,000-job search history. The design this replaced polled with a dataset=$vt_jobs search instead, which measured 2.534 billable CPU-seconds per poll — about 730 a day for every open session — and added 288 jobs a day to that history, evicting the very searches you would use to investigate what it found. A job is listed once it has been running for twice the longest time this app ever allows one of its own queries, which is the figure in the sentence above. The doubling is there so that a query still being wound up at its own time limit is never reported as a hang, and it costs nothing: across 725 completed gigamon_ami searches in this workspace the median was 5.1 seconds and the slowest that ever finished took 51, while the searches this was built for had been running between ten and nineteen hours. There is no cost column because Cribl reports 0 billable CPU-seconds while a job is still running — elapsed time is the figure that can honestly be shown.\"",
+          "about": "It reads Cribl's list of running jobs: one ordinary GET. It submits no search, bills nothing, and takes no place in the workspace's 1,000-job search history. The design this replaced polled with a dataset=$vt_jobs search instead, which measured 2.534 billable CPU-seconds per poll — about 730 a day for every open session — and added 288 jobs a day to that history, evicting the very searches you would use to investigate what it found. A job is listed once it has been running for twice the longest time this app ever allows one of its own queries, which is the figure in the sentence above. The doubling is there so that a query still being wound up at its own time limit is never reported as a hang, and it costs nothing: across 725 completed gigamon_ami searches in this workspace the median was 5.1 seconds and the slowest that ever finished took 51, while the searches this was built for had been running between ten and nineteen hours. There is no cost column because Cribl reports 0 billable CPU-seconds while a job is still running — elapsed time is the figure that can honestly be shown.",
+          "aboutHeading": "What this watch costs, and what it looks at",
+          "label": "What the long-running search watch costs and how it decides"
         }
       }
     },

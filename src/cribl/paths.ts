@@ -121,6 +121,13 @@ export const API_CALLS: readonly ApiCall[] = [
   },
   {
     method: 'GET',
+    path: `/m/${SEARCH_GROUP}/search/jobs`,
+    scope: 'product',
+    site: 'jobWatchdog.ts pollOnce',
+    why: 'List the search jobs currently running, to surface one that has been running far longer than any query this app permits itself. It is a config-plane READ, of other people’s searches as well as the viewer’s own where their role already allows it: it submits no search, bills nothing, and — unlike the `$vt_jobs` query it replaces — adds no job to the workspace’s own search history. What the app does with somebody else’s row is show it; only the viewer’s own rows get a Cancel.',
+  },
+  {
+    method: 'GET',
     path: `/m/${SEARCH_GROUP}/search/jobs/:jobId`,
     scope: 'product',
     site: 'search.ts stoppedByTimeLimit',
@@ -158,8 +165,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'POST',
     path: `/m/${SEARCH_GROUP}/search/jobs/:jobId/cancel`,
     scope: 'product',
-    site: 'search.ts cancelJob',
-    why: 'Stop a job this session started when the search is abandoned (range change, tab switch, unmount) or outlives its client timeout, so it stops billing instead of running to its cap. It is the user’s own job, seconds old, and no configuration — which is why this POST needs no confirmation dialog.',
+    site: 'search.ts cancelJob (also jobWatchdog.ts cancelHungJob)',
+    why: 'Stop a job this session started when the search is abandoned (range change, tab switch, unmount) or outlives its client timeout, so it stops billing instead of running to its cap. It is the user’s own job, seconds old, and no configuration — which is why that POST needs no confirmation dialog. The watchdog reuses the same grant for a job this session did not start but the SAME USER owns; it never cancels anybody else’s, and that one is confirmed because of its age: see cribl/jobWatchdog.ts cancelHungJob.',
   },
 
   // ── Cribl Search AI: dataset intelligence ─────────────────────────────────

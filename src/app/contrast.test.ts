@@ -241,7 +241,7 @@ const BANNER_PAIRS: Pair[] = [
     fg: "token('color.foreground.default')",
     bg: BANNER('warning'),
     threshold: 4.5,
-    where: '<AppBanners> → Alert appearance="warning" — reserved, no caller yet',
+    where: '<AppBanners> → Alert appearance="warning" — useJobWatchdogBanner, a long-running search of the viewer’s own',
   },
   {
     what: 'a banner: body text on the danger tint',
@@ -263,6 +263,27 @@ const BANNER_PAIRS: Pair[] = [
     bg: BANNER('warning'),
     threshold: 3,
     where: "Alert's own icon — 4.46:1 in light, which is why the word is never dropped",
+  },
+  {
+    // Same ink as the icon above, on the page instead of on a tint, and it is
+    // TEXT — so it owes 4.5, not 3. It is the only amber in the header, and it
+    // is also the only thing in the header that is ever there: see
+    // components/JobWatchdog.tsx on why the healthy state renders nothing.
+    what: 'the long-running-search indicator, when something is hung',
+    fg: "token('color.foreground.warning.default')",
+    bg: [PAGE],
+    threshold: 4.5,
+    where: '.jw-badge-hung (12px) — the header badge, ⚠ N long-running searches',
+  },
+  {
+    // The other half of that indicator: "this app could not check". Subtle ink
+    // rather than amber, on purpose — a gap in knowledge is not a problem found,
+    // and one amber that meant both would mean neither.
+    what: 'the long-running-search indicator, when the watch cannot see',
+    fg: 'var(--gm-fg-subtle)',
+    bg: [PAGE],
+    threshold: 4.5,
+    where: '.jw-badge-blind (12px) — a refused or failed job-list poll',
   },
   {
     what: 'a banner: the danger severity icon',
@@ -305,6 +326,30 @@ const TABLE_PAIRS: Pair[] = [
     threshold: 4.5,
     where: '.dtable thead th (10px uppercase) — Service Map triage, the three drill-downs',
   },
+  {
+    // The long-running-search drawer puts the same table on Capra's drawer
+    // surface, which is `color.background.panel.solid` (an OPAQUE surface, this
+    // app's `--gm-panel-2`) rather than the translucent `--gm-panel` every other
+    // `.dtable` sits on. Same ink, different ground, so it is measured rather
+    // than assumed to follow.
+    what: 'the column head of the one data table, on the drawer surface',
+    fg: 'var(--gm-fg-subtle)',
+    bg: ['var(--gm-panel-2)', PAGE],
+    threshold: 4.5,
+    where: '.dtable thead th inside .jw-body — the long-running-search list',
+  },
+  {
+    // The one place in the drawer where a panel is layered over the drawer
+    // surface rather than over the page: the query disclosure draws a
+    // `--gm-panel` block (translucent) on top of `--gm-panel-2` (opaque). No
+    // other row in this file composites those two, so the ink is re-measured on
+    // the stack as it is actually painted.
+    what: 'a colleague’s query text in the long-running-search drawer',
+    fg: 'var(--gm-fg)',
+    bg: ['var(--gm-panel)', 'var(--gm-panel-2)', PAGE],
+    threshold: 4.5,
+    where: '.jw-query (11px mono) — the per-row query disclosure',
+  },
 ]
 
 /**
@@ -337,14 +382,14 @@ const DIALOG_PAIRS: Pair[] = [
     fg: 'var(--gm-fg)',
     bg: MODAL,
     threshold: 4.5,
-    where: '.cdlg (13px) — the irreversibility line, the consequences, the object names',
+    where: '.cdlg (13px) — the irreversibility line, the consequences, the object names; .jw-body (13px), the long-running-search drawer',
   },
   {
     what: 'ConfirmDialog: the secondary text of a confirmation',
     fg: 'var(--gm-fg-subtle)',
     bg: MODAL,
     threshold: 4.5,
-    where: '.cdlg-head (11px uppercase), .cdlg-res-detail / .cdlg-undo / .cdlg-req (12px)',
+    where: '.cdlg-head (11px uppercase), .cdlg-res-detail / .cdlg-undo / .cdlg-req (12px); .jw-note / .jw-foot / .jw-since / .jw-noaction (11–12px) in the drawer',
   },
   {
     what: 'ConfirmDialog: the action word "create"',
@@ -365,14 +410,14 @@ const DIALOG_PAIRS: Pair[] = [
     fg: "token('color.foreground.info.default')",
     bg: MODAL,
     threshold: 4.5,
-    where: '<Pill appearance="info" variant="outline"> — in the type, no caller yet',
+    where: '<Pill appearance="info" variant="outline"> — in the type, no caller yet; also .jw-link, the drawer’s Open Cribl Search link',
   },
   {
     what: 'ConfirmDialog: the action word "delete"',
     fg: "token('color.foreground.danger.default')",
     bg: MODAL,
     threshold: 4.5,
-    where: '<Pill appearance="danger" variant="outline"> — the three rows of the teardown',
+    where: '<Pill appearance="danger" variant="outline"> — the three rows of the teardown, and the one `stop` row of a search cancel',
   },
 ]
 
@@ -431,7 +476,7 @@ const PAIRS: Pair[] = [
     fg: 'var(--gm-st-danger)',
     bg: ['var(--gm-panel-2)', PAGE],
     threshold: 4.5,
-    where: '.gs-checklist-head',
+    where: '.gs-checklist-head; .jw-note-bad, a refused job-list poll in the drawer',
   },
   {
     what: 'status: unknown',

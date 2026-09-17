@@ -39,9 +39,25 @@ policies:
   # Context"), so these are literal `default_search` paths. The app is granted
   # nothing in any other group by them.
 
-  # Run a panel's KQL query. Every figure in the app starts here.
+  # POST runs a panel's KQL query — every figure in the app starts here.
+  #
+  # GET lists the jobs currently running, for the long-running-search watch in
+  # src/cribl/jobWatchdog.ts. Slice 1.4 removed this action because nothing
+  # called it; this is the commit that first calls it. It is a config-plane read
+  # over job metadata — no search is submitted, nothing is billed, and no job is
+  # added to the workspace's 1,000-job search history, which is what ruled out
+  # the `dataset="$vt_jobs"` polling search the plan originally specified.
+  #
+  # It does mean this app can read the id, owner, status and QUERY TEXT of other
+  # people's searches wherever the caller's own role already allows that — which
+  # is the point (on the workspace where this was measured, every hung job
+  # belonged to a colleague) and is worth an admin knowing before they approve
+  # it. It is a READ of those, and nothing more: the app offers Cancel only on
+  # searches the signed-in user started. The app lists only jobs whose resolved
+  # datasets include gigamon_ami, and only those that have been running for
+  # twice the longest time it ever permits one of its own queries.
   - object: '/m/default_search/search/jobs'
-    actions: ['POST']
+    actions: ['GET', 'POST']
   # Read a failed job's errors, to tell a query stopped by its running-time cap
   # (which the panel says plainly) from one that failed for another reason.
   - object: '/m/default_search/search/jobs/:jobId'
@@ -65,6 +81,16 @@ policies:
   # tab switch, unmount) or outlives its client timeout, so it stops billing
   # instead of running to its cap. No dialog: it is the user's own job, seconds
   # old, and not configuration.
+  #
+  # The same grant also lets the long-running-search watch cancel a job this
+  # session did not start — but still ONE OF THE USER'S OWN, left running in
+  # Cribl Search or escaped from this app's own running-time cap. The watch
+  # lists every long-running search the account can see and offers Cancel only
+  # where the signed-in user owns the job: this app does not stop work it did
+  # not start, and nothing granted here lets it. That cancel is confirmed
+  # because of the job's AGE rather than its owner — a deliberate click, a
+  # dialog naming the job id and how long it has been running, and the outcome
+  # reported afterwards. Never from a render or a timer.
   - object: '/m/default_search/search/jobs/:jobId/cancel'
     actions: ['POST']
 

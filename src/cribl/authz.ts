@@ -73,8 +73,19 @@ export type WriteSurface =
    *  automatically with the app and must not be declared — so a refusal here is
    *  not a permission an admin grants separately. */
   | 'app'
-  /** A Cribl Search job this same user submitted, and its cancel. Not
-   *  configuration: nothing is created that outlives the query. */
+  /**
+   * A Cribl Search job and its cancel. Not configuration: nothing is created
+   * that outlives the query, and gating the submit would gate every panel.
+   *
+   * Every write on this surface is the signed-in user's own job, including the
+   * long-running-search watch's — it lists every search the account can see and
+   * cancels only `mine === true`, because the app does not stop work it did not
+   * start. What separates `jobWatchdog.ts#cancelHungJob` from the other two is
+   * not the owner but the age: search.ts cancels a job this session submitted
+   * seconds ago and has already walked away from, and that one ends a search
+   * somebody may have been waiting hours on. So it is the one `search` write
+   * with a confirmation and a gate.
+   */
   | 'search'
 
 /** Every control in this app that performs a write. One id per control, because
@@ -84,6 +95,7 @@ export type WriteId =
   | 'syslog_stack.remove'
   | 'search_caps.save'
   | 'dataset_intel.generate'
+  | 'hung_job.cancel'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -112,6 +124,16 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   'dataset_intel.generate': {
     surface: 'config',
     does: 'generating dataset intelligence',
+  },
+  // The only `search` write with a gate, and the reason is in WriteSurface
+  // above: it ends a search that may be hours old rather than seconds. Whether a
+  // non-admin can cancel even their OWN job through this app is unverified
+  // (V-66/V-S11 — every account this was tried on was an admin), so the gate
+  // earns its place: when Cribl refuses, the sentence names POST and the path an
+  // admin has to grant instead of leaving a button that does nothing.
+  'hung_job.cancel': {
+    surface: 'search',
+    does: 'cancelling one of your own long-running searches',
   },
 }
 
@@ -234,9 +256,30 @@ export const WRITE_SITES: readonly WriteSite[] = [
     surface: 'search',
     why: 'POST cancels a job this session created seconds earlier, so an abandoned search stops billing. Never user-triggered, and it stops work rather than starting it.',
   },
+  {
+    at: 'cribl/jobWatchdog.ts#cancelHungJob',
+    gates: ['hung_job.cancel'],
+    surface: 'search',
+    why:
+      'POST cancels a long-running search of the SIGNED-IN USER\'S OWN that this session did not start — one left running in Cribl Search, or one of this app\'s own queries the running-time cap failed to stop. The drawer lists every long-running search the account can see and offers Cancel only where `mine === true`; the store refuses the rest again at the moment of the click. It is gated because it ends a search that may be hours old rather than seconds: a deliberate click on a row in components/JobWatchdog.tsx, a ConfirmDialog naming the job id and its age, and the outcome reported as a toast. Never from a render, a timer or a retry.',
+  },
 ]
 
 // --- The ledger of refusals actually observed ------------------------------
+
+/**
+ * What caused a call, which decides whether a control may be blamed for its
+ * refusal.
+ *
+ * `click` is the assumption every caller had until slice 1.8: the app only
+ * talked to Cribl because somebody pressed something, so a refusal recorded
+ * while a write ran belonged to that write. The long-running-search watch broke
+ * it — a GET every five minutes, on a timer, forever. Its 403 is a real refusal
+ * and is still recorded, but attributing it to whatever button happened to be
+ * running is a lie about the user's own click, and a latched button is
+ * expensive: it tells somebody they may not do a thing they may in fact do.
+ */
+export type DenialOrigin = 'click' | 'background'
 
 /** One call the platform refused, as a control needs to describe it. */
 export interface Denial {
@@ -250,6 +293,8 @@ export interface Denial {
   message?: string
   /** Position in this session's ledger, so a control can ask "since when". */
   seq: number
+  /** What made the call. Only a `click` is ever attributed to a control. */
+  origin: DenialOrigin
 }
 
 /**
@@ -276,14 +321,20 @@ let seq = 0
  * construction rather than by everyone remembering to report. A caller that
  * uses `fetch` directly (cribl/datasetIntel.ts) reports here itself.
  */
-export function noteDenial(method: string, path: string, status: number, message?: string): void {
+export function noteDenial(
+  method: string,
+  path: string,
+  status: number,
+  message?: string,
+  origin: DenialOrigin = 'click',
+): void {
   if (!isDenial(status)) return
   // The query string is not part of what an admin grants — `object` in
   // policies.yml is a path throughout — so it is dropped rather than shown back
   // to somebody who has to act on it.
   const bare = path.split('?')[0]
   seq += 1
-  ledger.push({ method: method.toUpperCase(), path: bare, status, message, seq })
+  ledger.push({ method: method.toUpperCase(), path: bare, status, message, seq, origin })
   if (ledger.length > LEDGER_MAX) ledger.splice(0, ledger.length - LEDGER_MAX)
 }
 
@@ -291,14 +342,20 @@ export function noteDenial(method: string, path: string, status: number, message
 export const denialMark = (): number => seq
 
 /**
- * The FIRST refusal recorded since `mark`, or null when there was none.
+ * The FIRST refusal of the CALLER'S OWN work since `mark`, or null when there
+ * was none.
  *
  * First, not last, on purpose: in a run of several calls the first refusal is
  * the one that stopped it, and anything after is a consequence of continuing.
  * The customer needs the object that actually has to be granted.
+ *
+ * Background refusals are skipped, and that is the whole reason `origin` exists.
+ * This function answers "was the thing I just did refused?", and a poll that
+ * runs on a timer is not something the person did — see DenialOrigin. It stays
+ * in the ledger; it is simply never somebody's click.
  */
 export function denialSince(mark: number): Denial | null {
-  return ledger.find((d) => d.seq > mark) ?? null
+  return ledger.find((d) => d.seq > mark && d.origin === 'click') ?? null
 }
 
 /** Only for tests: forget everything this page has observed. */

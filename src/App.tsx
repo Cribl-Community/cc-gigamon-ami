@@ -12,6 +12,7 @@ import { TopProgress } from './components/TopProgress'
 import { TourProvider } from './app/TourContext'
 import { TourLauncher, TourPicker, TourStrip } from './components/Tour'
 import { AppBanners } from './components/AppBanners'
+import { JobWatchdogIndicator } from './components/JobWatchdog'
 import { Findings } from './tabs/Findings'
 import { Security } from './tabs/Security'
 import { WebApiHealth } from './tabs/WebApiHealth'
@@ -110,6 +111,55 @@ function LastUpdated({ ts, busy, inflight }: { ts: number; busy: boolean; inflig
 
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`
 
+/**
+ * THE TAB-CHANGE AUTO-REFRESH WARNING IS NOT BUILT, AND THIS IS WHY.
+ *
+ * S6 and §2.2's slice 1.8 row both specify one: on a tab change, if the
+ * already-selected interval crosses a threshold on the newly-mounted panels,
+ * render a one-time inline `Alert` offering **Switch to off** / **Keep**. It was
+ * re-checked before building and four separate things have moved out from under
+ * it since it was written. Recorded here rather than dropped silently, because
+ * the next reader will look for it and should find the argument, not a gap.
+ *
+ * 1. ITS HEADLINE CASE IS FIXED. The spec's whole example is Data Flow's pinned
+ *    30-day tile re-running on every tick — "≈12.3 M CPU-s/day ≈ 3,400
+ *    credits/day". Slice 0.5's pinned-window fix landed: `useSearch` keys a
+ *    pinned hook on `manualRefreshNonce`, and `useCostSlot(enabled && !pinned)`
+ *    keeps it out of the tick cost entirely. Counting the hooks that still
+ *    re-run on a tick, Data Flow is now 2 — the second-cheapest tab in the app.
+ *    Web & API is the worst at 6, Service Map 5, Capacity and TCP Health 4.
+ *
+ * 2. THERE IS NO LONGER A THRESHOLD TO CROSS. A-D29 removed 15 s and 30 s from
+ *    the menu, so AUTO_REFRESH is `Off` and `1m` and nothing else. "The
+ *    already-selected interval crosses a threshold" reduces to "auto-refresh is
+ *    on, and this tab is dearer than the last one" — and no threshold value
+ *    exists anywhere in the plan's evidence. Picking one would be inventing the
+ *    basis for a number the app then quotes, which is the one thing the cost
+ *    rules forbid.
+ *
+ * 3. THE FACT IS ALREADY ON SCREEN, ON THE CONTROL THAT CAUSES IT. `optionLabel`
+ *    below puts the measured cost in the visible option text, and it is computed
+ *    from `useMountedSearchCost()` — the panels mounted right now. The Header is
+ *    outside `<Routes>`, so a tab change recomputes it: arriving on Web & API
+ *    with 1m selected changes the selected option's own text. A banner would be
+ *    a second, louder statement of a fact 40 px away.
+ *
+ * 4. IT CANNOT FIRE WHEN THE SPEC SAYS IT SHOULD. A cost slot starts at
+ *    `cpuSeconds: null` and is only counted once its search has completed and
+ *    `GET /jobs/{id}/metrics` has answered. At the instant of a tab change the
+ *    new tab's cost is therefore unknown — `panels` is 0 — so a guard "on tab
+ *    change" would either quote nothing or appear several seconds after arrival,
+ *    reading as an interruption rather than a warning.
+ *
+ * WHAT IS STILL TRUE, so that reopening this is a decision and not a discovery:
+ * the mechanism survives. An interval chosen on Findings (1 hook) carries to
+ * Web & API (6), and at the plan's own measured ≈130 CPU-s per hook that is
+ * 6 × 130 × 1,440 ≈ 1.12 M CPU-s/day ≈ 312 credits/day — real money, and about
+ * a ninth of the case the spec argued from. If it is built later, the trigger
+ * that fits what the app can actually measure is a change in the MEASURED tick
+ * cost after the new tab's panels have run, not the moment of the tab change.
+ */
+
 /** What auto-refresh costs on this tab: a short cost on each option, and the
  *  detail behind the ⓘ beside the menu. Every figure is computed from the
  *  mounted searches' measured cost; nothing is a literal. */
@@ -167,6 +217,12 @@ function Header({ tabName }: { tabName: string }) {
         </p>
       </div>
       <div className="app-controls">
+        {/* First, so a warning is the leftmost thing in this cluster — and
+            rendering nothing at all the rest of the time, which is the whole
+            design (components/JobWatchdog.tsx). Mounted here rather than on a
+            tab because that is what keeps the watch running for as long as the
+            app is open. */}
+        <JobWatchdogIndicator />
         <LastUpdated ts={lastRefresh} busy={busy} inflight={inflight} />
         <label className="range-label">Range</label>
         <select className="range-select" value={range.label} aria-label="Time range"

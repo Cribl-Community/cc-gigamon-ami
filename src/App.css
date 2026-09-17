@@ -1235,6 +1235,65 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gate-note-text { flex: 1 1 260px; min-width: 0; }
 .gate-retry { flex: none; padding: var(--gm-sp-4) var(--gm-sp-10); font-size: var(--gm-fs-12); }
 
+/* Long-running search watch (components/JobWatchdog.tsx) ----------------------
+   `display: contents` and not `inline-flex`, because this wrapper is a child of
+   `.app-controls`, which is a flex row with a 10px gap — and a gap is applied
+   between flex items whether or not one of them has any width. An empty
+   inline-flex would therefore cost 10px of dead space in a header row that
+   already wraps at 1240px, on every screen where the watch has nothing to say,
+   which is nearly all of them. `display: contents` produces no box at all. The
+   live region inside is `position: absolute` (.sr-only) and the drawer portals
+   to document.body, so neither becomes a stray flex item. */
+.jw { display: contents; }
+.jw-badge {
+  display: inline-flex; align-items: center; gap: var(--gm-sp-6);
+  padding: var(--gm-sp-4) var(--gm-sp-10); font-size: var(--gm-fs-12);
+  background: transparent; border: 1px solid var(--gm-border); border-radius: token('radius.full');
+  cursor: pointer;
+}
+.jw-badge:hover { background: token('color.background.neutral.hover'); }
+/* The two states this indicator has. Both sit directly on the page — the header
+   declares no background of its own — and both are measured in
+   src/app/contrast.test.ts against token('color.background.application').
+   `blind` is subtle ink on purpose: "this app could not check" is a gap in
+   knowledge, not a problem found, and painting it the same amber as a real hung
+   job would make the amber mean two things. */
+.jw-badge-hung { color: token('color.foreground.warning.default'); }
+.jw-badge-blind { color: var(--gm-fg-subtle); }
+
+.jw-body { display: flex; flex-direction: column; gap: var(--gm-sp-12); font-size: var(--gm-fs-13); line-height: 1.5; color: var(--gm-fg); }
+.jw-body code { font-family: var(--gm-mono); }
+.jw-scope, .jw-note, .jw-foot { margin: 0; max-width: 78ch; }
+.jw-note, .jw-foot { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+.jw-note-bad { color: var(--gm-st-danger); }
+/* The table is the one `.dtable` family, on Capra's drawer surface — which is
+   color.background.panel.solid, the same opaque surface Modal uses and this
+   app's `--gm-panel-2`. Horizontal scroll rather than wrapped cells: `.dtable`
+   sets `white-space: nowrap`, and a wrapped job id is unreadable. */
+.jw-tablewrap { overflow-x: auto; }
+/* The query row. It opts out of the nowrap the rest of the table keeps, because
+   it is the one cell whose content is prose-shaped and arbitrarily long. */
+.jw-qrow td { white-space: normal; padding-left: 0; padding-top: 0; }
+.jw-qrow summary { cursor: pointer; font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
+.jw-query {
+  margin: var(--gm-sp-8) 0 0; padding: var(--gm-sp-8) var(--gm-sp-10);
+  max-height: 11rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg);
+  background: var(--gm-panel); border: 1px solid var(--gm-border); border-radius: token('radius.md');
+}
+.jw-since { color: var(--gm-fg-subtle); font-size: var(--gm-fs-11); }
+/* The Action cell of a row with no Cancel in it — somebody else's search, a row
+   whose owner the platform did not name, or any row at all once a poll has
+   failed. Subtle ink and no new colour: it is the same secondary text as
+   .jw-note, measured on the drawer surface in src/app/contrast.test.ts. */
+.jw-noaction { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
+/* The one row that is yours. Weight, not colour: this list is read for whose
+   work it is, and a hue nobody can name is not an answer to that — the Owner
+   cell already says the word "you". */
+.jw-owner-mine { font-weight: token('core.fontWeight.semibold'); }
+.jw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-10); }
+.jw-link { font-size: var(--gm-fs-12); color: token('color.foreground.info.default'); }
+
 .gs-steps { margin-top: var(--gm-sp-16); border-top: 1px solid var(--gm-border); padding-top: var(--gm-sp-12); display: flex; flex-direction: column; gap: var(--gm-sp-4); }
 .gs-step { display: flex; align-items: baseline; gap: var(--gm-sp-8); font-size: var(--gm-fs-12); font-family: var(--gm-mono); }
 .gs-step-icon { flex: none; width: 14px; text-align: center; }

@@ -53,6 +53,21 @@ export interface CapiInit {
    * they have been through `JSON.parse` the two are both "a value".
    */
   text?: boolean
+  /**
+   * Nobody clicked anything to cause this call: it is a poll, a timer, a
+   * refresh that runs on its own. A refusal of it is still recorded, and it is
+   * marked so that `denialSince` never attributes it to a control.
+   *
+   * WHY THIS EXISTS. `<GatedControl>` marks the ledger, runs the write, and
+   * treats any refusal recorded in between as ITS refusal — which is exactly
+   * right when the only calls in flight were the ones the click made. The
+   * long-running-search watch (cribl/jobWatchdog.ts) is the app's first
+   * recurring background call, and without this flag its five-minute 403 lands
+   * inside whichever window happens to be open and latches an unrelated button
+   * as denied. Measured: a provisioning POST that succeeded came back marked
+   * denied because a watchdog poll was refused while it ran.
+   */
+  background?: boolean
 }
 
 /**
@@ -78,7 +93,9 @@ export async function capi(method: string, path: string, body?: unknown, init: C
   // the control that caused the refusal is the thing that decides what it means
   // (cribl/authz.ts), and a GET refused during a status check is not a failure
   // at all, just a fact the screen has to stop calling "absent".
-  if (isDenial(resp.status)) noteDenial(method, path, resp.status, criblMessage(resp))
+  if (isDenial(resp.status)) {
+    noteDenial(method, path, resp.status, criblMessage(resp), init.background ? 'background' : 'click')
+  }
   return resp
 }
 

@@ -20,7 +20,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  denialMark, denialReason, denialSince, isDenial, noteDenial, resetDenials,
+  denialMark, denialReason, denialSince, isDenial, noteDenial, resetDenials, type Denial,
 } from './authz'
 import { capi } from './capi'
 
@@ -92,15 +92,34 @@ describe('the ledger', () => {
     await capi('DELETE', '/m/default/pipelines/gigamon_syslog')
     expect(denialSince(mark)?.message).toBeUndefined()
   })
+
+  it('never blames a control for a refusal nobody clicked for', async () => {
+    // The long-running-search watch is the app's first recurring background
+    // call: a GET every five minutes, forever. Without an origin on the record,
+    // its 403 lands inside whatever <GatedControl> window happens to be open and
+    // latches that button as denied — measured on a provisioning POST that
+    // SUCCEEDED and still came back refused.
+    vi.stubGlobal('fetch', async () => ({ status: 403, text: async () => '{"message":"Not authorized."}' }))
+    const mark = denialMark()
+    await capi('GET', '/m/default_search/search/jobs?offset=0', undefined, { background: true })
+    expect(denialSince(mark), 'a background poll told the UI the user’s click was refused').toBeNull()
+    // Recorded all the same — it is a real refusal and the ledger stays complete
+    // by construction; it is simply never attributed to anybody's click.
+    expect(denialMark(), 'the refusal was dropped rather than marked').toBeGreaterThan(mark)
+    // And the control's own refusal, in the same window, is still reported.
+    noteDenial('POST', '/version/commit', 403)
+    expect(denialSince(mark)?.path).toBe('/version/commit')
+  })
 })
 
 describe('the sentence', () => {
-  const denial = {
+  const denial: Denial = {
     method: 'PATCH',
     path: '/m/default/system/inputs/in_gigamon_syslog',
     status: 403,
     message: 'Not authorized or licensed to perform this action.',
     seq: 1,
+    origin: 'click',
   }
 
   it('names the method and the path, which is what an admin would grant', () => {

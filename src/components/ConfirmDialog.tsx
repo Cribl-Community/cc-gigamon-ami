@@ -72,8 +72,15 @@ import type { GatedControlProps } from './GatedControl'
  * What a confirmation does to one object. S8's four, kept whole even though
  * Guided Setup uses three — the word is rendered, so an action nothing renders
  * costs a line in a map rather than being a lie on screen.
+ *
+ * `stop` is the fifth, added by the long-running-search cancel (slice 1.8). It
+ * is here rather than reusing `delete` because the word is on screen next to the
+ * object: cancelling a Cribl Search job moves it to `canceled` and leaves it in
+ * the search history, so `delete` would tell a reader their colleague's search
+ * record was about to be removed. It also does not collide with the dialog's own
+ * Cancel button, which means the opposite thing.
  */
-export type ResourceAction = 'create' | 'replace' | 'delete' | 'deploy'
+export type ResourceAction = 'create' | 'replace' | 'delete' | 'deploy' | 'stop'
 
 /** One object a confirmation names. `id` is what an operator checks against. */
 export interface ConfirmResource {
@@ -125,6 +132,9 @@ const ACTION_APPEARANCE: Record<ResourceAction, 'success' | 'warning' | 'danger'
   // Restarts running Workers on a new configuration.
   deploy: 'info',
   delete: 'danger',
+  // Ends work that is in flight. Danger, like delete, because what it costs is
+  // the same thing: somebody's results, gone, with nothing to recover them from.
+  stop: 'danger',
 }
 
 /**
@@ -133,7 +143,7 @@ const ACTION_APPEARANCE: Record<ResourceAction, 'success' | 'warning' | 'danger'
  * and a sort that also grouped creates ahead of replaces would throw that away
  * to enforce a rule nobody asked for.
  */
-const DELETES_LAST: Record<ResourceAction, number> = { create: 0, replace: 0, deploy: 0, delete: 1 }
+const DELETES_LAST: Record<ResourceAction, number> = { create: 0, replace: 0, deploy: 0, delete: 1, stop: 1 }
 
 export function ConfirmDialog({
   isOpen,
