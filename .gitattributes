@@ -1,0 +1,64 @@
+# Line endings, decided once, because leaving it to each clone's core.autocrlf
+# cost six consecutive CI runs in Phase 1.
+#
+# WHAT HAPPENED. A digest hashed a file's source text. That text was CRLF in the
+# Windows working tree the author ran the check in, and LF in the object store
+# the Linux CI job checks out, so the same file hashed to two different values
+# and the snapshot passed locally and failed everywhere else. Six runs went by
+# before anybody looked at the bytes instead of the code. The hasher was fixed to
+# normalise `\r\n` before hashing; this file closes the class, so the next tool
+# that reads a file byte-for-byte does not have to remember the lesson.
+#
+# THE CHOICE, AND WHY IT IS `eol=lf` AND NOT BARE `text=auto`.
+#
+#   `* text=auto` alone normalises to LF in the REPOSITORY and then checks out
+#   according to each clone's `core.autocrlf` — CRLF on this machine. It makes
+#   the object store deterministic and leaves the working tree exactly as it is
+#   today, which is the cheaper change. But the bug was never in the object
+#   store: it was the gap between what CI reads and what the author reads, and
+#   `text=auto` keeps that gap open. Anything that hashes, snapshots or byte-
+#   compares a source file would still have to normalise by hand, and forgetting
+#   fails the same silent way.
+#
+#   `* text=auto eol=lf` also forces LF in EVERY working tree, so the bytes on
+#   this machine, the bytes in the repository and the bytes CI checks out are the
+#   same bytes. That is what actually closes the class, and it is what is set
+#   below.
+#
+# THE COST, STATED PLAINLY BECAUSE IT LANDS ON SOMEBODY'S MACHINE. `eol=lf`
+# overrides `core.autocrlf`, so the next checkout rewrites the line endings of
+# roughly 100 files on disk (measured 2026-09-17: 100 CRLF, 52 already LF, 1
+# mixed — the working tree was already inconsistent with itself, which is the
+# same bug wearing different clothes). Nothing in this repo needs CRLF: there is
+# no `.bat`, `.cmd` or `.ps1`, every toolchain here (Vite, TypeScript, oxlint,
+# vitest, npm) is indifferent, and every editor in use writes LF when told to.
+# If a Windows-only script ever lands, give it its own `eol=crlf` line rather
+# than reopening this decision for the whole tree.
+* text=auto eol=lf
+
+# Binary: never normalised, never diffed as text, never mangled by the rule
+# above. `binary` is `-text -diff`. Declared rather than left to git's NUL-byte
+# heuristic, which is a guess that only has to be wrong once.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.tgz   binary
+*.gz    binary
+*.zip   binary
+
+# The vendored Cribl OpenAPI spec: 8 MB, machine-generated, replaced wholesale
+# when a new Cribl version is vendored, and never hand-edited. `-diff` only stops
+# git rendering a line-by-line diff of it, which nobody has ever read and which
+# buries every real change in the same commit. It is deliberately NOT `-text` and
+# NOT `binary`: it is stored LF like everything else, so the rule above keeps it
+# consistent with CI, and `git grep` through it — how endpoints and response
+# shapes actually get looked up in this repo — keeps working either way.
+openapi.json -diff
+
+# SVG is text and is read in diffs — say so rather than let the heuristic decide
+# on a minified one.
+*.svg text
