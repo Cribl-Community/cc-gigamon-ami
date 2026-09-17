@@ -177,6 +177,29 @@ export function ConfirmDialog({
     setAttempted(false)
   }, [isOpen])
 
+  // Put focus back where it came from when the dialog closes.
+  //
+  // Capra's FocusScope restores focus itself when IT controls the unmount, but
+  // this dialog is rendered conditionally by its caller, so on close the whole
+  // subtree goes with the scope and the restore never runs — focus lands on
+  // <body>, and a keyboard user is returned to the top of the document rather
+  // than to the button they pressed. Measured in a real browser: happy-dom has
+  // no sequential focus navigation, so the test asserting this passed while the
+  // behaviour was broken. Hence the ref: remember the trigger on open, and put
+  // focus back on it on close if nothing else has claimed it since.
+  const restoreTo = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (isOpen) {
+      restoreTo.current = document.activeElement as HTMLElement | null
+      return
+    }
+    const el = restoreTo.current
+    restoreTo.current = null
+    // Only if focus fell to the body — if the caller moved it deliberately, or
+    // the trigger has since left the page, leave it alone.
+    if (el && el.isConnected && document.activeElement === document.body) el.focus()
+  }, [isOpen])
+
   // Hang the body on the dialog as its description. Capra offers no prop for it
   // (see the header); the dialog element is found through its role rather than
   // its class, and Capra never writes this attribute itself, so nothing fights
