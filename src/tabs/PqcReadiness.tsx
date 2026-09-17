@@ -146,7 +146,7 @@ export function PqcReadiness() {
           info="Share of TLS sessions negotiating TLS 1.3 (ssl_server_supported_version=772). PQC key exchange requires TLS 1.3." query={SERVERS_Q} />
         <KpiTile label="PQC key exchange offered" value={serversQ.loading ? '…' : fmtPct(totals.pqcPct, 1)} accent="warning"
           sub={`${fmtCount(totals.pqc)} sessions offered hybrid ML-KEM`}
-          info="Share of TLS 1.3 sessions whose ClientHello offered a hybrid ML-KEM group (X25519Kyber768 / X25519MLKEM768). Offered, not necessarily negotiated." query={GROUPS_Q} />
+          info="Share of TLS 1.3 sessions whose ClientHello offered a hybrid ML-KEM group (X25519Kyber768 / X25519MLKEM768). Offered, not necessarily negotiated." query={SERVERS_Q} />
         <KpiTile label="Harvest-now exposure" value={serversQ.loading ? '…' : fmtCount(totals.harvest)} accent="danger"
           sub="classical → sensitive destinations"
           info="Classical (non-PQC) sessions reaching a sensitivity-tagged destination (credential / pci / financial / phi). Recordable today, decryptable once a quantum computer exists. Sensitivity is a heuristic on the SNI." query={SERVERS_Q} />

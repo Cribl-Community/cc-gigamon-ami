@@ -90,7 +90,7 @@ export function WebApiHealth() {
         <KpiTile label="Server think-time p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95))} accent="warning"
           sub="http_server_ms" info="95th-percentile server processing time — request timestamp to response timestamp, measured on the wire." query={KPI} />
         <KpiTile label="HTTP/2 transactions" value={kpi.loading ? '…' : fmtCount(toNum(k.h2))} accent="neutral"
-          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={H2} />
+          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={KPI} />
       </div>
 
       <div className="grid-2">
