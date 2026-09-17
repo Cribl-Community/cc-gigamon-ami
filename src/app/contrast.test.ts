@@ -82,14 +82,14 @@ const PAGE = "token('color.background.application')"
 /**
  * Every surface a control can sit on, for the focus ring. Derived by reading
  * the rules the ring applies to, not assumed: a control inside .pivot-toggle
- * sits on neutral.subtle, a diagram ⓘ on --dop-canvas or --cribl-card.
+ * sits on neutral.subtle, a diagram ⓘ on --dop-canvas or --gm-brand-card.
  */
 const SURFACES: Array<[string, string[]]> = [
   ['the page', [PAGE]],
   ['a panel', ['var(--gm-panel)', PAGE]],
   ['a solid panel', ['var(--gm-panel-2)', PAGE]],
   ['the diagram canvas', ['var(--dop-canvas)', PAGE]],
-  ['a Cribl product card', ['var(--cribl-card)', PAGE]],
+  ['a Cribl product card', ['var(--gm-brand-card)', PAGE]],
   ['inside .pivot-toggle', ["token('color.background.neutral.subtle')", 'var(--gm-panel)', PAGE]],
 ]
 
@@ -300,7 +300,128 @@ const BANNER_PAIRS: Pair[] = [
     fg: 'var(--gm-fg)',
     bg: ['var(--gm-panel-2)', ...BANNER('info')],
     threshold: 4.5,
-    where: '.gs-btn in Alert’s action slot — "Choose a role", and GatedControl’s "Generate"',
+    where: '.btn in Alert’s action slot — "Choose a role", and GatedControl’s "Generate"',
+  },
+]
+
+/**
+ * `.btn` — the one house button, and the only rows in this file that exist
+ * because a MERGE forced a colour decision rather than because a rule was
+ * written.
+ *
+ * Slice 1.9 collapsed five button families into one. Three of them had a filled
+ * "primary": `.gs-btn-primary` on `background.accent.solid.default` and
+ * `.btn-incident` / `.tour-btn-primary` on `background.info.solid.default`.
+ * Those two tokens resolve to the same #0190ff in both themes, so the merge
+ * itself had nothing to choose — but it would have put one name on #fff over
+ * #0190ff, which is 3.26:1, the identical pairing the REJECTED table above
+ * asserts as a failure for a `bold` Pill. Capra's own `Button variant="primary"`
+ * paints the same thing. An app cannot assert that a pairing fails and ship its
+ * main button painting it, so the fills moved onto --gm-btn-primary and
+ * --gm-btn-danger: the same hues darkened until #fff clears AA, which is the
+ * move --gm-st-success and --gm-st-warning already made.
+ *
+ * ONE VALUE, BOTH THEMES, and that is why these rows look duplicated: the ink
+ * sits on the button's own fill, which does not flip, so light and dark measure
+ * the same number. They are still asserted in both, because the day someone adds
+ * a :root.dark override is the day that stops being true.
+ *
+ * The fill rows owe 3:1, not 4.5:1 (SC 1.4.11): both filled variants set
+ * `border-color: transparent`, so the fill IS the control's boundary against the
+ * page or the panel it sits on. The secondary button keeps its --gm-border
+ * outline and needs no such row.
+ *
+ * NOT here: the disabled state. `.btn:disabled` is 0.5 opacity, and SC 1.4.3
+ * exempts an inactive control from the contrast minimum — listing it would be
+ * asserting a threshold the standard does not set.
+ */
+const BUTTON_PAIRS: Pair[] = [
+  {
+    what: 'the label on a filled primary button',
+    fg: '#fff',
+    bg: ['var(--gm-btn-primary)', PAGE],
+    threshold: 4.5,
+    where: '.btn-primary (13px medium) — Deploy, Create ServiceNow incident, Apply, Next →, Submit incident',
+  },
+  {
+    what: 'the label on a filled danger button',
+    fg: '#fff',
+    bg: ['var(--gm-btn-danger)', PAGE],
+    threshold: 4.5,
+    where: '.btn-danger (13px medium) — the teardown confirm, the search-cancel confirm',
+  },
+  {
+    what: 'the label on the secondary button, on its own fill',
+    fg: 'var(--gm-fg)',
+    bg: ['var(--gm-panel-2)', PAGE],
+    threshold: 4.5,
+    where: '.btn (13px medium) — the header Refresh, the tour strip, Re-check, Reset to defaults',
+  },
+  {
+    what: 'the label on the secondary button, hovered',
+    fg: 'var(--gm-fg)',
+    bg: ["token('color.background.neutral.hover')", 'var(--gm-panel)', PAGE],
+    threshold: 4.5,
+    where: '.btn:hover — which is also the only fill .btn-ghost ever has',
+  },
+  {
+    what: 'a filled primary button against the page',
+    fg: 'var(--gm-btn-primary)',
+    bg: [PAGE],
+    threshold: 3,
+    where: '.btn-primary has border-color: transparent, so its fill is its boundary (SC 1.4.11)',
+  },
+  {
+    what: 'a filled primary button against a panel',
+    fg: 'var(--gm-btn-primary)',
+    bg: ['var(--gm-panel)', PAGE],
+    threshold: 3,
+    where: '.btn-primary inside a Panel — Guided Setup’s action column, the Service Map domain header',
+  },
+  {
+    what: 'a filled danger button against the modal surface',
+    fg: 'var(--gm-btn-danger)',
+    bg: ["token('color.background.neutral.subtle')", 'var(--gm-panel-2)', PAGE],
+    threshold: 3,
+    where: '.btn-danger in Capra’s Modal footer, which is neutral.subtle over panel.solid',
+  },
+  {
+    // KEPT rather than merged into .btn — see the comment above the rule in
+    // App.css. Ruling on it is what puts it here: a class this slice decided to
+    // keep is a class this slice is answerable for.
+    what: 'the Copy control in the ⓘ popover',
+    fg: 'var(--gm-fg-subtle)',
+    bg: ["token('color.background.neutral.subtle')", 'var(--gm-panel-2)', PAGE],
+    threshold: 4.5,
+    where: '.pinfo-copy (11px) — on .pinfo-pop, which is --gm-panel-2',
+  },
+]
+
+/**
+ * `.env-chip` — the environment chip in the header subtitle, and the other class
+ * slice 1.9 ruled on rather than retired.
+ *
+ * Two surfaces because it is drawn in two places: beside the version chip in
+ * `.app-subtitle`, which sits directly on the page, and in the Guided Setup
+ * panel header, which is `--gm-panel`. `.env-dev` is the only one the page ever
+ * shows (it is rendered only when the app is NOT installed) and `.env-installed`
+ * the only one the panel header shows, but both are measured on both, because
+ * the class does not know which of the two it is in.
+ */
+const CHIP_PAIRS: Pair[] = [
+  {
+    what: 'the environment chip: dev preview',
+    fg: "token('color.foreground.warning.default')",
+    bg: [PAGE],
+    threshold: 4.5,
+    where: '.env-chip.env-dev (11px) — the header subtitle',
+  },
+  {
+    what: 'the environment chip: installed in Cribl',
+    fg: "token('color.foreground.success.default')",
+    bg: PANEL,
+    threshold: 4.5,
+    where: '.env-chip.env-installed (11px) — the Guided Setup panel header',
   },
 ]
 
@@ -469,7 +590,7 @@ const PAIRS: Pair[] = [
     fg: 'var(--gm-st-danger)',
     bg: ['var(--gm-panel)', PAGE],
     threshold: 4.5,
-    where: '.svc-status-danger, .gs-res-error, .gs-step-err, .gs-btn-danger-text',
+    where: '.svc-status-danger, .gs-res-error, .gs-step-err, .btn-danger-text',
   },
   {
     what: 'status: danger, on the solid panel',
@@ -494,6 +615,8 @@ const PAIRS: Pair[] = [
   },
   ...PILL_PAIRS,
   ...BANNER_PAIRS,
+  ...BUTTON_PAIRS,
+  ...CHIP_PAIRS,
   ...TABLE_PAIRS,
   ...DIALOG_PAIRS,
 ]
@@ -727,8 +850,11 @@ describe('contrast of the colours App.css decides', () => {
       // The ring is one colour against many surfaces, so it is a loop rather
       // than eleven near-identical rows. `outline-offset: 2px` is why the
       // surface — and not the control's own fill — is the right thing to
-      // measure against: against a .gs-btn-primary or a .seg-active the ring is
-      // the same blue as the button, 1.00:1, and only the gap makes it visible.
+      // measure against: against a .seg-active or a .chip-active the ring is the
+      // same blue as the control, 1.00:1, and only the gap makes it visible. The
+      // house filled buttons left that list in slice 1.9 — the ring measures
+      // 1.54:1 on --gm-btn-primary and 1.67:1 on --gm-btn-danger, still short of
+      // 3:1, so the offset carries them too.
       for (const [where, layers] of SURFACES) {
         it(`the focus ring is visible on ${where}`, () => {
           const map = maps[theme]

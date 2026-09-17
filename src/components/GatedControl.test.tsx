@@ -31,7 +31,7 @@ afterEach(() => {
   resetDenials()
 })
 
-const button = () => container.querySelector<HTMLButtonElement>('.gs-btn-primary')!
+const button = () => container.querySelector<HTMLButtonElement>('.btn-primary')!
 const note = () => container.querySelector('.gate-note-text')?.textContent ?? null
 const retry = () => container.querySelector<HTMLButtonElement>('.gate-retry')
 

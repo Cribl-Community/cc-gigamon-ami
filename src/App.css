@@ -104,6 +104,63 @@
      throughput figure in .dop-flow-value at 14px, and the old #2b8a3e measured
      4.06:1 on the diagram's own --dop-canvas. Now 4.67:1. */
   --gm-flow-metric: #287f39;
+
+  /* ---- The two filled buttons --------------------------------------------
+     The one house button family (".btn" below) has two solid variants, and
+     these are their fills. They are NOT in :root.dark, deliberately: the ink on
+     them is #fff and it sits on the button's own fill rather than on a surface
+     that flips, so one value is correct in both themes — and a second value
+     would be a second pairing to measure for no gain.
+
+     WHY THEY ARE NOT CAPRA TOKENS, which is the whole reason this block exists.
+     The three classes that merged into `.btn-primary` painted
+     `background.accent.solid.default` (.gs-btn-primary) and
+     `background.info.solid.default` (.btn-incident, .tour-btn-primary). Those
+     two tokens resolve to the SAME #0190ff, in both themes — so the merge itself
+     changed no pixel and had no colour to choose. What it did do is put one
+     name on a pairing the app had already measured and rejected: #fff on #0190ff
+     is 3.26:1, the identical number src/app/contrast.test.ts asserts as a
+     FAILURE for Capra's `bold` Pill, and the reason components/StatusPill.tsx
+     uses `outline` instead. Slice 1.6 had already started routing around it by
+     hand — see the comment in components/DatasetIntelPrompt.tsx choosing
+     `gs-btn` over `gs-btn-primary` on exactly this measurement. Capra's own
+     `Button variant="primary"` is no escape: it paints
+     foreground.accent.contrast on background.accent.solid.default, which is the
+     same 3.26:1.
+
+     So the fills are the same hues darkened until #fff clears AA at 13px, the
+     move --gm-st-success and --gm-st-warning above already made, onto the same
+     Open Color ramp they use. One step, not two, for the reason in the first
+     paragraph. Both are measured in src/app/contrast.test.ts, in both themes,
+     against the ink and against the two surfaces the buttons sit on. */
+  --gm-btn-primary: #1971c2;  /* Open Color blue-8. #fff on it is 5.02:1, up from 3.26:1 on #0190ff. */
+  --gm-btn-danger: #c92a2a;   /* Open Color red-9 — the same hex --gm-st-danger uses in light.
+                                 #fff on it is 5.46:1, up from 3.91:1 on --gm-danger. */
+
+  /* ---- Brand constants ----------------------------------------------------
+     Gigamon orange and the Cribl teal/cyan, plus the Cribl product-card fills
+     and their ink. They are brand colours rather than theme colours, so — like
+     --gm-st-* above — they are hand-picked, and unlike --gm-st-* they do NOT
+     flip: the Cribl product cards stay dark in light mode too, because that is
+     how they are drawn in the source artwork and it keeps the platform block
+     reading as one object.
+
+     They were `--cribl-…` and `--gg-…`, declared 1200 lines down in a second
+     `:root, :root.dark` block beside the Data Flow diagram. Three naming
+     conventions in one file is how a reader stops being able to tell a house
+     token from a vendor's, so they are `--gm-brand-*` here with everything else.
+     The vendor each belongs to is this comment's job, not the name's: `orange`
+     is Gigamon's, `teal`/`cyan`/`card`/`ink` are Cribl's. The dual selector is
+     gone with them — a custom property declared only in `:root` already applies
+     in dark, and nothing in a `.dark` block ever redeclared these. */
+  --gm-brand-orange: #f60;
+  --gm-brand-orange-soft: #ff8a3d;
+  --gm-brand-card: #133f49;
+  --gm-brand-card-2: #2c3a4a;
+  --gm-brand-teal: #2bb3a8;
+  --gm-brand-cyan: #22d3ee;
+  --gm-brand-ink: #eaf6f8;
+  --gm-brand-ink-sub: #a8c6cd;
 }
 
 /* Dark overrides — `:root.dark` (0,2,0) outranks `:root` (0,1,0) regardless of
@@ -167,7 +224,14 @@ body {
   background: token('color.background.warning.solid.default');
 }
 /* Preview qualifier: part of the name, but it should not compete with it —
-   lighter weight and subdued, sized to sit on the title's baseline. */
+   lighter weight and subdued, sized to sit on the title's baseline.
+
+   KEPT, against the ux-spec's retire list, for the flattest of reasons: it is
+   not a badge, a chip or a label. It is four declarations of TYPE applied to
+   part of an <h1>, and there is no component in this app or in Capra that a
+   parenthesised qualifier on a heading belongs to. Slice 1.6 reached the same
+   conclusion and said so in components/StatusPill.tsx; this is the ruling that
+   closes it rather than deferring it again. */
 .title-preview {
   margin-left: -4px;
   font-size: var(--gm-fs-18);
@@ -183,6 +247,27 @@ body {
   align-items: center;
   gap: var(--gm-sp-10);
 }
+/* KEPT, against the ux-spec's retire list, and for a reason that is about the
+   chip NEXT to it rather than about this one.
+
+   `.env-chip` is not a status: <StatusPill> renders the state word itself out of
+   a status vocabulary (`present`, `failed`, `missing`), and "Cribl" / "dev
+   preview" is an environment. components/ConfirmDialog.tsx already refused to
+   widen that union for the same reason — its four action words are verbs — and
+   widening it twice would leave the one status map meaning three things. So the
+   destination the spec has in mind is Capra's `Pill variant="outline"`, which is
+   what <StatusPill> is built on.
+
+   And that is exactly what stops it. A Capra Pill draws its word at 12px behind
+   a 16px icon inside 8px of padding; `.version-chip` on the line below is 11px
+   mono in the same outline at the same radius, and it is on no retire list. The
+   two chips are one idea — this app's environment and version, stated the same
+   way, side by side in the subtitle — and converting one of them alone would
+   MAKE the mismatch the retire list exists to prevent. Both, or neither; and
+   `.version-chip` cannot go, because a Pill will not render mono.
+   Both inks are measured on both of their surfaces in src/app/contrast.test.ts.
+
+   Slice 1.6 left these two and recorded that it had. This is the ruling. */
 .env-chip {
   font-size: var(--gm-fs-11);
   padding: var(--gm-sp-2) var(--gm-sp-8);
@@ -212,9 +297,48 @@ body {
   font-size: var(--gm-fs-13);
   cursor: pointer;
 }
-.btn-refresh {
+/* ---------- The one house button ---------------------------------------------
+   WHAT IT REPLACES. Five families drew the same two buttons: `.gs-btn` +
+   `-primary|-ghost|-danger|-danger-text` (Guided Setup's name, on 17 controls
+   across the header banners, the watchdog drawer, TLS Posture and the two
+   confirmation dialogs — a class whose name says which tab it came from is
+   already a second language), `.tour-btn` + `-primary` (the tour strip),
+   `.btn-refresh` (the header, the error boundary, three tabs) and
+   `.btn-incident` (two tabs and the ServiceNow mock). Fourteen selectors, three
+   paddings, two font weights, two disabled opacities and two "primary" fills —
+   for a button and a filled button.
+
+   WHAT DIFFERED, and what each merged site therefore does now. This is the
+   audit, because a merge nobody can check is a repaint:
+     * padding — `.gs-btn` was 8/14, `.btn-refresh` 6/14, `.tour-btn` 6/12. The
+       base is 6/14. The 17 `.gs-btn` sites lose 4px of HEIGHT, which is a fix
+       rather than a cost: Capra's own `Button` is a fixed 32px (dimension
+       -component-md) and the confirmation dialogs put a house button next to a
+       Capra one in the same footer, mismatched by 4px until now. The same 4px
+       is why `.domain-head` on the Service Map and `.cap-controls` on Capacity
+       each had one button taller than the one beside it.
+     * font-weight — `.tour-btn` was normal, the other two medium. Base: medium.
+     * disabled — `.tour-btn` was 0.45 opacity, `.gs-btn` 0.5, `.btn-incident`
+       0.5 with `cursor: not-allowed`. Base: 0.5 and `cursor: default`.
+     * hover — `.btn-refresh` had a bare `:hover`, the other two
+       `:hover:not(:disabled)`. Base: the guarded one.
+     * TWO REAL BUGS FALL OUT. `.gs-btn-danger` and `.tour-btn-primary` are each
+       (0,1,0) and set only `background`, while `.gs-btn:hover:not(:disabled)`
+       and `.tour-btn:hover:not(:disabled)` are (0,2,0) — so hovering the red
+       "Remove onboarding stack" confirm button, the red "Cancel this search"
+       confirm button, and the blue "Next →" in the tour strip turned them all
+       NEUTRAL GREY. Every filled variant below carries its own hover.
+
+   WHAT IS NOT HERE. Capra's `Button`, and deliberately: it renders
+   `foreground.accent.contrast` on `background.accent.solid.default`, which is
+   #fff on #0190ff — 3.26:1, the same pairing src/app/contrast.test.ts asserts as
+   a failure for a `bold` Pill. Adopting it would import the defect this family
+   is fixing. See the --gm-btn-* block at the top of this file.
+   ------------------------------------------------------------------------- */
+.btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--gm-sp-6);
   background: var(--gm-panel-2);
   color: var(--gm-fg);
@@ -223,16 +347,39 @@ body {
   padding: var(--gm-sp-6) var(--gm-sp-14);
   font-size: var(--gm-fs-13);
   font-weight: token('core.fontWeight.medium');
+  /* A label that wraps mid-phrase ("←" alone on a line above "Back") is worse
+     than one that overflows. `.btn-refresh` and `.tour-btn` both had this; the
+     stretched Guided Setup buttons are in a 400px column and do not need it. */
+  white-space: nowrap;
   cursor: pointer;
+  transition: filter 0.15s, background 0.15s;
 }
-.btn-refresh:hover { background: token('color.background.neutral.hover'); }
-.btn-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--gm-panel-2); color: var(--gm-fg);
-  border: 1px solid var(--gm-border); border-radius: token('radius.md');
-  padding: var(--gm-sp-6) var(--gm-sp-8); cursor: pointer;
+.btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* The two filled variants. Each restates its own background in `:hover` because
+   the base hover is one selector more specific — see "TWO REAL BUGS" above. */
+.btn-primary {
+  background: var(--gm-btn-primary); color: #fff; border-color: transparent;
 }
-.btn-icon:hover { background: token('color.background.neutral.hover'); }
+.btn-primary:hover:not(:disabled) { background: var(--gm-btn-primary); filter: brightness(1.08); }
+.btn-danger {
+  background: var(--gm-btn-danger); color: #fff; border-color: transparent;
+}
+.btn-danger:hover:not(:disabled) { background: var(--gm-btn-danger); filter: brightness(1.08); }
+
+/* No fill until hovered. The base hover is what gives it one, which is the
+   behaviour `.gs-btn-ghost` already had — it never overrode the hover either. */
+.btn-ghost { background: transparent; }
+/* A destructive action that is not the page's main one: the word is red and the
+   border is dashed, and it is always worn over `.btn-ghost` so there is no fill
+   competing with the red. --gm-st-danger, measured on both panels already. */
+.btn-danger-text { color: var(--gm-st-danger); border-style: dashed; }
+
+/* Icon-only. The one distinction worth a modifier: a bare glyph needs square
+   padding, where a label needs room at the ends. Kept because it is the only
+   member of the family whose box is decided by the icon rather than the text. */
+.btn-icon { padding-inline: var(--gm-sp-8); }
 
 /* ---------- Tab bar ---------- */
 .tab-bar {
@@ -335,6 +482,23 @@ body {
    and would otherwise stay in the UA control font at 19.2px tall. */
 .pinfo-open { display: inline-flex; align-items: center; min-height: 24px; gap: var(--gm-sp-4); color: token('color.foreground.link'); text-decoration: none; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.medium'); }
 .pinfo-open:hover { text-decoration: underline; }
+/* KEPT, against the ux-spec's retire list, and this is the reason.
+   It is not the house button under another name. `.btn` is a 13px medium label
+   on a panel fill with 6/14 of padding and a ~32px box, sized to sit in a page's
+   action row next to a Capra `Button`. This one is an 11px subtle-ink control
+   inside a 12px popover, one of two things on a header row 8px apart, whose
+   whole job is to not compete with the query it sits above. Written as `.btn`
+   with a modifier it would override the base's size, weight, ink, fill and
+   radius — five of the eight declarations that make `.btn` what it is — which is
+   a separate treatment wearing a shared name, and that is the thing the retire
+   list exists to prevent, not the thing it asks for.
+   The ink is measured on the popover surface in src/app/contrast.test.ts.
+
+   The idea it IS a member of is "the small quiet control", which this file
+   spells three times: here, `.seg-sm` and `.chip`. That is the next family to
+   collapse and it is not this slice's — two of the three are toggles with an
+   active state and this one is an action, and neither of the other two is on any
+   retire list. Noted here so the next reader does not have to rediscover it. */
 .pinfo-copy { display: inline-flex; align-items: center; min-height: 24px; font: inherit; font-size: var(--gm-fs-11); background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); color: var(--gm-fg-subtle); border-radius: 6px; padding: var(--gm-sp-2) var(--gm-sp-10); cursor: pointer; }
 .pinfo-copy:hover { color: var(--gm-fg); }
 .pinfo-code-link { display: block; text-decoration: none; }
@@ -641,12 +805,8 @@ body {
 /* ---------- Latency domains ---------- */
 .domain-head { display: flex; align-items: center; gap: var(--gm-sp-14); }
 .domain-head .panel-title { flex: 1; }
-.btn-incident {
-  background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast');
-  border: none; border-radius: token('radius.md'); padding: var(--gm-sp-8) var(--gm-sp-16); font-size: var(--gm-fs-13);
-  font-weight: token('core.fontWeight.semibold'); cursor: pointer;
-}
-.btn-incident:disabled { opacity: 0.5; cursor: not-allowed; }
+/* `.btn-incident` was here. It is `.btn .btn-primary` — the same filled button
+   the tour strip and Guided Setup drew under two other names. */
 .domain-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gm-sp-14); }
 @media (max-width: 800px) { .domain-row { grid-template-columns: repeat(2, 1fr); } }
 .domain {
@@ -754,20 +914,34 @@ body {
 .exon-warn .exon-icon { background: var(--gm-warning); color: #1a1200; }
 .exon-text { font-size: var(--gm-fs-12); line-height: 1.5; color: var(--gm-fg); }
 
-/* ---------- Modal ---------- */
-.modal-scrim {
-  position: fixed; inset: 0; background: token('color.background.scrim');
-  display: flex; align-items: flex-start; justify-content: center; padding: 60px var(--gm-sp-16); z-index: 50; overflow-y: auto;
-}
-.modal {
-  width: 560px; max-width: 100%; background: var(--gm-panel-2);
-  border: 1px solid var(--gm-border); border-radius: var(--gm-radius); box-shadow: 0 24px 60px rgba(0,0,0,0.5);
-}
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: var(--gm-sp-16) var(--gm-sp-20); border-bottom: 1px solid var(--gm-border); }
-.modal-title { display: inline-flex; align-items: center; gap: var(--gm-sp-8); font-weight: token('core.fontWeight.semibold'); }
-.sn-dot { width: 12px; height: 12px; border-radius: 50%; background: #62d84e; }
-.modal-x { background: none; border: none; color: var(--gm-fg-subtle); font-size: var(--gm-fs-24); cursor: pointer; line-height: 1; }
-.modal-body { padding: var(--gm-sp-18) var(--gm-sp-20); display: flex; flex-direction: column; gap: var(--gm-sp-14); }
+/* ---------- The ServiceNow mock's own body -----------------------------------
+   THE SECOND MODAL IS GONE. `.modal-scrim`, `.modal`, `.modal-head`,
+   `.modal-title`, `.modal-x`, `.modal-body`, `.modal-actions`, `.modal-done`,
+   `.modal-note` and `.tour-modal` were a hand-built dialog that
+   `ServiceNowModal` and `TourPicker` shared while `ConfirmDialog` — added one
+   slice earlier for the same job — was already on Capra's `Modal`. Both are on
+   Capra's now, which is what the third file in this app to need a dialog would
+   otherwise have had to choose between.
+
+   It was not only a duplicate look. The hand-built one had no focus trap, did
+   not close on Escape, did not lock the page behind it, did not restore focus
+   on close, and labelled itself with a `<span>` nothing pointed at —
+   `TourPicker` did not even set `aria-modal`. Capra's does all five, and
+   src/components/ConfirmDialog.tsx already documents each one as measured
+   rather than assumed.
+
+   What is left in this block is what belongs to the ServiceNow mock itself: its
+   form fields and its success panel. The `.sn-` prefix is that component's, and
+   `.fld*` is the form. Nothing here is a dialog.
+
+   `.sn-dot` went with it — the brand-green dot that sat beside the words in the
+   header — and not for tidiness. `ModalProps.title` is typed ReactNode, but
+   Capra only builds the <h2> it points `aria-labelledby` at when the title is
+   TEXT; an element there leaves the dialog with no accessible name at all. That
+   was measured on the way in rather than guessed, and
+   components/ServiceNowModal.test.tsx pins it so the dot cannot come back by
+   accident. A decorative dot on a mock dialog is not worth the name of the thing
+   a screen-reader user has just been placed inside. */
 .fld { display: flex; flex-direction: column; gap: var(--gm-sp-4); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
 .fld-in {
   background: token('color.background.application'); color: var(--gm-fg);
@@ -775,10 +949,13 @@ body {
 }
 .fld-area { font-family: var(--gm-mono); font-size: var(--gm-fs-12); resize: vertical; }
 .fld-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gm-sp-12); }
-.modal-actions { display: flex; justify-content: flex-end; gap: var(--gm-sp-10); margin-top: var(--gm-sp-4); }
-.modal-done { align-items: center; text-align: center; gap: var(--gm-sp-10); padding: var(--gm-sp-32) var(--gm-sp-20); }
+/* The form and the success panel each stack their own children; the dialog
+   around them no longer does it for them, because Capra's content box is a
+   plain scroll region and that is the right division. */
+.sn-form { display: flex; flex-direction: column; gap: var(--gm-sp-14); }
+.sn-done { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--gm-sp-10); padding: var(--gm-sp-16) 0; }
 .done-check { width: 46px; height: 46px; border-radius: 50%; background: var(--gm-success); color: #05130c; display: flex; align-items: center; justify-content: center; font-size: var(--gm-fs-24); }
-.modal-note { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
+.sn-note { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
 
 /* ---------- Field explorer ---------- */
 .fe-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-12); }
@@ -906,28 +1083,19 @@ body {
 /* ---------- Guided tour (persona-based) ---------- */
 /* Never auto-opens: the launcher button and a one-time nudge are the only entries,
    and both completion and dismissal are persisted so it stays hidden afterwards. */
-.btn-tour { gap: var(--gm-sp-6); padding: var(--gm-sp-6) var(--gm-sp-12); font-size: var(--gm-fs-13); }
-.btn-tour-txt { font-weight: token('core.fontWeight.medium'); }
+/* `.btn-tour`, `.btn-tour-txt` and `.tour-btn` + `.tour-btn-primary` were here.
+   The launcher is `.btn` with a leading glyph — the base's own 6px gap is what
+   `.btn-tour` was for — and the strip's three controls are `.btn` and
+   `.btn .btn-primary`. See the button family near the top of this file.
 
-/* `.tour-nudge` was here. The first-run nudge is now one of the page-level
+   `.tour-nudge` was here too. The first-run nudge is now one of the page-level
    banners in `.appbanners`, drawn by Capra's Alert — see components/AppBanners
    .tsx and the `.appbanners` rule below. */
 
-.tour-btn {
-  background: var(--gm-panel-2); color: var(--gm-fg);
-  border: 1px solid var(--gm-border); border-radius: token('radius.md');
-  padding: var(--gm-sp-6) var(--gm-sp-12); font-size: var(--gm-fs-13); cursor: pointer; white-space: nowrap;
-}
-.tour-btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
-.tour-btn:disabled { opacity: 0.45; cursor: default; }
-.tour-btn-primary {
-  background: token('color.background.info.solid.default');
-  color: token('color.foreground.info.contrast'); border-color: transparent;
-}
-
-/* Persona picker */
-.tour-modal { width: 720px; }
-.tour-personas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gm-sp-12); padding: var(--gm-sp-16) var(--gm-sp-20) var(--gm-sp-20); }
+/* Persona picker. `.tour-modal` was here: the picker is Capra's `Modal` at
+   size="md" now, so the width (and the padding this grid used to carry, which
+   was the dialog body's job) are Capra's. */
+.tour-personas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gm-sp-12); }
 .tour-persona {
   display: flex; flex-direction: column; gap: var(--gm-sp-4); text-align: left;
   background: var(--gm-panel); color: inherit;
@@ -1178,21 +1346,12 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-res-commit code { font-family: var(--gm-mono); color: var(--gm-st-success); }
 
 .gs-actions { display: flex; flex-direction: column; gap: var(--gm-sp-10); }
-.gs-btn {
-  font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium'); border-radius: token('radius.md');
-  padding: var(--gm-sp-8) var(--gm-sp-14); cursor: pointer; border: 1px solid var(--gm-border);
-  background: var(--gm-panel-2); color: var(--gm-fg); transition: filter 0.15s, background 0.15s;
-}
-.gs-btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
-.gs-btn:disabled { opacity: 0.5; cursor: default; }
-.gs-btn-primary {
-  background: token('color.background.accent.solid.default');
-  color: #fff; border-color: transparent;
-}
-.gs-btn-primary:hover:not(:disabled) { filter: brightness(1.07); background: token('color.background.accent.solid.default'); }
-.gs-btn-ghost { background: transparent; }
-.gs-btn-danger { background: var(--gm-danger); color: #fff; border-color: transparent; }
-.gs-btn-danger-text { color: var(--gm-st-danger); border-style: dashed; }
+/* `.gs-btn` + `-primary|-ghost|-danger|-danger-text` were here. They are the
+   house button family now, near the top of this file, under a name that does
+   not say which tab they came from — they were drawing the header banners, the
+   long-running-search drawer, TLS Posture's retry and both confirmation dialogs
+   long before this slice. Nothing in Guided Setup's own layout moved with them:
+   `.gs-actions` above is still the column they stack in. */
 .gs-action-note { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); margin: 0; line-height: 1.45; }
 .gs-action-note code { font-family: var(--gm-mono); }
 .gs-action-warn { color: var(--gm-st-warning); }
@@ -1329,12 +1488,11 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
    property rather than on class. */
 
 /* ---------- Deep Observability Pipeline diagram (Data Flow tab) -------------
-   Brand composition of the Gigamon x Cribl architecture slide. Gigamon orange
-   and the Cribl teal/cyan are brand constants, so — like --gm-st-* above —
-   they are hand-picked and declared for both modes rather than tokenised.
-   The Cribl product cards stay dark in light mode too: that is how they are
-   drawn in the source artwork, and it keeps the platform block reading as one
-   object. ------------------------------------------------------------------ */
+   Brand composition of the Gigamon x Cribl architecture slide. The brand
+   constants themselves are `--gm-brand-*`, declared with every other house
+   token at the top of this file; what is left here is the diagram's own canvas
+   and pipework, which DO flip with the theme and are therefore not brand.
+   ------------------------------------------------------------------------- */
 :root {
   --dop-canvas: #f6f7f5;
   --dop-ink: #1d2430;
@@ -1353,22 +1511,12 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   --dop-pipe-3: #737f8d;
   --dop-pipe-mouth: #8a95a2;
 }
-:root, :root.dark {
-  --gg-orange: #f60;
-  --gg-orange-soft: #ff8a3d;
-  --cribl-card: #133f49;
-  --cribl-card-2: #2c3a4a;
-  --cribl-teal: #2bb3a8;
-  --cribl-cyan: #22d3ee;
-  --cribl-ink: #eaf6f8;
-  --cribl-ink-sub: #a8c6cd;
-}
 
 .dop-intro { margin-bottom: var(--gm-sp-10); }
 .dop-h { margin-bottom: var(--gm-sp-2); }
 .dop-kicker {
   margin: 0 0 var(--gm-sp-8); font-size: var(--gm-fs-14); font-style: italic;
-  font-weight: token('core.fontWeight.semibold'); color: var(--gg-orange);
+  font-weight: token('core.fontWeight.semibold'); color: var(--gm-brand-orange);
 }
 
 .dop-wrap {
@@ -1398,7 +1546,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
    sits off the node it annotates. */
 .dop-info-anchor { position: absolute; margin: -12px 0 0 -12px; pointer-events: auto; line-height: 0; }
 .dop-info-anchor .pinfo { margin-left: 0; }
-.dop-info-dark .pinfo-btn { color: var(--cribl-ink-sub); }
+.dop-info-dark .pinfo-btn { color: var(--gm-brand-ink-sub); }
 .dop-info-dark .pinfo-btn:hover, .dop-info-dark .pinfo-btn-on { color: #fff; }
 .dop-info-light .pinfo-btn { color: #5a636e; }
 .dop-info-light .pinfo-btn:hover, .dop-info-light .pinfo-btn-on { color: #1d2430; }
@@ -1415,7 +1563,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   text-anchor: middle; font-size: 15px; font-style: italic;
   font-weight: token('core.fontWeight.semibold'); fill: var(--dop-ink);
 }
-.dop-flow-orange { fill: var(--gg-orange); }
+.dop-flow-orange { fill: var(--gm-brand-orange); }
 .dop-flow-value {
   text-anchor: middle; font-size: 14px; font-variant-numeric: tabular-nums;
   font-weight: token('core.fontWeight.semibold'); fill: var(--gm-flow-metric);
@@ -1432,9 +1580,9 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-pipe-collar { fill: url(#dop-pipe); stroke: var(--dop-pipe-3); stroke-width: 1; }
 .dop-pipe-mouth { fill: var(--dop-pipe-mouth); }
 .dop-pipe-edge { stroke: var(--dop-pipe-3); stroke-width: 1; }
-.dop-pipe-sel .dop-pipe-collar { stroke: var(--gg-orange); stroke-width: 2.4; }
+.dop-pipe-sel .dop-pipe-collar { stroke: var(--gm-brand-orange); stroke-width: 2.4; }
 .dop-pipe:focus { outline: none; }
-.dop-pipe:focus-visible .dop-pipe-collar { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-pipe:focus-visible .dop-pipe-collar { stroke: var(--gm-brand-cyan); stroke-width: 2.4; }
 .dop-gg-mark {
   text-anchor: middle; font-size: 17px; font-weight: token('core.fontWeight.bold');
   fill: #fff; letter-spacing: 0.01em;
@@ -1442,7 +1590,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-gg-r { font-size: 8px; }
 .dop-pipe-h { text-anchor: middle; font-size: 29px; fill: #1d2430; }
 .dop-pipe-sub { text-anchor: middle; font-size: 15px; letter-spacing: 0.42em; fill: #1d2430; }
-.dop-pipe-rule { stroke: var(--gg-orange); stroke-width: 1.6; }
+.dop-pipe-rule { stroke: var(--gm-brand-orange); stroke-width: 1.6; }
 .dop-pipe-icon { color: #4a5462; }
 .dop-pipe-fn { text-anchor: middle; font-size: 11px; letter-spacing: 0.13em; fill: #4a5462; }
 
@@ -1450,21 +1598,21 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-amx { cursor: pointer; }
 .dop-amx-hit { fill: transparent; stroke: transparent; stroke-width: 1.4; }
 .dop-amx-sel .dop-amx-hit,
-.dop-amx:hover .dop-amx-hit { stroke: var(--gg-orange); fill: rgba(255, 102, 0, 0.06); }
+.dop-amx:hover .dop-amx-hit { stroke: var(--gm-brand-orange); fill: rgba(255, 102, 0, 0.06); }
 .dop-amx:focus { outline: none; }
-.dop-amx:focus-visible .dop-amx-hit { stroke: var(--cribl-cyan); }
+.dop-amx:focus-visible .dop-amx-hit { stroke: var(--gm-brand-cyan); }
 
 /* --- the Cribl platform block --- */
-.dop-box { fill: none; stroke: var(--cribl-teal); stroke-width: 2; opacity: 0.85; }
+.dop-box { fill: none; stroke: var(--gm-brand-teal); stroke-width: 2; opacity: 0.85; }
 .dop-box-label {
   font-size: 10.5px; letter-spacing: 0.18em;
-  fill: var(--cribl-teal); font-weight: token('core.fontWeight.semibold');
+  fill: var(--gm-brand-teal); font-weight: token('core.fontWeight.semibold');
 }
 
 /* --- edges: a static rail with the live dashed pipe over it --- */
 .dop-edge { fill: none; stroke-width: 2; }
-.dop-edge-teal { stroke: var(--cribl-teal); opacity: 0.5; }
-.dop-edge-orange { stroke: var(--gg-orange); opacity: 0.9; }
+.dop-edge-teal { stroke: var(--gm-brand-teal); opacity: 0.5; }
+.dop-edge-orange { stroke: var(--gm-brand-orange); opacity: 0.9; }
 /* The network-traffic arrow is plain ink in the source artwork, not brand teal. */
 .dop-edge-ink { stroke: var(--dop-ink); opacity: 0.72; }
 .dop-edge-dash {
@@ -1474,11 +1622,11 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* CSS, not SMIL: animating stroke-dashoffset via SMIL needs unsafe-inline in
    Firefox, which the Cribl app CSP does not grant. Packets stay SMIL
    (animateMotion is exempt) so they ride the real path geometry. */
-.dop-edge-live { stroke: var(--cribl-cyan); animation: dop-dash 1s linear infinite; }
+.dop-edge-live { stroke: var(--gm-brand-cyan); animation: dop-dash 1s linear infinite; }
 @keyframes dop-dash { to { stroke-dashoffset: -16; } }
-.dop-hop-orange .dop-edge-live { stroke: var(--gg-orange-soft); }
-.dop-packet { fill: var(--cribl-cyan); }
-.dop-hop-orange .dop-packet { fill: var(--gg-orange-soft); }
+.dop-hop-orange .dop-edge-live { stroke: var(--gm-brand-orange-soft); }
+.dop-packet { fill: var(--gm-brand-cyan); }
+.dop-hop-orange .dop-packet { fill: var(--gm-brand-orange-soft); }
 .dop-hop-idle .dop-edge { stroke: var(--gm-flow-idle); opacity: 0.8; }
 .dop-hop-blocked .dop-edge { stroke: token('color.background.danger.solid.default'); opacity: 1; }
 .dop-flag { font-size: 10.5px; letter-spacing: 0.04em; }
@@ -1486,54 +1634,54 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-flag-blocked { fill: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.semibold'); }
 
 /* --- the Cribl Stream group: one product, three stages --- */
-.dop-group { fill: rgba(43, 179, 168, 0.06); stroke: var(--cribl-teal); stroke-width: 1.2; stroke-dasharray: 4 5; opacity: 0.75; }
+.dop-group { fill: rgba(43, 179, 168, 0.06); stroke: var(--gm-brand-teal); stroke-width: 1.2; stroke-dasharray: 4 5; opacity: 0.75; }
 .dop-group-label {
   font-size: 10px; letter-spacing: 0.16em;
-  fill: var(--cribl-teal); font-weight: token('core.fontWeight.semibold');
+  fill: var(--gm-brand-teal); font-weight: token('core.fontWeight.semibold');
 }
 
 /* --- node cards: one centred column — icon, title, config id, metric --- */
 .dop-card { cursor: pointer; }
 .dop-card-bg {
-  fill: var(--cribl-card); stroke: rgba(255, 255, 255, 0.14); stroke-width: 1.4;
+  fill: var(--gm-brand-card); stroke: rgba(255, 255, 255, 0.14); stroke-width: 1.4;
   filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.18));
 }
-.dop-card-app .dop-card-bg { fill: var(--cribl-card-2); }
+.dop-card-app .dop-card-bg { fill: var(--gm-brand-card-2); }
 
 /* The card's primary label: brand-coloured, bold, and the largest thing on it. */
 .dop-title {
   text-anchor: middle; font-size: 19px; letter-spacing: -0.005em;
-  font-weight: token('core.fontWeight.bold'); fill: var(--cribl-cyan);
+  font-weight: token('core.fontWeight.bold'); fill: var(--gm-brand-cyan);
 }
 .dop-title-app { fill: #7ee0a8; }
-.dop-title-gigamon { fill: var(--gg-orange-soft); }
+.dop-title-gigamon { fill: var(--gm-brand-orange-soft); }
 
 /* Real product marks from @capra/icons. Capra sizes its icons from an inline
    `--_size`, which beats anything passed as a prop, so pin the box here — a
    wrapper rule rather than a dependency on Capra's generated class names. */
 .dop-prod-icon > svg { width: 30px; height: 30px; }
-.dop-prod-icon-cribl { color: var(--cribl-cyan); }
+.dop-prod-icon-cribl { color: var(--gm-brand-cyan); }
 
 /* Config ids are the thing people actually need to read off this diagram, so
    they get a real reading size rather than caption size. 11px monospace keeps
    the longest of them ("pipeline · gigamon_ami") inside its card. */
 .dop-card-sub {
   text-anchor: middle; font-size: 11px; font-family: var(--gm-mono);
-  fill: var(--cribl-ink);
+  fill: var(--gm-brand-ink);
 }
 /* Fine print under the title — body font, so it reads as prose not a config id. */
-.dop-card-caption { text-anchor: middle; font-size: 11px; fill: var(--cribl-ink); }
-.dop-card:hover .dop-card-bg { stroke: var(--cribl-cyan); }
-.dop-card-sel .dop-card-bg { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-card-caption { text-anchor: middle; font-size: 11px; fill: var(--gm-brand-ink); }
+.dop-card:hover .dop-card-bg { stroke: var(--gm-brand-cyan); }
+.dop-card-sel .dop-card-bg { stroke: var(--gm-brand-cyan); stroke-width: 2.4; }
 .dop-card:focus { outline: none; }
-.dop-card:focus-visible .dop-card-bg { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-card:focus-visible .dop-card-bg { stroke: var(--gm-brand-cyan); stroke-width: 2.4; }
 .dop-card-rule { stroke: rgba(255, 255, 255, 0.16); stroke-width: 1; }
 .dop-value {
   text-anchor: middle; font-size: 15px; font-weight: token('core.fontWeight.semibold');
   font-variant-numeric: tabular-nums; fill: #fff;
 }
-.dop-value-idle { fill: var(--cribl-ink-sub); }
-.dop-card-label { text-anchor: middle; font-size: 10px; fill: var(--cribl-ink-sub); }
+.dop-value-idle { fill: var(--gm-brand-ink-sub); }
+.dop-card-label { text-anchor: middle; font-size: 10px; fill: var(--gm-brand-ink-sub); }
 .dop-prov-bg { opacity: 0.9; }
 .dop-prov-cribl { fill: rgba(34, 211, 238, 0.18); }
 .dop-prov-records { fill: rgba(255, 255, 255, 0.1); }
@@ -1541,8 +1689,8 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   text-anchor: middle; font-size: 8.5px; letter-spacing: 0.05em;
   font-weight: token('core.fontWeight.semibold'); text-transform: uppercase;
 }
-.dop-prov-t-cribl { fill: var(--cribl-cyan); }
-.dop-prov-t-records { fill: var(--cribl-ink-sub); }
+.dop-prov-t-cribl { fill: var(--gm-brand-cyan); }
+.dop-prov-t-records { fill: var(--gm-brand-ink-sub); }
 /* Same chip, but sitting on the light diagram canvas rather than a dark card. */
 .dop-prov-canvas { fill: rgba(125, 155, 190, 0.2); }
 .dop-prov-t-canvas { fill: var(--dop-ink-sub); }
@@ -1561,13 +1709,13 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 }
 .dop-footer-brand { display: inline-flex; align-items: center; gap: var(--gm-sp-8); }
 .dop-footer-brand strong { color: var(--gm-fg); letter-spacing: 0.01em; }
-.dop-cribl-mark { fill: var(--cribl-cyan); }
+.dop-cribl-mark { fill: var(--gm-brand-cyan); }
 .dop-footer-gg {
-  background: var(--gg-orange); color: #fff; border-radius: 3px;
+  background: var(--gm-brand-orange); color: #fff; border-radius: 3px;
   padding: var(--gm-sp-2) var(--gm-sp-8); font-weight: token('core.fontWeight.bold'); font-size: var(--gm-fs-12);
 }
 .dop-footer-tag { font-style: italic; }
-.dop-footer-sep { flex: 1 1 40px; height: 1px; background: var(--cribl-teal); opacity: 0.5; }
+.dop-footer-sep { flex: 1 1 40px; height: 1px; background: var(--gm-brand-teal); opacity: 0.5; }
 
 /* ---------- Accessibility foundations --------------------------------------
    Three cross-cutting rules that every screen depends on, kept together
@@ -1587,15 +1735,19 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 
    The colour is the one Capra token measured against every surface a control
    in this app actually sits on: 3.26:1 on the page and on both panels, 3.04:1
-   on --dop-canvas, 3.51:1 on --cribl-card, 3.10:1 inside .pivot-toggle — worst
+   on --dop-canvas, 3.51:1 on --gm-brand-card, 3.10:1 inside .pivot-toggle — worst
    case 3.04:1 against the 3:1 SC 1.4.11 asks of a focus indicator, in LIGHT,
    and 5.4–6.0:1 in dark. Capra's own color.border.focus would NOT do: it is
    2.33:1 on the light page.
 
-   `outline-offset` is load-bearing, not decoration. Measured against the fill
-   of the primary buttons this ring surrounds — .gs-btn-primary, .seg-active,
-   .btn-incident, .chip-active, .tour-btn-primary — it is 1.00:1 at offset 0,
-   because it is the same blue. The 2px gap is what makes it visible there.
+   `outline-offset` is load-bearing, not decoration. Measured against the fills
+   this ring surrounds, it is 1.00:1 at offset 0 on .seg-active and .chip-active,
+   because those are painted in the ring's own info.solid blue; the 2px gap is
+   the whole of what makes it visible there. The house filled buttons are no
+   longer in that list — `.btn-primary` is --gm-btn-primary and `.btn-danger` is
+   --gm-btn-danger, which measure 1.54:1 and 1.67:1 against the ring. Still short
+   of 3:1, so the offset is still what carries them; the number moved, the
+   argument did not.
 
    No `border-radius` is set here. An outline already follows the element's own
    border-radius, and forcing one would square off this app's radius.full chips
@@ -1617,10 +1769,16 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
    Not listed, on purpose: the plain text links (.find-open, .doclink, .pqc-sni,
    .tcp-drill-note a). SC 2.5.8 exempts a target that is inline in a sentence or
    a block of text, and giving those a 24px box would space the prose out. The
-   pill-shaped ones (.find-ai, .chip) are not inline text and get the floor. */
-.panel-refresh, .modal-x, .tcp-drill-close,
+   pill-shaped ones (.find-ai, .chip) are not inline text and get the floor.
+
+   Five names left this list in slice 1.9 and one arrived: .btn-refresh,
+   .btn-icon, .gs-btn and .tour-btn are all `.btn` now, and .modal-x went with
+   the hand-built dialog — Capra's Modal draws its own close button and sizes its
+   own target. .pinfo-copy is not listed here because it sets `min-height: 24px`
+   in its own rule, where it can be read next to the popover it lives in. */
+.panel-refresh, .tcp-drill-close,
 .seg, .seg-sm, .chip, .linkspeed-in, .find-ai,
-.btn-refresh, .btn-icon, .range-select, .gs-btn, .gs-group-select, .tour-btn,
+.btn, .range-select, .gs-group-select,
 .fe-search, .cap-filter, .fld-in {
   min-height: 24px;
 }
@@ -1631,7 +1789,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
    a glyph or a couple of characters need one — and those are also the ones
    whose content has to be re-centred inside the taller box, because each is a
    bare glyph or a short word with little or no vertical padding of its own. */
-.panel-refresh, .modal-x, .tcp-drill-close, .seg, .seg-sm, .chip, .find-ai {
+.panel-refresh, .tcp-drill-close, .seg, .seg-sm, .chip, .find-ai {
   min-width: 24px;
   display: inline-flex;
   align-items: center;

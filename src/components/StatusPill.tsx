@@ -18,11 +18,20 @@
 // or a transparent outline. Thirteen names for three ideas is what a second
 // visual language looks like while it is forming. This retires three of them.
 // `.env-chip` and `.title-preview` were in this slice's brief and are NOT
-// retired — they are still declared in App.css and still used in App.tsx, and
-// `<Unavailable>` was not built at all. Saying so here rather than leaving the
-// brief to imply otherwise: the next person reads this file, not the plan. Ten
-// families remain, and each one converted should come here rather than growing
-// a fourteenth.
+// retired — they are still declared in App.css and still used in App.tsx.
+// Saying so here rather than leaving the brief to imply otherwise: the next
+// person reads this file, not the plan. Ten families remain, and each one
+// converted should come here rather than growing a fourteenth.
+//
+// `<Unavailable>` was also in that brief and was not built — and the close-out
+// slice decided it should not be. It was specified as a wrapper over Capra's
+// `EmptyState` that wires the theme, for a whole-tab blank slate; the only
+// distinction it would have made, unavailable versus empty, is one
+// `QueryBoundary` already makes in separate branches with different words and a
+// different colour. See the finding recorded at the top of QueryBoundary.tsx.
+// This component is what the app says instead, at the size a row or a cell has
+// room for, and TLS Posture is its first caller outside the three screens it
+// was extracted from.
 //
 // WHY IT IS NOT `variant="bold"`, WHICH IS WHAT CAPRA DEFAULTS TO AND WHAT THE
 // UX SPEC ASKS FOR. A bold Pill paints `color.foreground.<kind>.contrast` on
@@ -84,6 +93,11 @@ export type StatusState =
   | 'absent'
   | 'failed'
   | 'skipped'
+  // Guided Setup, and TLS Posture where a server's key exchange is unknown
+  // because the search behind it failed. The same meaning in both places — the
+  // app tried to find out and cannot say — so it is the same word, rather than
+  // a second one meaning what this one already means. `checking` is the pair's
+  // other half in both screens: still finding out, nothing has gone wrong.
   | 'unreadable'
   | 'checking'
   // Field Explorer, AMI field coverage.

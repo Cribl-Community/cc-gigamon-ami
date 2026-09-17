@@ -1727,9 +1727,9 @@
             "pqcServers",
             "servers"
           ],
-          "value": "servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
+          "value": "pqcUnavailable ? '—' : servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
           "info": "Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab.",
-          "sub": "no hybrid ML-KEM offered"
+          "sub": "pqcUnavailable ? 'key-exchange search failed — see the panel below' : 'no hybrid ML-KEM offered'"
         },
         "Panel · Servers": {
           "ref": "SERVERS",

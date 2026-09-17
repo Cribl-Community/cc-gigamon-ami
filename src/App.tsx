@@ -81,7 +81,7 @@ function ThemeToggle() {
   return (
     <button
       type="button"
-      className="btn-icon"
+      className="btn btn-icon"
       onClick={() => setTheme(next)}
       title={`Switch to ${next} mode`}
       aria-label={`Switch to ${next} mode`}
@@ -243,7 +243,7 @@ function Header({ tabName }: { tabName: string }) {
         </span>
         <TourLauncher />
         <ThemeToggle />
-        <button type="button" className="btn-refresh" onClick={doRefresh} aria-busy={busy}>
+        <button type="button" className="btn" onClick={doRefresh} aria-busy={busy}>
           <span className={`refresh-ic ${busy ? 'spin' : ''}`}><RefreshIcon /></span> {busy ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>

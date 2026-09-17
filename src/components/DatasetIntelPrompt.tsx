@@ -125,14 +125,20 @@ export function useDatasetIntelBanner(): AppBanner | null {
     ),
     // The gate stays: generation is a write, Cribl can refuse it, and the
     // refusal has to be readable at the button that was refused (slice 1.4).
-    // `gs-btn` and not `gs-btn-primary`: the primary is white on a solid accent,
-    // which measures 3.26:1 and does not clear AA at this size.
+    // `btn` and not `btn-primary`, and the reason has changed since slice 1.6
+    // wrote this line. It used to be a contrast fix: `.gs-btn-primary` painted
+    // #fff on Capra's solid accent, 3.26:1, which does not clear AA at this
+    // size. Slice 1.9 fixed that at the source — `.btn-primary` is
+    // --gm-btn-primary now and measures 5.02:1, asserted in
+    // src/app/contrast.test.ts. What is left is the ordinary reason: this button
+    // is inside a dismissible banner offering something optional, and a filled
+    // primary would give it the weight of the page's main action.
     action: (
       <GatedControl
         write="dataset_intel.generate"
         label="Generate"
         busyLabel="Starting…"
-        className="gs-btn"
+        className="btn"
         run={start}
       />
     ),

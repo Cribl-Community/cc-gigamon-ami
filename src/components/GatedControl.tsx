@@ -76,7 +76,7 @@ export function GatedControl({
   write,
   label,
   busyLabel,
-  className = 'gs-btn gs-btn-primary',
+  className = 'btn btn-primary',
   unavailable = null,
   run,
   blockedUntil = null,
@@ -142,7 +142,7 @@ export function GateNote({ write }: { write: WriteId }) {
   return (
     <span className="gate-note" role="status">
       <span className="gate-note-text">{gate.reason}</span>
-      <button type="button" className="gs-btn gs-btn-ghost gate-retry" onClick={gate.clear}>
+      <button type="button" className="btn btn-ghost gate-retry" onClick={gate.clear}>
         Try again
       </button>
     </span>

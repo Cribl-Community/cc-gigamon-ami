@@ -227,7 +227,7 @@ export function SearchLimitsPanel() {
           }
           run={onSave}
         />
-        <button type="button" className="gs-btn gs-btn-ghost" onClick={onReset} disabled={saving}>
+        <button type="button" className="btn btn-ghost" onClick={onReset} disabled={saving}>
           Reset to defaults
         </button>
         <span className="sl-actions-note">

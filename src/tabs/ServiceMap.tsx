@@ -175,7 +175,12 @@ export function ServiceMap() {
         <p className="svc-hint">Select a service above to see its four latency domains and packet-evidence triage.</p>
       )}
 
-      {snOpen && sel && <ServiceNowModal service={cleanName(sel)} onClose={() => setSnOpen(false)} />}
+      {/* Mounted for as long as a service is selected, and opened by `isOpen`
+          rather than by being mounted. Capra's Modal releases the page scroll
+          lock and the `inert` it puts on #root when it CLOSES; unmounting it
+          while it is still open would skip that and leave the app behind it
+          unscrollable. Same shape as <ConfirmDialog> in ProvisionPanel. */}
+      {sel && <ServiceNowModal isOpen={snOpen} service={cleanName(sel)} onClose={() => setSnOpen(false)} />}
     </div>
   )
 }
@@ -263,9 +268,9 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
   return (
     <>
       <div className="domain-head">
-        <button type="button" className="btn-refresh" onClick={onBack}>← service map</button>
+        <button type="button" className="btn" onClick={onBack}>← service map</button>
         <h3 className="panel-title">{label} — four latency domains<InfoTip text="Each domain is scored independently at p95 against its own SLO — never averaged — so you can see exactly where the time goes." /></h3>
-        <button type="button" className="btn-incident" onClick={onIncident}>Create ServiceNow incident</button>
+        <button type="button" className="btn btn-primary" onClick={onIncident}>Create ServiceNow incident</button>
       </div>
 
       <QueryBoundary state={domains} emptyLabel="No flows to this service in the window">

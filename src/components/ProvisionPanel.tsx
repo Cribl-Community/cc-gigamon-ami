@@ -455,7 +455,7 @@ export function ProvisionPanel() {
           <div className="gs-checklist">
             <div className="gs-checklist-head">
               <span>Resources</span>
-              <button type="button" className="gs-btn gs-btn-ghost" onClick={() => void populate()} disabled={loading || running !== null}>
+              <button type="button" className="btn btn-ghost" onClick={() => void populate()} disabled={loading || running !== null}>
                 {loading ? 'Checking…' : 'Re-check'}
               </button>
             </div>
@@ -515,7 +515,7 @@ export function ProvisionPanel() {
           <div className="gs-actions">
             <button
               type="button"
-              className="gs-btn gs-btn-primary"
+              className="btn btn-primary"
               /* aria-disabled, never disabled: a disabled button leaves the tab
                  order, so when the user CONFIRMS the write this trigger vanishes
                  from under the returning focus and lands it on <body> — losing a
@@ -557,7 +557,7 @@ export function ProvisionPanel() {
               <>
                 <button
                   type="button"
-                  className="gs-btn gs-btn-ghost gs-btn-danger-text"
+                  className="btn btn-ghost btn-danger-text"
                   onClick={() => { if (removeBlocked) return; setConfirming('remove') }}
                   aria-disabled={removeBlocked || undefined}
                   title={removeGate.reason ?? undefined}
@@ -626,7 +626,7 @@ export function ProvisionPanel() {
               write="syslog_stack.remove"
               label={`Yes, delete from ${group}`}
               busyLabel="Removing…"
-              className="gs-btn gs-btn-danger"
+              className="btn btn-danger"
               unavailable={running !== null ? 'Another run is already in progress.' : null}
               run={onRemove}
             />
@@ -657,7 +657,7 @@ export function ProvisionPanel() {
           <div className="gs-endpoint">
             <div className="gs-endpoint-main">
               <code className="gs-endpoint-addr">{endpoint}</code>
-              <button type="button" className="gs-btn gs-btn-ghost" onClick={copyEndpoint}>{copied ? 'Copied ✓' : 'Copy'}</button>
+              <button type="button" className="btn btn-ghost" onClick={copyEndpoint}>{copied ? 'Copied ✓' : 'Copy'}</button>
             </div>
             <div className="gs-endpoint-meta">
               <span><strong>Protocol</strong> TCP &amp; UDP</span>

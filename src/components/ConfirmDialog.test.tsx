@@ -112,7 +112,7 @@ function Harness({ resources = REMOVE_RESOURCES, typeToConfirm, irreversible, co
             write="syslog_stack.remove"
             label="Yes, delete from default"
             busyLabel="Removing…"
-            className="gs-btn gs-btn-danger"
+            className="btn btn-danger"
             run={run}
           />
         }

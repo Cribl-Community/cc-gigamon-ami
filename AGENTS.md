@@ -1,5 +1,14 @@
 # Cribl App Platform Developer Guide
 
+> **How to read the added notes.** This guide ships with the app scaffold. Building this app turned
+> up platform behaviour it does not cover, and those notes are folded in below under
+> **“Measured, not documented”** headings. They are labelled that way because the distinction is the
+> value: everything else here is Cribl's own statement of the contract, whereas a measured note is
+> what **one** Cribl.Cloud workspace did on **one** date. Code against it, re-check it after a
+> platform upgrade, and do not quote it back to anyone as a guarantee. Where a measured note
+> contradicts nothing above it, it is filling a silence — and a silence is the thing most likely to
+> be misread as "so it works the obvious way".
+
 ## Versioning
 
 `npm run package` increments your app version before creating the archive. By default, it increments the patch version, for example `1.0.0` to `1.0.1`.
@@ -105,6 +114,52 @@ Each app has a scoped KV store. Use `CRIBL_API_URL` as the base — the proxy ha
 | Set | PUT | `CRIBL_API_URL + '/kvstore/the/path/to/key'` | value |
 | Delete | DELETE | `CRIBL_API_URL + '/kvstore/the/path/to/key'` | — |
 | List keys | POST | `CRIBL_API_URL + '/kvstore/keys'` | `{ prefix: 'my/key/prefix' }` |
+
+#### Measured, not documented — the content type decides whether your write survives
+
+Measured on a live Cribl.Cloud workspace (2026-07-31, and again on a second app and workspace on
+2026-09-15 with the same result) by PUTting the same document twice:
+
+| `Content-Type` on the PUT | What the store persisted |
+|---|---|
+| `application/json` | the 15-byte literal **`[object Object]`** |
+| `text/plain` | the JSON verbatim — round-trips correctly |
+
+The store parses a JSON body and then persists `String(obj)`. **The PUT answers `200` either way**,
+so the app reports success and every later read is garbage. Nothing surfaces the cause unless you
+inspect the stored bytes, and the symptom — settings that quietly revert — reads as a persistence
+bug rather than as a header bug.
+
+- **Write** `PUT` with `Content-Type: text/plain` and a `JSON.stringify(doc)` body.
+- **Read** with `res.text()` then `JSON.parse`, *not* `res.json()`: a stored document and the
+  `[object Object]` corruption are only distinguishable as bytes. `404` is "first run", not an error.
+- **Treat a corrupt value as absent and leave it where it is.** The repair is one line, and it is a
+  write — on load, which "Confirming Destructive Operations" above forbids. The next genuine
+  user-triggered write overwrites it.
+- **Per-user state takes the user id in the key** (`<ns>/prefs/<userId>`), from
+  `window.getCriblUser()`. One shared document means every user overwrites the last one.
+
+#### Measured, not documented — `POST /kvstore/keys` answers a bare array
+
+Measured on a live workspace (2026-09-15): the call answers `200` with a **bare JSON array of key
+names** — no `{ items: [...] }` envelope, though nearly every other Cribl collection endpoint has
+one.
+
+Take that as an observation rather than a contract, because there is nothing to hold it to. **The
+`/kvstore/…` family does not appear in `openapi.json` at all** — checked against the copy in this
+repo, spec version `4.19.0`, which carries zero `/kvstore` paths: the four rows in the table above
+are documented here in this guide and nowhere in the machine-readable spec. So nothing states the
+response shape, and nothing promises a later release will not wrap it the way the rest of the API
+wraps collections.
+
+Parse both shapes. The failure this avoids is the quiet one: code that reaches for `.items` on a
+bare array gets `undefined`, returns an empty list, and reports **"the store is empty"** — which
+looks like a normal answer, not an error, so nobody investigates it.
+
+```js
+const list = Array.isArray(body) ? body : (body?.items ?? body?.keys);
+if (!Array.isArray(list)) return [];
+```
 
 ### Config Group Context
 
@@ -250,6 +305,29 @@ policies:
 
 **Live preview:** editing `config/policies.yml`, `config/proxies.yml`, or `package.json` while running `npm run dev` reloads the app automatically so your changes take effect without a manual refresh.
 
+#### Undefined, and therefore avoidable — what `*` matches
+
+This guide offers `*` and `:name` as interchangeable ways to cover a child path, and **never says
+whether `*` matches one path segment or many.** `/m/:gid/system/inputs/*` is either "every input in
+the group" or "every input and everything beneath one", and those are different grants.
+
+A live workspace cannot settle it for you either, and that is worth knowing before you go looking:
+the rule above says a user who already holds a permission reaches the path without any grant, so an
+**admin never exercises the matcher at all**. Testing as yourself proves nothing unless you are a
+non-admin the app was shared with.
+
+So do not guess — **name every segment**, and use `:name` for a variable one. `:name` is a single
+variable segment and is what this guide itself offers as the equivalent of `*` for a child path. A
+declaration with no `*` in it means the same thing under either reading, which is the only way to be
+sure an admin is approving what you think you are asking for. Prefer a literal wherever the app only
+ever calls one value: `/m/:gid/system/inputs/in_my_app_syslog` asks an admin for "may delete the
+input this app made" rather than "may delete any input".
+
+This is also the entry most worth a test. A path the app calls and the file does not declare is a
+403 that **only non-admins ever see**, so it ships green and fails at the customer;
+`src/cribl/policyCoverage.test.ts` in this repo checks this file against the source in both
+directions, and asserts that no declaration contains a `*`.
+
 ## React Router
 
 When using React Router, set the basename to `window.CRIBL_BASE_PATH`:
@@ -287,4 +365,63 @@ Unless the user specifies otherwise, use the Capra design system for all UI code
 - In CSS, always use design tokens when available. Always use the custom `token()` function to reference design tokens. Never use a CSS variable directly.
 - React components, both from `@capra/core` and `@capra/icons`, should rarely have CSS classes applied. Adding margins or spacing should happen outside the component with wrappers.
 - Don't write CSS selectors that depend on Capra component internals, classes, or HTML structure.
+
+### Measured, not documented — what Capra's `Modal` does not do
+
+Measured on `@capra/core@1.8.2` / `@capra/theme@1.3.1` (2026-09) by mounting the component and
+reading the DOM. Capra documents none of it, so re-measure after a minor.
+
+**Using a design system is not an accessibility result.** It is a good start and a poor finish:
+"we use Capra" is a statement about a dependency, not about what a user can read or reach.
+
+What `Modal` already gives you, so you don't rebuild it: a `<section role="dialog" aria-labelledby>`
+pointing at the `<h2>` it builds from `title`; the dialog portalled to `document.body` **outside the
+app root**, with the app root marked `inert` while it is open (that is the focus trap); scroll
+locked on `<html>` and released on close; overlay at `z-index: 10000`; Escape and the header ✕ both
+close, and focus is restored to whatever held it before. Check the last two with a *custom* footer if
+you write one — Capra's own Cancel carries a `slot="close"` that yours will not.
+
+The two gaps to close yourself:
+
+| Gap | What actually happens | Close it with |
+|---|---|---|
+| **Initial focus** | No prop controls it. Capra focuses the dialog `<section>` itself. | `autoFocus` on the button that should hold it — the mechanism verified to win. On a destructive dialog that is **Cancel**, never the destructive action. |
+| **`aria-describedby`** | `ModalProps` has no such prop, and Capra does not wire `slot="description"` for `Modal` the way it does for `Drawer`. The dialog announces its title and **nothing else** on open. | One id'd container around the body, and an effect that hangs the attribute on the dialog by hand. |
+
+Reach the dialog element through `closest('[role="dialog"]')`, not through a Capra class name — a
+role is a public contract, a class name moves in a patch release.
+
+This is the gap that makes a confirmation dialog only *look* like one. "Confirming Destructive
+Operations" above requires a prompt naming exactly what will be affected and a warning when the
+action cannot be undone; without `aria-describedby`, a screen-reader user hears the title and then
+the buttons, and none of that text is read at all. (`ModalProps` also has no `isConfirmDisabled`,
+which is why a type-to-confirm dialog needs a custom footer — prefer `aria-disabled` to `disabled`
+there, so the control keeps its place in the tab order and can still explain why it is blocked.)
+
+### Measured, not documented — a headless DOM cannot check the above
+
+Measured on `happy-dom` 20.x (2026-09). Neither limitation is documented; both are simply absent.
+
+- **No sequential focus navigation.** `Tab` is a `KeyboardEvent` that nothing in the environment
+  interprets, so dispatching it moves focus nowhere.
+- **`inert` is stored, not enforced.** It is an attribute sitting on an element; it removes nothing
+  from the tab order.
+
+So the obvious test for a dialog — press Tab repeatedly and prove focus never leaves it — **passes
+against an empty document**. It passes if you delete the dialog. A green tick there is a claim that
+the behaviour works, made by a runtime that never looked, and it is self-concealing: the only way to
+find it is to break the code and watch the test still pass. The same shape recurs — no layout engine,
+so every `getBoundingClientRect()` is zero and any "it does not overflow" or hit-area assertion is
+vacuous; no resolved colour, so no contrast assertion is possible from a rendered node.
+
+What to do instead: **assert the mechanism, and say that is what you did.** The dialog renders
+outside the app root, and the app root carries `inert` while it is open and loses it on close — if
+Capra stops portalling or stops marking the page inert, those fail for the right reason. Then write
+the disclaimer beside them, and keep a list at the bottom of each test file of what it could **not**
+assert and why. The gap between "this dialog is accessible" and "these tests pass" is exactly that
+list, and it is what needs a real browser pass with a date on it.
+
+One timing note that will otherwise make a test assert the opposite of the truth: focus management,
+`inert` marking and scroll locking land a **turn after** the render that opens a dialog
+(react-aria's `FocusScope`, not React). Flush a turn before measuring any of them.
 

@@ -112,7 +112,7 @@ function useTourNudgeBanner(): AppBanner | null {
     appearance: 'info',
     title: 'First time here?',
     body: 'Take a 5-minute guided tour tailored to your role — NetOps, Security, AI governance or Compliance.',
-    action: <button type="button" className="gs-btn" onClick={openPicker}>Choose a role</button>,
+    action: <button type="button" className="btn" onClick={openPicker}>Choose a role</button>,
     onDismiss: markSeen,
   }
 }

@@ -256,7 +256,7 @@ export function useJobWatchdogBanner(): AppBanner | null {
       `They keep billing until they finish or are cancelled; the oldest started ${elapsedInWords(oldest.elapsedMs)} ago. ` +
       `This app checks every ${POLL_MINUTES} minutes while it is open.`,
     action: (
-      <button type="button" className="gs-btn" onClick={openWatchdogDrawer}>
+      <button type="button" className="btn" onClick={openWatchdogDrawer}>
         Review searches
       </button>
     ),
@@ -504,11 +504,11 @@ function WatchdogDrawer({ isOpen, onClose, watch }: DrawerProps) {
           {watch.checking && ' Checking…'}
         </p>
         <div className="jw-actions">
-          <button type="button" className="gs-btn gs-btn-ghost" onClick={() => void checkNow()} disabled={watch.checking}>
+          <button type="button" className="btn btn-ghost" onClick={() => void checkNow()} disabled={watch.checking}>
             Check again
           </button>
           {watch.dismissedIds.length > 0 && (
-            <button type="button" className="gs-btn gs-btn-ghost" onClick={restoreDismissed}>
+            <button type="button" className="btn btn-ghost" onClick={restoreDismissed}>
               Show the warning again
             </button>
           )}
@@ -562,7 +562,7 @@ function JobRows({ watch, job, onCancel }: { watch: WatchdogState; job: HungJob;
                control that discards hours of work. */
             <button
               type="button"
-              className="gs-btn gs-btn-ghost gs-btn-danger-text"
+              className="btn btn-ghost btn-danger-text"
               aria-label={`Cancel search ${job.id}, running for ${elapsedInWords(job.elapsedMs)}, started by ${ownerLabel(job)}`}
               onClick={onCancel}
             >
@@ -647,7 +647,7 @@ function CancelConfirm({ job, onCancel, onConfirm }: { job: HungJob; onCancel: (
           write="hung_job.cancel"
           label="Cancel this search"
           busyLabel="Cancelling…"
-          className="gs-btn gs-btn-danger"
+          className="btn btn-danger"
           run={onConfirm}
         />
       }
