@@ -158,13 +158,21 @@ export function TcpHealth() {
                     <span className={sum('loss') ? 'd-warn' : ''}>{fmtCount(sum('loss'))} loss</span>
                   </div>
                   <div className="tcp-drill-scroll">
-                    <table className="tcp-drill-tbl">
+                    <table className="dtable dtable-sticky">
+                      <caption className="sr-only">
+                        Endpoint pairs behind this heatmap cell, one row per source and destination, with the
+                        packet-health counters and the network and application p95 latencies for each.
+                      </caption>
                       <thead>
                         <tr>
-                          <th>Source</th><th>Destination</th>
-                          <th className="num">Flows</th><th className="num">Retrans</th><th className="num">Resets</th>
-                          <th className="num">CRC</th><th className="num">Loss</th>
-                          <th className="num">Net p95</th><th className="num">App p95</th>
+                          <th scope="col">Source</th><th scope="col">Destination</th>
+                          <th scope="col" className="dtable-num">Flows</th>
+                          <th scope="col" className="dtable-num">Retrans</th>
+                          <th scope="col" className="dtable-num">Resets</th>
+                          <th scope="col" className="dtable-num">CRC</th>
+                          <th scope="col" className="dtable-num">Loss</th>
+                          <th scope="col" className="dtable-num">Net p95</th>
+                          <th scope="col" className="dtable-num">App p95</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -172,15 +180,15 @@ export function TcpHealth() {
                           const retrans = toNum(r.retrans), resets = toNum(r.resets), crc = toNum(r.crc), loss = toNum(r.loss)
                           return (
                             <tr key={i} className={resets || crc ? 'tcp-drill-bad' : ''}>
-                              <td className="mono">{str(r, 'src_ip', '—')}</td>
-                              <td className="mono">{str(r, 'dst_ip', '—')}</td>
-                              <td className="num">{fmtCount(r.flows)}</td>
-                              <td className={`num ${retrans ? 'd-warn' : 'tcp-zero'}`}>{fmtCount(retrans)}</td>
-                              <td className={`num ${resets ? 'd-danger' : 'tcp-zero'}`}>{fmtCount(resets)}</td>
-                              <td className={`num ${crc ? 'd-danger' : 'tcp-zero'}`}>{fmtCount(crc)}</td>
-                              <td className={`num ${loss ? 'd-warn' : 'tcp-zero'}`}>{fmtCount(loss)}</td>
-                              <td className="num">{toNum(r.net) ? fmtMs(toNum(r.net) * 1000) : '—'}</td>
-                              <td className="num">{toNum(r.app) ? fmtMs(toNum(r.app) * 1000) : '—'}</td>
+                              <th scope="row" className="dtable-id dtable-mono">{str(r, 'src_ip', '—')}</th>
+                              <td className="dtable-mono">{str(r, 'dst_ip', '—')}</td>
+                              <td className="dtable-num">{fmtCount(r.flows)}</td>
+                              <td className={`dtable-num ${retrans ? 'd-warn' : 'tcp-zero'}`}>{fmtCount(retrans)}</td>
+                              <td className={`dtable-num ${resets ? 'd-danger' : 'tcp-zero'}`}>{fmtCount(resets)}</td>
+                              <td className={`dtable-num ${crc ? 'd-danger' : 'tcp-zero'}`}>{fmtCount(crc)}</td>
+                              <td className={`dtable-num ${loss ? 'd-warn' : 'tcp-zero'}`}>{fmtCount(loss)}</td>
+                              <td className="dtable-num">{toNum(r.net) ? fmtMs(toNum(r.net) * 1000) : '—'}</td>
+                              <td className="dtable-num">{toNum(r.app) ? fmtMs(toNum(r.app) * 1000) : '—'}</td>
                             </tr>
                           )
                         })}

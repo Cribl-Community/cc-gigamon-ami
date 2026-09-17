@@ -16,10 +16,10 @@
     "searches": 37,
     "links": 23,
     "briefs": 17,
-    "prose": 13,
+    "prose": 15,
     "modules": 129,
     "catalogs": 13,
-    "states": 20,
+    "states": 26,
     "passthrough": 3,
     "unbound": 21
   },
@@ -80,6 +80,16 @@
     }
   },
   "states": {
+    "src/components/JobWatchdog.tsx": {
+      "announcement": "''",
+      "confirming": "null"
+    },
+    "src/components/SearchLimitsPanel.tsx": {
+      "inForce": "null",
+      "note": "null",
+      "saving": "false",
+      "source": "'default'"
+    },
     "src/tabs/CapacityTopTalkers.tsx": {
       "applied": "''",
       "customGbps": "''",
@@ -304,6 +314,31 @@
           "about": "(unbound)",
           "aboutHeading": "What auto-refresh costs",
           "label": "What auto-refresh costs on this tab"
+        }
+      }
+    },
+    "src/components/JobWatchdog.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "PanelInfo · \"It reads Cribl's list of running jobs: one ordinary GET. It submits no search, bills nothing, and takes no place in the workspace's 1,000-job search history. The design this replaced polled with a dataset=$vt_jobs search instead, which measured 2.534 billable CPU-seconds per poll — about 730 a day for every open session — and added 288 jobs a day to that history, evicting the very searches you would use to investigate what it found. A job is listed once it has been running for twice the longest time this app ever allows one of its own queries, which is the figure in the sentence above. The doubling is there so that a query still being wound up at its own time limit is never reported as a hang, and it costs nothing: across 725 completed gigamon_ami searches in this workspace the median was 5.1 seconds and the slowest that ever finished took 51, while the searches this was built for had been running between ten and nineteen hours. There is no cost column because Cribl reports 0 billable CPU-seconds while a job is still running — elapsed time is the figure that can honestly be shown.\"": {
+          "ref": "\"It reads Cribl's list of running jobs: one ordinary GET. It submits no search, bills nothing, and takes no place in the workspace's 1,000-job search history. The design this replaced polled with a dataset=$vt_jobs search instead, which measured 2.534 billable CPU-seconds per poll — about 730 a day for every open session — and added 288 jobs a day to that history, evicting the very searches you would use to investigate what it found. A job is listed once it has been running for twice the longest time this app ever allows one of its own queries, which is the figure in the sentence above. The doubling is there so that a query still being wound up at its own time limit is never reported as a hang, and it costs nothing: across 725 completed gigamon_ami searches in this workspace the median was 5.1 seconds and the slowest that ever finished took 51, while the searches this was built for had been running between ten and nineteen hours. There is no cost column because Cribl reports 0 billable CPU-seconds while a job is still running — elapsed time is the figure that can honestly be shown.\"",
+          "about": "It reads Cribl's list of running jobs: one ordinary GET. It submits no search, bills nothing, and takes no place in the workspace's 1,000-job search history. The design this replaced polled with a dataset=$vt_jobs search instead, which measured 2.534 billable CPU-seconds per poll — about 730 a day for every open session — and added 288 jobs a day to that history, evicting the very searches you would use to investigate what it found. A job is listed once it has been running for twice the longest time this app ever allows one of its own queries, which is the figure in the sentence above. The doubling is there so that a query still being wound up at its own time limit is never reported as a hang, and it costs nothing: across 725 completed gigamon_ami searches in this workspace the median was 5.1 seconds and the slowest that ever finished took 51, while the searches this was built for had been running between ten and nineteen hours. There is no cost column because Cribl reports 0 billable CPU-seconds while a job is still running — elapsed time is the figure that can honestly be shown.",
+          "aboutHeading": "What this watch costs, and what it looks at",
+          "label": "What the long-running search watch costs and how it decides"
+        }
+      }
+    },
+    "src/components/SearchLimitsPanel.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "Panel · Search running-time limits": {
+          "info": "Every query this app submits is prefixed with set max_running_time_per_search=<seconds>, chosen from this table by the time range the panel reads. Cribl stops the job when it reaches that, and the panel names the limit rather than reporting a plain failure. Nothing here changes what a query returns — only how long Cribl lets it run before stopping it."
         }
       }
     },
@@ -1692,9 +1727,9 @@
             "pqcServers",
             "servers"
           ],
-          "value": "servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
+          "value": "pqcUnavailable ? '—' : servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
           "info": "Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab.",
-          "sub": "no hybrid ML-KEM offered"
+          "sub": "pqcUnavailable ? 'key-exchange search failed — see the panel below' : 'no hybrid ML-KEM offered'"
         },
         "Panel · Servers": {
           "ref": "SERVERS",

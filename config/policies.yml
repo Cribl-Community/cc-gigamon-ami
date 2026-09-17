@@ -1,27 +1,215 @@
 # Product API access declaration. Declare Cribl product API paths your app needs to access.
 # At install time, admins see exactly which platform resources the app will use.
 #
-# This app is read-only: it runs Cribl Search jobs against the Cribl Lake dataset
-# `gigamon_ami` and reads their results. Search always runs in the default_search
-# group, so every call is under /m/default_search/search/...
+# READ THIS AS A GRANT, NOT AS DOCUMENTATION. AGENTS.md is explicit that when an
+# admin shares this app with a user, every path declared here is granted to that
+# user for the duration of a request made through the app. So this file decides
+# two different things: what an admin is told the app will touch, and whether a
+# non-admin's click works at all. A missing entry is a 403 the app reports as a
+# failed step; an entry the app never uses is asking an admin to trust it with
+# more than it needs. Both are defects, and src/cribl/policyCoverage.test.ts
+# fails on either — it reads the source of every module that can reach the Cribl
+# API, works out the path each call actually builds, and compares that list with
+# this one in both directions. The reasons below are not decoration either:
+# src/cribl/paths.ts carries the same sentence per call, and that is what the
+# test checks the code against.
+#
+# Two conventions worth knowing before editing:
+#
+#   NO WILDCARDS. AGENTS.md never says whether `*` matches one path segment or
+#   many, and this workspace cannot answer it (every caller here is an admin, and
+#   an admin never exercises the matcher). Rather than guess, every object below
+#   names each segment it needs, so the file means the same thing under either
+#   reading. `:name` is a single variable segment and is what AGENTS.md offers as
+#   the equivalent of `*` for a child path.
+#
+#   LITERALS WHERE THE APP ONLY EVER CALLS ONE VALUE. Search runs only in
+#   `default_search`, and Guided Setup only ever touches the three objects it
+#   created — so this file says `/m/:gid/system/inputs/in_gigamon_syslog` rather
+#   than `/m/:gid/system/inputs/*`. The grant an admin approves is then "may
+#   delete the input this app made", not "may delete any input".
+#
+# The dashboards are read-only: they run Cribl Search jobs against the Cribl Lake
+# dataset `gigamon_ami` and read the results. Guided Setup is the one place the
+# app writes, and every call it makes is behind a confirmation in
+# tabs/GuidedSetup.tsx that names the objects it will change.
 policies:
-  # Submit a search job (POST) and list jobs (GET).
+  # --- Cribl Search: every dashboard panel ------------------------------------
+  # Search always runs in the dedicated search group (AGENTS.md, "Config Group
+  # Context"), so these are literal `default_search` paths. The app is granted
+  # nothing in any other group by them.
+
+  # POST runs a panel's KQL query — every figure in the app starts here.
+  #
+  # GET lists the jobs currently running, for the long-running-search watch in
+  # src/cribl/jobWatchdog.ts. Slice 1.4 removed this action because nothing
+  # called it; this is the commit that first calls it. It is a config-plane read
+  # over job metadata — no search is submitted, nothing is billed, and no job is
+  # added to the workspace's 1,000-job search history, which is what ruled out
+  # the `dataset="$vt_jobs"` polling search the plan originally specified.
+  #
+  # It does mean this app can read the id, owner, status and QUERY TEXT of other
+  # people's searches wherever the caller's own role already allows that — which
+  # is the point (on the workspace where this was measured, every hung job
+  # belonged to a colleague) and is worth an admin knowing before they approve
+  # it. It is a READ of those, and nothing more: the app offers Cancel only on
+  # searches the signed-in user started. The app lists only jobs whose resolved
+  # datasets include gigamon_ami, and only those that have been running for
+  # twice the longest time it ever permits one of its own queries.
   - object: '/m/default_search/search/jobs'
     actions: ['GET', 'POST']
-  # Poll job status, read results, field-summaries and per-job metrics (GET), and
-  # cancel (POST /{id}/cancel — the only POST on this sub-path). The app cancels
-  # a job it created seconds earlier when the search is abandoned (range change,
-  # tab switch, unmount) or outlives its client timeout (30 s past the search's
-  # server-side running-time cap), so it stops billing
-  # instead of running to its cap. That needs no dialog: it is not configuration,
-  # and the job belongs to the same user.
-  - object: '/m/default_search/search/jobs/*'
-    actions: ['GET', 'POST']
+  # Read a failed job's errors, to tell a query stopped by its running-time cap
+  # (which the panel says plainly) from one that failed for another reason.
+  - object: '/m/default_search/search/jobs/:jobId'
+    actions: ['GET']
+  # Poll a submitted job until it completes. Without this every panel in the app
+  # hangs at "loading" forever — which is what a non-admin used to see.
+  - object: '/m/default_search/search/jobs/:jobId/status'
+    actions: ['GET']
+  # Read the rows a completed job produced: the data behind every chart and table.
+  - object: '/m/default_search/search/jobs/:jobId/results'
+    actions: ['GET']
+  # Per-field fill, cardinality and top values, for the Field Explorer tab.
+  - object: '/m/default_search/search/jobs/:jobId/field-summaries'
+    actions: ['GET']
+  # A completed job's billable CPU-seconds, for the header's auto-refresh cost
+  # label. Declared like any other read because a denial here is invisible: the
+  # app would show a cost figure that is wrong rather than an error.
+  - object: '/m/default_search/search/jobs/:jobId/metrics'
+    actions: ['GET']
+  # Stop a job this session started when the search is abandoned (range change,
+  # tab switch, unmount) or outlives its client timeout, so it stops billing
+  # instead of running to its cap. No dialog: it is the user's own job, seconds
+  # old, and not configuration.
+  #
+  # The same grant also lets the long-running-search watch cancel a job this
+  # session did not start — but still ONE OF THE USER'S OWN, left running in
+  # Cribl Search or escaped from this app's own running-time cap. The watch
+  # lists every long-running search the account can see and offers Cancel only
+  # where the signed-in user owns the job: this app does not stop work it did
+  # not start, and nothing granted here lets it. That cancel is confirmed
+  # because of the job's AGE rather than its owner — a deliberate click, a
+  # dialog naming the job id and how long it has been running, and the outcome
+  # reported afterwards. Never from a render or a timer.
+  - object: '/m/default_search/search/jobs/:jobId/cancel'
+    actions: ['POST']
 
-  # Cribl Search AI: read whether AI features are enabled, and read/generate
-  # "dataset intelligence" for the gigamon_ami Lake dataset. Without this the
-  # Copilot agent rediscovers the 319-field schema on every AI investigation.
+  # --- Cribl Search AI: dataset intelligence ----------------------------------
+  # Whether the tenant has AI features switched on at all, so the app offers them
+  # only where they exist.
   - object: '/ai/settings/features'
     actions: ['GET']
-  - object: '/ai/settings/dataset-intelligence/*'
+  # Read the generated schema summary for the gigamon_ami dataset (GET), and
+  # generate it once from a button the user presses (POST). Without it the
+  # Copilot agent rediscovers the ~319-field schema on every AI investigation.
+  - object: '/ai/settings/dataset-intelligence/:dataset'
     actions: ['GET', 'POST']
+
+  # --- Guided Setup: the Gigamon AMI syslog onboarding stack ------------------
+  # cribl/provision.ts, reached only from the Guided Setup tab's confirmed
+  # Deploy / Remove buttons. Everything it creates is additive and scoped to the
+  # five objects named in that confirmation. It never edits the demo DataGen
+  # source or any other shared resource, and the route is prepended above the
+  # catch-all with a filter scoped to this app's own source.
+
+  # The Stream worker group the stack is applied to. /products/stream/... is the
+  # current path family and /master/groups the deprecated one; both are declared
+  # because provision.ts falls back to the old path on a 404, which is how an
+  # older Leader answers the new one.
+
+  # List the worker groups Guided Setup offers in its picker.
+  - object: '/master/groups'
+    actions: ['GET']
+  # Read which commit a group's Workers are running, so a commit an earlier run
+  # left undeployed can be found and finished rather than stranded forever.
+  - object: '/products/stream/groups/:gid'
+    actions: ['GET']
+  - object: '/master/groups/:gid'
+    actions: ['GET']
+  # Push the committed config to the group's running Workers. This is the step
+  # that makes a deploy real, and it restarts Worker Processes.
+  - object: '/products/stream/groups/:gid/deploy'
+    actions: ['PATCH']
+  - object: '/master/groups/:gid/deploy'
+    actions: ['PATCH']
+
+  # The Cribl Lake dataset the dashboards read. GET to see whether it exists,
+  # POST to create it when it does not. `default` is the lake itself, not a
+  # placeholder — the app never addresses another one.
+  #
+  # No DELETE, on purpose. The dataset holds the customer's ingested flow
+  # records, so a DELETE grant would let this app destroy that data; the teardown
+  # leaves it, and removing it is a Cribl Lake operation the customer performs
+  # deliberately. src/cribl/paths.ts carries that decision as a named exception,
+  # so the paired-teardown check passes it rather than missing it.
+  - object: '/products/lake/lakes/default/datasets'
+    actions: ['GET', 'POST']
+
+  # The four group-scoped config objects, under the /m/:gid prefix every
+  # non-/system/ endpoint takes. The group is the one the user picks, so :gid has
+  # to stay a placeholder — which means these writes are granted in EVERY worker
+  # group on the Leader, not only the one the picker selects. The app cannot
+  # narrow that; the README says so plainly under "What installing this app
+  # grants".
+
+  # The Syslog source Gigamon AMX exports arrive on (TCP/UDP 5514). POST creates
+  # it; GET answers "does it exist yet" and drives the status pill; PATCH
+  # re-applies the spec to one that is already there — that is the grant slice
+  # 1.3 shipped without, where deploying a fresh stack worked and every re-apply
+  # afterwards 403ed; DELETE is the teardown, and only ever of this source.
+  - object: '/m/:gid/system/inputs'
+    actions: ['POST']
+  - object: '/m/:gid/system/inputs/in_gigamon_syslog'
+    actions: ['GET', 'PATCH', 'DELETE']
+
+  # The Cribl Lake destination. Created only on a tenant that does not already
+  # have one; where it exists it is left untouched. No PATCH: the app never
+  # rewrites a destination it may not have made. No DELETE either — see
+  # LEFT_BEHIND in src/cribl/paths.ts for the decision and what it leaves behind.
+  - object: '/m/:gid/system/outputs'
+    actions: ['POST']
+  - object: '/m/:gid/system/outputs/gigamon_lake'
+    actions: ['GET']
+
+  # The pipeline that parses Gigamon AMI JSON out of the syslog message and
+  # normalizes its fields. POST creates, GET checks, PATCH re-applies the
+  # function list to an existing one, DELETE is the teardown.
+  - object: '/m/:gid/pipelines'
+    actions: ['POST']
+  - object: '/m/:gid/pipelines/gigamon_syslog'
+    actions: ['GET', 'PATCH', 'DELETE']
+
+  # A group has ONE routing table and PATCH replaces it wholesale, so this is the
+  # most consequential entry in the file. provision.ts edits the array it just
+  # read — one insert, one in-place update, or one removal — rather than
+  # composing a new table, so every other route keeps the index the customer gave
+  # it. The same PATCH both installs our route and uninstalls it.
+  - object: '/m/:gid/routes'
+    actions: ['GET']
+  - object: '/m/:gid/routes/:tableId'
+    actions: ['PATCH']
+
+  # Git versioning on the Leader. /version/status reads which files are pending so
+  # the commit can name exactly ours and leave anyone else's pending changes
+  # alone; /version/commit commits that list. /version and /version/files are
+  # read-only and answer one question: did an earlier run commit something this
+  # group never deployed? Without them a commit whose deploy failed can never be
+  # deployed by this app again.
+  #
+  # No revert and no undo. A commit is the customer's own history, and "undo my
+  # commit" on a shared repo can just as easily undo somebody else's work.
+  - object: '/version'
+    actions: ['GET']
+  - object: '/version/status'
+    actions: ['GET']
+  - object: '/version/files'
+    actions: ['GET']
+  - object: '/version/commit'
+    actions: ['POST']
+
+  # NOT DECLARED, DELIBERATELY: the app-scoped KV store (`/kvstore/…`), which
+  # cribl/kv.ts reads and writes for the search caps, per-viewer preferences and
+  # Guided Setup's commit memory. AGENTS.md: app-scoped paths are granted
+  # automatically via the AppUser role when an admin shares the app — "do not
+  # redeclare them here". They are listed in src/cribl/paths.ts with
+  # `scope: 'app'`, and the coverage test asserts they stay out of this file.

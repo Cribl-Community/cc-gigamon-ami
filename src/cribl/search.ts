@@ -111,9 +111,10 @@ export interface CapTier {
  * same wall time, so a cap this table thinks is generous can stop a panel that
  * was working fine — and a stopped panel reads to the customer as a broken app,
  * not as a budget decision. An installer therefore has to be able to raise them
- * without a code change: `setCapTiers` is that seam, and slice 1.3 puts a
- * settings surface on it once the KV store it needs exists and is verified.
- * Until then this table is the one place the numbers live.
+ * without a code change, and can: components/SearchLimitsPanel.tsx is that
+ * surface and cribl/searchCaps.ts stores what it saves, both of them going
+ * through `setCapTiers` below. This table is what applies when nothing is
+ * stored, which is the normal case and the one every install starts in.
  */
 export const DEFAULT_CAP_TIERS: readonly CapTier[] = [
   { upToSeconds: 3600, capSeconds: 120 },
@@ -122,13 +123,85 @@ export const DEFAULT_CAP_TIERS: readonly CapTier[] = [
   { upToSeconds: Infinity, capSeconds: 900 },
 ]
 
+/**
+ * The narrowest and widest cap an installer may set.
+ *
+ * `setCapTiers` refuses a table that is not a table. These refuse one that is a
+ * perfectly well-formed table and still nonsense, which is the failure an
+ * install-wide setting actually has: a typo, a copied figure in the wrong unit,
+ * or a "make it never stop" that someone meant kindly. Both bounds are a
+ * judgement rather than a measurement, so here is the judgement.
+ *
+ * THE CEILING. A cap is a wall-clock time somebody waits out — the client gives
+ * up 30 s after it (clientTimeoutMs), and a panel that has not answered in an
+ * hour has failed in every sense a customer cares about, whatever the job is
+ * still doing. Cost says the same thing from the other side: the engine fans a
+ * live query out across the dataset, so wall-clock seconds and billable
+ * CPU-seconds are different quantities — one 6-second query measured on this
+ * workspace billed 127 CPU-seconds, roughly twenty to one. At 1 credit per
+ * billable CPU-hour that puts a single query running out a one-hour cap in the
+ * region of twenty credits; the same arithmetic on a day-long cap is several
+ * hundred credits for one runaway panel, which is why a day is not a cap but the
+ * absence of one. That ratio is a demo-feed measurement quoted to show the
+ * shape, not a number anything here computes from: the ceiling is a flat hour.
+ *
+ * THE FLOOR is the mirror image. A single query against this Lake dataset has a
+ * measured floor near five seconds before it has read anything worth reading,
+ * and the app's long-range panels have legitimately taken 154 s. Below 30 s a
+ * cap can no longer tell a runaway query from an ordinary one; it stops both,
+ * and every panel on the tab reports a time limit it never used to hit.
+ */
+export const MIN_CAP_SECONDS = 30
+export const MAX_CAP_SECONDS = 3600
+
+/**
+ * Read a cap table from something untrusted — a KV document written by an older
+ * version of this app, edited by hand in the store, or typed into the settings
+ * form — and answer null when there is nothing usable in it.
+ *
+ * Null means "keep whatever is in force". That is deliberately the same answer
+ * for absent, corrupt and absurd, because on the load path all three have the
+ * same correct response: leave DEFAULT_CAP_TIERS alone and write nothing.
+ *
+ * A bad row refuses the WHOLE table rather than being filtered out the way
+ * `setCapTiers` filters. Dropping one row silently changes which window gets
+ * which cap, and what survives is a table nobody chose; refusing leaves the
+ * table someone did choose.
+ *
+ * What it does NOT refuse: a wider window with a shorter cap than a narrower
+ * one. It looks upside down, but "anything over 4 h fails fast, I only care
+ * about the live panels" is a real position an installer can hold, and it is not
+ * evidence of corruption.
+ */
+export function parseCapTiers(value: unknown): CapTier[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+  const tiers: CapTier[] = []
+  for (const row of value) {
+    if (!row || typeof row !== 'object') return null
+    const { upToSeconds, capSeconds } = row as { upToSeconds?: unknown; capSeconds?: unknown }
+    if (typeof capSeconds !== 'number' || !Number.isFinite(capSeconds)) return null
+    if (capSeconds < MIN_CAP_SECONDS || capSeconds > MAX_CAP_SECONDS) return null
+    // JSON has no Infinity — `JSON.stringify` writes the widest tier's bound as
+    // null — so null, and an absent field, mean "no upper bound" on the way back
+    // in. Anything else has to be a real positive number.
+    const upTo = upToSeconds === null || upToSeconds === undefined ? Infinity : upToSeconds
+    if (typeof upTo !== 'number' || Number.isNaN(upTo) || upTo <= 0) return null
+    tiers.push({ upToSeconds: upTo, capSeconds: Math.round(capSeconds) })
+  }
+  return tiers.sort((a, b) => a.upToSeconds - b.upToSeconds)
+}
+
 let capTiers: readonly CapTier[] = DEFAULT_CAP_TIERS
 
 /**
- * Replace the cap table — for slice 1.3's settings surface, and for tests.
+ * Replace the cap table — from the settings surface, and from tests.
  * Tiers are sorted here, so a caller may pass them in any order. An empty or
  * malformed table is refused rather than accepted, because the failure mode of
  * losing the caps is an unbounded bill, which is the thing they exist to stop.
+ *
+ * This only checks that a table is a table. Anything reading numbers a person or
+ * a stored document supplied runs them through `parseCapTiers` first, which is
+ * where "well-formed but absurd" is caught.
  */
 export function setCapTiers(tiers: readonly CapTier[]): void {
   const valid = tiers.filter((t) => t.capSeconds > 0 && t.upToSeconds > 0)

@@ -62,8 +62,8 @@ export function CapacityTopTalkers() {
           </div>
           <input className="cap-filter" placeholder={p.ph} value={filterInput}
             onChange={(e) => setFilterInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && applyFilter()} />
-          <button type="button" className="btn-incident" onClick={applyFilter}>Apply</button>
-          {applied && <button type="button" className="btn-refresh" onClick={() => { setApplied(''); setFilterInput('') }}>Clear</button>}
+          <button type="button" className="btn btn-primary" onClick={applyFilter}>Apply</button>
+          {applied && <button type="button" className="btn" onClick={() => { setApplied(''); setFilterInput('') }}>Clear</button>}
           <InfoTip text="Scope every panel below to one entity — type a value (substring match) and Apply. Clears with Clear." side="left" />
         </div>
       </div>

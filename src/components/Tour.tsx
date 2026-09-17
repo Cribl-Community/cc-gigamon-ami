@@ -1,3 +1,4 @@
+import { Modal } from '@capra/core'
 import { useTour } from '../app/TourContext'
 import { PERSONAS } from '../app/tour'
 
@@ -14,52 +15,59 @@ function CompassIcon() {
 export function TourLauncher() {
   const { openPicker } = useTour()
   return (
-    <button type="button" className="btn-icon btn-tour" onClick={openPicker} title="Guided tour by role" aria-label="Start a guided tour">
-      <CompassIcon /> <span className="btn-tour-txt">Guided tour</span>
+    /* Plain `.btn`, not `.btn-icon`: this one has a label as well as a glyph, so
+       it wants the label padding and the 6px gap the base already sets — which is
+       all `.btn-tour` and `.btn-tour-txt` ever added. */
+    <button type="button" className="btn" onClick={openPicker} title="Guided tour by role" aria-label="Start a guided tour">
+      <CompassIcon /> <span>Guided tour</span>
     </button>
   )
 }
 
-/** One-time nudge for first-time users. Never returns once a tour is run or dismissed. */
-export function TourNudge() {
-  const { seen, persona, openPicker, markSeen } = useTour()
-  if (seen || persona) return null
-  return (
-    <div className="tour-nudge" role="note">
-      <span>
-        <strong>First time here?</strong> Take a 5-minute guided tour tailored to your role — NetOps, Security,
-        AI governance or Compliance.
-      </span>
-      <span className="tour-nudge-actions">
-        <button type="button" className="tour-btn tour-btn-primary" onClick={openPicker}>Choose a role</button>
-        <button type="button" className="tour-btn" onClick={markSeen}>Dismiss</button>
-      </span>
-    </div>
-  )
-}
+/* The one-time nudge for first-time users used to live here as `TourNudge`,
+   with its own `.tour-nudge` box. It is now one of the page-level banners
+   `AppBanners` draws — same three-state read of `offerNudge`, same two actions,
+   one banner treatment for the whole app. See components/AppBanners.tsx. */
 
+/**
+ * The persona picker, on Capra's `Modal` — the same dialog `ConfirmDialog` uses,
+ * for the reasons that file documents at length: it portals out of `#root`,
+ * marks the app `inert` behind it, closes on Escape and on its own ✕, locks page
+ * scroll, and labels itself by the `<h2>` it builds from `title`.
+ *
+ * Four of those five were missing here, and the fifth was hand-rolled. This
+ * picker was a `<div role="dialog">` with no `aria-modal`, no focus trap, no
+ * Escape, no scroll lock and an `aria-label` duplicating a heading that was an
+ * `<h3>` nothing pointed at — Tab walked straight out of it into the page
+ * underneath. Only the ✕ was there, and it is Capra's now too.
+ *
+ * `footer={null}` because there is no action to take here that is not one of the
+ * persona cards: a Cancel button beside eight choices is a ninth choice that
+ * does nothing the ✕ does not already do.
+ */
 export function TourPicker() {
   const { pickerOpen, closePicker, start } = useTour()
-  if (!pickerOpen) return null
   return (
-    <div className="modal-scrim" onClick={closePicker}>
-      <div className="modal tour-modal" role="dialog" aria-label="Choose a guided tour" onClick={(e) => e.stopPropagation()}>
-        <header className="modal-head">
-          <h3 className="modal-title">Guided tour — pick your role</h3>
-          <button type="button" className="modal-x" onClick={closePicker} aria-label="Close">×</button>
-        </header>
-        <div className="tour-personas">
-          {PERSONAS.map((p) => (
-            <button key={p.id} type="button" className="tour-persona" onClick={() => start(p.id)}>
-              <span className="tour-persona-role">{p.role}</span>
-              <span className="tour-persona-name">{p.name}</span>
-              <span className="tour-persona-q">“{p.question}”</span>
-              <span className="tour-persona-steps">{p.steps.length} steps</span>
-            </button>
-          ))}
-        </div>
+    <Modal
+      isOpen={pickerOpen}
+      title="Guided tour — pick your role"
+      onClose={closePicker}
+      footer={null}
+      // The picker is a two-column grid of cards; `sm` (544px) would leave each
+      // persona's question in a 240px column.
+      size="md"
+    >
+      <div className="tour-personas">
+        {PERSONAS.map((p) => (
+          <button key={p.id} type="button" className="tour-persona" onClick={() => start(p.id)}>
+            <span className="tour-persona-role">{p.role}</span>
+            <span className="tour-persona-name">{p.name}</span>
+            <span className="tour-persona-q">“{p.question}”</span>
+            <span className="tour-persona-steps">{p.steps.length} steps</span>
+          </button>
+        ))}
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -84,9 +92,9 @@ export function TourStrip() {
           {step.look && <p className="tour-strip-look"><span className="tour-look-tag">Look for</span>{step.look}</p>}
         </div>
         <div className="tour-strip-actions">
-          <button type="button" className="tour-btn" onClick={exit}>Exit</button>
-          <button type="button" className="tour-btn" onClick={back} disabled={index === 0}>← Back</button>
-          <button type="button" className="tour-btn tour-btn-primary" onClick={next}>{last ? 'Finish' : 'Next →'}</button>
+          <button type="button" className="btn" onClick={exit}>Exit</button>
+          <button type="button" className="btn" onClick={back} disabled={index === 0}>← Back</button>
+          <button type="button" className="btn btn-primary" onClick={next}>{last ? 'Finish' : 'Next →'}</button>
         </div>
       </div>
     </aside>

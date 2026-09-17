@@ -34,7 +34,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="qb-center qb-error">
           <span className="qb-error-title">This view hit an error</span>
           <span className="qb-msg">{this.state.error.message}</span>
-          <button type="button" className="btn-refresh" onClick={() => this.setState({ error: null })}>Try again</button>
+          <button type="button" className="btn" onClick={() => this.setState({ error: null })}>Try again</button>
         </div>
       )
     }

@@ -1,3 +1,46 @@
+// The four answers a panel can give about its own query, and the component that
+// was going to be a fifth.
+//
+// WHAT THIS DISTINGUISHES. Running (nothing on screen yet) · failed, with a
+// heading that names a known cause where there is one · succeeded and returned
+// nothing · has data, optionally re-running over it. Failed and empty are
+// already separate branches, with different words, a different colour and a
+// different heading — "Search failed" over the reason, against a plain
+// `emptyLabel`. That distinction is the whole of what this file exists to keep.
+//
+// `<Unavailable>` WAS SPECIFIED AND IS NOT BUILT. It was to be a wrapper over
+// Capra's `EmptyState`, wiring `theme` from src/app/theme.ts. Reading the two
+// together is what settled it:
+//
+//   • `EmptyState` distinguishes nothing. It is a layout — illustration, title,
+//     description, an optional action — with no notion of why a region is
+//     blank. Whatever tells unavailable from empty has to be the caller.
+//   • This file is that caller, and it already does. So a wrapper here would
+//     have changed the drawing of a state, not the set of states — a rename,
+//     and one that swaps a compact in-panel message for an illustrated blank
+//     slate at exactly the moment a panel is trying to keep its other panels
+//     company.
+//
+// The screens it was specified FOR are whole-tab blank slates — a workspace the
+// app cannot run against at all, a settings page for a feature this tenant does
+// not have. Those are `EmptyState`'s size and shape, and none of them exists in
+// the app yet. Building the wrapper before its first caller would have meant
+// guessing the caller.
+//
+// THE PQC TILE IS NOT THAT CALLER EITHER, which is the test that decided it. It
+// was offered as one: TLS Posture's "Classical KEX" tile, when the search behind
+// it fails. A KPI tile is four to a row and about eighty pixels tall, and an
+// `EmptyState` is an illustration with a heading — it does not fit, and would
+// not be right if it did. What that tile needed was an em dash, a caption and a
+// dropped colour claim; what its table rows needed was `<StatusPill>`; what its
+// panel needed was a Capra `Alert`. Three sizes of "unavailable", none of them
+// a blank slate. See src/tabs/TlsPosture.tsx.
+//
+// FOR WHOEVER BUILDS THE FIRST WHOLE-TAB ONE: `EmptyState`'s `theme` prop
+// defaults to `'light'` and this app defaults to dark, so the illustration
+// arrives wrong unless the theme is passed. That is the one thing the wrapper
+// was really for, and it is one line at the call site until there are two.
+
 import type { ReactNode } from 'react'
 import { IS_INSTALLED } from '../cribl/config'
 

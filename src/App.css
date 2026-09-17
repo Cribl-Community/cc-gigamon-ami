@@ -3,7 +3,16 @@
 
 :root {
   --gm-radius: token('radius.lg');
-  --gm-border: token('border.default');
+  /* The COLOUR, not `border.default` — which resolves to the SHORTHAND
+     `1px solid var(…)`. Every one of the 55 sites writing
+     `1px solid var(--gm-border)` therefore expanded to
+     `1px solid 1px solid #cdced6`: invalid at computed-value time, so the whole
+     declaration became `unset`, border-style computed to `none`, and NO BORDER
+     RENDERED ANYWHERE — panels, KPI tiles, the tab bar, every table row
+     divider, every input. Confirmed in the BUILT stylesheet before this fix:
+     `1px solid 1px solid` was really shipping. The two `border-color:` sites
+     want a colour as well, so all 55 agree on this form. */
+  --gm-border: token('color.border.neutral.default');
   --gm-panel: token('color.background.surface');
   --gm-panel-2: token('color.background.panel.solid');
   --gm-fg: token('color.foreground.default');
@@ -14,35 +23,168 @@
   --gm-info: token('color.background.info.solid.default');
   --gm-mono: token('core.fontFamily.mono');
 
+  /* ---- Spacing and type scales -------------------------------------------
+     Derived from what this file already used, not invented: a census of its
+     303 spacing and 194 font-size declarations with the near-duplicates
+     collapsed onto the nearest step (ties round down). 162 numbers across 150
+     declarations moved, every one by at most 2px and most by 0.5–1px.
+
+     THE POINT is that the next spacing or type decision is a choice between
+     existing steps rather than a new number. If you need a value that is not
+     here, add a STEP — in this block, with a line saying what forced it —
+     rather than a literal in a rule. A bare px in a padding, margin, gap or
+     font-size below is a gap in this block, not a shortcut.
+
+     Named for their pixel value, so `gap: var(--gm-sp-10)` needs no lookup and
+     adding a step cannot renumber the others. Where Capra has a matching step
+     the value is its token; where it has none the px is written out and said
+     so. Capra's spacing ladder is 2/4/8/16/24/32 — nothing between 8 and 16,
+     which this file crosses 135 times — and its type ladder is
+     10/12/14/16/18/20/24/30 with no 11, 13 or 26 step, and no `sm` step at all
+     (`token('core.fontSize.sm')` does not exist and fails the build).
+
+     Deliberately NOT on these ladders, and that is 33 declarations out of 497:
+     the five negative margins (-1/-4/-6/-12px), which compensate for one
+     specific box rather than carrying rhythm; the four page-scale clearances
+     used once each (40/48/60/190px); the 24 SVG text sizes in the DopDiagram
+     and service map, which are measured against a fixed viewBox and so are
+     artwork dimensions rather than UI type; and the `em` font sizes
+     (0.85–0.92em), which are relative to their parent on purpose. */
+  --gm-sp-2: token('spacing.xs');           /*  2px */
+  --gm-sp-4: token('spacing.sm');           /*  4px */
+  --gm-sp-6: 6px;                           /*  no Capra step */
+  --gm-sp-8: token('spacing.md');           /*  8px */
+  --gm-sp-10: 10px;                         /*  no Capra step */
+  --gm-sp-12: 12px;                         /*  no Capra step */
+  --gm-sp-14: 14px;                         /*  no Capra step */
+  --gm-sp-16: token('spacing.lg');          /* 16px */
+  --gm-sp-18: 18px;                         /*  no Capra step */
+  --gm-sp-20: 20px;                         /*  no Capra step */
+  --gm-sp-24: token('spacing.xl');          /* 24px */
+  --gm-sp-32: token('spacing.2xl');         /* 32px */
+
+  /* 10–14 is the entire caption/body range; 18/24/26 are the display sizes. */
+  --gm-fs-10: token('core.fontSize.xxs');   /* 10px */
+  --gm-fs-11: 11px;                         /* no Capra step */
+  --gm-fs-12: token('core.fontSize.xs');    /* 12px */
+  --gm-fs-13: 13px;                         /* no Capra step */
+  --gm-fs-14: token('core.fontSize.body');  /* 14px */
+  --gm-fs-18: token('core.fontSize.lg');    /* 18px */
+  --gm-fs-24: token('core.fontSize.2xl');   /* 24px */
+  --gm-fs-26: 26px;                         /* Capra jumps 24 → 30 */
+
   /* Hand-picked graph/status colors. Everything above is a Capra token and
      flips with .dark automatically; these do not, so both modes are defined.
-     LIGHT values here, dark overrides in :root.dark below. */
-  --gm-st-success: #2b8a3e;
-  --gm-st-warning: #e67700;
-  --gm-st-danger: #c92a2a;
-  --gm-st-unknown: #5c6773;
-  --gm-flow-line: #b2dfc0;
-  --gm-flow-line-on: #2f9e44;
-  --gm-flow-dot: #2f9e44;
+     LIGHT values here, dark overrides in :root.dark below.
+
+     The family is Open Color: the 9 step in light, the 4 step in dark. Two
+     members have left that ramp because the 9 step does not clear WCAG AA on
+     this app's white panel at the 10–12px these are used at, and there is no
+     darker step in Open Color to move to. Both replacements are the SAME hue
+     darkened until they pass, not a new colour — see src/app/contrast.test.ts,
+     which measures every one of these against the surface it is actually drawn
+     on, in both themes, and fails below threshold. Change a value here and that
+     test tells you the new ratio. */
+  --gm-st-success: #287f39;   /* was Open Color green-9 #2b8a3e — 4.37:1 on white, needs 4.5. Now 5.02:1. */
+  --gm-st-warning: #ac5900;   /* was Open Color orange-9 #e67700 — 3.00:1 on white. Now 5.02:1. */
+  --gm-st-danger: #c92a2a;    /* red-9, 5.46:1 */
+  --gm-st-unknown: #5c6773;   /* 5.76:1 */
+  /* --gm-st-info and --gm-st-danger-contrast were here. The first was drawn only
+     by .gs-toast-commit's left rail and the second only by the filled .gs-err
+     pill; slice 1.6 replaced both surfaces with Capra components, so both
+     variables had no consumer left and their rows in src/app/contrast.test.ts
+     had no rule to name. The finding behind the second one is worth keeping and
+     moved to src/components/StatusPill.tsx: white ink on a status FILL is
+     2.32:1 on the dark red and Capra's own foreground.danger.contrast is white
+     in both modes, so a filled status pill cannot be repaired by swapping
+     tokens. Anything that fills with a status colour again needs its own ink,
+     and a row here to prove it. */
   --gm-flow-idle: #c5cbd4;
-  --gm-flow-metric: #2b8a3e;
+  /* The same green as --gm-st-success and moved with it: it prints the live
+     throughput figure in .dop-flow-value at 14px, and the old #2b8a3e measured
+     4.06:1 on the diagram's own --dop-canvas. Now 4.67:1. */
+  --gm-flow-metric: #287f39;
+
+  /* ---- The two filled buttons --------------------------------------------
+     The one house button family (".btn" below) has two solid variants, and
+     these are their fills. They are NOT in :root.dark, deliberately: the ink on
+     them is #fff and it sits on the button's own fill rather than on a surface
+     that flips, so one value is correct in both themes — and a second value
+     would be a second pairing to measure for no gain.
+
+     WHY THEY ARE NOT CAPRA TOKENS, which is the whole reason this block exists.
+     The three classes that merged into `.btn-primary` painted
+     `background.accent.solid.default` (.gs-btn-primary) and
+     `background.info.solid.default` (.btn-incident, .tour-btn-primary). Those
+     two tokens resolve to the SAME #0190ff, in both themes — so the merge itself
+     changed no pixel and had no colour to choose. What it did do is put one
+     name on a pairing the app had already measured and rejected: #fff on #0190ff
+     is 3.26:1, the identical number src/app/contrast.test.ts asserts as a
+     FAILURE for Capra's `bold` Pill, and the reason components/StatusPill.tsx
+     uses `outline` instead. Slice 1.6 had already started routing around it by
+     hand — see the comment in components/DatasetIntelPrompt.tsx choosing
+     `gs-btn` over `gs-btn-primary` on exactly this measurement. Capra's own
+     `Button variant="primary"` is no escape: it paints
+     foreground.accent.contrast on background.accent.solid.default, which is the
+     same 3.26:1.
+
+     So the fills are the same hues darkened until #fff clears AA at 13px, the
+     move --gm-st-success and --gm-st-warning above already made, onto the same
+     Open Color ramp they use. One step, not two, for the reason in the first
+     paragraph. Both are measured in src/app/contrast.test.ts, in both themes,
+     against the ink and against the two surfaces the buttons sit on. */
+  --gm-btn-primary: #1971c2;  /* Open Color blue-8. #fff on it is 5.02:1, up from 3.26:1 on #0190ff. */
+  --gm-btn-danger: #c92a2a;   /* Open Color red-9 — the same hex --gm-st-danger uses in light.
+                                 #fff on it is 5.46:1, up from 3.91:1 on --gm-danger. */
+
+  /* ---- Brand constants ----------------------------------------------------
+     Gigamon orange and the Cribl teal/cyan, plus the Cribl product-card fills
+     and their ink. They are brand colours rather than theme colours, so — like
+     --gm-st-* above — they are hand-picked, and unlike --gm-st-* they do NOT
+     flip: the Cribl product cards stay dark in light mode too, because that is
+     how they are drawn in the source artwork and it keeps the platform block
+     reading as one object.
+
+     They were `--cribl-…` and `--gg-…`, declared 1200 lines down in a second
+     `:root, :root.dark` block beside the Data Flow diagram. Three naming
+     conventions in one file is how a reader stops being able to tell a house
+     token from a vendor's, so they are `--gm-brand-*` here with everything else.
+     The vendor each belongs to is this comment's job, not the name's: `orange`
+     is Gigamon's, `teal`/`cyan`/`card`/`ink` are Cribl's. The dual selector is
+     gone with them — a custom property declared only in `:root` already applies
+     in dark, and nothing in a `.dark` block ever redeclared these. */
+  --gm-brand-orange: #f60;
+  --gm-brand-orange-soft: #ff8a3d;
+  --gm-brand-card: #133f49;
+  --gm-brand-card-2: #2c3a4a;
+  --gm-brand-teal: #2bb3a8;
+  --gm-brand-cyan: #22d3ee;
+  --gm-brand-ink: #eaf6f8;
+  --gm-brand-ink-sub: #a8c6cd;
 }
 
 /* Dark overrides — `:root.dark` (0,2,0) outranks `:root` (0,1,0) regardless of
    source order, so these can't be accidentally reordered into a no-op. */
 :root.dark {
-  --gm-st-success: #69db7c;
-  --gm-st-warning: #ffd43b;
-  --gm-st-danger: #ff8787;
-  --gm-st-unknown: #909cae;
-  --gm-flow-line: #2f6f43;
-  --gm-flow-line-on: #37b24d;
-  --gm-flow-dot: #51cf66;
+  --gm-st-success: #69db7c;   /* 11.12:1 on the panel */
+  --gm-st-warning: #ffd43b;   /* 13.63:1 */
+  --gm-st-danger: #ff8787;    /*  8.39:1 as text */
+  --gm-st-unknown: #909cae;   /*  6.99:1 */
   --gm-flow-idle: #4a5160;
   --gm-flow-metric: #51cf66;
 }
 
 * { box-sizing: border-box; }
+
+/* Form controls do not inherit font-family, so every house button, input and
+   select in this app was rendering in the UA control font (Arial on Chrome)
+   while the text around it used Capra's Open Sans. The type scale reaches their
+   font-SIZE either way; this is what makes the face match. It also lifted three
+   controls over the 24px hit-area floor on its own, because Open Sans' normal
+   line-height is 1.44 against Arial's 1.15. `font-family` and not
+   `font: inherit`: the shorthand would reset the size and weight those rules
+   set as well, which in a file this shorthand-heavy is order-dependent. */
+button, input, select, textarea { font-family: inherit; }
 
 html, body, #root { height: 100%; margin: 0; }
 
@@ -55,7 +197,7 @@ body {
   min-height: 100%;
   max-width: 1500px;
   margin: 0 auto;
-  padding: 0 24px 48px;
+  padding: 0 var(--gm-sp-24) 48px;
 }
 
 /* ---------- Header ---------- */
@@ -63,15 +205,15 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 22px 0 14px;
+  gap: var(--gm-sp-16);
+  padding: var(--gm-sp-20) 0 var(--gm-sp-14);
 }
 .app-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--gm-sp-12);
   margin: 0;
-  font-size: 26px;
+  font-size: var(--gm-fs-26);
   font-weight: token('core.fontWeight.bold');
   letter-spacing: -0.01em;
 }
@@ -82,40 +224,68 @@ body {
   background: token('color.background.warning.solid.default');
 }
 /* Preview qualifier: part of the name, but it should not compete with it —
-   lighter weight and subdued, sized to sit on the title's baseline. */
+   lighter weight and subdued, sized to sit on the title's baseline.
+
+   KEPT, against the ux-spec's retire list, for the flattest of reasons: it is
+   not a badge, a chip or a label. It is four declarations of TYPE applied to
+   part of an <h1>, and there is no component in this app or in Capra that a
+   parenthesised qualifier on a heading belongs to. Slice 1.6 reached the same
+   conclusion and said so in components/StatusPill.tsx; this is the ruling that
+   closes it rather than deferring it again. */
 .title-preview {
   margin-left: -4px;
-  font-size: 19px;
+  font-size: var(--gm-fs-18);
   font-weight: token('core.fontWeight.normal');
   color: var(--gm-fg-subtle);
   letter-spacing: 0;
 }
 .app-subtitle {
-  margin: 6px 0 0 17px;
+  margin: var(--gm-sp-6) 0 0 var(--gm-sp-16);
   color: var(--gm-fg-subtle);
-  font-size: 13px;
+  font-size: var(--gm-fs-13);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--gm-sp-10);
 }
+/* KEPT, against the ux-spec's retire list, and for a reason that is about the
+   chip NEXT to it rather than about this one.
+
+   `.env-chip` is not a status: <StatusPill> renders the state word itself out of
+   a status vocabulary (`present`, `failed`, `missing`), and "Cribl" / "dev
+   preview" is an environment. components/ConfirmDialog.tsx already refused to
+   widen that union for the same reason — its four action words are verbs — and
+   widening it twice would leave the one status map meaning three things. So the
+   destination the spec has in mind is Capra's `Pill variant="outline"`, which is
+   what <StatusPill> is built on.
+
+   And that is exactly what stops it. A Capra Pill draws its word at 12px behind
+   a 16px icon inside 8px of padding; `.version-chip` on the line below is 11px
+   mono in the same outline at the same radius, and it is on no retire list. The
+   two chips are one idea — this app's environment and version, stated the same
+   way, side by side in the subtitle — and converting one of them alone would
+   MAKE the mismatch the retire list exists to prevent. Both, or neither; and
+   `.version-chip` cannot go, because a Pill will not render mono.
+   Both inks are measured on both of their surfaces in src/app/contrast.test.ts.
+
+   Slice 1.6 left these two and recorded that it had. This is the ruling. */
 .env-chip {
-  font-size: 11px;
-  padding: 1px 8px;
+  font-size: var(--gm-fs-11);
+  padding: var(--gm-sp-2) var(--gm-sp-8);
   border-radius: token('radius.full');
   border: 1px solid var(--gm-border);
 }
 .env-installed { color: token('color.foreground.success.default'); border-color: token('color.background.success.solid.default'); }
 .env-dev { color: token('color.foreground.warning.default'); border-color: token('color.background.warning.solid.default'); }
-.version-chip { font-size: 11px; font-family: var(--gm-mono); color: var(--gm-fg-subtle); padding: 1px 7px; border: 1px solid var(--gm-border); border-radius: token('radius.full'); }
+.version-chip { font-size: var(--gm-fs-11); font-family: var(--gm-mono); color: var(--gm-fg-subtle); padding: var(--gm-sp-2) var(--gm-sp-6); border: 1px solid var(--gm-border); border-radius: token('radius.full'); }
 
-.app-controls { display: flex; align-items: center; gap: 10px; padding-top: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.app-controls { display: flex; align-items: center; gap: var(--gm-sp-10); padding-top: var(--gm-sp-4); flex-wrap: wrap; justify-content: flex-end; }
 .auto-refresh { display: inline-flex; align-items: center; }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-.range-label { color: var(--gm-fg-subtle); font-size: 13px; }
-.last-updated { color: var(--gm-fg-subtle); font-size: 12px; font-variant-numeric: tabular-nums; }
+.range-label { color: var(--gm-fg-subtle); font-size: var(--gm-fs-13); }
+.last-updated { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); font-variant-numeric: tabular-nums; }
 .refresh-ic { display: inline-flex; }
 .spin-once { animation: spin 0.7s linear; transform-origin: center; }
 .range-select {
@@ -123,48 +293,110 @@ body {
   color: var(--gm-fg);
   border: 1px solid var(--gm-border);
   border-radius: token('radius.md');
-  padding: 7px 10px;
-  font-size: 13px;
+  padding: var(--gm-sp-6) var(--gm-sp-10);
+  font-size: var(--gm-fs-13);
   cursor: pointer;
 }
-.btn-refresh {
+/* ---------- The one house button ---------------------------------------------
+   WHAT IT REPLACES. Five families drew the same two buttons: `.gs-btn` +
+   `-primary|-ghost|-danger|-danger-text` (Guided Setup's name, on 17 controls
+   across the header banners, the watchdog drawer, TLS Posture and the two
+   confirmation dialogs — a class whose name says which tab it came from is
+   already a second language), `.tour-btn` + `-primary` (the tour strip),
+   `.btn-refresh` (the header, the error boundary, three tabs) and
+   `.btn-incident` (two tabs and the ServiceNow mock). Fourteen selectors, three
+   paddings, two font weights, two disabled opacities and two "primary" fills —
+   for a button and a filled button.
+
+   WHAT DIFFERED, and what each merged site therefore does now. This is the
+   audit, because a merge nobody can check is a repaint:
+     * padding — `.gs-btn` was 8/14, `.btn-refresh` 6/14, `.tour-btn` 6/12. The
+       base is 6/14. The 17 `.gs-btn` sites lose 4px of HEIGHT, which is a fix
+       rather than a cost: Capra's own `Button` is a fixed 32px (dimension
+       -component-md) and the confirmation dialogs put a house button next to a
+       Capra one in the same footer, mismatched by 4px until now. The same 4px
+       is why `.domain-head` on the Service Map and `.cap-controls` on Capacity
+       each had one button taller than the one beside it.
+     * font-weight — `.tour-btn` was normal, the other two medium. Base: medium.
+     * disabled — `.tour-btn` was 0.45 opacity, `.gs-btn` 0.5, `.btn-incident`
+       0.5 with `cursor: not-allowed`. Base: 0.5 and `cursor: default`.
+     * hover — `.btn-refresh` had a bare `:hover`, the other two
+       `:hover:not(:disabled)`. Base: the guarded one.
+     * TWO REAL BUGS FALL OUT. `.gs-btn-danger` and `.tour-btn-primary` are each
+       (0,1,0) and set only `background`, while `.gs-btn:hover:not(:disabled)`
+       and `.tour-btn:hover:not(:disabled)` are (0,2,0) — so hovering the red
+       "Remove onboarding stack" confirm button, the red "Cancel this search"
+       confirm button, and the blue "Next →" in the tour strip turned them all
+       NEUTRAL GREY. Every filled variant below carries its own hover.
+
+   WHAT IS NOT HERE. Capra's `Button`, and deliberately: it renders
+   `foreground.accent.contrast` on `background.accent.solid.default`, which is
+   #fff on #0190ff — 3.26:1, the same pairing src/app/contrast.test.ts asserts as
+   a failure for a `bold` Pill. Adopting it would import the defect this family
+   is fixing. See the --gm-btn-* block at the top of this file.
+   ------------------------------------------------------------------------- */
+.btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: var(--gm-sp-6);
   background: var(--gm-panel-2);
   color: var(--gm-fg);
   border: 1px solid var(--gm-border);
   border-radius: token('radius.md');
-  padding: 7px 14px;
-  font-size: 13px;
+  padding: var(--gm-sp-6) var(--gm-sp-14);
+  font-size: var(--gm-fs-13);
   font-weight: token('core.fontWeight.medium');
+  /* A label that wraps mid-phrase ("←" alone on a line above "Back") is worse
+     than one that overflows. `.btn-refresh` and `.tour-btn` both had this; the
+     stretched Guided Setup buttons are in a 400px column and do not need it. */
+  white-space: nowrap;
   cursor: pointer;
+  transition: filter 0.15s, background 0.15s;
 }
-.btn-refresh:hover { background: token('color.background.neutral.hover'); }
-.btn-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--gm-panel-2); color: var(--gm-fg);
-  border: 1px solid var(--gm-border); border-radius: token('radius.md');
-  padding: 7px 9px; cursor: pointer;
+.btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* The two filled variants. Each restates its own background in `:hover` because
+   the base hover is one selector more specific — see "TWO REAL BUGS" above. */
+.btn-primary {
+  background: var(--gm-btn-primary); color: #fff; border-color: transparent;
 }
-.btn-icon:hover { background: token('color.background.neutral.hover'); }
+.btn-primary:hover:not(:disabled) { background: var(--gm-btn-primary); filter: brightness(1.08); }
+.btn-danger {
+  background: var(--gm-btn-danger); color: #fff; border-color: transparent;
+}
+.btn-danger:hover:not(:disabled) { background: var(--gm-btn-danger); filter: brightness(1.08); }
+
+/* No fill until hovered. The base hover is what gives it one, which is the
+   behaviour `.gs-btn-ghost` already had — it never overrode the hover either. */
+.btn-ghost { background: transparent; }
+/* A destructive action that is not the page's main one: the word is red and the
+   border is dashed, and it is always worn over `.btn-ghost` so there is no fill
+   competing with the red. --gm-st-danger, measured on both panels already. */
+.btn-danger-text { color: var(--gm-st-danger); border-style: dashed; }
+
+/* Icon-only. The one distinction worth a modifier: a bare glyph needs square
+   padding, where a label needs room at the ends. Kept because it is the only
+   member of the family whose box is decided by the icon rather than the text. */
+.btn-icon { padding-inline: var(--gm-sp-8); }
 
 /* ---------- Tab bar ---------- */
 .tab-bar {
   display: flex;
-  gap: 6px;
+  gap: var(--gm-sp-6);
   flex-wrap: wrap;
   border-bottom: 1px solid var(--gm-border);
-  margin-bottom: 22px;
+  margin-bottom: var(--gm-sp-20);
 }
 /* Nav-link chips — scoped to .tab-bar so `white-space: nowrap` (and the
    nav styling) does NOT leak into the tab CONTENT wrapper, which also uses
    the class `.tab`. This overload was making every tab description run off. */
 .tab-bar .tab {
-  padding: 10px 14px;
+  padding: var(--gm-sp-10) var(--gm-sp-14);
   color: var(--gm-fg-subtle);
   text-decoration: none;
-  font-size: 14px;
+  font-size: var(--gm-fs-14);
   font-weight: token('core.fontWeight.medium');
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
@@ -177,10 +409,10 @@ body {
 }
 
 /* ---------- Tab body ---------- */
-.tab { display: flex; flex-direction: column; gap: 18px; }
-.tab-intro { display: flex; flex-direction: column; gap: 8px; }
-.tab-h { margin: 0; font-size: 19px; font-weight: token('core.fontWeight.semibold'); }
-.tab-sub { margin: 0; color: var(--gm-fg-subtle); font-size: 13.5px; max-width: 960px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.tab { display: flex; flex-direction: column; gap: var(--gm-sp-18); }
+.tab-intro { display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.tab-h { margin: 0; font-size: var(--gm-fs-18); font-weight: token('core.fontWeight.semibold'); }
+.tab-sub { margin: 0; color: var(--gm-fg-subtle); font-size: var(--gm-fs-13); max-width: 960px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
 .tab-sub code, code { font-family: var(--gm-mono); font-size: 0.92em; color: token('color.foreground.info.default'); }
 .tab-sub .d-danger { color: token('color.foreground.danger.default'); }
 .tab-sub .d-warn { color: token('color.foreground.warning.default'); }
@@ -197,60 +429,98 @@ body {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
+  gap: var(--gm-sp-12);
+  padding: var(--gm-sp-14) var(--gm-sp-18);
   border-bottom: 1px solid var(--gm-border);
 }
-.panel-title { margin: 0; font-size: 14.5px; font-weight: token('core.fontWeight.semibold'); display: inline-flex; align-items: center; }
-.panel-note { color: var(--gm-fg-subtle); font-size: 12px; font-family: var(--gm-mono); }
-.panel-head-right { display: inline-flex; align-items: center; gap: 10px; flex: none; }
+.panel-title { margin: 0; font-size: var(--gm-fs-14); font-weight: token('core.fontWeight.semibold'); display: inline-flex; align-items: center; }
+.panel-note { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); font-family: var(--gm-mono); }
+.panel-head-right { display: inline-flex; align-items: center; gap: var(--gm-sp-10); flex: none; }
 .panel-refresh {
   display: inline-flex; align-items: center; justify-content: center;
   background: none; border: 1px solid transparent; border-radius: token('radius.md');
-  color: var(--gm-fg-subtle); cursor: pointer; padding: 3px; line-height: 0;
+  color: var(--gm-fg-subtle); cursor: pointer; padding: var(--gm-sp-2); line-height: 0;
 }
 .panel-refresh:hover { color: var(--gm-fg); background: token('color.background.neutral.subtle'); }
 .panel-refresh-on { color: token('color.foreground.info.default'); }
 .panel-refresh-on svg { animation: spin 0.85s linear infinite; transform-origin: center; }
-.panel-body { padding: 16px 18px; }
+.panel-body { padding: var(--gm-sp-16) var(--gm-sp-18); }
 
 /* ---------- PanelInfo (ⓘ popover: explanation + query) ---------- */
-.pinfo { position: relative; display: inline-flex; align-items: center; margin-left: 5px; }
-.pinfo-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--gm-fg-subtle); cursor: pointer; padding: 2px; border-radius: 4px; }
+.pinfo { position: relative; display: inline-flex; align-items: center; margin-left: var(--gm-sp-4); }
+/* 24px minimum target (SC 2.5.8). The glyph stays 13px and centred; only the
+   box a pointer has to hit grows. This ⓘ is on every panel, every KPI tile and
+   every diagram node, so it was the most-pressed 17px target in the app. */
+.pinfo-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; background: none; border: none; color: var(--gm-fg-subtle); cursor: pointer; padding: var(--gm-sp-2); border-radius: 4px; }
 .pinfo-btn:hover, .pinfo-btn-on { color: var(--gm-fg); }
 .pinfo-pop {
   position: fixed; z-index: 60;
   max-width: 92vw;
   background: var(--gm-panel-2); border: 1px solid var(--gm-border); border-radius: 10px;
-  box-shadow: 0 16px 44px rgba(0,0,0,0.55); padding: 14px;
+  box-shadow: 0 16px 44px rgba(0,0,0,0.55); padding: var(--gm-sp-14);
   text-align: left; text-transform: none; letter-spacing: normal; white-space: normal;
   font-weight: token('core.fontWeight.normal');
-  display: flex; flex-direction: column; gap: 13px;
+  display: flex; flex-direction: column; gap: var(--gm-sp-12);
+  /* The one scroll region in the popover. PanelInfo sets `max-height` inline
+     only when it had to clamp against the viewport, so this does nothing until
+     it is needed — and when it is, scrolling no longer dismisses the popover. */
+  overflow: auto;
 }
-.pinfo-block { display: flex; flex-direction: column; gap: 6px; }
-.pinfo-h { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
-.pinfo-h-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.pinfo-about { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--gm-fg); white-space: normal; overflow-wrap: anywhere; }
-.pinfo-actions { display: inline-flex; align-items: center; gap: 8px; }
-.pinfo-open { display: inline-flex; align-items: center; gap: 4px; color: token('color.foreground.link'); text-decoration: none; font-size: 11px; font-weight: token('core.fontWeight.medium'); }
+/* Focused programmatically on open, so the Copy button and the links are one
+   Tab away instead of at the end of the page. Its own border and shadow are
+   the boundary; a 400px ring around the whole dialog is noise, not an
+   indicator. Keyboard focus on anything INSIDE it keeps the global ring. */
+.pinfo-pop:focus { outline: none; }
+.pinfo-block { display: flex; flex-direction: column; gap: var(--gm-sp-6); }
+.pinfo-h { font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.pinfo-h-row { display: flex; align-items: center; justify-content: space-between; gap: var(--gm-sp-10); }
+.pinfo-about { margin: 0; font-size: var(--gm-fs-12); line-height: 1.5; color: var(--gm-fg); white-space: normal; overflow-wrap: anywhere; }
+.pinfo-actions { display: inline-flex; align-items: center; gap: var(--gm-sp-8); }
+/* min-height, not padding: the two controls sit 8px apart inside .pinfo-h-row,
+   so SC 2.5.8's spacing exception does not rescue them (24px circles centred on
+   each would intersect). `font: inherit` because <button> does not inherit it
+   and would otherwise stay in the UA control font at 19.2px tall. */
+.pinfo-open { display: inline-flex; align-items: center; min-height: 24px; gap: var(--gm-sp-4); color: token('color.foreground.link'); text-decoration: none; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.medium'); }
 .pinfo-open:hover { text-decoration: underline; }
-.pinfo-copy { background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); color: var(--gm-fg-subtle); border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+/* KEPT, against the ux-spec's retire list, and this is the reason.
+   It is not the house button under another name. `.btn` is a 13px medium label
+   on a panel fill with 6/14 of padding and a ~32px box, sized to sit in a page's
+   action row next to a Capra `Button`. This one is an 11px subtle-ink control
+   inside a 12px popover, one of two things on a header row 8px apart, whose
+   whole job is to not compete with the query it sits above. Written as `.btn`
+   with a modifier it would override the base's size, weight, ink, fill and
+   radius — five of the eight declarations that make `.btn` what it is — which is
+   a separate treatment wearing a shared name, and that is the thing the retire
+   list exists to prevent, not the thing it asks for.
+   The ink is measured on the popover surface in src/app/contrast.test.ts.
+
+   The idea it IS a member of is "the small quiet control", which this file
+   spells three times: here, `.seg-sm` and `.chip`. That is the next family to
+   collapse and it is not this slice's — two of the three are toggles with an
+   active state and this one is an action, and neither of the other two is on any
+   retire list. Noted here so the next reader does not have to rediscover it. */
+.pinfo-copy { display: inline-flex; align-items: center; min-height: 24px; font: inherit; font-size: var(--gm-fs-11); background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); color: var(--gm-fg-subtle); border-radius: 6px; padding: var(--gm-sp-2) var(--gm-sp-10); cursor: pointer; }
 .pinfo-copy:hover { color: var(--gm-fg); }
 .pinfo-code-link { display: block; text-decoration: none; }
+/* No max-height here any more. It used to cap the query at 260px with its own
+   `overflow: auto`, which made a second, nested scroll region — and scrolling
+   it closed the popover, so the tail of the three longest frozen queries (40,
+   9 and 3 lines) could not be read at all. .pinfo-pop is now the one scroller
+   and the clamp is measured against the viewport, not guessed at 260px. */
 .pinfo-code {
-  margin: 0; font-family: var(--gm-mono); font-size: 11.5px; line-height: 1.6;
+  margin: 0; font-family: var(--gm-mono); font-size: var(--gm-fs-11); line-height: 1.6;
   color: token('color.foreground.info.default');
   background: token('color.background.application'); border: 1px solid var(--gm-border);
-  border-radius: 8px; padding: 10px 11px; white-space: pre-wrap; word-break: break-word;
-  max-height: 260px; overflow: auto; cursor: pointer;
+  border-radius: 8px; padding: var(--gm-sp-10) var(--gm-sp-10); white-space: pre-wrap; word-break: break-word;
+  cursor: pointer;
 }
 .pinfo-code-link:hover .pinfo-code { border-color: token('color.background.info.solid.default'); }
 
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gm-sp-18); }
 @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
 
 /* ---------- KPI tiles ---------- */
-.kpi-row { display: grid; gap: 14px; }
+.kpi-row { display: grid; gap: var(--gm-sp-14); }
 .kpi-row-3 { grid-template-columns: repeat(3, 1fr); }
 .kpi-row-4 { grid-template-columns: repeat(4, 1fr); }
 .kpi-row-6 { grid-template-columns: repeat(6, 1fr); }
@@ -263,26 +533,26 @@ body {
   border: 1px solid var(--gm-border);
   border-top: 3px solid token('color.background.neutral.solid.default');
   border-radius: var(--gm-radius);
-  padding: 14px 16px;
+  padding: var(--gm-sp-14) var(--gm-sp-16);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--gm-sp-6);
 }
 .kpi-info { border-top-color: var(--gm-info); }
 .kpi-success { border-top-color: var(--gm-success); }
 .kpi-warning { border-top-color: var(--gm-warning); }
 .kpi-danger { border-top-color: var(--gm-danger); }
-.kpi-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gm-fg-subtle); }
-.kpi-value { font-size: 27px; font-weight: token('core.fontWeight.bold'); line-height: 1.05; }
-.kpi-unit { font-size: 14px; font-weight: token('core.fontWeight.normal'); color: var(--gm-fg-subtle); margin-left: 3px; }
-.kpi-sub { font-size: 11.5px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.kpi-label { font-size: var(--gm-fs-11); letter-spacing: 0.06em; text-transform: uppercase; color: var(--gm-fg-subtle); }
+.kpi-value { font-size: var(--gm-fs-26); font-weight: token('core.fontWeight.bold'); line-height: 1.05; }
+.kpi-unit { font-size: var(--gm-fs-14); font-weight: token('core.fontWeight.normal'); color: var(--gm-fg-subtle); margin-left: var(--gm-sp-2); }
+.kpi-sub { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
 
 /* ---------- Pills & dots ---------- */
 .pill {
   align-self: flex-start;
-  font-size: 11px;
+  font-size: var(--gm-fs-11);
   font-weight: token('core.fontWeight.semibold');
-  padding: 2px 9px;
+  padding: var(--gm-sp-2) var(--gm-sp-8);
   border-radius: token('radius.full');
   color: token('color.foreground.neutral.contrast');
 }
@@ -300,36 +570,35 @@ body {
 .dot-unknown { background: #5c6773; }
 .dot-pulse { animation: dot-pulse 1.8s ease-in-out infinite; }
 @keyframes dot-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(240,62,62,0.5); } 50% { box-shadow: 0 0 0 4px rgba(240,62,62,0); } }
-@media (prefers-reduced-motion: reduce) { .dot-pulse { animation: none; } }
 
 /* ---------- BarList ---------- */
-.barlist { display: flex; flex-direction: column; gap: 7px; }
+.barlist { display: flex; flex-direction: column; gap: var(--gm-sp-6); }
 .barrow {
   display: grid;
   grid-template-columns: 150px 1fr 150px;
   align-items: center;
-  gap: 12px;
+  gap: var(--gm-sp-12);
   background: none;
   border: none;
-  padding: 3px 0;
+  padding: var(--gm-sp-2) 0;
   color: inherit;
   text-align: left;
   font: inherit;
 }
 .barrow-click { cursor: pointer; }
 .barrow-click:hover .barrow-fill { filter: brightness(1.15); }
-.barrow-label { font-family: var(--gm-mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barrow-label { font-family: var(--gm-mono); font-size: var(--gm-fs-12); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .barrow-track { height: 20px; background: token('color.background.neutral.subtle'); border-radius: 4px; overflow: hidden; }
 .barrow-fill { display: block; height: 100%; border-radius: 4px; }
 .barrow-success { background: token('color.background.success.solid.default'); }
 .barrow-info { background: token('color.background.info.solid.default'); }
 .barrow-accent { background: token('color.background.accent.solid.default'); }
-.barrow-value { font-family: var(--gm-mono); font-size: 12.5px; color: var(--gm-fg-subtle); text-align: right; }
+.barrow-value { font-family: var(--gm-mono); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); text-align: right; }
 .barrow-note { color: var(--gm-fg-subtle); opacity: 0.75; }
 
 /* ---------- App-mix list ---------- */
-.mixlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.mixrow { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+.mixlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.mixrow { display: grid; grid-template-columns: 14px 1fr auto; gap: var(--gm-sp-10); align-items: center; font-size: var(--gm-fs-13); }
 .mixname { font-family: var(--gm-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mixpct { color: var(--gm-fg-subtle); font-variant-numeric: tabular-nums; }
 .swatch { width: 12px; height: 12px; border-radius: 3px; }
@@ -339,15 +608,15 @@ body {
 .swatch-6 { background: #ffd43b; } .swatch-7 { background: #74c0fc; }
 
 /* ---------- Resolver list ---------- */
-.resolver-toolbar { margin-bottom: 12px; }
-.resolver-scroll { max-height: 560px; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+.resolver-toolbar { margin-bottom: var(--gm-sp-12); }
+.resolver-scroll { max-height: 560px; overflow-y: auto; margin: 0 -6px; padding: 0 var(--gm-sp-6); }
 .resolver-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .resolver-row {
   display: grid;
   grid-template-columns: 12px 1fr auto auto;
   align-items: center;
-  gap: 12px;
-  padding: 9px 2px;
+  gap: var(--gm-sp-12);
+  padding: var(--gm-sp-8) var(--gm-sp-2);
   border-bottom: 1px solid var(--gm-border);
 }
 .resolver-row:last-child { border-bottom: none; }
@@ -355,26 +624,26 @@ body {
 .resolver-row-click:hover { background: token('color.background.neutral.subtle'); }
 .row-drill { color: var(--gm-fg-subtle); font-size: 0.85em; opacity: 0; transition: opacity 0.1s; }
 .resolver-row-click:hover .row-drill { opacity: 1; }
-.resolver-name { font-family: var(--gm-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.resolver-stats { font-family: var(--gm-mono); font-size: 11.5px; color: var(--gm-fg-subtle); white-space: nowrap; }
+.resolver-name { font-family: var(--gm-mono); font-size: var(--gm-fs-13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resolver-stats { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); white-space: nowrap; }
 .tls-issuer { color: var(--gm-fg-subtle); font-size: 0.86em; }
 .tls-nocert { opacity: 0.7; }
 
 /* ---------- Pivot / segmented toggle ---------- */
-.pivot-toggle { display: inline-flex; gap: 4px; background: token('color.background.neutral.subtle'); padding: 3px; border-radius: token('radius.md'); align-self: flex-start; }
+.pivot-toggle { display: inline-flex; gap: var(--gm-sp-4); background: token('color.background.neutral.subtle'); padding: var(--gm-sp-2); border-radius: token('radius.md'); align-self: flex-start; }
 .seg {
   background: none; border: none; color: var(--gm-fg-subtle);
-  padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: token('core.fontWeight.medium');
+  padding: var(--gm-sp-4) var(--gm-sp-14); border-radius: 6px; cursor: pointer; font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium');
 }
 .seg-active { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); }
 
 /* ---------- Query states ---------- */
 .qb-center {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; padding: 40px 16px; text-align: center;
+  gap: var(--gm-sp-10); padding: 40px var(--gm-sp-16); text-align: center;
 }
-.qb-compact { padding: 20px 12px; }
-.qb-msg { color: var(--gm-fg-subtle); font-size: 13px; max-width: 640px; }
+.qb-compact { padding: var(--gm-sp-20) var(--gm-sp-12); }
+.qb-msg { color: var(--gm-fg-subtle); font-size: var(--gm-fs-13); max-width: 640px; }
 .qb-error-title { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.semibold'); }
 .spinner {
   width: 22px; height: 22px; border-radius: 50%;
@@ -409,40 +678,36 @@ body {
 .qb-updating .qb-refreshing-content { opacity: 0.45; pointer-events: none; }
 .qb-refreshing-badge {
   position: absolute; top: 0; right: 0; z-index: 3;
-  display: none; align-items: center; gap: 7px;
-  padding: 4px 10px; border-radius: token('radius.full');
+  display: none; align-items: center; gap: var(--gm-sp-6);
+  padding: var(--gm-sp-4) var(--gm-sp-10); border-radius: token('radius.full');
   background: var(--gm-panel-2); border: 1px solid var(--gm-border);
-  color: var(--gm-fg-subtle); font-size: 11.5px; white-space: nowrap;
+  color: var(--gm-fg-subtle); font-size: var(--gm-fs-11); white-space: nowrap;
 }
 .qb-updating .qb-refreshing-badge { display: inline-flex; }
 .last-updated-busy { color: token('color.foreground.info.default'); }
 .spin { animation: spin 0.9s linear infinite; transform-origin: center; }
 
-@media (prefers-reduced-motion: reduce) {
-  .topbar-progress-bar { animation: none; width: 100%; opacity: 0.6; }
-  .spin, .spinner { animation-duration: 2.4s; }
-}
 
 /* ---------- Flow diagram ---------- */
-.flow-detail { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; line-height: 1.5; }
+.flow-detail { margin: 0; padding-left: var(--gm-sp-18); display: flex; flex-direction: column; gap: var(--gm-sp-6); font-size: var(--gm-fs-13); line-height: 1.5; }
 
 /* Where each number came from — Cribl component telemetry vs the AMI records. */
 .prov {
-  display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: token('radius.full');
-  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold');
+  display: inline-block; margin-top: var(--gm-sp-2); padding: var(--gm-sp-2) var(--gm-sp-6); border-radius: token('radius.full');
+  font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold');
 }
 .prov-cribl { background: token('color.background.info.subtle'); color: token('color.foreground.info.default'); }
 .prov-records { background: token('color.background.neutral.subtle'); color: var(--gm-fg-subtle); }
 
 /* Range picker + provenance legend above the flow. */
-.flow-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-.flow-tb-label { font-size: 13px; color: var(--gm-fg-subtle); }
-.flow-tb-note { font-size: 12px; color: var(--gm-fg-subtle); line-height: 1.5; max-width: 760px; }
+.flow-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--gm-sp-10); margin-bottom: var(--gm-sp-14); }
+.flow-tb-label { font-size: var(--gm-fs-13); color: var(--gm-fg-subtle); }
+.flow-tb-note { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; max-width: 760px; }
 .flow-tb-note .prov { margin-top: 0; }
 
 /* Live-throughput pulse next to the event count. */
 .flow-pulse {
-  display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: var(--gm-sp-6);
   background: var(--gm-fg-subtle); vertical-align: middle;
 }
 .flow-pulse-on { background: token('color.background.success.solid.default'); animation: flow-pulse 1.9s ease-in-out infinite; }
@@ -452,68 +717,65 @@ body {
 }
 
 /* Deep links inside the ⓘ popover. */
-.pinfo-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.pinfo-links { display: flex; flex-wrap: wrap; gap: var(--gm-sp-8); }
 
-@media (prefers-reduced-motion: reduce) {
-  .flow-pulse-on { animation: none; }
-}
 
 /* ---------- Reference tab ---------- */
-.fam-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.fam-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gm-sp-14); }
 @media (max-width: 800px) { .fam-grid { grid-template-columns: 1fr; } }
-.fam { border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: 12px 14px; }
-.fam-name { font-weight: token('core.fontWeight.semibold'); font-size: 13.5px; }
-.fam-desc { color: var(--gm-fg-subtle); font-size: 12.5px; margin: 4px 0 8px; }
-.fam-fields code { font-size: 11px; color: token('color.foreground.info.default'); line-height: 1.7; }
-.usecases, .doclist { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; font-size: 13.5px; line-height: 1.5; }
-.usecases li { padding-left: 14px; border-left: 2px solid var(--gm-border); }
-.doclist li { display: flex; flex-direction: column; gap: 2px; }
+.fam { border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: var(--gm-sp-12) var(--gm-sp-14); }
+.fam-name { font-weight: token('core.fontWeight.semibold'); font-size: var(--gm-fs-13); }
+.fam-desc { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); margin: var(--gm-sp-4) 0 var(--gm-sp-8); }
+.fam-fields code { font-size: var(--gm-fs-11); color: token('color.foreground.info.default'); line-height: 1.7; }
+.usecases, .doclist { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--gm-sp-12); font-size: var(--gm-fs-13); line-height: 1.5; }
+.usecases li { padding-left: var(--gm-sp-14); border-left: 2px solid var(--gm-border); }
+.doclist li { display: flex; flex-direction: column; gap: var(--gm-sp-2); }
 .doclink { color: token('color.foreground.link'); text-decoration: none; font-weight: token('core.fontWeight.medium'); }
 .doclink:hover { text-decoration: underline; }
-.docnote { color: var(--gm-fg-subtle); font-size: 12px; }
+.docnote { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
 
 /* ---------- Stub ---------- */
-.stub-panel { padding: 20px 22px; position: relative; display: flex; flex-direction: column; gap: 10px; }
+.stub-panel { padding: var(--gm-sp-20) var(--gm-sp-20); position: relative; display: flex; flex-direction: column; gap: var(--gm-sp-10); }
 .stub-badge {
-  align-self: flex-start; font-size: 11px; font-weight: token('core.fontWeight.semibold');
+  align-self: flex-start; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.semibold');
   color: token('color.foreground.warning.default');
-  border: 1px solid token('color.background.warning.solid.default'); border-radius: token('radius.full'); padding: 2px 10px;
+  border: 1px solid token('color.background.warning.solid.default'); border-radius: token('radius.full'); padding: var(--gm-sp-2) var(--gm-sp-10);
 }
-.stub-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; line-height: 1.45; }
-.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.fieldchip { background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); border-radius: 5px; padding: 2px 7px; font-size: 11.5px; }
-.stub-gap { font-size: 12.5px; color: var(--gm-fg-subtle); line-height: 1.5; margin: 0; }
+.stub-list { margin: 0; padding-left: var(--gm-sp-18); display: flex; flex-direction: column; gap: var(--gm-sp-6); font-size: var(--gm-fs-13); line-height: 1.45; }
+.chip-row { display: flex; flex-wrap: wrap; gap: var(--gm-sp-6); }
+.fieldchip { background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); border-radius: 5px; padding: var(--gm-sp-2) var(--gm-sp-6); font-size: var(--gm-fs-11); }
+.stub-gap { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; margin: 0; }
 .stub-gap strong { color: token('color.foreground.warning.default'); }
 
 /* ---------- Heatmap ---------- */
 .heatmap-wrap { overflow-x: auto; }
 .heatmap { border-collapse: separate; border-spacing: 4px; width: 100%; }
-.heat-corner { font-size: 11px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); text-align: left; font-weight: token('core.fontWeight.normal'); white-space: nowrap; padding-right: 8px; }
-.heat-colh, .heat-rowh { font-size: 11px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); font-weight: token('core.fontWeight.normal'); }
-.heat-colh { text-align: center; padding-bottom: 2px; }
-.heat-rowh { text-align: right; padding-right: 8px; white-space: nowrap; }
+.heat-corner { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); text-align: left; font-weight: token('core.fontWeight.normal'); white-space: nowrap; padding-right: var(--gm-sp-8); }
+.heat-colh, .heat-rowh { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); font-weight: token('core.fontWeight.normal'); }
+.heat-colh { text-align: center; padding-bottom: var(--gm-sp-2); }
+.heat-rowh { text-align: right; padding-right: var(--gm-sp-8); white-space: nowrap; }
 .heat-cell { padding: 0; text-align: center; }
-.heat-empty { color: token('color.foreground.placeholder'); font-size: 13px; }
+.heat-empty { color: token('color.foreground.placeholder'); font-size: var(--gm-fs-13); }
 .heat-btn {
   width: 100%; min-width: 72px; height: 40px; border: none; border-radius: 6px;
-  color: #05130c; font-family: var(--gm-mono); font-size: 12px; font-weight: token('core.fontWeight.semibold');
+  color: #05130c; font-family: var(--gm-mono); font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.semibold');
   cursor: default;
 }
 .heat-btn:not(:disabled) { cursor: pointer; }
 .heat-btn:not(:disabled):hover { outline: 2px solid token('color.foreground.default'); }
 
 /* ---------- TimeChart ---------- */
-.timechart { display: flex; flex-direction: column; gap: 8px; }
-.tc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.tc-ymax { font-size: 11px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
-.tc-legend { display: flex; gap: 14px; }
-.tc-key { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--gm-fg-subtle); }
+.timechart { display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.tc-head { display: flex; align-items: center; justify-content: space-between; gap: var(--gm-sp-12); }
+.tc-ymax { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.tc-legend { display: flex; gap: var(--gm-sp-14); }
+.tc-key { display: inline-flex; align-items: center; gap: var(--gm-sp-4); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
 .tc-swatch { width: 10px; height: 3px; border-radius: 2px; }
 .tc-svg { width: 100%; height: 160px; display: block; }
 .tc-grid { stroke: token('border.default'); stroke-width: 1; vector-effect: non-scaling-stroke; }
 
 /* ---------- Service map ---------- */
-.svc-graph-wrap { display: flex; flex-direction: column; gap: 10px; }
+.svc-graph-wrap { display: flex; flex-direction: column; gap: var(--gm-sp-10); }
 .svc-graph { width: 100%; height: 420px; display: block; }
 .svc-edge { stroke: token('color.background.neutral.selected'); opacity: 0.7; }
 .svc-node { cursor: pointer; }
@@ -530,181 +792,252 @@ body {
   70%  { opacity: 0; }
   100% { transform: scale(2.6); opacity: 0; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .svc-pulse-ring { animation: none; opacity: 0; }
-}
 .svc-label { fill: token('color.foreground.default'); font-size: 12.5px; font-family: var(--gm-mono); pointer-events: none; }
-.svc-legend { display: flex; gap: 18px; font-size: 12px; color: var(--gm-fg-subtle); flex-wrap: wrap; }
-.svc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.svc-legend { display: flex; gap: var(--gm-sp-18); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); flex-wrap: wrap; }
+.svc-legend span { display: inline-flex; align-items: center; gap: var(--gm-sp-6); }
 /* Aggregated peers that carry no AWS name tag — dashed to read as "not a real service". */
 .svc-ext-edge { stroke: var(--gm-fg-subtle); stroke-dasharray: 5 5; opacity: 0.3; }
 .svc-ext-node circle { fill: none; stroke: var(--gm-fg-subtle); stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.75; }
 .svc-ext-label { fill: var(--gm-fg-subtle); font-size: 11px; font-family: var(--gm-mono); pointer-events: none; }
 .dash-line { width: 16px; height: 0; border-top: 1.5px dashed var(--gm-fg-subtle); flex: none; }
-.svc-hint { color: var(--gm-fg-subtle); font-size: 13px; padding: 8px 0; }
+.svc-hint { color: var(--gm-fg-subtle); font-size: var(--gm-fs-13); padding: var(--gm-sp-8) 0; }
 
 /* ---------- Latency domains ---------- */
-.domain-head { display: flex; align-items: center; gap: 14px; }
+.domain-head { display: flex; align-items: center; gap: var(--gm-sp-14); }
 .domain-head .panel-title { flex: 1; }
-.btn-incident {
-  background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast');
-  border: none; border-radius: token('radius.md'); padding: 8px 16px; font-size: 13px;
-  font-weight: token('core.fontWeight.semibold'); cursor: pointer;
-}
-.btn-incident:disabled { opacity: 0.5; cursor: not-allowed; }
-.domain-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+/* `.btn-incident` was here. It is `.btn .btn-primary` — the same filled button
+   the tour strip and Guided Setup drew under two other names. */
+.domain-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gm-sp-14); }
 @media (max-width: 800px) { .domain-row { grid-template-columns: repeat(2, 1fr); } }
 .domain {
   background: var(--gm-panel); border: 1px solid var(--gm-border);
   border-top: 3px solid token('color.background.neutral.solid.default');
-  border-radius: var(--gm-radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 7px;
+  border-radius: var(--gm-radius); padding: var(--gm-sp-14) var(--gm-sp-16); display: flex; flex-direction: column; gap: var(--gm-sp-6);
 }
 .domain-ok { border-top-color: var(--gm-success); }
 .domain-bad { border-top-color: var(--gm-danger); }
 .domain-na { border-top-color: token('color.background.neutral.solid.default'); opacity: 0.75; }
 
 /* ---------- Triage ---------- */
-.triage { width: 100%; border-collapse: collapse; font-family: var(--gm-mono); font-size: 12.5px; }
-.triage td { padding: 7px 4px; border-bottom: 1px solid var(--gm-border); }
+.triage { width: 100%; border-collapse: collapse; font-family: var(--gm-mono); font-size: var(--gm-fs-12); }
+.triage td { padding: var(--gm-sp-6) var(--gm-sp-4); border-bottom: 1px solid var(--gm-border); }
 .triage td:nth-child(2) { text-align: right; color: var(--gm-fg-subtle); }
 .triage td:nth-child(3) { text-align: right; }
 .tri-ok { color: token('color.foreground.success.default'); }
 .tri-bad { color: token('color.foreground.danger.default'); }
 .tri-warn { color: token('color.foreground.warning.default'); }
-.verdict { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-.verdict-label { font-size: 11px; font-weight: token('core.fontWeight.bold'); color: token('color.foreground.danger.default'); font-family: var(--gm-mono); }
-.verdict-text { font-size: 13px; font-weight: token('core.fontWeight.semibold'); }
+.verdict { display: flex; align-items: center; gap: var(--gm-sp-10); margin-top: var(--gm-sp-14); }
+.verdict-label { font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.bold'); color: token('color.foreground.danger.default'); font-family: var(--gm-mono); }
+.verdict-text { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); }
 
-/* ---------- Enriched triage table ---------- */
-.triage-scope { font-family: var(--gm-mono); font-size: 11.5px; color: var(--gm-fg-subtle); margin-bottom: 10px; }
+/* ---------- The one data table ----------------------------------------------
+   Generalised from `.triage2`, which was one of two near-identical table
+   treatments: `.triage2` (mono, flush left — the Service Map triage evidence)
+   and `.tcp-drill-tbl` (proportional, sticky head — three drill-downs across
+   Security and TCP Health). What actually differed between them was the type
+   face and four pixels of padding. Each had also grown its own numeric-cell
+   class, so the app had two ways to right-align a figure.
+
+   Out of scope, and deliberately: `.heatmap`, which is a grid of coloured
+   buttons in a <table> — a picture with axes, not rows of data — and the
+   list-shaped pseudo-tables (`.find-row`, `.cov-row`, `.pqc-row`, `.gs-res-row`,
+   `.sl-row`), which are stacks of cards with no column headers; giving them
+   this class would be a semantics change, not a styling one.
+
+   THE CONTRACT, which is why this is a family and not a rename. Every table
+   using it carries a `<caption class="sr-only">` naming what it lists,
+   `scope="col"` on every column head, and `scope="row"` on the cell a reader
+   would use to name the row. None of the tables it replaces had any of the
+   three. A per-row control belongs in `.dtable-actions` and carries the row's
+   id in its accessible name, so "Remove" is never the whole announcement.
+
+   Members defined here: `-head` (a column head outside `<thead>`), `-id` (the
+   row's identity cell), `-num` (right-aligned tabular figures), `-actions`
+   (the per-row control cell). Modifiers: `-mono` on the table or on one cell,
+   `-sticky` for a table inside a scrolling container. A row that needs marking
+   uses a content class — there is no `-row` rule, because a member with no
+   declaration is decoration and the next reader would have to grep to find
+   that out. */
+.dtable { width: 100%; border-collapse: collapse; font-size: var(--gm-fs-12); }
+.dtable th, .dtable td {
+  text-align: left; font-weight: token('core.fontWeight.normal'); white-space: nowrap;
+  padding: var(--gm-sp-6) var(--gm-sp-10); border-bottom: 1px solid var(--gm-border);
+}
+/* Flush with the panel's own text column, which is the look `.triage2` had and
+   the reason the first column does not read as indented from the prose above. */
+.dtable th:first-child, .dtable td:first-child { padding-left: 0; }
+.dtable thead th, .dtable-head {
+  text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: var(--gm-fs-10); color: var(--gm-fg-subtle);
+}
+/* The identity cell is the one piece of a row a reader quotes back, so it keeps
+   full-strength ink even where the rest of the row is dimmed. */
+.dtable-id { color: var(--gm-fg); }
+/* Qualified by element: the `.dtable th, .dtable td` rule above is (0,1,1) and
+   would otherwise outrank a bare (0,1,0) class, silently left-aligning every
+   numeric column the slice converted. */
+.dtable th.dtable-num, .dtable td.dtable-num { text-align: right; font-variant-numeric: tabular-nums; }
+.dtable th.dtable-actions, .dtable td.dtable-actions { text-align: right; }
+.dtable-mono { font-family: var(--gm-mono); }
+/* A sticky head needs an opaque backdrop of its own, or the rows scroll
+   through it. --gm-panel, because every scrolling table here is inside one. */
+/* An OPAQUE backdrop. --gm-panel is color.background.surface, which ships
+   translucent (85% light, 25% dark), so rows scrolled under a sticky head
+   showed through it — measured at 1.02:1 between the head label and the body
+   ink ghosting behind it, i.e. illegible. */
+.dtable-sticky thead th { position: sticky; top: 0; background: var(--gm-panel-2); z-index: 1; }
+
+/* ---------- Enriched triage table (content classes) ---------- */
+.triage-scope { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); margin-bottom: var(--gm-sp-10); }
 .triage-scope code { color: token('color.foreground.info.default'); }
 .triage-wrap { overflow-x: auto; }
-.triage2 { width: 100%; border-collapse: collapse; font-family: var(--gm-mono); font-size: 12px; }
-.triage2 th { text-align: left; font-weight: token('core.fontWeight.normal'); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; color: var(--gm-fg-subtle); padding: 4px 10px 8px 0; border-bottom: 1px solid var(--gm-border); white-space: nowrap; }
-.triage2 td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--gm-border); white-space: nowrap; }
-.tri-rec { color: var(--gm-fg-subtle); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.tri-rec { color: var(--gm-fg-subtle); font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.04em; }
 .tri-field { color: var(--gm-fg); }
-.tri-val { color: var(--gm-fg-subtle); text-align: right; }
-.tri-domain { font-size: 11px; }
+.tri-val { color: var(--gm-fg-subtle); }
+.tri-domain { font-size: var(--gm-fs-11); }
 .d-app { color: #ffa94d; } .d-net { color: #4dabf7; } .d-srv { color: #f783ac; } .d-dns { color: #63e6be; } .d-none { color: var(--gm-fg-subtle); }
 .tri-rec-identity .tri-field { color: token('color.foreground.info.default'); }
-.tri-rec-evidence td { opacity: 0.92; }
+/* Both selectors, because the record cell is now a `<th scope="row">`. */
+.tri-rec-evidence th, .tri-rec-evidence td { opacity: 0.92; }
 .tri-dim { color: var(--gm-fg-subtle); }
-.tri-verdict-row td { border-bottom: none; padding-top: 11px; }
+.tri-verdict-row th, .tri-verdict-row td { border-bottom: none; padding-top: var(--gm-sp-10); }
 .tri-verdict-row .tri-rec { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.bold'); }
-.tri-verdict-cell { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.bold'); font-size: 13px; letter-spacing: 0.02em; }
+.tri-verdict-cell { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.bold'); font-size: var(--gm-fs-13); letter-spacing: 0.02em; }
 
 /* NetOps-exonerated narrative callout */
-.exon { display: flex; gap: 11px; align-items: flex-start; margin-top: 14px; padding: 12px 14px; border-radius: token('radius.md'); border: 1px solid var(--gm-border); }
+.exon { display: flex; gap: var(--gm-sp-10); align-items: flex-start; margin-top: var(--gm-sp-14); padding: var(--gm-sp-12) var(--gm-sp-14); border-radius: token('radius.md'); border: 1px solid var(--gm-border); }
 .exon-text { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .exon-ok { background: token('color.background.success.subtle'); border-color: token('color.background.success.solid.default'); }
 .exon-warn { background: token('color.background.warning.subtle'); border-color: token('color.background.warning.solid.default'); }
-.exon-icon { flex: none; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: token('core.fontWeight.bold'); }
+.exon-icon { flex: none; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.bold'); }
 .exon-ok .exon-icon { background: var(--gm-success); color: #05130c; }
 .exon-warn .exon-icon { background: var(--gm-warning); color: #1a1200; }
-.exon-text { font-size: 12.5px; line-height: 1.5; color: var(--gm-fg); }
+.exon-text { font-size: var(--gm-fs-12); line-height: 1.5; color: var(--gm-fg); }
 
-/* ---------- Modal ---------- */
-.modal-scrim {
-  position: fixed; inset: 0; background: token('color.background.scrim');
-  display: flex; align-items: flex-start; justify-content: center; padding: 60px 16px; z-index: 50; overflow-y: auto;
-}
-.modal {
-  width: 560px; max-width: 100%; background: var(--gm-panel-2);
-  border: 1px solid var(--gm-border); border-radius: var(--gm-radius); box-shadow: 0 24px 60px rgba(0,0,0,0.5);
-}
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--gm-border); }
-.modal-title { display: inline-flex; align-items: center; gap: 9px; font-weight: token('core.fontWeight.semibold'); }
-.sn-dot { width: 12px; height: 12px; border-radius: 50%; background: #62d84e; }
-.modal-x { background: none; border: none; color: var(--gm-fg-subtle); font-size: 24px; cursor: pointer; line-height: 1; }
-.modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
-.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--gm-fg-subtle); }
+/* ---------- The ServiceNow mock's own body -----------------------------------
+   THE SECOND MODAL IS GONE. `.modal-scrim`, `.modal`, `.modal-head`,
+   `.modal-title`, `.modal-x`, `.modal-body`, `.modal-actions`, `.modal-done`,
+   `.modal-note` and `.tour-modal` were a hand-built dialog that
+   `ServiceNowModal` and `TourPicker` shared while `ConfirmDialog` — added one
+   slice earlier for the same job — was already on Capra's `Modal`. Both are on
+   Capra's now, which is what the third file in this app to need a dialog would
+   otherwise have had to choose between.
+
+   It was not only a duplicate look. The hand-built one had no focus trap, did
+   not close on Escape, did not lock the page behind it, did not restore focus
+   on close, and labelled itself with a `<span>` nothing pointed at —
+   `TourPicker` did not even set `aria-modal`. Capra's does all five, and
+   src/components/ConfirmDialog.tsx already documents each one as measured
+   rather than assumed.
+
+   What is left in this block is what belongs to the ServiceNow mock itself: its
+   form fields and its success panel. The `.sn-` prefix is that component's, and
+   `.fld*` is the form. Nothing here is a dialog.
+
+   `.sn-dot` went with it — the brand-green dot that sat beside the words in the
+   header — and not for tidiness. `ModalProps.title` is typed ReactNode, but
+   Capra only builds the <h2> it points `aria-labelledby` at when the title is
+   TEXT; an element there leaves the dialog with no accessible name at all. That
+   was measured on the way in rather than guessed, and
+   components/ServiceNowModal.test.tsx pins it so the dot cannot come back by
+   accident. A decorative dot on a mock dialog is not worth the name of the thing
+   a screen-reader user has just been placed inside. */
+.fld { display: flex; flex-direction: column; gap: var(--gm-sp-4); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
 .fld-in {
   background: token('color.background.application'); color: var(--gm-fg);
-  border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: 8px 10px; font-size: 13px; font-family: inherit;
+  border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: var(--gm-sp-8) var(--gm-sp-10); font-size: var(--gm-fs-13); font-family: inherit;
 }
-.fld-area { font-family: var(--gm-mono); font-size: 12px; resize: vertical; }
-.fld-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
-.modal-done { align-items: center; text-align: center; gap: 10px; padding: 30px 20px; }
-.done-check { width: 46px; height: 46px; border-radius: 50%; background: var(--gm-success); color: #05130c; display: flex; align-items: center; justify-content: center; font-size: 24px; }
-.modal-note { color: var(--gm-fg-subtle); font-size: 12px; }
+.fld-area { font-family: var(--gm-mono); font-size: var(--gm-fs-12); resize: vertical; }
+.fld-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gm-sp-12); }
+/* The form and the success panel each stack their own children; the dialog
+   around them no longer does it for them, because Capra's content box is a
+   plain scroll region and that is the right division. */
+.sn-form { display: flex; flex-direction: column; gap: var(--gm-sp-14); }
+.sn-done { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--gm-sp-10); padding: var(--gm-sp-16) 0; }
+.done-check { width: 46px; height: 46px; border-radius: 50%; background: var(--gm-success); color: #05130c; display: flex; align-items: center; justify-content: center; font-size: var(--gm-fs-24); }
+.sn-note { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
 
 /* ---------- Field explorer ---------- */
-.fe-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.fe-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-12); }
 .fe-search {
   background: var(--gm-panel-2); color: var(--gm-fg); border: 1px solid var(--gm-border);
-  border-radius: token('radius.md'); padding: 8px 12px; font-size: 13px; min-width: 220px;
+  border-radius: token('radius.md'); padding: var(--gm-sp-8) var(--gm-sp-12); font-size: var(--gm-fs-13); min-width: 220px;
 }
-.fe-fams { display: flex; flex-wrap: wrap; gap: 6px; }
+.fe-fams { display: flex; flex-wrap: wrap; gap: var(--gm-sp-6); }
 .chip {
   background: token('color.background.neutral.subtle'); color: var(--gm-fg-subtle);
-  border: 1px solid var(--gm-border); border-radius: token('radius.full'); padding: 4px 12px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--gm-border); border-radius: token('radius.full'); padding: var(--gm-sp-4) var(--gm-sp-12); font-size: var(--gm-fs-12); cursor: pointer;
 }
 .chip-active { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); border-color: transparent; }
 .fe-list { list-style: none; margin: 0; padding: 0; }
 .fe-item { border-bottom: 1px solid var(--gm-border); }
 .fe-row {
   display: grid; grid-template-columns: 16px minmax(160px, 1.4fr) 70px 1fr 110px;
-  align-items: center; gap: 12px; width: 100%; background: none; border: none;
-  color: inherit; text-align: left; font: inherit; padding: 9px 4px; cursor: pointer;
+  align-items: center; gap: var(--gm-sp-12); width: 100%; background: none; border: none;
+  color: inherit; text-align: left; font: inherit; padding: var(--gm-sp-8) var(--gm-sp-4); cursor: pointer;
 }
 .fe-row:hover { background: token('color.background.neutral.subtle'); }
-.fe-caret { color: var(--gm-fg-subtle); font-size: 11px; }
-.fe-name { font-family: var(--gm-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
-.fe-type { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.fe-caret { color: var(--gm-fg-subtle); font-size: var(--gm-fs-11); }
+.fe-name { font-family: var(--gm-mono); font-size: var(--gm-fs-13); overflow: hidden; text-overflow: ellipsis; }
+.fe-type { font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
 .fe-type-number { color: token('color.foreground.info.default'); }
-.fe-fill { display: flex; align-items: center; gap: 8px; }
+.fe-fill { display: flex; align-items: center; gap: var(--gm-sp-8); }
 .fe-fill-track { flex: 1; height: 8px; background: token('color.background.neutral.subtle'); border-radius: 4px; overflow: hidden; }
 .fe-fill-bar { display: block; height: 100%; background: token('color.background.success.solid.default'); }
-.fe-fill-lbl { font-family: var(--gm-mono); font-size: 11.5px; color: var(--gm-fg-subtle); width: 34px; text-align: right; }
-.fe-distinct { font-family: var(--gm-mono); font-size: 11.5px; color: var(--gm-fg-subtle); text-align: right; }
-.fe-detail { padding: 6px 4px 14px 32px; }
-.fe-values { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
-.fe-val { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr 70px; gap: 12px; align-items: center; }
-.fe-val-name { font-family: var(--gm-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fe-fill-lbl { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); width: 34px; text-align: right; }
+.fe-distinct { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); text-align: right; }
+.fe-detail { padding: var(--gm-sp-6) var(--gm-sp-4) var(--gm-sp-14) var(--gm-sp-32); }
+.fe-values { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--gm-sp-4); }
+.fe-val { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr 70px; gap: var(--gm-sp-12); align-items: center; }
+.fe-val-name { font-family: var(--gm-mono); font-size: var(--gm-fs-12); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fe-val-track { height: 14px; background: token('color.background.neutral.subtle'); border-radius: 3px; overflow: hidden; }
 .fe-val-bar { display: block; height: 100%; background: token('color.background.accent.solid.default'); }
-.fe-val-count { font-family: var(--gm-mono); font-size: 11.5px; color: var(--gm-fg-subtle); text-align: right; }
+.fe-val-count { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); text-align: right; }
 
 /* ---------- AMI coverage (expected vs present) ---------- */
 .cov-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .cov-row {
-  display: grid; grid-template-columns: 74px minmax(150px, 240px) 1fr; align-items: baseline; gap: 12px;
-  padding: 8px 4px; border-bottom: 1px solid var(--gm-border);
+  display: grid; grid-template-columns: 92px minmax(150px, 240px) 1fr; align-items: baseline; gap: var(--gm-sp-12);
+  padding: var(--gm-sp-8) var(--gm-sp-4); border-bottom: 1px solid var(--gm-border);
 }
 .cov-row:last-child { border-bottom: none; }
 .cov-missing { background: token('color.background.danger.subtle'); }
 .cov-missing .cov-name { color: token('color.foreground.danger.default'); }
-.cov-badge { justify-self: start; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold'); padding: 2px 7px; border-radius: token('radius.full'); }
-.cov-badge-present { background: token('color.background.success.subtle'); color: token('color.foreground.success.default'); }
-.cov-badge-derived { background: token('color.background.warning.subtle'); color: token('color.foreground.warning.default'); }
-.cov-badge-missing { background: token('color.background.danger.subtle'); color: token('color.foreground.danger.default'); }
-.cov-name { font-family: var(--gm-mono); font-size: 12.5px; overflow-wrap: anywhere; }
-.cov-desc { font-size: 12.5px; color: var(--gm-fg); line-height: 1.45; }
+/* `.cov-badge*` is gone — the status column is <StatusPill>. The track above
+   grew from 74px because a Capra Pill draws its word at 12px and puts a 16px
+   icon in front of it inside 8px of padding either side, where the old badge was
+   10px caps with no icon. The widest word here is "present". */
+.cov-name { font-family: var(--gm-mono); font-size: var(--gm-fs-12); overflow-wrap: anywhere; }
+.cov-desc { font-size: var(--gm-fs-12); color: var(--gm-fg); line-height: 1.45; }
 .cov-use { color: var(--gm-fg-subtle); }
 .cov-derived { color: token('color.foreground.warning.default'); }
 .cov-derived code { color: token('color.foreground.warning.default'); }
 .cov-miss { color: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.medium'); }
 .cov-lock { font-size: 0.85em; }
-.cov-src { font-size: 11.5px; color: var(--gm-fg-subtle); line-height: 1.5; margin: 4px 0 0; max-width: 960px; }
-.uc-desc { font-size: 12.5px; color: var(--gm-fg-subtle); line-height: 1.5; margin: 0 0 10px; max-width: 900px; }
-.uc-bar { display: flex; gap: 2px; height: 8px; margin-bottom: 12px; border-radius: 4px; overflow: hidden; }
+.cov-src { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); line-height: 1.5; margin: var(--gm-sp-4) 0 0; max-width: 960px; }
+.uc-desc { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; margin: 0 0 var(--gm-sp-10); max-width: 900px; }
+.uc-bar { display: flex; gap: var(--gm-sp-2); height: 8px; margin-bottom: var(--gm-sp-12); border-radius: 4px; overflow: hidden; }
 .uc-seg { flex: 1; }
 .uc-seg-present { background: token('color.background.success.solid.default'); }
 .uc-seg-derived { background: token('color.background.warning.solid.default'); }
 .uc-seg-missing { background: token('color.background.danger.solid.default'); }
-.uc-lead { font-size: 13px; color: var(--gm-fg-subtle); line-height: 1.55; margin: 0 0 14px; max-width: 900px; }
-@media (max-width: 720px) { .cov-row { grid-template-columns: 64px 1fr; } .cov-desc { grid-column: 1 / -1; } }
+.uc-lead { font-size: var(--gm-fs-13); color: var(--gm-fg-subtle); line-height: 1.55; margin: 0 0 var(--gm-sp-14); max-width: 900px; }
+/* 92px to match the wider track above: a Capra Pill draws its word at 12px
+   behind a 16px icon, so the narrow-screen column has to grow with it or the
+   pill is clipped on exactly the screens with least room. */
+@media (max-width: 720px) { .cov-row { grid-template-columns: 92px 1fr; } .cov-desc { grid-column: 1 / -1; } }
 
 /* ---------- InfoTip ---------- */
-.infotip { position: relative; display: inline-flex; align-items: center; margin-left: 5px; color: var(--gm-fg-subtle); cursor: help; vertical-align: middle; }
-.infotip:hover, .infotip:focus-visible { color: var(--gm-fg); outline: none; }
+.infotip { position: relative; display: inline-flex; align-items: center; margin-left: var(--gm-sp-4); color: var(--gm-fg-subtle); cursor: help; vertical-align: middle; }
+/* No `outline: none` here. This span is tabIndex=0 and its tooltip cannot be
+   reached any other way, so the colour change is a second cue, never the only
+   one — the global ring below is the indicator. */
+.infotip:hover, .infotip:focus-visible { color: var(--gm-fg); }
 .infotip-pop {
   position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
   width: max-content; max-width: 280px; white-space: normal;
   background: var(--gm-panel-2); color: var(--gm-fg); border: 1px solid var(--gm-border);
-  border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: token('core.fontWeight.normal');
+  border-radius: 8px; padding: var(--gm-sp-8) var(--gm-sp-10); font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.normal');
   line-height: 1.45; text-transform: none; letter-spacing: normal; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
   opacity: 0; visibility: hidden; transition: opacity 0.12s ease; pointer-events: none;
 }
@@ -714,22 +1047,22 @@ body {
 .infotip-right { bottom: auto; top: 50%; left: calc(100% + 8px); transform: translateY(-50%); }
 
 /* ---------- Toggles / small segments ---------- */
-.toggle-row { display: flex; flex-wrap: wrap; gap: 26px; align-items: center; }
-.toggle-grp { display: flex; align-items: center; gap: 10px; }
-.toggle-lbl { font-size: 12.5px; color: var(--gm-fg-subtle); display: inline-flex; align-items: center; }
-.seg-sm { background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); color: var(--gm-fg-subtle); border-radius: 6px; padding: 3px 9px; font-size: 11.5px; cursor: pointer; margin-left: 4px; }
+.toggle-row { display: flex; flex-wrap: wrap; gap: var(--gm-sp-24); align-items: center; }
+.toggle-grp { display: flex; align-items: center; gap: var(--gm-sp-10); }
+.toggle-lbl { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); display: inline-flex; align-items: center; }
+.seg-sm { background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); color: var(--gm-fg-subtle); border-radius: 6px; padding: var(--gm-sp-2) var(--gm-sp-8); font-size: var(--gm-fs-11); cursor: pointer; margin-left: var(--gm-sp-4); }
 .seg-sm.seg-active { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); border-color: transparent; }
 
 /* ---------- Heatmap color scale ---------- */
-.heat-scale { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 11px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.heat-scale { display: flex; align-items: center; gap: var(--gm-sp-10); margin-top: var(--gm-sp-14); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
 .heat-scale-bar { flex: 0 0 180px; height: 10px; border-radius: 5px; background: linear-gradient(90deg, hsl(140,62%,40%), hsl(70,62%,44%), hsl(30,62%,46%), hsl(0,62%,46%)); }
 
 /* ---------- Capacity controls ---------- */
-.cap-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.cap-filter { background: var(--gm-panel-2); color: var(--gm-fg); border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: 7px 11px; font-size: 13px; min-width: 260px; }
-.linkspeed { display: inline-flex; align-items: center; gap: 4px; }
-.linkspeed-in { width: 66px; background: token('color.background.application'); color: var(--gm-fg); border: 1px solid var(--gm-border); border-radius: 6px; padding: 3px 8px; font-size: 11.5px; margin-left: 4px; }
-.mix-wrap { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.cap-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-10); }
+.cap-filter { background: var(--gm-panel-2); color: var(--gm-fg); border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: var(--gm-sp-6) var(--gm-sp-10); font-size: var(--gm-fs-13); min-width: 260px; }
+.linkspeed { display: inline-flex; align-items: center; gap: var(--gm-sp-4); }
+.linkspeed-in { width: 66px; background: token('color.background.application'); color: var(--gm-fg); border: 1px solid var(--gm-border); border-radius: 6px; padding: var(--gm-sp-2) var(--gm-sp-8); font-size: var(--gm-fs-11); margin-left: var(--gm-sp-4); }
+.mix-wrap { display: flex; align-items: center; gap: var(--gm-sp-20); flex-wrap: wrap; }
 .mix-wrap .mixlist { flex: 1; min-width: 200px; }
 
 /* ---------- Service node status ---------- */
@@ -750,44 +1083,30 @@ body {
 /* ---------- Guided tour (persona-based) ---------- */
 /* Never auto-opens: the launcher button and a one-time nudge are the only entries,
    and both completion and dismissal are persisted so it stays hidden afterwards. */
-.btn-tour { gap: 7px; padding: 7px 12px; font-size: 13px; }
-.btn-tour-txt { font-weight: token('core.fontWeight.medium'); }
+/* `.btn-tour`, `.btn-tour-txt` and `.tour-btn` + `.tour-btn-primary` were here.
+   The launcher is `.btn` with a leading glyph — the base's own 6px gap is what
+   `.btn-tour` was for — and the strip's three controls are `.btn` and
+   `.btn .btn-primary`. See the button family near the top of this file.
 
-.tour-nudge {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  margin: -6px 0 18px; padding: 11px 15px;
-  background: token('color.background.info.subtle');
-  border: 1px solid token('color.background.info.solid.default');
-  border-radius: token('radius.md'); font-size: 13px; line-height: 1.5;
-}
-.tour-nudge-actions { display: inline-flex; gap: 8px; flex: none; }
+   `.tour-nudge` was here too. The first-run nudge is now one of the page-level
+   banners in `.appbanners`, drawn by Capra's Alert — see components/AppBanners
+   .tsx and the `.appbanners` rule below. */
 
-.tour-btn {
-  background: var(--gm-panel-2); color: var(--gm-fg);
-  border: 1px solid var(--gm-border); border-radius: token('radius.md');
-  padding: 6px 13px; font-size: 13px; cursor: pointer; white-space: nowrap;
-}
-.tour-btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
-.tour-btn:disabled { opacity: 0.45; cursor: default; }
-.tour-btn-primary {
-  background: token('color.background.info.solid.default');
-  color: token('color.foreground.info.contrast'); border-color: transparent;
-}
-
-/* Persona picker */
-.tour-modal { width: 720px; }
-.tour-personas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px 20px 20px; }
+/* Persona picker. `.tour-modal` was here: the picker is Capra's `Modal` at
+   size="md" now, so the width (and the padding this grid used to carry, which
+   was the dialog body's job) are Capra's. */
+.tour-personas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gm-sp-12); }
 .tour-persona {
-  display: flex; flex-direction: column; gap: 4px; text-align: left;
+  display: flex; flex-direction: column; gap: var(--gm-sp-4); text-align: left;
   background: var(--gm-panel); color: inherit;
   border: 1px solid var(--gm-border); border-left: 3px solid token('color.background.info.solid.default');
-  border-radius: token('radius.md'); padding: 13px 15px; cursor: pointer;
+  border-radius: token('radius.md'); padding: var(--gm-sp-12) var(--gm-sp-14); cursor: pointer;
 }
 .tour-persona:hover { background: token('color.background.neutral.hover'); }
-.tour-persona-role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); }
-.tour-persona-name { font-size: 14.5px; font-weight: token('core.fontWeight.semibold'); }
-.tour-persona-q { font-size: 12.5px; color: var(--gm-fg-subtle); line-height: 1.45; font-style: italic; }
-.tour-persona-steps { font-size: 11px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); margin-top: 3px; }
+.tour-persona-role { font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); }
+.tour-persona-name { font-size: var(--gm-fs-14); font-weight: token('core.fontWeight.semibold'); }
+.tour-persona-q { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.45; font-style: italic; }
+.tour-persona-steps { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); margin-top: var(--gm-sp-2); }
 
 /* Docked strip */
 .tour-strip {
@@ -796,26 +1115,25 @@ body {
   box-shadow: 0 -10px 30px rgba(0,0,0,0.35);
 }
 .tour-strip-inner {
-  max-width: 1500px; margin: 0 auto; padding: 13px 24px;
-  display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+  max-width: 1500px; margin: 0 auto; padding: var(--gm-sp-12) var(--gm-sp-24);
+  display: flex; align-items: center; gap: var(--gm-sp-20); flex-wrap: wrap;
 }
-.tour-strip-meta { display: flex; flex-direction: column; gap: 4px; min-width: 168px; flex: none; }
-.tour-strip-role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: token('color.foreground.info.default'); font-weight: token('core.fontWeight.semibold'); }
-.tour-strip-count { font-size: 12px; color: var(--gm-fg-subtle); font-variant-numeric: tabular-nums; }
+.tour-strip-meta { display: flex; flex-direction: column; gap: var(--gm-sp-4); min-width: 168px; flex: none; }
+.tour-strip-role { font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.06em; color: token('color.foreground.info.default'); font-weight: token('core.fontWeight.semibold'); }
+.tour-strip-count { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); font-variant-numeric: tabular-nums; }
 .tour-progress { height: 3px; background: token('color.background.neutral.subtle'); border-radius: 2px; overflow: hidden; }
 .tour-progress-bar { height: 100%; background: token('color.background.info.solid.default'); transition: width 0.25s ease; }
-.tour-strip-body { flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 3px; }
-.tour-strip-title { margin: 0; font-size: 14px; font-weight: token('core.fontWeight.semibold'); }
-.tour-strip-text { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--gm-fg); }
-.tour-strip-look { margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--gm-fg-subtle); }
+.tour-strip-body { flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: var(--gm-sp-2); }
+.tour-strip-title { margin: 0; font-size: var(--gm-fs-14); font-weight: token('core.fontWeight.semibold'); }
+.tour-strip-text { margin: 0; font-size: var(--gm-fs-12); line-height: 1.5; color: var(--gm-fg); }
+.tour-strip-look { margin: var(--gm-sp-2) 0 0; font-size: var(--gm-fs-12); line-height: 1.5; color: var(--gm-fg-subtle); }
 .tour-look-tag {
-  display: inline-block; margin-right: 7px; padding: 1px 7px; border-radius: token('radius.full');
+  display: inline-block; margin-right: var(--gm-sp-6); padding: var(--gm-sp-2) var(--gm-sp-6); border-radius: token('radius.full');
   background: token('color.background.warning.subtle'); color: token('color.foreground.warning.default');
-  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold');
+  font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold');
 }
-.tour-strip-actions { display: inline-flex; gap: 8px; flex: none; }
+.tour-strip-actions { display: inline-flex; gap: var(--gm-sp-8); flex: none; }
 /* Keep the last panel clear of the docked strip. */
-.tour-strip ~ * { }
 body:has(.tour-strip) .app { padding-bottom: 190px; }
 
 /* Highlighted target. Attribute selector, not a class — see TourContext:
@@ -828,10 +1146,6 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 }
 @keyframes tour-pop { from { outline-color: transparent; } }
 
-@media (prefers-reduced-motion: reduce) {
-  [data-tour-hl] { animation: none; }
-  .tour-progress-bar { transition: none; }
-}
 @media (max-width: 720px) {
   .tour-personas { grid-template-columns: 1fr; }
 }
@@ -839,97 +1153,89 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* ---------- Findings ---------- */
 .find-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .find-row {
-  display: grid; grid-template-columns: 84px 1fr auto; align-items: start; gap: 14px;
-  padding: 13px 4px; border-bottom: 1px solid var(--gm-border);
+  display: grid; grid-template-columns: 96px 1fr auto; align-items: start; gap: var(--gm-sp-14);
+  padding: var(--gm-sp-12) var(--gm-sp-4); border-bottom: 1px solid var(--gm-border);
 }
 .find-row:last-child { border-bottom: none; }
-.find-sev {
-  justify-self: start; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
-  font-weight: token('core.fontWeight.semibold'); padding: 3px 9px; border-radius: token('radius.full');
-}
-.find-sev-critical { background: token('color.background.danger.subtle'); color: token('color.foreground.danger.default'); }
-.find-sev-high { background: token('color.background.warning.subtle'); color: token('color.foreground.warning.default'); }
-.find-sev-medium { background: token('color.background.info.subtle'); color: token('color.foreground.info.default'); }
-.find-sev-low { background: token('color.background.neutral.subtle'); color: var(--gm-fg-subtle); }
-.find-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.find-title { font-size: 13.5px; font-weight: token('core.fontWeight.semibold'); }
-.find-why { font-size: 12.5px; color: var(--gm-fg-subtle); line-height: 1.5; }
-.find-meta { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
-.find-cat { font-size: 10.5px; color: var(--gm-fg-subtle); }
-.find-right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
-.find-count { font-size: 17px; font-weight: token('core.fontWeight.semibold'); font-variant-numeric: tabular-nums; }
-.find-rate { font-size: 11px; color: var(--gm-fg-subtle); font-variant-numeric: tabular-nums; }
-.find-open { font-size: 11.5px; color: token('color.foreground.info.default'); text-decoration: none; margin-top: 3px; }
+/* `.find-sev*` is gone — severity is a <StatusPill>, the same one Guided Setup
+   and the coverage list use. The severity track above widened with it. */
+.find-main { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
+.find-title { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); }
+.find-why { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; }
+.find-meta { display: flex; align-items: center; gap: var(--gm-sp-10); margin-top: var(--gm-sp-2); }
+.find-cat { font-size: var(--gm-fs-10); color: var(--gm-fg-subtle); }
+.find-right { display: flex; flex-direction: column; align-items: flex-end; gap: var(--gm-sp-2); flex: none; }
+.find-count { font-size: var(--gm-fs-18); font-weight: token('core.fontWeight.semibold'); font-variant-numeric: tabular-nums; }
+.find-rate { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-variant-numeric: tabular-nums; }
+.find-open { font-size: var(--gm-fs-11); color: token('color.foreground.info.default'); text-decoration: none; margin-top: var(--gm-sp-2); }
 .find-open:hover { text-decoration: underline; }
 .find-critical { background: token('color.background.danger.subtle'); border-radius: token('radius.md'); }
 @media (max-width: 720px) {
   .find-row { grid-template-columns: 1fr; }
   .find-right { align-items: flex-start; }
 }
-.find-actions { display: inline-flex; gap: 10px; align-items: center; margin-top: 4px; }
+.find-actions { display: inline-flex; gap: var(--gm-sp-10); align-items: center; margin-top: var(--gm-sp-4); }
 .find-ai {
-  font-size: 11.5px; text-decoration: none; white-space: nowrap;
-  padding: 2px 9px; border-radius: token('radius.full');
+  font-size: var(--gm-fs-11); text-decoration: none; white-space: nowrap;
+  padding: var(--gm-sp-2) var(--gm-sp-8); border-radius: token('radius.full');
   background: token('color.background.info.subtle'); color: token('color.foreground.info.default');
   font-weight: token('core.fontWeight.semibold');
 }
 .find-ai:hover { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); }
 
-/* ---------- Dataset intelligence prompt ---------- */
-.intel-note {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  padding: 11px 15px; border-radius: token('radius.md'); font-size: 13px; line-height: 1.5;
-  background: token('color.background.warning.subtle');
-  border: 1px solid token('color.background.warning.solid.default');
-}
-.intel-working {
-  background: token('color.background.info.subtle');
-  border-color: token('color.background.info.solid.default');
-}
-.intel-actions { display: inline-flex; gap: 8px; flex: none; }
-.intel-err { color: token('color.foreground.danger.default'); }
+/* ---------- Page-level banners ----------------------------------------------
+   The ONE slot a page-level banner may appear in: one stack, below the tab bar,
+   never sticky. `.tour-nudge` and `.intel-note` were two hand-built boxes that
+   differed only in tint; both are now descriptions rendered by Capra's Alert,
+   which owns the tint, the icon, the role, the live region and the close
+   button. This rule is therefore only the SLOT — position and rhythm — and
+   there is deliberately nothing here that paints a banner.
+
+   The margins are the ones `.tour-nudge` carried, so the vertical rhythm under
+   the tab bar is unchanged: -6px closes the gap the tab bar's own 20px leaves,
+   and 18px separates the stack from the tab content. */
+.appbanners { display: flex; flex-direction: column; gap: var(--gm-sp-8); margin: -6px 0 var(--gm-sp-18); }
 
 /* ---------- TCP endpoint drill ---------- */
 .heat-btn-sel { outline: 3px solid token('color.foreground.default'); outline-offset: -3px; z-index: 1; position: relative; }
-.tcp-drill-title { display: inline-flex; align-items: center; gap: 6px; }
+.tcp-drill-title { display: inline-flex; align-items: center; gap: var(--gm-sp-6); }
 .tcp-drill-title code { font-size: 0.9em; }
 .tcp-arrow { color: var(--gm-fg-subtle); }
-.tcp-drill-note { display: inline-flex; align-items: center; gap: 12px; }
+.tcp-drill-note { display: inline-flex; align-items: center; gap: var(--gm-sp-12); }
 .tcp-drill-note a { color: token('color.foreground.info.default'); text-decoration: none; }
 .tcp-drill-note a:hover { text-decoration: underline; }
-.tcp-drill-close { background: none; border: none; color: var(--gm-fg-subtle); cursor: pointer; font-size: 12px; padding: 2px 4px; }
+.tcp-drill-close { background: none; border: none; color: var(--gm-fg-subtle); cursor: pointer; font-size: var(--gm-fs-12); padding: var(--gm-sp-2) var(--gm-sp-4); }
 .tcp-drill-close:hover { color: var(--gm-fg); }
-.tcp-drill-summary { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12.5px; color: var(--gm-fg-subtle); margin-bottom: 12px; }
+.tcp-drill-summary { display: flex; flex-wrap: wrap; gap: var(--gm-sp-18); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); margin-bottom: var(--gm-sp-12); }
 .tcp-drill-summary strong { color: var(--gm-fg); font-variant-numeric: tabular-nums; }
 .tcp-drill-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
-.tcp-drill-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.tcp-drill-tbl th, .tcp-drill-tbl td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--gm-border); white-space: nowrap; }
-.tcp-drill-tbl th { position: sticky; top: 0; background: var(--gm-panel); color: var(--gm-fg-subtle); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; z-index: 1; }
-.tcp-drill-tbl td.num, .tcp-drill-tbl th.num { text-align: right; font-variant-numeric: tabular-nums; }
-.tcp-drill-tbl td.mono { font-family: var(--gm-mono); font-size: 12px; }
-.tcp-drill-tbl .tcp-zero { color: var(--gm-fg-subtle); opacity: 0.5; }
-.tcp-drill-tbl tr.tcp-drill-bad td.mono { font-weight: token('core.fontWeight.semibold'); }
+/* The three drill-down tables are `.dtable .dtable-sticky` now — see the family
+   near `.triage-scope`. What is left here is what is about THESE tables: a zero
+   that should recede rather than be read, and the endpoint pair on a row that
+   saw resets or CRC errors. */
+.tcp-zero { color: var(--gm-fg-subtle); opacity: 0.5; }
+.tcp-drill-bad .dtable-mono { font-weight: token('core.fontWeight.semibold'); }
 
 /* ---------- PQC readiness ---------- */
-.pqc-worklist { display: flex; flex-direction: column; gap: 6px; }
-.pqc-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 12px; padding-bottom: 6px; border-bottom: 2px solid var(--gm-border); font-size: 13.5px; font-weight: token('core.fontWeight.semibold'); }
+.pqc-worklist { display: flex; flex-direction: column; gap: var(--gm-sp-6); }
+.pqc-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--gm-sp-12); margin-top: var(--gm-sp-12); padding-bottom: var(--gm-sp-6); border-bottom: 2px solid var(--gm-border); font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); }
 .pqc-group-head:first-child { margin-top: 0; }
 .pqc-head-bad { border-bottom-color: token('color.background.danger.solid.default'); }
 .pqc-head-ok { border-bottom-color: token('color.background.success.solid.default'); }
-.pqc-count { display: inline-block; margin-left: 6px; padding: 0 8px; border-radius: token('radius.full'); background: token('color.background.neutral.subtle'); font-variant-numeric: tabular-nums; }
-.pqc-head-note { font-size: 11.5px; font-weight: token('core.fontWeight.normal'); color: var(--gm-fg-subtle); }
+.pqc-count { display: inline-block; margin-left: var(--gm-sp-6); padding: 0 var(--gm-sp-8); border-radius: token('radius.full'); background: token('color.background.neutral.subtle'); font-variant-numeric: tabular-nums; }
+.pqc-head-note { font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.normal'); color: var(--gm-fg-subtle); }
 .pqc-list { list-style: none; margin: 0; padding: 0; }
-.pqc-row { display: grid; grid-template-columns: 1fr 90px 78px 110px 100px; align-items: center; gap: 12px; padding: 8px 4px; border-bottom: 1px solid var(--gm-border); font-size: 12.5px; }
-.pqc-colhead { color: var(--gm-fg-subtle); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: none; }
+.pqc-row { display: grid; grid-template-columns: 1fr 90px 78px 110px 100px; align-items: center; gap: var(--gm-sp-12); padding: var(--gm-sp-8) var(--gm-sp-4); border-bottom: 1px solid var(--gm-border); font-size: var(--gm-fs-12); }
+.pqc-colhead { color: var(--gm-fg-subtle); font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: none; }
 .pqc-num { text-align: right; font-variant-numeric: tabular-nums; }
-.pqc-svc { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.pqc-sni { font-family: var(--gm-mono); font-size: 12.5px; color: var(--gm-fg); text-decoration: none; font-weight: token('core.fontWeight.semibold'); }
+.pqc-svc { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
+.pqc-sni { font-family: var(--gm-mono); font-size: var(--gm-fs-12); color: var(--gm-fg); text-decoration: none; font-weight: token('core.fontWeight.semibold'); }
 .pqc-sni:hover { text-decoration: underline; }
-.pqc-issuer { font-size: 11px; color: var(--gm-fg-subtle); }
-.pqc-tls { font-family: var(--gm-mono); font-size: 12px; }
+.pqc-issuer { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
+.pqc-tls { font-family: var(--gm-mono); font-size: var(--gm-fs-12); }
 .pqc-pre13 { color: token('color.foreground.danger.default'); }
 .pqc-qs { font-variant-numeric: tabular-nums; font-weight: token('core.fontWeight.semibold'); }
-.pqc-sens { justify-self: start; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold'); padding: 2px 8px; border-radius: token('radius.full'); }
+.pqc-sens { justify-self: start; font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; font-weight: token('core.fontWeight.semibold'); padding: var(--gm-sp-2) var(--gm-sp-8); border-radius: token('radius.full'); }
 .pqc-sens-credential, .pqc-sens-pci, .pqc-sens-financial, .pqc-sens-phi { background: token('color.background.danger.subtle'); color: token('color.foreground.danger.default'); }
 .pqc-sens-business { background: token('color.background.neutral.subtle'); color: var(--gm-fg-subtle); }
 .pqc-sens-public { background: token('color.background.info.subtle'); color: token('color.foreground.info.default'); }
@@ -937,19 +1243,19 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 @media (max-width: 820px) { .pqc-row { grid-template-columns: 1fr 70px 70px; } .pqc-row > :nth-child(4), .pqc-row > :nth-child(5) { display: none; } }
 
 /* PQC key-exchange tag on TLS Posture rows */
-.pill-kex { font-size: 10px; letter-spacing: 0.04em; }
+.pill-kex { font-size: var(--gm-fs-10); letter-spacing: 0.04em; }
 .pill-kex-pqc { background: token('color.background.success.subtle'); color: token('color.foreground.success.default'); }
 .pill-kex-classical { background: token('color.background.warning.subtle'); color: token('color.foreground.warning.default'); }
 /* TLS rows carry an extra key-exchange pill, so they need a 5th column. */
 .resolver-row-tls { grid-template-columns: 12px 1fr auto auto auto; }
 
 /* ---------- Security · MITRE ATT&CK ---------- */
-.mitre-tactic { margin-bottom: 16px; }
-.mitre-tactic-name { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); margin-bottom: 8px; font-weight: token('core.fontWeight.semibold'); }
-.mitre-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.mitre-tactic { margin-bottom: var(--gm-sp-16); }
+.mitre-tactic-name { font-size: var(--gm-fs-11); text-transform: uppercase; letter-spacing: 0.06em; color: var(--gm-fg-subtle); margin-bottom: var(--gm-sp-8); font-weight: token('core.fontWeight.semibold'); }
+.mitre-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--gm-sp-10); }
 .mitre-tile {
-  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
-  border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: 11px 13px;
+  display: flex; flex-direction: column; gap: var(--gm-sp-2); text-align: left; cursor: pointer;
+  border: 1px solid var(--gm-border); border-radius: token('radius.md'); padding: var(--gm-sp-10) var(--gm-sp-12);
   color: #fff; position: relative; transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 .mitre-tile:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,0.35); }
@@ -959,15 +1265,14 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .mitre-low  { background: #1e7e46; border-color: #14603360; }
 .mitre-idle { background: var(--gm-panel-2); color: var(--gm-fg-subtle); border-color: var(--gm-border); }
 .mitre-sel { outline: 2px solid var(--gm-fg); outline-offset: 2px; }
-.mitre-id { font-family: var(--gm-mono); font-size: 11px; opacity: 0.85; }
-.mitre-name { font-size: 13px; font-weight: token('core.fontWeight.semibold'); line-height: 1.25; }
-.mitre-count { font-size: 24px; font-weight: token('core.fontWeight.bold'); font-variant-numeric: tabular-nums; margin-top: 2px; }
-.mitre-sig { font-size: 10.5px; font-family: var(--gm-mono); opacity: 0.85; }
-.mitre-risk { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8; margin-top: 1px; }
+.mitre-id { font-family: var(--gm-mono); font-size: var(--gm-fs-11); opacity: 0.85; }
+.mitre-name { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); line-height: 1.25; }
+.mitre-count { font-size: var(--gm-fs-24); font-weight: token('core.fontWeight.bold'); font-variant-numeric: tabular-nums; margin-top: var(--gm-sp-2); }
+.mitre-sig { font-size: var(--gm-fs-10); font-family: var(--gm-mono); opacity: 0.85; }
+.mitre-risk { font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8; margin-top: var(--gm-sp-2); }
 .mitre-idle .mitre-count { color: var(--gm-fg-subtle); }
-.mitre-drill { }
-.mitre-gaps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.mitre-gap { display: grid; grid-template-columns: 80px 1fr 2fr; gap: 12px; align-items: baseline; padding: 7px 2px; border-bottom: 1px solid var(--gm-border); font-size: 12.5px; }
+.mitre-gaps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--gm-sp-2); }
+.mitre-gap { display: grid; grid-template-columns: 80px 1fr 2fr; gap: var(--gm-sp-12); align-items: baseline; padding: var(--gm-sp-6) var(--gm-sp-2); border-bottom: 1px solid var(--gm-border); font-size: var(--gm-fs-12); }
 .mitre-gap:last-child { border-bottom: none; }
 .mitre-gap-id { font-family: var(--gm-mono); color: var(--gm-fg-subtle); }
 .mitre-gap-name { font-weight: token('core.fontWeight.semibold'); }
@@ -975,92 +1280,181 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 @media (max-width: 640px) { .mitre-gap { grid-template-columns: 1fr; } }
 
 /* MITRE tactic summary treemap */
-.mitre-treemap { display: flex; gap: 4px; align-items: stretch; min-height: 92px; flex-wrap: wrap; }
+.mitre-treemap { display: flex; gap: var(--gm-sp-4); align-items: stretch; min-height: 92px; flex-wrap: wrap; }
 .mitre-tm-block {
-  display: flex; flex-direction: column; justify-content: center; gap: 3px;
-  flex-basis: 0; min-width: 150px; padding: 14px 16px; cursor: pointer; color: #fff;
+  display: flex; flex-direction: column; justify-content: center; gap: var(--gm-sp-2);
+  flex-basis: 0; min-width: 150px; padding: var(--gm-sp-14) var(--gm-sp-16); cursor: pointer; color: #fff;
   border: none; border-radius: token('radius.md'); text-align: left;
   transition: filter 0.12s ease, transform 0.12s ease;
 }
 .mitre-tm-block:hover { filter: brightness(1.08); transform: translateY(-1px); }
 .mitre-tm-dim { opacity: 0.4; }
-.mitre-tm-name { font-size: 13.5px; font-weight: token('core.fontWeight.semibold'); line-height: 1.2; }
-.mitre-tm-total { font-size: 26px; font-weight: token('core.fontWeight.bold'); font-variant-numeric: tabular-nums; }
-.mitre-tm-sub { font-size: 11px; opacity: 0.85; font-family: var(--gm-mono); }
+.mitre-tm-name { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.semibold'); line-height: 1.2; }
+.mitre-tm-total { font-size: var(--gm-fs-26); font-weight: token('core.fontWeight.bold'); font-variant-numeric: tabular-nums; }
+.mitre-tm-sub { font-size: var(--gm-fs-11); opacity: 0.85; font-family: var(--gm-mono); }
 
 /* ---------- Guided Setup ---------- */
-.gs-intro { color: var(--gm-fg); font-size: 13.5px; line-height: 1.55; margin: 0 0 14px; max-width: 80ch; }
-.gs-intro code { font-family: var(--gm-mono); font-size: 12px; background: var(--gm-panel-2); padding: 1px 5px; border-radius: token('radius.md'); }
-.gs-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.gs-intro { color: var(--gm-fg); font-size: var(--gm-fs-13); line-height: 1.55; margin: 0 0 var(--gm-sp-14); max-width: 80ch; }
+.gs-intro code { font-family: var(--gm-mono); font-size: var(--gm-fs-12); background: var(--gm-panel-2); padding: var(--gm-sp-2) var(--gm-sp-4); border-radius: token('radius.md'); }
+.gs-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--gm-sp-18); align-items: start; }
 @media (max-width: 780px) { .gs-grid { grid-template-columns: 1fr; } }
 
 .gs-group-picker {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
-  padding: 12px 14px; margin: 0 0 16px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--gm-sp-10);
+  padding: var(--gm-sp-12) var(--gm-sp-14); margin: 0 0 var(--gm-sp-16);
   background: var(--gm-panel-2); border: 1px solid var(--gm-border); border-radius: var(--gm-radius);
 }
 .gs-group-label {
-  font-size: 12px; font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg-subtle);
+  font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg-subtle);
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .gs-group-select {
-  font-size: 13px; font-family: var(--gm-mono); color: var(--gm-fg);
+  font-size: var(--gm-fs-13); font-family: var(--gm-mono); color: var(--gm-fg);
   background: var(--gm-panel); border: 1px solid var(--gm-border); border-radius: token('radius.md');
-  padding: 6px 10px; cursor: pointer; min-width: 200px;
+  padding: var(--gm-sp-6) var(--gm-sp-10); cursor: pointer; min-width: 200px;
 }
 .gs-group-select:disabled { opacity: 0.5; cursor: default; }
-.gs-group-hint { flex: 1 1 260px; min-width: 0; font-size: 12px; color: var(--gm-fg-subtle); line-height: 1.5; }
-.gs-group-hint code { font-family: var(--gm-mono); font-size: 11.5px; }
+.gs-group-hint { flex: 1 1 260px; min-width: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; }
+.gs-group-hint code { font-family: var(--gm-mono); font-size: var(--gm-fs-11); }
 
 .gs-checklist { border: 1px solid var(--gm-border); border-radius: var(--gm-radius); overflow: hidden; }
 .gs-checklist-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 9px 12px; background: var(--gm-panel-2); border-bottom: 1px solid var(--gm-border);
-  font-size: 12px; font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg-subtle);
+  padding: var(--gm-sp-8) var(--gm-sp-12); background: var(--gm-panel-2); border-bottom: 1px solid var(--gm-border);
+  font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg-subtle);
   text-transform: uppercase; letter-spacing: 0.04em;
 }
-.gs-res-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--gm-border); }
-.gs-res-row:last-child { border-bottom: none; }
-.gs-pill {
-  flex: none; min-width: 74px; text-align: center; font-size: 11px; font-weight: token('core.fontWeight.semibold');
-  font-family: var(--gm-mono); padding: 2px 8px; border-radius: token('radius.full'); border: 1px solid transparent;
+/* Grid, not flex: `.gs-pill` used to hold the status column open with
+   `min-width: 74px`, and a Capra Pill is `width: fit-content`, so without a
+   track the five labels beside it would no longer line up. 112px is the widest
+   word this list can show — "unreadable" — plus the Pill's icon and padding. */
+.gs-res-row {
+  display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: var(--gm-sp-12);
+  padding: var(--gm-sp-10) var(--gm-sp-12); border-bottom: 1px solid var(--gm-border);
 }
-.gs-ok { color: var(--gm-st-success); border-color: var(--gm-st-success); }
-.gs-missing { color: var(--gm-st-danger); border-color: var(--gm-st-danger); }
-.gs-unknown { color: var(--gm-st-unknown); border-color: var(--gm-border); }
-.gs-err { color: #fff; background: var(--gm-st-danger); border-color: var(--gm-st-danger); }
-.gs-skip { color: var(--gm-st-warning); border-color: var(--gm-st-warning); }
-.gs-res-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.gs-res-label { font-size: 13px; font-weight: token('core.fontWeight.medium'); color: var(--gm-fg); }
-.gs-res-detail code { font-family: var(--gm-mono); font-size: 11.5px; color: var(--gm-fg-subtle); }
-.gs-res-error { font-size: 11.5px; color: var(--gm-st-danger); margin-top: 3px; line-height: 1.35; }
-.gs-res-skip { font-size: 11.5px; color: var(--gm-st-warning); margin-top: 3px; line-height: 1.35; }
-.gs-res-commit { font-size: 11px; color: var(--gm-fg-subtle); margin-top: 3px; }
+.gs-res-row:last-child { border-bottom: none; }
+/* `.gs-pill` + `.gs-ok|missing|unknown|err|skip` are gone — <StatusPill>. The
+   filled danger pill went with them, and took --gm-st-danger-contrast out of use
+   with it; see the note where that variable used to be declared, at the top of
+   this file. */
+.gs-res-text { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
+.gs-res-label { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium'); color: var(--gm-fg); }
+.gs-res-detail code { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
+.gs-res-error { font-size: var(--gm-fs-11); color: var(--gm-st-danger); margin-top: var(--gm-sp-2); line-height: 1.35; }
+.gs-res-skip { font-size: var(--gm-fs-11); color: var(--gm-st-warning); margin-top: var(--gm-sp-2); line-height: 1.35; }
+.gs-res-commit { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); margin-top: var(--gm-sp-2); }
 .gs-res-commit code { font-family: var(--gm-mono); color: var(--gm-st-success); }
 
-.gs-actions { display: flex; flex-direction: column; gap: 10px; }
-.gs-btn {
-  font-size: 13px; font-weight: token('core.fontWeight.medium'); border-radius: token('radius.md');
-  padding: 9px 14px; cursor: pointer; border: 1px solid var(--gm-border);
-  background: var(--gm-panel-2); color: var(--gm-fg); transition: filter 0.15s, background 0.15s;
-}
-.gs-btn:hover:not(:disabled) { background: token('color.background.neutral.hover'); }
-.gs-btn:disabled { opacity: 0.5; cursor: default; }
-.gs-btn-primary {
-  background: token('color.background.accent.solid.default');
-  color: #fff; border-color: transparent;
-}
-.gs-btn-primary:hover:not(:disabled) { filter: brightness(1.07); background: token('color.background.accent.solid.default'); }
-.gs-btn-ghost { background: transparent; }
-.gs-btn-danger { background: var(--gm-danger); color: #fff; border-color: transparent; }
-.gs-btn-danger-text { color: var(--gm-st-danger); border-style: dashed; }
-.gs-action-note { font-size: 12px; color: var(--gm-fg-subtle); margin: 0; line-height: 1.45; }
+.gs-actions { display: flex; flex-direction: column; gap: var(--gm-sp-10); }
+/* `.gs-btn` + `-primary|-ghost|-danger|-danger-text` were here. They are the
+   house button family now, near the top of this file, under a name that does
+   not say which tab they came from — they were drawing the header banners, the
+   long-running-search drawer, TLS Posture's retry and both confirmation dialogs
+   long before this slice. Nothing in Guided Setup's own layout moved with them:
+   `.gs-actions` above is still the column they stack in. */
+.gs-action-note { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); margin: 0; line-height: 1.45; }
 .gs-action-note code { font-family: var(--gm-mono); }
-.gs-confirm { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--gm-fg); padding: 10px; border: 1px solid var(--gm-st-danger); border-radius: token('radius.md'); }
-.gs-confirm > div { display: flex; gap: 8px; }
+.gs-action-warn { color: var(--gm-st-warning); }
+/* ConfirmDialog (components/ConfirmDialog.tsx). One family in, one family out:
+   `.gs-confirm*` drew the box, the border and the button row of the inline
+   confirmation this replaces, and Capra's Modal now draws all three — so what is
+   left here is only the body's own type and rhythm. Everything sits on
+   color.background.panel.solid, which is Capra's modal surface and is also this
+   app's `--gm-panel-2`; src/app/contrast.test.ts measures the three inks below
+   and the four action pills against it. */
+.cdlg { display: flex; flex-direction: column; gap: var(--gm-sp-12); font-size: var(--gm-fs-13); line-height: 1.5; color: var(--gm-fg); }
+.cdlg p { margin: 0; max-width: 68ch; }
+.cdlg code { font-family: var(--gm-mono); }
+/* The irreversibility line. Colour is the second signal here, never the first —
+   the sentence opens with the words "This cannot be undone." */
+.cdlg-warn { color: var(--gm-st-danger); }
+.cdlg-head { margin: 0; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.medium'); letter-spacing: 0.06em; text-transform: uppercase; color: var(--gm-fg-subtle); }
+.cdlg-res { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.cdlg-res-row { display: flex; align-items: flex-start; gap: var(--gm-sp-10); }
+.cdlg-res-text { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; }
+.cdlg-res-detail { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+.cdlg-undo { color: var(--gm-fg-subtle); }
+/* The type-to-confirm field sits OUTSIDE .cdlg, and therefore outside the
+   dialog's aria-describedby: it is a labelled control that announces itself on
+   focus, and repeating it in the description would make the thing read on open
+   longer without saying anything new. */
+.cdlg-ttc { display: flex; flex-direction: column; gap: var(--gm-sp-8); margin-top: var(--gm-sp-16); padding-top: var(--gm-sp-12); border-top: 1px solid var(--gm-border); }
+.cdlg-req { margin: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
 
-.gs-steps { margin-top: 16px; border-top: 1px solid var(--gm-border); padding-top: 12px; display: flex; flex-direction: column; gap: 5px; }
-.gs-step { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-family: var(--gm-mono); }
+/* GatedControl (components/GatedControl.tsx). The wrapper carries no look of its
+   own — a gated button has to be indistinguishable from the plain one it
+   replaced — it only stacks the refusal note under the button it belongs to,
+   inside whatever row the caller already had. */
+.gate { display: inline-flex; flex-direction: column; align-items: flex-start; gap: var(--gm-sp-8); min-width: 0; }
+.gate-note {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-10);
+  max-width: 62ch; padding: var(--gm-sp-8) var(--gm-sp-12); font-size: var(--gm-fs-12); line-height: 1.5;
+  color: var(--gm-fg); border: 1px solid var(--gm-st-danger); border-radius: token('radius.md');
+}
+.gate-note-text { flex: 1 1 260px; min-width: 0; }
+.gate-retry { flex: none; padding: var(--gm-sp-4) var(--gm-sp-10); font-size: var(--gm-fs-12); }
+
+/* Long-running search watch (components/JobWatchdog.tsx) ----------------------
+   `display: contents` and not `inline-flex`, because this wrapper is a child of
+   `.app-controls`, which is a flex row with a 10px gap — and a gap is applied
+   between flex items whether or not one of them has any width. An empty
+   inline-flex would therefore cost 10px of dead space in a header row that
+   already wraps at 1240px, on every screen where the watch has nothing to say,
+   which is nearly all of them. `display: contents` produces no box at all. The
+   live region inside is `position: absolute` (.sr-only) and the drawer portals
+   to document.body, so neither becomes a stray flex item. */
+.jw { display: contents; }
+.jw-badge {
+  display: inline-flex; align-items: center; gap: var(--gm-sp-6);
+  padding: var(--gm-sp-4) var(--gm-sp-10); font-size: var(--gm-fs-12);
+  background: transparent; border: 1px solid var(--gm-border); border-radius: token('radius.full');
+  cursor: pointer;
+}
+.jw-badge:hover { background: token('color.background.neutral.hover'); }
+/* The two states this indicator has. Both sit directly on the page — the header
+   declares no background of its own — and both are measured in
+   src/app/contrast.test.ts against token('color.background.application').
+   `blind` is subtle ink on purpose: "this app could not check" is a gap in
+   knowledge, not a problem found, and painting it the same amber as a real hung
+   job would make the amber mean two things. */
+.jw-badge-hung { color: token('color.foreground.warning.default'); }
+.jw-badge-blind { color: var(--gm-fg-subtle); }
+
+.jw-body { display: flex; flex-direction: column; gap: var(--gm-sp-12); font-size: var(--gm-fs-13); line-height: 1.5; color: var(--gm-fg); }
+.jw-body code { font-family: var(--gm-mono); }
+.jw-scope, .jw-note, .jw-foot { margin: 0; max-width: 78ch; }
+.jw-note, .jw-foot { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+.jw-note-bad { color: var(--gm-st-danger); }
+/* The table is the one `.dtable` family, on Capra's drawer surface — which is
+   color.background.panel.solid, the same opaque surface Modal uses and this
+   app's `--gm-panel-2`. Horizontal scroll rather than wrapped cells: `.dtable`
+   sets `white-space: nowrap`, and a wrapped job id is unreadable. */
+.jw-tablewrap { overflow-x: auto; }
+/* The query row. It opts out of the nowrap the rest of the table keeps, because
+   it is the one cell whose content is prose-shaped and arbitrarily long. */
+.jw-qrow td { white-space: normal; padding-left: 0; padding-top: 0; }
+.jw-qrow summary { cursor: pointer; font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
+.jw-query {
+  margin: var(--gm-sp-8) 0 0; padding: var(--gm-sp-8) var(--gm-sp-10);
+  max-height: 11rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg);
+  background: var(--gm-panel); border: 1px solid var(--gm-border); border-radius: token('radius.md');
+}
+.jw-since { color: var(--gm-fg-subtle); font-size: var(--gm-fs-11); }
+/* The Action cell of a row with no Cancel in it — somebody else's search, a row
+   whose owner the platform did not name, or any row at all once a poll has
+   failed. Subtle ink and no new colour: it is the same secondary text as
+   .jw-note, measured on the drawer surface in src/app/contrast.test.ts. */
+.jw-noaction { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
+/* The one row that is yours. Weight, not colour: this list is read for whose
+   work it is, and a hue nobody can name is not an answer to that — the Owner
+   cell already says the word "you". */
+.jw-owner-mine { font-weight: token('core.fontWeight.semibold'); }
+.jw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-10); }
+.jw-link { font-size: var(--gm-fs-12); color: token('color.foreground.info.default'); }
+
+.gs-steps { margin-top: var(--gm-sp-16); border-top: 1px solid var(--gm-border); padding-top: var(--gm-sp-12); display: flex; flex-direction: column; gap: var(--gm-sp-4); }
+.gs-step { display: flex; align-items: baseline; gap: var(--gm-sp-8); font-size: var(--gm-fs-12); font-family: var(--gm-mono); }
 .gs-step-icon { flex: none; width: 14px; text-align: center; }
 .gs-step-label { min-width: 120px; color: var(--gm-fg); }
 .gs-step-action { color: var(--gm-fg-subtle); }
@@ -1071,51 +1465,34 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 
 .gs-endpoint { border: 1px solid var(--gm-border); border-radius: var(--gm-radius); overflow: hidden; }
 .gs-endpoint-main {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 14px 16px; background: var(--gm-panel-2);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--gm-sp-12);
+  padding: var(--gm-sp-14) var(--gm-sp-16); background: var(--gm-panel-2);
 }
-.gs-endpoint-addr { font-family: var(--gm-mono); font-size: 18px; font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg); word-break: break-all; }
-.gs-endpoint-meta { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 12px 16px; font-size: 12.5px; color: var(--gm-fg-subtle); }
-.gs-endpoint-meta strong { color: var(--gm-fg); font-weight: token('core.fontWeight.semibold'); margin-right: 5px; }
+.gs-endpoint-addr { font-family: var(--gm-mono); font-size: var(--gm-fs-18); font-weight: token('core.fontWeight.semibold'); color: var(--gm-fg); word-break: break-all; }
+.gs-endpoint-meta { display: flex; flex-wrap: wrap; gap: var(--gm-sp-6) var(--gm-sp-20); padding: var(--gm-sp-12) var(--gm-sp-16); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+.gs-endpoint-meta strong { color: var(--gm-fg); font-weight: token('core.fontWeight.semibold'); margin-right: var(--gm-sp-4); }
 .gs-endpoint-meta code { font-family: var(--gm-mono); }
-.gs-note { font-size: 12px; color: var(--gm-fg-subtle); margin: 10px 0 0; line-height: 1.5; }
+.gs-note { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); margin: var(--gm-sp-10) 0 0; line-height: 1.5; }
 .gs-note code { font-family: var(--gm-mono); }
 
-.gs-facts { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 9px; }
-.gs-facts li { font-size: 13px; line-height: 1.55; color: var(--gm-fg); }
-.gs-facts code { font-family: var(--gm-mono); font-size: 12px; background: var(--gm-panel-2); padding: 1px 5px; border-radius: token('radius.md'); }
+.gs-facts { margin: 0; padding-left: var(--gm-sp-18); display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.gs-facts li { font-size: var(--gm-fs-13); line-height: 1.55; color: var(--gm-fg); }
+.gs-facts code { font-family: var(--gm-mono); font-size: var(--gm-fs-12); background: var(--gm-panel-2); padding: var(--gm-sp-2) var(--gm-sp-4); border-radius: token('radius.md'); }
 
-/* Transient status pop-ups (commit / deploy / confirmation) */
-.gs-toasts {
-  position: fixed; right: 20px; bottom: 20px; z-index: 60;
-  display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 90vw);
-}
-.gs-toast {
-  display: flex; align-items: center; gap: 9px;
-  padding: 10px 13px; border-radius: token('radius.md');
-  background: var(--gm-panel); border: 1px solid var(--gm-border);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
-  font-size: 12.5px; color: var(--gm-fg);
-  animation: gs-toast-in 0.16s ease-out;
-}
-.gs-toast-icon { flex: none; width: 14px; text-align: center; font-size: 12px; }
-.gs-toast-text { min-width: 0; line-height: 1.4; }
-.gs-toast-commit { border-left: 3px solid var(--gm-st-info); }
-.gs-toast-deploy { border-left: 3px solid var(--gm-st-warning); }
-.gs-toast-provision { border-left: 3px solid var(--gm-border); }
-.gs-toast-done { border-left: 3px solid var(--gm-st-success); }
-.gs-toast-done .gs-toast-icon { color: var(--gm-st-success); }
-.gs-toast-error { border-left: 3px solid var(--gm-st-danger); }
-.gs-toast-error .gs-toast-icon { color: var(--gm-st-danger); }
-@keyframes gs-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+/* The transient status pop-ups (`.gs-toasts`, `.gs-toast*`, `@keyframes
+   gs-toast-in`) are gone. They are Capra's Toast now — mounted at the root, not
+   inside this tab, because the old container was the live region AND its first
+   message in the same commit. src/components/Toast.tsx carries the reasoning.
+   Nothing here styles them: Capra's own animation is already covered by the
+   prefers-reduced-motion reset at the foot of this file, which matches on
+   property rather than on class. */
 
 /* ---------- Deep Observability Pipeline diagram (Data Flow tab) -------------
-   Brand composition of the Gigamon x Cribl architecture slide. Gigamon orange
-   and the Cribl teal/cyan are brand constants, so — like --gm-st-* above —
-   they are hand-picked and declared for both modes rather than tokenised.
-   The Cribl product cards stay dark in light mode too: that is how they are
-   drawn in the source artwork, and it keeps the platform block reading as one
-   object. ------------------------------------------------------------------ */
+   Brand composition of the Gigamon x Cribl architecture slide. The brand
+   constants themselves are `--gm-brand-*`, declared with every other house
+   token at the top of this file; what is left here is the diagram's own canvas
+   and pipework, which DO flip with the theme and are therefore not brand.
+   ------------------------------------------------------------------------- */
 :root {
   --dop-canvas: #f6f7f5;
   --dop-ink: #1d2430;
@@ -1134,30 +1511,20 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   --dop-pipe-3: #737f8d;
   --dop-pipe-mouth: #8a95a2;
 }
-:root, :root.dark {
-  --gg-orange: #f60;
-  --gg-orange-soft: #ff8a3d;
-  --cribl-card: #133f49;
-  --cribl-card-2: #2c3a4a;
-  --cribl-teal: #2bb3a8;
-  --cribl-cyan: #22d3ee;
-  --cribl-ink: #eaf6f8;
-  --cribl-ink-sub: #a8c6cd;
-}
 
-.dop-intro { margin-bottom: 10px; }
-.dop-h { margin-bottom: 2px; }
+.dop-intro { margin-bottom: var(--gm-sp-10); }
+.dop-h { margin-bottom: var(--gm-sp-2); }
 .dop-kicker {
-  margin: 0 0 8px; font-size: 15px; font-style: italic;
-  font-weight: token('core.fontWeight.semibold'); color: var(--gg-orange);
+  margin: 0 0 var(--gm-sp-8); font-size: var(--gm-fs-14); font-style: italic;
+  font-weight: token('core.fontWeight.semibold'); color: var(--gm-brand-orange);
 }
 
 .dop-wrap {
   background: var(--dop-canvas);
   border: 1px solid var(--gm-border);
   border-radius: var(--gm-radius);
-  padding: 10px 14px;
-  margin-bottom: 16px;
+  padding: var(--gm-sp-10) var(--gm-sp-14);
+  margin-bottom: var(--gm-sp-16);
   overflow-x: auto;
 }
 /* Floor the scale so the composition stays legible, and let the canvas scroll
@@ -1173,10 +1540,13 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-info-layer { position: absolute; inset: 0; pointer-events: none; }
 /* Centred with negative margins, never `transform`: a transformed ancestor
    becomes the containing block for `position: fixed`, which would resolve
-   PanelInfo's popover against this 17px span instead of the viewport. */
-.dop-info-anchor { position: absolute; margin: -9px 0 0 -9px; pointer-events: auto; line-height: 0; }
+   PanelInfo's popover against this span instead of the viewport. The offset is
+   half the .pinfo-btn box, and moved with it when that box grew from 17px to
+   the 24px SC 2.5.8 asks for — let these two drift apart and every diagram ⓘ
+   sits off the node it annotates. */
+.dop-info-anchor { position: absolute; margin: -12px 0 0 -12px; pointer-events: auto; line-height: 0; }
 .dop-info-anchor .pinfo { margin-left: 0; }
-.dop-info-dark .pinfo-btn { color: var(--cribl-ink-sub); }
+.dop-info-dark .pinfo-btn { color: var(--gm-brand-ink-sub); }
 .dop-info-dark .pinfo-btn:hover, .dop-info-dark .pinfo-btn-on { color: #fff; }
 .dop-info-light .pinfo-btn { color: #5a636e; }
 .dop-info-light .pinfo-btn:hover, .dop-info-light .pinfo-btn-on { color: #1d2430; }
@@ -1193,7 +1563,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   text-anchor: middle; font-size: 15px; font-style: italic;
   font-weight: token('core.fontWeight.semibold'); fill: var(--dop-ink);
 }
-.dop-flow-orange { fill: var(--gg-orange); }
+.dop-flow-orange { fill: var(--gm-brand-orange); }
 .dop-flow-value {
   text-anchor: middle; font-size: 14px; font-variant-numeric: tabular-nums;
   font-weight: token('core.fontWeight.semibold'); fill: var(--gm-flow-metric);
@@ -1210,9 +1580,9 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-pipe-collar { fill: url(#dop-pipe); stroke: var(--dop-pipe-3); stroke-width: 1; }
 .dop-pipe-mouth { fill: var(--dop-pipe-mouth); }
 .dop-pipe-edge { stroke: var(--dop-pipe-3); stroke-width: 1; }
-.dop-pipe-sel .dop-pipe-collar { stroke: var(--gg-orange); stroke-width: 2.4; }
+.dop-pipe-sel .dop-pipe-collar { stroke: var(--gm-brand-orange); stroke-width: 2.4; }
 .dop-pipe:focus { outline: none; }
-.dop-pipe:focus-visible .dop-pipe-collar { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-pipe:focus-visible .dop-pipe-collar { stroke: var(--gm-brand-cyan); stroke-width: 2.4; }
 .dop-gg-mark {
   text-anchor: middle; font-size: 17px; font-weight: token('core.fontWeight.bold');
   fill: #fff; letter-spacing: 0.01em;
@@ -1220,7 +1590,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-gg-r { font-size: 8px; }
 .dop-pipe-h { text-anchor: middle; font-size: 29px; fill: #1d2430; }
 .dop-pipe-sub { text-anchor: middle; font-size: 15px; letter-spacing: 0.42em; fill: #1d2430; }
-.dop-pipe-rule { stroke: var(--gg-orange); stroke-width: 1.6; }
+.dop-pipe-rule { stroke: var(--gm-brand-orange); stroke-width: 1.6; }
 .dop-pipe-icon { color: #4a5462; }
 .dop-pipe-fn { text-anchor: middle; font-size: 11px; letter-spacing: 0.13em; fill: #4a5462; }
 
@@ -1228,21 +1598,21 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-amx { cursor: pointer; }
 .dop-amx-hit { fill: transparent; stroke: transparent; stroke-width: 1.4; }
 .dop-amx-sel .dop-amx-hit,
-.dop-amx:hover .dop-amx-hit { stroke: var(--gg-orange); fill: rgba(255, 102, 0, 0.06); }
+.dop-amx:hover .dop-amx-hit { stroke: var(--gm-brand-orange); fill: rgba(255, 102, 0, 0.06); }
 .dop-amx:focus { outline: none; }
-.dop-amx:focus-visible .dop-amx-hit { stroke: var(--cribl-cyan); }
+.dop-amx:focus-visible .dop-amx-hit { stroke: var(--gm-brand-cyan); }
 
 /* --- the Cribl platform block --- */
-.dop-box { fill: none; stroke: var(--cribl-teal); stroke-width: 2; opacity: 0.85; }
+.dop-box { fill: none; stroke: var(--gm-brand-teal); stroke-width: 2; opacity: 0.85; }
 .dop-box-label {
   font-size: 10.5px; letter-spacing: 0.18em;
-  fill: var(--cribl-teal); font-weight: token('core.fontWeight.semibold');
+  fill: var(--gm-brand-teal); font-weight: token('core.fontWeight.semibold');
 }
 
 /* --- edges: a static rail with the live dashed pipe over it --- */
 .dop-edge { fill: none; stroke-width: 2; }
-.dop-edge-teal { stroke: var(--cribl-teal); opacity: 0.5; }
-.dop-edge-orange { stroke: var(--gg-orange); opacity: 0.9; }
+.dop-edge-teal { stroke: var(--gm-brand-teal); opacity: 0.5; }
+.dop-edge-orange { stroke: var(--gm-brand-orange); opacity: 0.9; }
 /* The network-traffic arrow is plain ink in the source artwork, not brand teal. */
 .dop-edge-ink { stroke: var(--dop-ink); opacity: 0.72; }
 .dop-edge-dash {
@@ -1252,11 +1622,11 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* CSS, not SMIL: animating stroke-dashoffset via SMIL needs unsafe-inline in
    Firefox, which the Cribl app CSP does not grant. Packets stay SMIL
    (animateMotion is exempt) so they ride the real path geometry. */
-.dop-edge-live { stroke: var(--cribl-cyan); animation: dop-dash 1s linear infinite; }
+.dop-edge-live { stroke: var(--gm-brand-cyan); animation: dop-dash 1s linear infinite; }
 @keyframes dop-dash { to { stroke-dashoffset: -16; } }
-.dop-hop-orange .dop-edge-live { stroke: var(--gg-orange-soft); }
-.dop-packet { fill: var(--cribl-cyan); }
-.dop-hop-orange .dop-packet { fill: var(--gg-orange-soft); }
+.dop-hop-orange .dop-edge-live { stroke: var(--gm-brand-orange-soft); }
+.dop-packet { fill: var(--gm-brand-cyan); }
+.dop-hop-orange .dop-packet { fill: var(--gm-brand-orange-soft); }
 .dop-hop-idle .dop-edge { stroke: var(--gm-flow-idle); opacity: 0.8; }
 .dop-hop-blocked .dop-edge { stroke: token('color.background.danger.solid.default'); opacity: 1; }
 .dop-flag { font-size: 10.5px; letter-spacing: 0.04em; }
@@ -1264,54 +1634,54 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .dop-flag-blocked { fill: token('color.foreground.danger.default'); font-weight: token('core.fontWeight.semibold'); }
 
 /* --- the Cribl Stream group: one product, three stages --- */
-.dop-group { fill: rgba(43, 179, 168, 0.06); stroke: var(--cribl-teal); stroke-width: 1.2; stroke-dasharray: 4 5; opacity: 0.75; }
+.dop-group { fill: rgba(43, 179, 168, 0.06); stroke: var(--gm-brand-teal); stroke-width: 1.2; stroke-dasharray: 4 5; opacity: 0.75; }
 .dop-group-label {
   font-size: 10px; letter-spacing: 0.16em;
-  fill: var(--cribl-teal); font-weight: token('core.fontWeight.semibold');
+  fill: var(--gm-brand-teal); font-weight: token('core.fontWeight.semibold');
 }
 
 /* --- node cards: one centred column — icon, title, config id, metric --- */
 .dop-card { cursor: pointer; }
 .dop-card-bg {
-  fill: var(--cribl-card); stroke: rgba(255, 255, 255, 0.14); stroke-width: 1.4;
+  fill: var(--gm-brand-card); stroke: rgba(255, 255, 255, 0.14); stroke-width: 1.4;
   filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.18));
 }
-.dop-card-app .dop-card-bg { fill: var(--cribl-card-2); }
+.dop-card-app .dop-card-bg { fill: var(--gm-brand-card-2); }
 
 /* The card's primary label: brand-coloured, bold, and the largest thing on it. */
 .dop-title {
   text-anchor: middle; font-size: 19px; letter-spacing: -0.005em;
-  font-weight: token('core.fontWeight.bold'); fill: var(--cribl-cyan);
+  font-weight: token('core.fontWeight.bold'); fill: var(--gm-brand-cyan);
 }
 .dop-title-app { fill: #7ee0a8; }
-.dop-title-gigamon { fill: var(--gg-orange-soft); }
+.dop-title-gigamon { fill: var(--gm-brand-orange-soft); }
 
 /* Real product marks from @capra/icons. Capra sizes its icons from an inline
    `--_size`, which beats anything passed as a prop, so pin the box here — a
    wrapper rule rather than a dependency on Capra's generated class names. */
 .dop-prod-icon > svg { width: 30px; height: 30px; }
-.dop-prod-icon-cribl { color: var(--cribl-cyan); }
+.dop-prod-icon-cribl { color: var(--gm-brand-cyan); }
 
 /* Config ids are the thing people actually need to read off this diagram, so
    they get a real reading size rather than caption size. 11px monospace keeps
    the longest of them ("pipeline · gigamon_ami") inside its card. */
 .dop-card-sub {
   text-anchor: middle; font-size: 11px; font-family: var(--gm-mono);
-  fill: var(--cribl-ink);
+  fill: var(--gm-brand-ink);
 }
 /* Fine print under the title — body font, so it reads as prose not a config id. */
-.dop-card-caption { text-anchor: middle; font-size: 11px; fill: var(--cribl-ink); }
-.dop-card:hover .dop-card-bg { stroke: var(--cribl-cyan); }
-.dop-card-sel .dop-card-bg { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-card-caption { text-anchor: middle; font-size: 11px; fill: var(--gm-brand-ink); }
+.dop-card:hover .dop-card-bg { stroke: var(--gm-brand-cyan); }
+.dop-card-sel .dop-card-bg { stroke: var(--gm-brand-cyan); stroke-width: 2.4; }
 .dop-card:focus { outline: none; }
-.dop-card:focus-visible .dop-card-bg { stroke: var(--cribl-cyan); stroke-width: 2.4; }
+.dop-card:focus-visible .dop-card-bg { stroke: var(--gm-brand-cyan); stroke-width: 2.4; }
 .dop-card-rule { stroke: rgba(255, 255, 255, 0.16); stroke-width: 1; }
 .dop-value {
   text-anchor: middle; font-size: 15px; font-weight: token('core.fontWeight.semibold');
   font-variant-numeric: tabular-nums; fill: #fff;
 }
-.dop-value-idle { fill: var(--cribl-ink-sub); }
-.dop-card-label { text-anchor: middle; font-size: 10px; fill: var(--cribl-ink-sub); }
+.dop-value-idle { fill: var(--gm-brand-ink-sub); }
+.dop-card-label { text-anchor: middle; font-size: 10px; fill: var(--gm-brand-ink-sub); }
 .dop-prov-bg { opacity: 0.9; }
 .dop-prov-cribl { fill: rgba(34, 211, 238, 0.18); }
 .dop-prov-records { fill: rgba(255, 255, 255, 0.1); }
@@ -1319,8 +1689,8 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   text-anchor: middle; font-size: 8.5px; letter-spacing: 0.05em;
   font-weight: token('core.fontWeight.semibold'); text-transform: uppercase;
 }
-.dop-prov-t-cribl { fill: var(--cribl-cyan); }
-.dop-prov-t-records { fill: var(--cribl-ink-sub); }
+.dop-prov-t-cribl { fill: var(--gm-brand-cyan); }
+.dop-prov-t-records { fill: var(--gm-brand-ink-sub); }
 /* Same chip, but sitting on the light diagram canvas rather than a dark card. */
 .dop-prov-canvas { fill: rgba(125, 155, 190, 0.2); }
 .dop-prov-t-canvas { fill: var(--dop-ink-sub); }
@@ -1328,25 +1698,188 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* --- selected-stage detail + brand footer --- */
 /* Config ids appear here verbatim, so this deliberately does not uppercase. */
 .dop-stage-kicker {
-  margin: 0 0 10px; font-size: 12.5px; letter-spacing: 0.02em;
+  margin: 0 0 var(--gm-sp-10); font-size: var(--gm-fs-12); letter-spacing: 0.02em;
   font-family: var(--gm-mono); color: var(--gm-fg-subtle);
 }
 .dop-arrowhead-ink { fill: var(--dop-ink); }
 .dop-footer {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 14px;
-  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--gm-border);
-  font-size: 13px; color: var(--gm-fg-subtle);
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--gm-sp-14);
+  margin-top: var(--gm-sp-18); padding-top: var(--gm-sp-12); border-top: 1px solid var(--gm-border);
+  font-size: var(--gm-fs-13); color: var(--gm-fg-subtle);
 }
-.dop-footer-brand { display: inline-flex; align-items: center; gap: 8px; }
+.dop-footer-brand { display: inline-flex; align-items: center; gap: var(--gm-sp-8); }
 .dop-footer-brand strong { color: var(--gm-fg); letter-spacing: 0.01em; }
-.dop-cribl-mark { fill: var(--cribl-cyan); }
+.dop-cribl-mark { fill: var(--gm-brand-cyan); }
 .dop-footer-gg {
-  background: var(--gg-orange); color: #fff; border-radius: 3px;
-  padding: 2px 8px; font-weight: token('core.fontWeight.bold'); font-size: 12px;
+  background: var(--gm-brand-orange); color: #fff; border-radius: 3px;
+  padding: var(--gm-sp-2) var(--gm-sp-8); font-weight: token('core.fontWeight.bold'); font-size: var(--gm-fs-12);
 }
 .dop-footer-tag { font-style: italic; }
-.dop-footer-sep { flex: 1 1 40px; height: 1px; background: var(--cribl-teal); opacity: 0.5; }
+.dop-footer-sep { flex: 1 1 40px; height: 1px; background: var(--gm-brand-teal); opacity: 0.5; }
 
-@media (prefers-reduced-motion: reduce) {
-  .dop-edge-live { animation: none; }
+/* ---------- Accessibility foundations --------------------------------------
+   Three cross-cutting rules that every screen depends on, kept together
+   because each of them was previously a per-feature decision taken (or missed)
+   in twenty separate places. They are last in the file on purpose: the focus
+   ring is a single-class selector and has to win against the selection and
+   hover outlines of equal weight above it.
+   ------------------------------------------------------------------------- */
+
+/* Focus. There was no app-level rule at all, so every ring here was either the
+   browser's default or nothing — and `.infotip`, the one control whose tooltip
+   a keyboard user cannot reach any other way, replaced its ring with a colour
+   change. `:where()` keeps the element list at zero specificity so only
+   `:focus-visible` counts, which is what lets a component that genuinely draws
+   its own indicator (`.dop-card`, `.dop-pipe`, `.dop-amx`, each substituting a
+   cyan stroke) keep overriding it.
+
+   The colour is the one Capra token measured against every surface a control
+   in this app actually sits on: 3.26:1 on the page and on both panels, 3.04:1
+   on --dop-canvas, 3.51:1 on --gm-brand-card, 3.10:1 inside .pivot-toggle — worst
+   case 3.04:1 against the 3:1 SC 1.4.11 asks of a focus indicator, in LIGHT,
+   and 5.4–6.0:1 in dark. Capra's own color.border.focus would NOT do: it is
+   2.33:1 on the light page.
+
+   `outline-offset` is load-bearing, not decoration. Measured against the fills
+   this ring surrounds, it is 1.00:1 at offset 0 on .seg-active and .chip-active,
+   because those are painted in the ring's own info.solid blue; the 2px gap is
+   the whole of what makes it visible there. The house filled buttons are no
+   longer in that list — `.btn-primary` is --gm-btn-primary and `.btn-danger` is
+   --gm-btn-danger, which measure 1.54:1 and 1.67:1 against the ring. Still short
+   of 3:1, so the offset is still what carries them; the number moved, the
+   argument did not.
+
+   No `border-radius` is set here. An outline already follows the element's own
+   border-radius, and forcing one would square off this app's radius.full chips
+   and badges for as long as they are focused. */
+:where(a, button, [role="button"], [role="radio"], [role="tab"],
+       input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid token('color.background.info.solid.default');
+  outline-offset: 2px;
 }
+
+/* Hit areas — SC 2.5.8, 24x24 CSS px. Every one of these is a floor on the BOX
+   only: no glyph, icon or font-size changes, so nothing looks bigger. They are
+   listed together rather than fixed where each rule lives because the measured
+   failures were a moving target — three of them were under 24px only because a
+   <button> does not inherit font-family and so rendered in the UA control font,
+   and they crossed the line the moment that was fixed above. A floor does not
+   care which; it holds whatever the padding and the font do next.
+
+   Not listed, on purpose: the plain text links (.find-open, .doclink, .pqc-sni,
+   .tcp-drill-note a). SC 2.5.8 exempts a target that is inline in a sentence or
+   a block of text, and giving those a 24px box would space the prose out. The
+   pill-shaped ones (.find-ai, .chip) are not inline text and get the floor.
+
+   Five names left this list in slice 1.9 and one arrived: .btn-refresh,
+   .btn-icon, .gs-btn and .tour-btn are all `.btn` now, and .modal-x went with
+   the hand-built dialog — Capra's Modal draws its own close button and sizes its
+   own target. .pinfo-copy is not listed here because it sets `min-height: 24px`
+   in its own rule, where it can be read next to the popover it lives in. */
+.panel-refresh, .tcp-drill-close,
+.seg, .seg-sm, .chip, .linkspeed-in, .find-ai,
+.btn, .range-select, .gs-group-select,
+.fe-search, .cap-filter, .fld-in {
+  min-height: 24px;
+}
+/* Width is a separate list, and deliberately a shorter one. .fe-search,
+   .cap-filter and .gs-group-select already set a min-width of 220–260px; this
+   rule sits later in the file at the same specificity, so a 24px floor here
+   would OUTRANK theirs and shrink all three. Only the targets whose content is
+   a glyph or a couple of characters need one — and those are also the ones
+   whose content has to be re-centred inside the taller box, because each is a
+   bare glyph or a short word with little or no vertical padding of its own. */
+.panel-refresh, .tcp-drill-close, .seg, .seg-sm, .chip, .find-ai {
+  min-width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* .infotip is the exception that cannot take a floor: it is a 13px focusable
+   span sitting inline in a sentence, and growing its box to 24px would push the
+   words around it apart. A centred pseudo-element gives the pointer and the
+   stylus the 24x24 target without the span occupying any more space. It paints
+   nothing, and a transparent box still hit-tests. */
+.infotip::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+}
+
+/* Motion. Property-matched, not selector-matched — which is the whole point.
+   The six per-feature blocks this replaces each named specific classes, and
+   that is exactly how `.panel-refresh-on svg` slipped through: it uses the same
+   `spin` keyframes as the `.spin, .spinner` those blocks listed, under a
+   different selector, so every per-panel refresh spun at full speed for someone
+   who had asked it not to. Two more animations (`.spin-once`, `.gs-toast`) and
+   seven of this file's eight transitions were uncovered the same way. A reset
+   over `*` closes the class of bug instead of this instance of it, and the next
+   animated state is covered before anyone remembers to list it.
+
+   DopDiagram's packets are SMIL, which no CSS media query can stop; they are
+   gated in JS by usePrefersReducedMotion() instead. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Exceptions, each one class more specific than the reset, so they win
+     wherever they sit. */
+
+  /* Busy spinners keep turning, just slowly. Cribl Search reports no
+     incremental progress, so rotation is the only evidence a query is still
+     running; stopping it would read as finished, or as hung. This judgement is
+     carried over verbatim from the block being replaced — what is new is that
+     the per-panel refresh is finally in the list. */
+  .spin, .spinner, .panel-refresh-on svg {
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  /* An animation that has ended reverts to the element's own styles, and for
+     these two that resting state is wrong rather than merely still: a 40%-wide
+     progress bar parked at the left edge, and a radar ping frozen as a solid
+     opaque ring around every breaching node. */
+  .topbar-progress-bar { animation: none !important; width: 100%; opacity: 0.6; }
+  .svc-pulse-ring { animation: none !important; opacity: 0; }
+}
+
+/* ---------- Search running-time limits (A-D30 settings surface) ---------- */
+.sl-rows { display: grid; gap: 10px; margin: 0 0 14px; }
+.sl-row {
+  display: grid; align-items: center; gap: 4px 14px;
+  grid-template-columns: minmax(150px, 220px) auto 1fr;
+}
+.sl-band { font-size: 13px; color: var(--gm-fg); font-weight: token('core.fontWeight.medium'); }
+.sl-input-wrap { display: inline-flex; align-items: baseline; gap: 6px; }
+.sl-input {
+  width: 96px; font-size: 13px; font-family: var(--gm-mono); color: var(--gm-fg);
+  background: var(--gm-panel); border: 1px solid var(--gm-border); border-radius: token('radius.md');
+  padding: 6px 8px; text-align: right;
+}
+.sl-input:disabled { opacity: 0.5; cursor: default; }
+.sl-input-bad { border-color: var(--gm-st-danger); }
+.sl-unit { font-size: 12px; color: var(--gm-fg-subtle); }
+.sl-default { font-size: 12px; color: var(--gm-fg-subtle); font-family: var(--gm-mono); }
+.sl-field-err { grid-column: 1 / -1; font-size: 11.5px; color: var(--gm-st-danger); line-height: 1.35; }
+@media (max-width: 620px) {
+  .sl-row { grid-template-columns: 1fr; }
+}
+
+.sl-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.sl-actions-note { flex: 1 1 240px; min-width: 0; font-size: 12px; color: var(--gm-fg-subtle); line-height: 1.45; }
+.sl-note {
+  margin: 12px 0 0; padding: 9px 12px; font-size: 12.5px; line-height: 1.5;
+  border: 1px solid var(--gm-border); border-radius: token('radius.md');
+}
+.sl-note-ok { border-color: var(--gm-st-success); color: var(--gm-fg); }
+.sl-note-warn { border-color: var(--gm-st-warning); color: var(--gm-fg); }
+.sl-note-err { border-color: var(--gm-st-danger); color: var(--gm-fg); }
