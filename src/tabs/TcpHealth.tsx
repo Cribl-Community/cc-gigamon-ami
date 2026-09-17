@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
+import { METRICS, metricFor, subnetFields, buildHeatQuery, buildDrillQuery, buildTrendQuery, latencyQuery, type MetricKey, type Mask } from '../queries/tcpHealth'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -10,42 +10,28 @@ import { TimeChart, type Series } from '../components/TimeChart'
 import { InfoTip } from '../components/InfoTip'
 import { toNum, str, fmtMs, fmtCount } from '../lib/format'
 
-const METRICS = [
-  { key: 'dupacks', field: 'tcp_dup_ack', label: 'Dup ACKs', info: 'tcp_dup_ack — duplicate ACKs per flow, a retransmission signal.' },
-  { key: 'resets', field: 'tcp_reset', label: 'Resets', info: 'tcp_reset — fraction of flows where the RST bit was seen (abrupt close), derived from tcp_flags.' },
-  { key: 'crc', field: 'tcp_wrong_crc', label: 'Wrong CRC', info: 'tcp_wrong_crc — checksum errors per flow (corruption on the wire).' },
-  { key: 'loss', field: 'tcp_loss_count', label: 'Loss', info: 'tcp_loss_count — detected lost segments per flow.' },
-] as const
-type MetricKey = (typeof METRICS)[number]['key']
-
 const TOP = 8
 
 export function TcpHealth() {
   const { range } = useDashboard()
   const [metric, setMetric] = useState<MetricKey>('resets')
-  const [mask, setMask] = useState<'24' | '16'>('24')
+  const [mask, setMask] = useState<Mask>('24')
   // Selected heatmap cell → in-app endpoint drill (was: open in Search).
   const [sel, setSel] = useState<{ row: string; col: string } | null>(null)
-  const m = METRICS.find((x) => x.key === metric)!
-  const field = m.field
-  const sf = mask === '24' ? 'src_subnet' : 'src_subnet16'
-  const df = mask === '24' ? 'dst_subnet' : 'dst_subnet16'
+  const m = metricFor(metric)
+  // Result columns to read back — the same pair the queries group by.
+  const { sf, df } = subnetFields(mask)
 
   const drillTile = (rowSub: string, colSub: string) => setSel({ row: rowSub, col: colSub })
-  const changeMask = (mk: '24' | '16') => { setMask(mk); setSel(null) } // subnet format changes
+  const changeMask = (mk: Mask) => { setMask(mk); setSel(null) } // subnet format changes
 
-  const heatQuery = q(`protocol=6 ${sf}=* ${df}=* | summarize v=sum(${field}), flows=count() by ${sf}, ${df} | sort by flows desc | limit 120`)
+  const heatQuery = buildHeatQuery(metric, mask)
   const heat = useSearch(heatQuery, { deps: [metric, mask] })
 
-  // Endpoint-level breakdown for the selected subnet pair. Only runs while a
-  // cell is selected; re-runs when the pair (or subnet mask) changes.
-  const drillQuery = sel
-    ? q(`protocol=6 ${sf}="${sel.row}" ${df}="${sel.col}" | summarize flows=count(), retrans=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95) by src_ip, dst_ip | sort by flows desc | limit 100`)
-    : ''
+  const drillQuery = buildDrillQuery(sel, mask)
   const drill = useSearch(drillQuery, { enabled: !!sel, deps: [sel?.row, sel?.col, mask] })
-  const trendQuery = q(`protocol=6 | summarize v=sum(${field}), flows=count() by bin(_time, 1m) | sort by _time asc`)
+  const trendQuery = buildTrendQuery(metric)
   const trend = useSearch(trendQuery, { deps: [metric] })
-  const latencyQuery = q('| summarize net=percentile(tcp_rtt,95), net_lo=min(tcp_rtt), net_hi=max(tcp_rtt), app=percentile(tcp_rtt_app,95), app_lo=min(tcp_rtt_app), app_hi=max(tcp_rtt_app) by bin(_time, 1m) | sort by _time asc')
   const latency = useSearch(latencyQuery)
 
   // Build top-N × top-N matrix; cell = per-flow rate (metric / flows).

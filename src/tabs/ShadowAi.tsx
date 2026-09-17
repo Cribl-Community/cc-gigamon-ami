@@ -1,19 +1,12 @@
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { BarList, type BarItem } from '../components/BarList'
 import { toNum, str, fmtCount, fmtBytes } from '../lib/format'
+import { AI_APPS } from '../data/aiApps'
+import { appsQuery, aiOverallQuery, aiUsersQuery } from '../queries/shadowAi'
 
-// GenAI / LLM apps AMI can identify from the wire.
-const AI_APPS = [
-  'openai', 'chatgpt', 'claude', 'anthropic', 'perplexity-ai', 'midjourney', 'elevenlabs-io', 'stability-ai',
-  'runway', 'descript', 'copy-ai', 'jasper-ai', 'writesonic', 'poe', 'bard', 'meta-ai', 'ms-copilot',
-  'codewhisperer', 'mistral-ai', 'deepseek', 'deepseek-net', 'google-gen', 'notebooklm', 'personal-ai',
-  'inflection-ai', 'muse-ai', 'mem-ai', 'aiva', 'lasco-ai', 'emailtree-ai', 'murf-ai', 'llm-stats',
-  'swe-bench', 'anyword', 'pixlr',
-]
 // Sanctioned/common SaaS (for the shadow-vs-known split).
 const SAAS_APPS = new Set([
   'office365', 'microsoft', 'google', 'facebook', 'instagram', 'whatsapp', 'spotify', 'zoom', 'webex',
@@ -22,14 +15,10 @@ const SAAS_APPS = new Set([
   'wondershare', 'filmora',
 ])
 const AI_SET = new Set(AI_APPS)
-const AI_IN = AI_APPS.map((a) => `"${a}"`).join(',')
 
 export function ShadowAi() {
-  const appsQuery = q('| summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90')
   const apps = useSearch(appsQuery)
-  const aiOverallQuery = q(`| where app_name in (${AI_IN}) | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)`)
   const aiOverall = useSearch(aiOverallQuery)
-  const aiUsersQuery = q(`| where app_name in (${AI_IN}) | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15`)
   const aiUsers = useSearch(aiUsersQuery)
 
   const aiApps = apps.rows.filter((r) => AI_SET.has(str(r, 'app_name')))

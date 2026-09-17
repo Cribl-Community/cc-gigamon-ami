@@ -1,30 +1,16 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { str, toNum, fmtCount } from '../lib/format'
-import { PQC_GROUP_CODES } from '../data/pqc'
+import { SERVERS, PQC_BY_SERVER, serverDrill } from '../queries/tlsPosture'
 
 const WEAK = new Set(['TLS_1_0', 'TLS_1_1', 'SSL_3_0', 'SSL_2_0'])
 const KNOWN_CA = ['digicert', 'let', 'globalsign', 'sectigo', 'comodo', 'geotrust', 'amazon', 'google trust',
   'gts', 'entrust', 'isrg', 'cloudflare', 'baltimore', 'microsoft', 'apple', 'godaddy', 'thawte', 'rapidssl']
-
-const PQC_IN = `(${PQC_GROUP_CODES.map((c) => `"${c}"`).join(', ')})`
-
-const SERVERS = q(
-  'ssl_server_name=* | summarize flows=count(), ver=max(ssl_protocol_version), ' +
-    'issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), cn=max(ssl_common_name) ' +
-    'by ssl_server_name | sort by flows desc | limit 60',
-)
-
-// PQC capability is a separate, cheap query — it only touches the sparse set of
-// records that offered a hybrid ML-KEM group, so it stays fast. Folding it into
-// the SERVERS query (5 max() aggregations) timed the search out.
-const PQC_BY_SERVER = q(`ssl_ext_ec_supported_groups_type in ${PQC_IN} | summarize pqc=count() by ssl_server_name | limit 200`)
 
 interface Posture { badge: string; accent: 'success' | 'warning' | 'danger'; daysLeft: number | null }
 
@@ -61,8 +47,7 @@ export function TlsPosture() {
   const pqcMap = new Map(pqcServers.rows.map((r) => [str(r, 'ssl_server_name'), toNum(r.pqc)]))
 
   const drillServer = (server: string) => {
-    const dq = q(`ssl_server_name="${server}" | summarize flows=count(), ver=max(ssl_protocol_version), issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), notbefore=max(ssl_validity_not_before), subject=max(ssl_common_name), cipher=max(ssl_cipher_suite_id) by ssl_server_name`)
-    window.open(searchUiUrl(dq, range.earliest), '_blank', 'noopener')
+    window.open(searchUiUrl(serverDrill(server), range.earliest), '_blank', 'noopener')
   }
 
   const assessed = servers.rows.map((r) => {

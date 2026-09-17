@@ -1,27 +1,15 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
-import { q } from '../cribl/search'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { toNum, str, fmtMs, fmtPct, fmtCount } from '../lib/format'
+import { OVERALL, PER_RESOLVER, resolverDrillQuery } from '../queries/dnsHealth'
 
 // dns_response_time is in seconds → ms for display.
 const S_TO_MS = 1000
-
-const OVERALL = q(
-  'app_name="dns" | summarize total=count(), ' +
-    'noerr=sum(iif(dns_reply_code=="0",1,0)), sf=sum(iif(dns_reply_code=="2",1,0)), ' +
-    'nx=sum(iif(dns_reply_code=="3",1,0)), resolvers=dcount(dns_host)',
-)
-
-const PER_RESOLVER = q(
-  'app_name="dns" dns_host=* | summarize p50=percentile(dns_response_time,50), ' +
-    'noerr=sum(iif(dns_reply_code=="0",1,0)), sf=sum(iif(dns_reply_code=="2",1,0)), ' +
-    'nx=sum(iif(dns_reply_code=="3",1,0)), total=count() by dns_host | sort by total desc | limit 500',
-)
 
 export function DnsHealth() {
   const { range } = useDashboard()
@@ -33,8 +21,7 @@ export function DnsHealth() {
   const [failingOnly, setFailingOnly] = useState(true)
 
   const drillResolver = (host: string) => {
-    const dq = q(`app_name="dns" dns_host="${host}" | summarize count() by dns_reply_code, dns_query | sort by dns_query desc | limit 200`)
-    window.open(searchUiUrl(dq, range.earliest), '_blank', 'noopener')
+    window.open(searchUiUrl(resolverDrillQuery(host), range.earliest), '_blank', 'noopener')
   }
 
   const o = overall.rows[0] ?? {}

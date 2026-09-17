@@ -1,10 +1,12 @@
 {
   "compilerOptions": {
-    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    /* Tests may read files from disk; app sources must not, so Node types live
+       here and never in tsconfig.app.json. */
+    "types": ["node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 
@@ -22,8 +24,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
-  /* Tests are type-checked by tsconfig.test.json, which has Node types; keeping
-     them out of here is what stops `node:fs` from being reachable in app code. */
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }
