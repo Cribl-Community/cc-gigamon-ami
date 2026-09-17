@@ -137,6 +137,7 @@ import {
 } from '../cribl/lake'
 import {
   commitAndDeployDestination,
+  commitScopeAfterConfirm,
   destinationCommitFiles,
   destinationCommitMessage,
   loadingLanding,
@@ -526,11 +527,21 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
         setSteps((prev) => [...prev, { key: 'commit', status: 'cancelled' }])
         return
       }
+      // The list above crossed a user-paced dialog, so it is as old as that
+      // dialog was open — another admin committing in that window leaves it
+      // naming a path Git no longer reports. Re-read and refuse if it moved,
+      // for the same reason the destination body is re-read after its own
+      // confirmation: what is sent has to be what was read.
+      const scope = await commitScopeAfterConfirm(group, files)
+      if ('stop' in scope) {
+        setSteps((prev) => [...prev, scope.stop])
+        return
+      }
       // `trail` on: this call is its own intent, so nothing else writes the
       // audit entry for it. The whole reason this button exists is that the
       // PATCH landed and the commit did not, which is the state most worth a
       // record — see commitAndDeployDestination's header.
-      const next = await commitAndDeployDestination(group, files, destinationCommitMessage(group, lastDiff), {}, true)
+      const next = await commitAndDeployDestination(group, scope.files, destinationCommitMessage(group, lastDiff), {}, true)
       await afterWrite('The commit and deploy', {
         ok: next.every((s) => s.status === 'applied' || s.status === 'skipped'),
         cancelled: false,
@@ -658,7 +669,17 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
 
   const failedSteps = steps.filter((s) => s.status === 'error')
   const destinationApplied = steps.some((s) => s.key === 'destination' && s.status === 'applied')
-  const commitIncomplete = destinationApplied && failedSteps.some((s) => s.key === 'commit' || s.key === 'deploy')
+  // NOT `failedSteps.some(...)`, which is what this was. That tested for
+  // `status === 'error'`, and the half-applied state this recovery path exists
+  // for used to arrive as `skipped` — the commit file list was read before the
+  // PATCH, matched nothing, and the commit was quietly skipped. So the one case
+  // the button was built for was exactly the case it did not render in. The
+  // list read after the PATCH now reports that contradiction as an error, and
+  // this no longer depends on it doing so: once the destination is applied,
+  // ANY commit or deploy step that did not apply — error, skipped, cancelled —
+  // leaves the Workers on the old configuration, which is what the strip says.
+  const commitIncomplete =
+    destinationApplied && steps.some((s) => (s.key === 'commit' || s.key === 'deploy') && s.status !== 'applied')
 
   const feeds = resolveFeeds(rows.inputs.value ?? [], rows.routes.value ?? [], DESTINATION_ID)
   const thisGroup = rows.groups.value?.find((g) => g.id === group) ?? null
@@ -1247,8 +1268,8 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
           ]}
           consequences={[
             asking.files.length === 0
-              ? 'Cribl reports no pending change to this group’s configuration, so there may be nothing left to commit.'
-              : `The commit carries ${asking.files.length} pending file${asking.files.length === 1 ? '' : 's'}: ${asking.files.join(', ')}.`,
+              ? 'Cribl reports no pending change to this group’s outputs.yml, so there may be nothing left to commit — somebody may have committed it in Cribl already.'
+              : `The commit carries ${asking.files.join(', ')} — that one file holds every destination in ${asking.group}.`,
             ...DEPLOY_CONSEQUENCES,
           ]}
           undo={DESTINATION_UNDO}

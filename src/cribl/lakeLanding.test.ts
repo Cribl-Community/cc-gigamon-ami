@@ -26,6 +26,7 @@ import { LAKE_ADDRESSING, type LakeDataset } from './lake'
 import {
   CAPABILITIES,
   commitAndDeployDestination,
+  commitScopeAfterConfirm,
   destinationCommitFiles,
   destinationCommitMessage,
   feedsThrough,
@@ -97,6 +98,16 @@ interface WorldOpts {
   answers?: Record<string, [number, unknown]>
   /** Paths `/version/status` reports as uncommitted. */
   pending?: string[]
+  /**
+   * What `/version/status` reports ONCE THE DESTINATION PATCH HAS LANDED.
+   *
+   * The whole point of the fix this stages: a Git status taken before the PATCH
+   * cannot report `outputs.yml`, because the write that dirties it has not been
+   * sent. Real Cribl answers differently on either side of that 200, and until
+   * the commit list was moved after the write this app only ever asked on the
+   * side that could not see its own change.
+   */
+  pendingAfterWrite?: string[]
   /** Commit hash `/version/commit` answers with; null = "nothing to commit". */
   commit?: string | null
   /** What the dataset GET answers, before anything has been written. */
@@ -123,9 +134,10 @@ interface WorldOpts {
 
 /** A workspace with the stack already there, so a test only says what differs. */
 function stubWorld(opts: WorldOpts = {}): Call[] {
-  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite, betweenReads, destBetweenReads } = opts
+  const { answers = {}, pending = [OUTPUTS_YML], pendingAfterWrite, commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite, betweenReads, destBetweenReads } = opts
   const calls: Call[] = []
   let datasetPatched = false
+  let destPatched = false
   let datasetReads = 0
   let destReads = 0
 
@@ -164,6 +176,7 @@ function stubWorld(opts: WorldOpts = {}): Call[] {
         if (destReads >= 2 && destBetweenReads) return reply(destBetweenReads[0], destBetweenReads[1])
         return reply(200, { items: [LIVE_DESTINATION] })
       case `PATCH ${DEST_PATH}`:
+        destPatched = true
         return reply(200, { items: [] })
       case `GET /m/${GROUP}/system/inputs`:
         return reply(200, { items: [{ id: 'in_gigamon_datagen', type: 'datagen', connections: [{ output: 'gigamon_lake' }] }] })
@@ -173,8 +186,10 @@ function stubWorld(opts: WorldOpts = {}): Call[] {
         return reply(404, { message: 'LocalSearch is not enabled' })
       case 'GET /products/stream/groups':
         return reply(200, { items: [{ id: GROUP, name: GROUP, configVersion: 'deadbeef' }] })
-      case 'GET /version/status':
-        return reply(200, { items: [{ files: pending.map((p) => ({ path: p })) }] })
+      case 'GET /version/status': {
+        const now = destPatched && pendingAfterWrite ? pendingAfterWrite : pending
+        return reply(200, { items: [{ files: now.map((p) => ({ path: p })) }] })
+      }
       case 'POST /version/commit':
         return reply(200, commit === null ? { items: [{}] } : { items: [{ commit }] })
       case `PATCH ${DEPLOY_PATH}`:
@@ -911,20 +926,61 @@ describe('updateDestination', () => {
     expect(calls.filter((c) => c.method === 'GET' && c.path === DEST_PATH)).toHaveLength(1)
   })
 
-  it('hands the confirmation the diff, both feeds and the pending files', async () => {
-    stubWorld({ pending: [OUTPUTS_YML, `groups/${GROUP}/local/cribl/inputs.yml`] })
-    let ctx: { keys: string[]; feeds: string[]; complete: boolean; pending: string[] } | null = null
+  it('hands the confirmation the diff, both feeds, and the two file lists apart', async () => {
+    stubWorld({ pending: [`groups/${GROUP}/local/cribl/inputs.yml`] })
+    let ctx: { keys: string[]; feeds: string[]; complete: boolean; carries: string[]; other: string[] } | null = null
     await updateDestination(GROUP, destinationSpec(balanced), {
       confirm: (c) => {
-        ctx = { keys: c.diff.map((d) => d.key), feeds: c.feeds.map((f) => f.kind), complete: c.feedsComplete, pending: c.pendingFiles }
+        ctx = {
+          keys: c.diff.map((d) => d.key), feeds: c.feeds.map((f) => f.kind), complete: c.feedsComplete,
+          carries: c.commitFiles, other: c.otherPending,
+        }
         return false
       },
     })
     expect(ctx!.keys).toContain('maxFileSizeMB')
     expect(ctx!.feeds).toEqual(['quickconnect', 'route'])
     expect(ctx!.complete).toBe(true)
-    // Every pending change, not only ours — the commit carries them.
-    expect(ctx!.pending).toHaveLength(2)
+    // ONE list became two, because one list could only ever be wrong in one of
+    // two directions. This used to hand over the repo-wide pending list as
+    // `pendingFiles`, and the dialog rendered it as what the commit carries —
+    // so it named `inputs.yml`, which the commit never touches.
+    expect(ctx!.carries).toEqual([OUTPUTS_YML])
+    expect(ctx!.other).toEqual([`groups/${GROUP}/local/cribl/inputs.yml`])
+  })
+
+  it('reads the commit scope AFTER the PATCH, so it can see the file the PATCH dirtied', async () => {
+    // THE INSTANCE THIS TEST EXISTS FOR. Before the write, Git reports only
+    // somebody else's work: `outputs.yml` is clean, because the change to it
+    // has not been sent. That read was the one the commit list came from, so it
+    // matched nothing, `destinationCommitFiles` answered [], the commit was
+    // SKIPPED, and `outcome()` called the run ok — destination changed, Workers
+    // left on the old configuration, no error anywhere.
+    const calls = stubWorld({
+      pending: ['groups/other/local/cribl/outputs.yml'],
+      pendingAfterWrite: ['groups/other/local/cribl/outputs.yml', OUTPUTS_YML],
+    })
+    const r = await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+    const commit = writes(calls).find((c) => c.path === '/version/commit')
+    expect((commit!.body as { files: string[] }).files).toEqual([OUTPUTS_YML])
+    expect(r.steps.map((s) => `${s.key}:${s.status}`)).toEqual(['destination:applied', 'commit:applied', 'deploy:applied'])
+    // The ordering itself, not only its result: a status read after the PATCH.
+    const order = calls.map((c) => `${c.method} ${c.path.split('?')[0]}`)
+    expect(order.lastIndexOf('GET /version/status')).toBeGreaterThan(order.indexOf(`PATCH ${DEST_PATH}`))
+  })
+
+  it('reports an error, not a silent skip, when Git reports nothing after a successful PATCH', async () => {
+    // Those two cannot both be true, so the app refuses to guess a path — and
+    // says the workspace is half-applied rather than pushing a success toast.
+    const calls = stubWorld({
+      pending: ['groups/other/local/cribl/outputs.yml'],
+      pendingAfterWrite: ['groups/other/local/cribl/outputs.yml'],
+    })
+    const r = await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+    expect(writes(calls).some((c) => c.path === '/version/commit')).toBe(false)
+    expect(r.steps.map((s) => `${s.key}:${s.status}`)).toEqual(['destination:applied', 'commit:error'])
+    expect(r.ok).toBe(false)
+    expect(r.steps[1].detail).toContain('still running the old configuration')
   })
 
   it('sends the live body back with only the edited keys changed', async () => {
@@ -1140,9 +1196,47 @@ describe('destinationCommitFiles', () => {
 
   it('constructs a path only when Git reported nothing at all', () => {
     expect(destinationCommitFiles(GROUP, [])).toEqual([OUTPUTS_YML])
-    // Git reported changes and none of them is ours: committing a constructed
-    // path here would commit somebody else's work.
+  })
+
+  it('answers [] for a status that names only another group — and that is now a caller’s problem', () => {
+    // WHAT THIS USED TO CLAIM, AND WHY IT WAS A DEFECT. The assertion was the
+    // same call, with the comment "Git reported changes and none of them is
+    // ours: committing a constructed path here would commit somebody else's
+    // work." The function's behaviour is right and unchanged. What was wrong
+    // was that `updateDestination` fed it a status read taken BEFORE the PATCH,
+    // where this is the NORMAL answer on any workspace with unrelated pending
+    // work — so [] meant "we looked too early", the commit was skipped, and the
+    // run still reported ok. Read after the PATCH, [] can only mean Git
+    // genuinely reports nothing, which after a 200 is a contradiction and is
+    // reported as an error. So this stays pinned, and the test above pins what
+    // the caller must now do with it.
     expect(destinationCommitFiles(GROUP, ['groups/other/local/cribl/outputs.yml'])).toEqual([])
+  })
+})
+
+describe('commitScopeAfterConfirm', () => {
+  // The retry button computes its file list before its dialog opens and commits
+  // it after — a file list crossing a user-paced confirmation, which is the same
+  // hazard `destinationMergeSourceAfterConfirm` closes for the body. A commit is
+  // a write like any other, so what is sent has to be what was read.
+
+  it('answers the fresh list when nothing moved', async () => {
+    stubWorld({ pending: [OUTPUTS_YML] })
+    const r = await commitScopeAfterConfirm(GROUP, [OUTPUTS_YML])
+    expect(r).toEqual({ files: [OUTPUTS_YML] })
+  })
+
+  it('refuses rather than substitutes when the scope moved under the open dialog', async () => {
+    // Another admin committed while the dialog was open, so the approved path is
+    // one Git no longer reports. Committing the newer set instead would be
+    // committing something nobody read.
+    stubWorld({ pending: ['groups/other/local/cribl/outputs.yml'] })
+    const r = await commitScopeAfterConfirm(GROUP, [OUTPUTS_YML])
+    expect('stop' in r).toBe(true)
+    const stop = (r as { stop: { status: string; detail?: string } }).stop
+    expect(stop.status).toBe('error')
+    expect(stop.detail).toContain('changed while that confirmation was open')
+    expect(stop.detail).toContain(OUTPUTS_YML)
   })
 })
 

@@ -96,6 +96,14 @@ interface Call {
 }
 
 interface WorkspaceOpts {
+  /**
+   * Paths `/version/status` reports as uncommitted, for the whole run.
+   *
+   * A list with no `outputs.yml` in it stages the half-apply: the PATCH lands,
+   * the commit list comes back empty, and the run used to report ok with the
+   * Workers left on the old configuration and the recovery button hidden.
+   */
+  pending?: string[]
   /** `${METHOD} ${path}` (no query string) → answer this status instead. */
   status?: Record<string, number>
   /** Leave the dataset out of the lake entirely (create mode). */
@@ -184,7 +192,13 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
 
     // Cribl Search.
     if (path === JOBS && method === 'POST') return response(200, { items: [{ id: 'job-1' }] })
-    if (path.endsWith('/status')) return response(200, { items: [{ status: 'completed' }] })
+    // SCOPED TO THE JOBS PATH, and it was not. A bare `endsWith('/status')` also
+    // swallowed `GET /version/status`, so every Git status read in this file
+    // came back as a finished search job with no `files` — which made
+    // `pendingConfigFiles()` answer [] and `destinationCommitFiles` take its
+    // constructed-path branch, in every test. The commit-scope tests below are
+    // about exactly that read, so the stub had to stop answering for it.
+    if (path.startsWith(JOBS) && path.endsWith('/status')) return response(200, { items: [{ status: 'completed' }] })
     if (path.endsWith('/results')) {
       const rows = opts.searchRows ?? []
       return response(200, [JSON.stringify({ job: 'job-1', totalEventCount: rows.length }), ...rows.map((r) => JSON.stringify(r))].join('\n'))
@@ -233,7 +247,7 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
     }
     if (path === '/master/groups') return response(200, { items: [{ id: 'default', name: 'default' }] })
     if (path === '/version/status') {
-      return response(200, { items: [{ files: [{ path: 'groups/default/local/cribl/outputs.yml' }] }] })
+      return response(200, { items: [{ files: (opts.pending ?? ['groups/default/local/cribl/outputs.yml']).map((f) => ({ path: f })) }] })
     }
     if (path === '/version/commit') return response(200, { items: [{ commit: 'cafebabe0123456789' }] })
     if (path === `${GROUPS}/default/deploy`) return response(200, { items: [{ configVersion: 'cafebabe01' }] })
@@ -476,7 +490,14 @@ describe('what a destination confirmation owes the reader', () => {
       { kind: 'route' as const, id: 'r1', label: 'route gigamon_ami_syslog' },
     ],
     feedsComplete: true,
-    pendingFiles: ['groups/default/local/cribl/outputs.yml', 'groups/default/local/cribl/inputs.yml'],
+    // The two lists are separate BECAUSE this fixture used to be one. It was
+    // `pendingFiles: [outputs.yml, inputs.yml]` — the repo-wide Git status —
+    // and the dialog told an admin the commit would carry `inputs.yml`. It
+    // never does: `destinationCommitFiles` filters to this group's
+    // `outputs.yml` alone. Naming a file the commit does not touch is the same
+    // class of untruth as hiding one it does.
+    commitFiles: ['groups/default/local/cribl/outputs.yml'],
+    otherPending: ['groups/default/local/cribl/inputs.yml'],
   }
 
   it('says the Worker Processes restart, in the dialog and not in a toast afterwards', () => {
@@ -500,9 +521,35 @@ describe('what a destination confirmation owes the reader', () => {
     expect(lines[0]).toContain('may be short')
   })
 
-  it('counts somebody else’s pending work into the commit', () => {
-    expect(destinationConsequences(ctx)[1]).toContain('2 pending files')
-    expect(destinationConsequences(ctx)[1]).toContain('anybody else’s unfinished work')
+  it('names the one file the commit carries, and says what else is in it', () => {
+    // Not a count of the repo-wide pending list, which is what this asserted
+    // until 2026-09-17 — see the fixture above.
+    const line = destinationConsequences(ctx)[1]
+    expect(line).toContain('groups/default/local/cribl/outputs.yml')
+    expect(line).toContain('every destination in default')
+    expect(line).not.toContain('inputs.yml')
+  })
+
+  it('names what is pending elsewhere as left alone, not as carried', () => {
+    const line = destinationConsequences(ctx)[2]
+    expect(line).toContain('inputs.yml')
+    expect(line).toMatch(/leaves it alone/)
+  })
+
+  it('says nothing else is pending only when the read said so', () => {
+    // A claim the code can check is checked. A warning that fires when nothing
+    // is pending is the one people learn to click past.
+    const clean = destinationConsequences({ ...ctx, otherPending: [] })[2]
+    expect(clean).toContain('nothing else uncommitted')
+    expect(destinationConsequences(ctx)[2]).not.toContain('nothing else uncommitted')
+  })
+
+  it('never says the commit carries only this edit', () => {
+    // The retired sentence. `outputs.yml` is shared, so it cannot be made true
+    // by any read — and it contradicted DEPLOY_CONSEQUENCES three lines below.
+    for (const c of [ctx, { ...ctx, otherPending: [] }]) {
+      for (const line of destinationConsequences(c)) expect(line).not.toContain('carries only this edit')
+    }
   })
 
   it('names the destination and the deploy as two separate objects', () => {
@@ -909,6 +956,39 @@ describe('the destination editor', () => {
     expect(buttonNamed('Retry the commit and deploy')).toBeTruthy()
     // The destination really was written; only the commit was refused.
     expect(calls.some((c) => c.method === 'PATCH' && c.path === DESTINATION)).toBe(true)
+  })
+})
+
+describe('a commit that was skipped rather than refused', () => {
+  it('is reported and offered a retry, not counted as a success', async () => {
+    // INSTANCE 3. Git reports work pending somewhere else and nothing in this
+    // group's outputs.yml. Read before the PATCH — where the commit list used
+    // to come from — that is the NORMAL answer, because the write that dirties
+    // the file has not been sent yet. `destinationCommitFiles` matched nothing,
+    // `commitAndDeployDestination` returned `skipped`, `outcome()` counted a
+    // skip as ok, the toast said it worked, and `commitIncomplete` required an
+    // `error` so the retry button did not render in the one state it exists for.
+    //
+    // Here the list is read after the PATCH, so an empty answer contradicts a
+    // 200 and is reported as an error — and the strip no longer depends on that
+    // status string either.
+    const { calls } = stubWorkspace({ pending: ['groups/other/local/cribl/outputs.yml'] })
+    await mount()
+    await press(buttonStarting('Adjust how objects are written'))
+    const balanced = [...document.body.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find(
+      (i) => i.value === 'balanced',
+    )
+    await press(balanced)
+    await press(buttonNamed('Change\u2026'))
+    await press(buttonNamed('Yes, apply and deploy'))
+
+    // The destination really was changed — which is what makes the silence bad.
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === DESTINATION)).toBe(true)
+    // …and nothing was committed on a path nobody could name.
+    expect(calls.some((c) => c.path === '/version/commit')).toBe(false)
+    const text = bodyText()
+    expect(text).toContain('still running the old configuration')
+    expect(buttonNamed('Retry the commit and deploy')).toBeTruthy()
   })
 })
 

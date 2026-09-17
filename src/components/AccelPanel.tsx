@@ -122,6 +122,7 @@ import { currentUserId } from '../cribl/user'
 import { MANIFEST, type AccelId } from '../cribl/accel/manifest'
 import {
   applyAcceleration,
+  approvedWrites,
   applyPlan,
   pauseAcceleration,
   readAccelState,
@@ -237,7 +238,17 @@ export function AccelPanel() {
     setLeftBehind([])
     setStillPresent([])
     try {
-      const result = await applyAcceleration((s) => setSteps((prev) => [...prev, s]))
+      // The set the dialog named, from the same `state` its resource list was
+      // rendered from. `applyAcceleration` re-reads and refuses any row that no
+      // longer matches, so a saved search somebody edited while the dialog was
+      // open is not overwritten under a confirmation that never mentioned it.
+      // `state` is non-null wherever this is reachable — the dialog holding the
+      // button renders only when it is — but the approved set is the point of
+      // the call, so it is read defensively rather than asserted.
+      const result = await applyAcceleration(
+        (s) => setSteps((prev) => [...prev, s]),
+        state === null ? undefined : approvedWrites(state),
+      )
       if (!alive.current) return
       setState(result.state)
       const failed = result.steps.filter((s) => s.action === 'error' || s.action === 'refused')
@@ -573,7 +584,13 @@ export function AccelPanel() {
           costLine={applyCostLine(saving)}
           consequences={[
             'Cribl records whoever presses this as the owner of each saved search. That is server-controlled — this app cannot set it and cannot move it afterwards.',
-            'Nothing else in this workspace’s saved searches is read, changed or removed.',
+            // NOT "read, changed or removed", which shipped and was false on
+            // the first word: `readAccelState` issues GET /search/saved with no
+            // filter and classifies orphans from what comes back, so every
+            // saved search in the workspace IS read. That read is load-bearing
+            // — it is how an orphan of this app's own is found — so the honest
+            // fix is to say it rather than to narrow the call.
+            'Every saved search in this workspace is listed, which is how an orphan of this app’s own is found. Nothing outside the ids above is changed or removed.',
             ...(plan?.willLeave ?? []).map((l) => `Not changed: ${l.label} — ${l.why}.`),
           ]}
           undo={

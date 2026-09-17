@@ -44,10 +44,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
-  deployAll, pendingDeploy, removeSyslogStack,
+  commitScope, deployAll, pendingDeploy, removeSyslogStack,
   ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
   SYSLOG_ROUTE_ID, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, DEFAULT_STREAM_GROUP,
-  type PendingChange, type StepResult,
+  type PendingChange, type ResourceKey, type StepResult,
 } from './provision'
 
 const GROUP = DEFAULT_STREAM_GROUP
@@ -85,6 +85,21 @@ interface LeaderOpts {
   pipeline?: Record<string, unknown> | null
   /** The live syslog source, likewise. */
   source?: Record<string, unknown> | null
+  /**
+   * What the pipeline / source / routing-table GET answers FROM THE SECOND READ
+   * ONWARD — i.e. the other admin.
+   *
+   * Every ensure* reads once to compose the diff its confirmation shows, and
+   * again after the answer to compose the body it sends. Everything between
+   * those two reads is time somebody spent in front of a Modal, so this is the
+   * only way to stage the window the write used to be composed across: a body
+   * built on the first read is a FULL REPLACEMENT of an object that has moved,
+   * which does not lose the race, it reverts the other writer. `undefined`
+   * means nothing moved and both reads answer the same thing.
+   */
+  pipelineBetweenReads?: Record<string, unknown> | null
+  sourceBetweenReads?: Record<string, unknown> | null
+  routesBetweenReads?: Array<Record<string, unknown>> | null
 }
 
 /**
@@ -120,8 +135,12 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
     configVersion = HEAD, head = HEAD, changedSince = [],
     pipeline = STALE_PIPELINE, source = STALE_SOURCE,
+    pipelineBetweenReads, sourceBetweenReads, routesBetweenReads,
   } = opts
   const calls: Call[] = []
+  let pipeReads = 0
+  let sourceReads = 0
+  let routeReads = 0
 
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -156,7 +175,11 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     if (at('POST', '/version/commit')) return reply(200, commit === null ? { items: [{}] } : { items: [{ commit }] })
 
     // The routing table, and everything else already provisioned.
-    if (at('GET', `/m/${GROUP}/routes`)) return reply(200, { items: [{ id: 'default', ...table, routes }] })
+    if (at('GET', `/m/${GROUP}/routes`)) {
+      routeReads += 1
+      const now = routeReads >= 2 && routesBetweenReads !== undefined ? routesBetweenReads : routes
+      return reply(200, now === null ? { items: [] } : { items: [{ id: 'default', ...table, routes: now }] })
+    }
     if (at('PATCH', ROUTES_PATCH)) return reply(200, { items: [] })
     if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
 
@@ -164,8 +187,16 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     // merge onto this body. Answering with a real body is what lets a test say
     // "already correct" at all — and, since the merge, what lets it say anything
     // about the request body, which is composed from exactly this.
-    if (at('GET', `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)) return reply(200, { items: pipeline ? [pipeline] : [] })
-    if (at('GET', `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)) return reply(200, { items: source ? [source] : [] })
+    if (at('GET', `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)) {
+      pipeReads += 1
+      const now = pipeReads >= 2 && pipelineBetweenReads !== undefined ? pipelineBetweenReads : pipeline
+      return reply(200, { items: now ? [now] : [] })
+    }
+    if (at('GET', `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)) {
+      sourceReads += 1
+      const now = sourceReads >= 2 && sourceBetweenReads !== undefined ? sourceBetweenReads : source
+      return reply(200, { items: now ? [now] : [] })
+    }
     // Everything else in the group already exists and takes whatever is sent.
     // A re-apply therefore PATCHes the pipeline and the source every time and
     // reports them `updated` — which is exactly what a real Leader does, and why
@@ -510,6 +541,125 @@ describe('the confirmation seam', () => {
     const steps = await runWith({ confirm: () => false })
     expect(steps.some((s) => s.action === 'error')).toBe(false)
   })
+
+  // ── The window the seam opened, and what closes it ────────────────────────
+  //
+  // Every ensure* composed its PATCH body from a read taken BEFORE `agreed(...)`.
+  // That was not exploitable while the only caller passed no `confirm` —
+  // `preConfirmed` returns true synchronously, with no await boundary a racer
+  // can use — and the seam exists precisely so that a caller CAN pass a real
+  // dialog. The first one to do it would have made a stale FULL REPLACEMENT
+  // live: not a lost race, a revert of whatever the other admin wrote.
+  //
+  // So these tests pass a `confirm` that behaves like a dialog somebody is
+  // sitting in front of, and the stub answers differently from the second read
+  // onward. Every one of them fails against the pre-2026-09-17 code.
+
+  const PIPE_PATH = `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`
+  const SRC_PATH = `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`
+  const sent = (calls: Call[], path: string) =>
+    calls.find((c) => c.method === 'PATCH' && c.path === path)?.body as Record<string, unknown> | undefined
+
+  it('composes the source PATCH from a read taken after the answer, not before it', async () => {
+    // Somebody adds a TLS block to the customer's syslog source while the dialog
+    // is open. The body sent is built on the second read, so it carries it.
+    const calls = stubLeader({
+      ...settled,
+      source: { ...SOURCE_SPEC, tcpPort: 9999 },
+      sourceBetweenReads: { ...SOURCE_SPEC, tcpPort: 9999, tls: { disabled: false, certificateName: 'theirs' } },
+    })
+    const steps = await runWith({ confirm: () => true })
+    expect(step(steps, 'source')?.action).toBe('updated')
+    expect(sent(calls, SRC_PATH)?.tls, 'a field added while the dialog was open was deleted by the write').toEqual({
+      disabled: false, certificateName: 'theirs',
+    })
+  })
+
+  it('refuses the source write when the change it was asked about has moved', async () => {
+    // The dialog said "tcpPort 9999 → 5514". By the time Yes came back the live
+    // port was something else, so that is no longer the change, and a
+    // confirmation describes ONE before → after.
+    const calls = stubLeader({
+      ...settled,
+      source: { ...SOURCE_SPEC, tcpPort: 9999 },
+      sourceBetweenReads: { ...SOURCE_SPEC, tcpPort: 7777 },
+    })
+    const steps = await runWith({ confirm: () => true })
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === SRC_PATH)).toBe(false)
+    expect(step(steps, 'source')?.action).toBe('error')
+    expect(step(steps, 'source')?.detail).toContain('changed while that confirmation was open')
+  })
+
+  it('writes nothing when the read after the answer cannot be read', async () => {
+    // No fallback to the first read. That fallback IS the stale merge, arriving
+    // as a convenience on the workspace least able to tolerate it.
+    const calls = stubLeader({
+      ...settled,
+      pipeline: { ...PIPELINE_SPEC, conf: { ...PIPELINE_SPEC.conf, functions: [] } },
+      pipelineBetweenReads: null,
+    })
+    const steps = await runWith({ confirm: () => true })
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === PIPE_PATH)).toBe(false)
+    expect(step(steps, 'pipeline')?.action).toBe('error')
+    expect(step(steps, 'pipeline')?.detail).toContain('could not be read again after that confirmation')
+  })
+
+  it('calls it a no-op when somebody applied the same change while the dialog was open', async () => {
+    // Not a conflict — there is simply nothing left to send.
+    const calls = stubLeader({
+      ...settled,
+      pipeline: { ...PIPELINE_SPEC, conf: { ...PIPELINE_SPEC.conf, functions: [] } },
+      pipelineBetweenReads: { ...PIPELINE_SPEC },
+    })
+    const steps = await runWith({ confirm: () => true })
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === PIPE_PATH)).toBe(false)
+    expect(step(steps, 'pipeline')?.action).toBe('exists')
+  })
+
+  it('sends the routing table read after the answer, so another admin’s new route survives', async () => {
+    // THE WORST OF THE THREE. This PATCH replaces the group's entire routing
+    // table, so a table read before the dialog reverts every route somebody
+    // else added, reordered or deleted while it was open.
+    const stale = { ...ROUTE_SPEC, description: 'from an older version of this app' }
+    const theirs = { id: 'their_route', name: 'their_route', filter: 'true', pipeline: 'theirs' }
+    const calls = stubLeader({
+      ...settled,
+      routes: [stale, catchAll],
+      routesBetweenReads: [stale, theirs, catchAll],
+    })
+    const steps = await runWith({ confirm: () => true })
+    expect(step(steps, 'route')?.action).toBe('updated')
+    expect(routesSent(calls)?.map((r) => r.id), 'a route added while the dialog was open was deleted by this write')
+      .toEqual([SYSLOG_ROUTE_ID, 'their_route', 'default'])
+  })
+
+  it('refuses when our route was removed from the table while the dialog was open', async () => {
+    // The approved ACTION moved, not just its diff: "correct it where it sits"
+    // and "add it above the catch-all" are not the same press.
+    const stale = { ...ROUTE_SPEC, description: 'stale' }
+    const calls = stubLeader({ ...settled, routes: [stale, catchAll], routesBetweenReads: [catchAll] })
+    const steps = await runWith({ confirm: () => true })
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)).toBe(false)
+    expect(step(steps, 'route')?.action).toBe('error')
+    expect(step(steps, 'route')?.detail).toContain('removed from the routing table while that confirmation was open')
+  })
+
+  it('writes nothing when the routing table cannot be read again', async () => {
+    const stale = { ...ROUTE_SPEC, description: 'stale' }
+    const calls = stubLeader({ ...settled, routes: [stale, catchAll], routesBetweenReads: null })
+    const steps = await runWith({ confirm: () => true })
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)).toBe(false)
+    expect(step(steps, 'route')?.detail).toContain('could not be read again after that confirmation')
+  })
+
+  it('still re-reads when no confirm was passed, so the guard is structural rather than conditional', async () => {
+    // `preConfirmed` is the only caller today, and the fix must not be something
+    // a future caller has to remember to opt into. One extra GET per written
+    // object per run is the price of the seam being safe to wire.
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    await run()
+    expect(calls.filter((c) => c.method === 'GET' && c.path === SRC_PATH)).toHaveLength(2)
+  })
 })
 
 describe('the two Lake specs', () => {
@@ -677,6 +827,27 @@ describe('an undeployed commit', () => {
     expect(await pendingDeploy(GROUP)).toBe(null)
   })
 
+  it('reads as "none" rather than guessing when /version/files is unavailable', async () => {
+    // This used to `return head` — a repo-wide HEAD presented to the user as a
+    // commit "committed to <group> but never deployed", on no group evidence at
+    // all, feeding an offer to deploy that restarts that group's Worker
+    // Processes. The function's own rule is at the top of it: "Could not tell"
+    // answers null, exactly like "nothing pending".
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace(/^\/capi/, '')
+      const method = (init.method ?? 'GET').toUpperCase()
+      const reply = (status: number, value: unknown) => ({
+        ok: status < 300, status, statusText: 'OK',
+        text: async () => JSON.stringify(value), json: async () => value,
+      })
+      if (path.startsWith('/version/files')) return reply(403, { message: 'not granted' })
+      if (path.startsWith('/version?')) return reply(200, { items: [{ hash: HEAD, refs: 'HEAD -> main' }] })
+      if (method === 'GET' && path === `/products/stream/groups/${GROUP}`) return reply(200, { items: [{ id: GROUP, configVersion: DEPLOYED }] })
+      return reply(200, { items: [] })
+    })
+    expect(await pendingDeploy(GROUP)).toBe(null)
+  })
+
   it('takes the commit that carries the HEAD ref, not whichever the history listed first', async () => {
     // Getting this backwards deploys an old commit to a live group, which is a
     // rollback nobody asked for.
@@ -695,6 +866,52 @@ describe('an undeployed commit', () => {
       return reply({ items: [] })
     })
     expect(await pendingDeploy(GROUP)).toBe(HEAD)
+  })
+})
+
+describe('commitScope', () => {
+  // What Guided Setup's confirmation needs in order to stop saying "Nothing else
+  // in <group> is touched, including the demo DataGen source" — a sentence that
+  // shipped, and that is true of what this app WRITES and false of what its
+  // commit CARRIES. `pendingFiles()` has been in the module since Phase 1 and
+  // nothing ever put it in front of a person.
+  const FILES = [
+    `groups/${GROUP}/local/cribl/inputs.yml`,
+    `groups/${GROUP}/local/cribl/pipelines/${SYSLOG_PIPELINE_ID}/conf.yml`,
+    `groups/${GROUP}/local/cribl/routes.yml`,
+    `groups/${GROUP}/local/cribl/outputs.yml`,
+  ]
+  const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
+
+  it('names every whole file a deploy can commit, including the one holding the demo DataGen source', () => {
+    expect(commitScope(GROUP, ALL, []).carries).toEqual(FILES)
+  })
+
+  it('names three for a teardown, because the destination is never touched by one', () => {
+    // The over-naming half of the same class: a dialog that names a file it does
+    // not touch is as untrue as one that hides a file it does.
+    expect(commitScope(GROUP, ['source', 'pipeline', 'route'], []).carries).not.toContain(FILES[3])
+  })
+
+  it('separates somebody else\u2019s work IN those files from work elsewhere', () => {
+    const scope = commitScope(GROUP, ALL, [
+      `groups/${GROUP}/local/cribl/inputs.yml`,
+      'groups/other/local/cribl/routes.yml',
+    ])
+    // In our files: this press commits and deploys it.
+    expect(scope.alreadyDirty).toEqual([`groups/${GROUP}/local/cribl/inputs.yml`])
+    // Elsewhere: the commit names its own paths, so it is left alone.
+    expect(scope.elsewhere).toEqual(['groups/other/local/cribl/routes.yml'])
+    expect(scope.unknown).toBe(false)
+  })
+
+  it('says "could not tell" rather than "nothing is pending" when Git reported nothing', () => {
+    // An empty repo-wide status and an unavailable endpoint look identical from
+    // here — the same ambiguity filesToCommit resolves by falling back to
+    // constructed paths — and a dialog that renders the second as the first is
+    // asserting a clean tree it never saw.
+    expect(commitScope(GROUP, ALL, null).unknown).toBe(true)
+    expect(commitScope(GROUP, ALL, null).alreadyDirty).toEqual([])
   })
 })
 

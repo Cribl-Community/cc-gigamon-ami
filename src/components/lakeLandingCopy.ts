@@ -201,10 +201,39 @@ export function destinationResources(ctx: DestinationConfirmContext): ConfirmRes
  * Everything a destination change causes that is not in the diff.
  *
  * The feed list first, because it answers "what am I about to interrupt?"; then
- * how much of somebody else's work rides along in the commit; then
- * DEPLOY_CONSEQUENCES verbatim from cribl/landing.ts — including the Worker
- * Process restart, which is the sentence an admin who runs this at 11 a.m. on a
- * Tuesday will wish they had been shown.
+ * what the commit carries and what it leaves; then DEPLOY_CONSEQUENCES verbatim
+ * from cribl/landing.ts — including the Worker Process restart, which is the
+ * sentence an admin who runs this at 11 a.m. on a Tuesday will wish they had
+ * been shown.
+ *
+ * ── THE TWO SENTENCES THIS REPLACED, AND WHY BOTH WERE UNTRUE ───────────────
+ *
+ * They were one sentence with two branches off `ctx.pendingFiles`, which was
+ * the repo-wide Git status — not the commit's file list, and not scoped to this
+ * group.
+ *
+ *   empty:     "Cribl reports no pending change to this group's configuration,
+ *              so the commit carries only this edit."
+ *   non-empty: "The commit carries N pending files — including anybody else's
+ *              unfinished work in them: <the repo-wide list>."
+ *
+ * The first UNDER-NAMED. `outputs.yml` holds every destination in the group, so
+ * "carries only this edit" is a claim about the other contents of a shared file,
+ * asserted from a status read that was taken before the PATCH that dirties it
+ * and could not have seen it. It also contradicted DEPLOY_CONSEQUENCES[1],
+ * rendered three lines below it in this same list.
+ *
+ * The second OVER-NAMED. The commit's real list is one path; the sentence read
+ * the repo-wide one, so the shipped dialog told an admin the commit would carry
+ * `inputs.yml` — the panel's own test fixture had exactly that — and it does
+ * not. A dialog that names a file it does not touch is the same class of
+ * untruth as one that hides a file it does.
+ *
+ * So now: two facts, separately. What the commit carries is stated flat, with
+ * no condition on it, because `POST /version/commit` takes PATHS and a path is
+ * a whole file — no read makes that conditional. What is pending elsewhere IS
+ * checkable, so it is checked and named; a warning that fires when nothing is
+ * pending is the one people learn to click past.
  */
 export function destinationConsequences(ctx: DestinationConfirmContext): string[] {
   const feeds =
@@ -212,9 +241,10 @@ export function destinationConsequences(ctx: DestinationConfirmContext): string[
       ? 'Nothing that this app could see currently writes through this destination.'
       : `Everything that writes through it moves with it: ${ctx.feeds.map((f) => f.label).join(', ')}.`
   const complete = ctx.feedsComplete ? '' : ' One of the two reads behind that list was refused, so the list may be short.'
-  const pending =
-    ctx.pendingFiles.length === 0
-      ? 'Cribl reports no pending change to this group’s configuration, so the commit carries only this edit.'
-      : `The commit carries ${ctx.pendingFiles.length} pending file${ctx.pendingFiles.length === 1 ? '' : 's'} — including anybody else’s unfinished work in them: ${ctx.pendingFiles.join(', ')}.`
-  return [feeds + complete, pending, ...DEPLOY_CONSEQUENCES]
+  const carries = `The commit carries ${ctx.commitFiles.join(', ')} — that one file holds every destination in ${ctx.group}.`
+  const elsewhere =
+    ctx.otherPending.length === 0
+      ? `Cribl reports nothing else uncommitted on this Leader right now, so nothing else rides along. That was read when this dialog opened.`
+      : `Cribl reports ${ctx.otherPending.length} other uncommitted file${ctx.otherPending.length === 1 ? '' : 's'} on this Leader; the commit names its own path and leaves ${ctx.otherPending.length === 1 ? 'it' : 'them'} alone: ${ctx.otherPending.join(', ')}.`
+  return [feeds + complete, carries, elsewhere, ...DEPLOY_CONSEQUENCES]
 }

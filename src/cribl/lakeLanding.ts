@@ -885,9 +885,36 @@ export interface DestinationConfirmContext {
   /** False when one of the two feed reads was refused, so the dialog can say the
    *  list may be short instead of presenting it as complete. */
   feedsComplete: boolean
-  /** Every pending change to this group's config that the commit will carry —
-   *  including somebody else's. */
-  pendingFiles: string[]
+  /**
+   * The paths this commit will carry, WHOLE.
+   *
+   * One entry, this group's `outputs.yml`, and it is constructed rather than
+   * read: the file the PATCH is about to dirty cannot appear in a Git status
+   * taken before the PATCH, which is the defect the doc comment this replaces
+   * used to encode. It said "Every pending change to this group's config that
+   * the commit will carry — including somebody else's", and it was wrong about
+   * both halves: the value it described was repo-wide (no group filter), and
+   * the commit's real list is `destinationCommitFiles`, filtered to one file.
+   * So the dialog named `inputs.yml` as carried when it is not, and could not
+   * name `outputs.yml` as carried when it is.
+   *
+   * `outputs.yml` holds EVERY destination in the group, so "carries this file"
+   * means "carries anybody else's uncommitted destination work in it too".
+   * That is a property of the file and of `POST /version/commit` taking paths,
+   * not of any read, so no re-read makes it go away and the copy says it flat.
+   */
+  commitFiles: string[]
+  /**
+   * What Git reports uncommitted ELSEWHERE — repo-wide, minus `commitFiles`.
+   * These are left where they are; the commit names its own paths and Cribl
+   * commits only those. Separate from `commitFiles` because a dialog that
+   * merges the two lists either over-names or under-names, and this app has
+   * shipped both.
+   *
+   * As old as the dialog has been open, and it is only ever used to say what
+   * is NOT being committed, so staleness here cannot mislead about the write.
+   */
+  otherPending: string[]
 }
 
 /**
@@ -1015,7 +1042,18 @@ export async function updateDestination(
   }
 
   const [feeds, pending] = await Promise.all([feedsThrough(group, DESTINATION_ID, init), pendingConfigFiles(init)])
-  const files = destinationCommitFiles(group, pending)
+  // What the commit will carry is NOT read here, and that is the fix rather
+  // than an omission. This read happens before the PATCH at the bottom of this
+  // function, so it is structurally incapable of seeing `outputs.yml` dirty —
+  // the write that dirties it has not been sent. Asking it what the commit
+  // carries returned `[]` on any workspace with unrelated pending work, and the
+  // commit was then silently skipped with the destination already changed.
+  // The commit list is built from the read AFTER the PATCH, below.
+  //
+  // This read is still worth making: what it can honestly answer is what is
+  // pending ELSEWHERE, which the commit leaves alone. That is `otherPending`.
+  const commitFiles = [destinationConfigFile(group)]
+  const otherPending = pending.filter((p) => !isDestinationConfigFile(p, group))
 
   const proceed = await confirmed(opts.confirm, {
     group,
@@ -1023,7 +1061,8 @@ export async function updateDestination(
     diff,
     feeds: feeds.feeds,
     feedsComplete: feeds.complete,
-    pendingFiles: pending,
+    commitFiles,
+    otherPending,
   })
   if (!proceed) return outcome([{ key: 'destination', status: 'cancelled' }])
 
@@ -1038,7 +1077,23 @@ export async function updateDestination(
 
   const steps = [patched]
   if (patched.status === 'applied') {
-    steps.push(...(await commitAndDeployDestination(group, files, opts.message ?? destinationCommitMessage(group, diff), init)))
+    // ── THE COMMIT SCOPE IS READ HERE, AFTER THE WRITE ───────────────────────
+    //
+    // The 200 above is the proof this read cannot miss its file: `outputs.yml`
+    // is dirty, because Cribl has just accepted a change to an object in it.
+    // Read before the PATCH (where this used to be) the same call could only
+    // ever see somebody else's work, so on a workspace with any unrelated
+    // pending change `destinationCommitFiles` matched nothing, answered `[]`,
+    // and the run reported `ok` having changed a live delivery point and
+    // committed nothing. cribl/provision.ts has always had this ordering right
+    // — `deployAll` calls `filesToCommit` after its five writes — and this is
+    // that house rule applied to the writer that did not follow it.
+    //
+    // `afterWrite` tells the commit that an empty list is now a CONTRADICTION
+    // rather than a quiet "nothing to do": see commitAndDeployDestination.
+    const after = await pendingConfigFiles(init)
+    const files = destinationCommitFiles(group, after)
+    steps.push(...(await commitAndDeployDestination(group, files, opts.message ?? destinationCommitMessage(group, diff), init, false, true)))
   }
   void audit('lake_landing.destination', { group, destination: DESTINATION_ID, diff, steps })
   return outcome(steps)
@@ -1065,6 +1120,16 @@ export async function updateDestination(
  * anything, and that half-applied state is the one §1.5 rule 9 most wants a
  * trail of. It was missing until the Phase 3 settling pass: the recovery from
  * the phase's likeliest real failure left no record that it had been attempted.
+ *
+ * `afterWrite` SAYS WHAT AN EMPTY FILE LIST MEANS HERE. Called from
+ * `updateDestination` the PATCH has just returned 200, so Git reporting nothing
+ * pending in this group's `outputs.yml` is a contradiction — the destination is
+ * changed and the Workers are running the old configuration — and a `skipped`
+ * step for it reads as success, hides LakeLandingPanel's recovery button behind
+ * its `error` test, and leaves the workspace half-applied with no sign of it.
+ * Called from the retry button nothing was written in this run, so an empty
+ * list may honestly mean somebody committed it in the Cribl UI already; that
+ * stays `skipped`.
  */
 export async function commitAndDeployDestination(
   group: string,
@@ -1072,6 +1137,7 @@ export async function commitAndDeployDestination(
   message: string,
   init: CapiInit = {},
   trail = false,
+  afterWrite = false,
 ): Promise<WriteStep[]> {
   const record = (steps: WriteStep[]): WriteStep[] => {
     if (trail) void audit('lake_landing.destination.retry', { group, destination: DESTINATION_ID, files, steps })
@@ -1079,7 +1145,16 @@ export async function commitAndDeployDestination(
   }
   if (files.length === 0) {
     return record([
-      { key: 'commit', status: 'skipped', detail: 'Cribl reports no pending change to this group’s outputs.yml.' },
+      afterWrite
+        ? {
+            key: 'commit',
+            status: 'error',
+            detail:
+              `Nothing was committed: ${DESTINATION_ID} in group ${group} was changed and accepted, and Cribl then reported no pending change to ` +
+              `that group’s outputs.yml. Those two cannot both be true, so this app will not guess a path to commit. The destination is changed ` +
+              `and this group’s Workers are still running the old configuration — retry the commit and deploy, or commit ${destinationConfigFile(group)} in Cribl.`,
+          }
+        : { key: 'commit', status: 'skipped', detail: 'Cribl reports no pending change to this group’s outputs.yml.' },
     ])
   }
 
@@ -1141,14 +1216,77 @@ export async function pendingConfigFiles(init: CapiInit = {}): Promise<string[]>
  * the commit call would reject — and scoped to this group's `outputs.yml`, so
  * another group's pending work is left where it is. When the status read gives
  * nothing at all, the constructed path is the best effort, and the caller finds
- * out it was a guess because the commit answers "nothing to commit".
+ * out it was a guess because the commit answers "nothing to commit". That is
+ * the same rule cribl/provision.ts's `filesToCommit` follows, deliberately:
+ * fall back to a constructed path only when Git reported NOTHING, never when it
+ * reported something that did not match.
+ *
+ * WHAT THE EMPTY ANSWER MEANS IS THE CALLER'S TO DECIDE, and the two callers
+ * decide differently on purpose. After a successful PATCH it is a contradiction
+ * (see `commitAndDeployDestination`'s `afterWrite`); before any write of this
+ * run — the retry button — it can honestly mean somebody committed it in the
+ * Cribl UI already.
  */
 export function destinationCommitFiles(group: string, pending: readonly string[]): string[] {
-  const marker = 'local/cribl/outputs.yml'
-  const inGroup = (p: string) => p.includes(`groups/${group}/`) || !p.includes('groups/')
-  const selected = pending.filter((p) => inGroup(p) && p.includes(marker))
+  const selected = pending.filter((p) => isDestinationConfigFile(p, group))
   if (selected.length > 0) return selected
-  return pending.length === 0 ? [`groups/${group}/local/cribl/outputs.yml`] : []
+  return pending.length === 0 ? [destinationConfigFile(group)] : []
+}
+
+/** The one Git path a destination change in this group lands in. Constructed,
+ *  not read — this is what the dialog names, because the PATCH has not been
+ *  sent when the dialog opens and so no Git status can report it yet. */
+export function destinationConfigFile(group: string): string {
+  return `groups/${group}/local/cribl/outputs.yml`
+}
+
+/**
+ * Whether a path Git reported IS this group's destinations file.
+ *
+ * Layout-independent, the same way provision.ts's `pathInGroup` is: a named
+ * group carries a `groups/<group>/` segment, and a group-rooted versioning root
+ * has no `groups/` segment at all. A path in ANOTHER group is neither, which is
+ * the case that matters — committing it would commit somebody else's work.
+ */
+export function isDestinationConfigFile(path: string, group: string): boolean {
+  const inGroup = path.includes(`groups/${group}/`) || !path.includes('groups/')
+  return inGroup && path.includes('local/cribl/outputs.yml')
+}
+
+/**
+ * The commit scope to send, re-read AFTER the answer — or the reason nothing
+ * may be sent.
+ *
+ * THE SAME RULE AS `destinationMergeSourceAfterConfirm`, APPLIED TO THE FILE
+ * LIST. A dialog is user-paced: whatever a caller computed before opening it is
+ * as old as the dialog has been on screen, and a commit is a write like any
+ * other. The retry button is the one place in this app where a file list
+ * genuinely crosses a confirmation — it is computed from a status read taken
+ * before the dialog opens and consumed after — and another admin committing in
+ * that window leaves the approved list naming a path Git no longer reports.
+ *
+ * REFUSES RATHER THAN SUBSTITUTES. A confirmation describes one set of files;
+ * if the set moved, this one is void, exactly as a moved destination diff is.
+ * Silently committing the newer set would be committing something nobody read.
+ */
+export async function commitScopeAfterConfirm(
+  group: string,
+  approved: readonly string[],
+  init: CapiInit = {},
+): Promise<{ files: string[] } | { stop: WriteStep }> {
+  const now = destinationCommitFiles(group, await pendingConfigFiles(init))
+  const same = now.length === approved.length && now.every((p) => approved.includes(p))
+  if (same) return { files: now }
+  return {
+    stop: {
+      key: 'commit',
+      status: 'error',
+      detail:
+        `Nothing was committed: what Cribl reports pending in group ${group} changed while that confirmation was open, so the commit you approved ` +
+        `is not the commit that would now be made. Approved: ${approved.length ? approved.join(', ') : 'nothing'}. Would now carry: ` +
+        `${now.length ? now.join(', ') : 'nothing'}. Look at the group and try again.`,
+    },
+  }
 }
 
 /** The message somebody reading `git log` on the Leader will see — who did what

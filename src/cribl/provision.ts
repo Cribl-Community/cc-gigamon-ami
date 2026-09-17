@@ -74,7 +74,7 @@ import { capi, errText, groupPath, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
 import { appendLog } from './kv'
 import {
-  DEFAULT_PROFILE, datasetSpec, destinationSpec,
+  DEFAULT_PROFILE, datasetSpec, destinationSpec, sameDiff,
   type DiffRow, type LandingProfile,
 } from './landing'
 import { loadCommitMemory } from './setupMemory'
@@ -542,6 +542,76 @@ async function filesToCommit(group: string, keys: ResourceKey[]): Promise<string
   return selected
 }
 
+/**
+ * The Git paths a Guided Setup commit in this group can carry, and what else is
+ * uncommitted beside them — the two things its confirmation has to say.
+ *
+ * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+ * `pendingFiles()` has been in this module since Phase 1 and the Guided Setup
+ * dialog never surfaced it. So that dialog said "Nothing else in ${group} is
+ * touched, including the demo DataGen source" — true of what this app WRITES
+ * (`ensureSource` PATCHes one object, `ensureRoute` splices one entry) and
+ * false of what the commit CARRIES. `POST /version/commit` takes FILE PATHS
+ * (openapi.json, GitCommitBody.files: "Array of file paths to include in the
+ * commit"), and `inputs.yml` holds every source in the group INCLUDING the demo
+ * DataGen one. Those are different sentences and the copy collapsed them into
+ * one. This returns what the honest version needs.
+ *
+ * `carries` IS CONSTRUCTED, NOT READ, and deliberately: at the moment the
+ * dialog opens nothing has been written, so no Git status can report the files
+ * this run is about to dirty. It is the full set the run MAY commit — which
+ * files it actually names is decided by `filesToCommit` afterwards, from the
+ * status read taken after the writes.
+ *
+ * `alsoPending` IS READ, because it is the half the code can actually check,
+ * and a warning that fires when nothing is pending is the one people learn to
+ * click past. It is repo-wide minus `carries`, so it says what the commit
+ * leaves alone. `null` means the status read gave nothing back — not "nothing
+ * is pending" — and the copy has to say which.
+ */
+export interface CommitScope {
+  /** Every file in this group a Guided Setup run can commit, whole. */
+  carries: string[]
+  /**
+   * The paths Git ALREADY reports uncommitted among the files this run may
+   * commit — somebody else's unfinished work, which this press commits and
+   * deploys. The specific thing, checked, rather than a standing warning.
+   */
+  alreadyDirty: string[]
+  /**
+   * Uncommitted elsewhere on this Leader. The commit names its own paths, so
+   * these are left where they are; worth saying only because the deploy that
+   * follows moves the group to a commit rather than to a change.
+   */
+  elsewhere: string[]
+  /** True when the Git status read answered nothing at all — "could not tell",
+   *  not "nothing is pending", and the copy must not confuse the two. */
+  unknown: boolean
+}
+
+/** Everything Cribl currently sees as uncommitted, anywhere in the repo, or
+ *  null when the status read answered nothing — which is "could not tell", not
+ *  "nothing is pending", and `commitScope` keeps the two apart. Read once per
+ *  status check and split per dialog by `commitScope`, which is pure. */
+export async function pendingConfigPaths(): Promise<string[] | null> {
+  try {
+    const p = await pendingFiles()
+    // An empty list and an unavailable endpoint look identical here — the same
+    // ambiguity `filesToCommit` resolves by falling back to constructed paths.
+    return p.length === 0 ? null : p
+  } catch {
+    return null
+  }
+}
+
+export function commitScope(group: string, keys: readonly ResourceKey[], pending: readonly string[] | null): CommitScope {
+  const carries = keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null)
+  if (pending === null) return { carries, alreadyDirty: [], elsewhere: [], unknown: true }
+  const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
+  const mine = (p: string) => pathInGroup(p, group) && markers.some((m) => p.includes(m))
+  return { carries, alreadyDirty: pending.filter(mine), elsewhere: pending.filter((p) => !mine(p)), unknown: false }
+}
+
 // --- What the write actually sends, and what it changes -------------------
 //
 // ── A SHIPPED DEFECT, FOUND 2026-09-17 ─────────────────────────────────────
@@ -749,6 +819,88 @@ interface EnsureCtx {
 
 const refused = (key: ResourceKey): StepResult => ({ key, action: 'skipped', detail: NOT_CONFIRMED })
 
+// ── THE READ THAT COMPOSES A PATCH MUST BE TAKEN AFTER THE ANSWER ───────────
+//
+// READ THIS BEFORE WIRING `confirm` TO ANYTHING. Every ensure* below reads the
+// live object, computes a body from it, asks `agreed(ctx.confirm, …)`, and then
+// PATCHes. Until 2026-09-17 the body it sent was the one composed from the FIRST
+// read — so the merge source was as old as the dialog had been on screen, and
+// these endpoints are full replacements. A stale merge does not lose the race,
+// it REVERTS whatever the other writer did; for `ensureRoute` that is the
+// group's entire routing table.
+//
+// It was not exploitable, and the reason it was not is the hazard: the only
+// caller (components/ProvisionPanel.tsx) passes no `confirm`, so `agreed` runs
+// `preConfirmed`, which returns `true` synchronously with no await boundary a
+// racer can use. The seam exists precisely so that a caller CAN pass a real
+// dialog (see the header, and `preConfirmed`), and the first one to do it would
+// have made this live — which is the stale-merge defect cribl/lakeLanding.ts
+// spent two commits closing on the Lake writers.
+//
+// So it is closed by construction here instead: each ensure* re-reads after the
+// answer and sends a body built on the SECOND read, refusing when the read fails
+// and refusing when the change has moved. `preConfirmed` costs one extra GET per
+// written object per run, which is the price of the seam being safe to wire.
+
+/** Why nothing was sent when the read after the confirmation failed. There is
+ *  NO fallback to the first read — that fallback IS the stale merge, arriving
+ *  as a convenience on the workspace least able to tolerate it (the reasoning
+ *  is written out at lakeLanding.ts's `destinationMergeSourceAfterConfirm`). */
+const reReadFailed = (what: string) =>
+  `not applied — ${what} could not be read again after that confirmation, and this endpoint replaces the whole object, ` +
+  'so a write composed from the older read would delete whatever changed in between'
+
+/** Why nothing was sent when the object moved under an open confirmation. A
+ *  confirmation describes one before → after; if that is no longer the change,
+ *  this one is void rather than stale, and nothing re-asks from a dialog the
+ *  user has already dismissed. */
+const diffMovedNote = (what: string, approved: readonly DiffRow[], now: readonly DiffRow[]) => {
+  const say = (rows: readonly DiffRow[]) =>
+    rows.length === 0 ? 'nothing' : rows.map((d) => `${d.key} (${JSON.stringify(d.before) ?? 'absent'} → ${JSON.stringify(d.after) ?? 'absent'})`).join(', ')
+  return (
+    `not applied — ${what} changed while that confirmation was open, and the change you approved is not the change that would now be ` +
+    `applied. Approved: ${say(approved)}. Would now apply: ${say(now)}. Look at the object in Cribl and re-apply.`
+  )
+}
+
+/**
+ * The body to PATCH, composed from a read taken AFTER the answer — or the
+ * reason nothing may be sent.
+ *
+ * The counterpart of lakeLanding.ts's `destinationMergeSourceAfterConfirm`, and
+ * it refuses on the same three conditions for the same reasons: an unreadable
+ * second read sends nothing, an empty second diff is a no-op rather than a
+ * conflict (somebody applied exactly this while the dialog was open), and a diff
+ * that moved voids the confirmation.
+ *
+ * ONLY THE DIFF IS COMPARED, not the body. A key this app has never heard of
+ * that moved in between is carried forward rather than reverted, because the
+ * body sent is built from the body that holds it — and nothing here has to guess
+ * a list of server-derived keys whose movement is not a conflict.
+ *
+ * IT TAKES THE RESPONSE, NOT THE PATH. The second GET stays at each call site,
+ * spelled exactly as the first one is, because cribl/policyCoverage.test.ts
+ * resolves every `capi(...)` path statically and a path threaded through a
+ * parameter is one it cannot read — an endpoint this app calls that no test can
+ * check against config/policies.yml is how a 403 reaches a non-admin.
+ */
+function mergeSourceAfterConfirm(
+  key: ResourceKey,
+  again: ApiResp,
+  what: string,
+  spec: Record<string, unknown>,
+  serverOwned: readonly string[],
+  approved: readonly DiffRow[],
+): { body: Record<string, unknown>; diff: DiffRow[] } | { stop: StepResult } {
+  const live = again.status === 200 ? firstItem(again) : null
+  if (!live) return { stop: { key, action: 'error', detail: reReadFailed(what) } }
+  const body = patchBody(live, spec, serverOwned)
+  const now = bodyDiff(live, body)
+  if (now.length === 0) return { stop: { key, action: 'exists', detail: 'nothing left to change — it was applied while that confirmation was open' } }
+  if (!sameDiff(approved, now)) return { stop: { key, action: 'error', detail: diffMovedNote(what, approved, now) } }
+  return { body, diff: now }
+}
+
 /**
  * The Lake dataset: created when absent, and never edited from here.
  *
@@ -822,9 +974,16 @@ async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
     if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'overwrite', object: RESOURCE_PHRASE.pipeline, diff }))) {
       return refused('pipeline')
     }
-    const r = await capi('PATCH', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`), body)
+    // `body` above filled the dialog and is NOT what is sent — see
+    // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
+    const merge = mergeSourceAfterConfirm(
+      'pipeline', await capi('GET', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`)), `pipeline ${SYSLOG_PIPELINE_ID}`,
+      PIPELINE_SPEC, PIPELINE_SERVER_OWNED, diff,
+    )
+    if ('stop' in merge) return merge.stop
+    const r = await capi('PATCH', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`), merge.body)
     return r.status === 200
-      ? { key: 'pipeline', action: 'updated', detail: diff.map((d) => d.key).join(', ') }
+      ? { key: 'pipeline', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
       : { key: 'pipeline', action: 'error', detail: errText(r) }
   }
   if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'create', object: RESOURCE_PHRASE.pipeline, diff: [] }))) {
@@ -856,9 +1015,16 @@ async function ensureSource(ctx: EnsureCtx): Promise<StepResult> {
     if (!(await agreed(ctx.confirm, { key: 'source', action: 'overwrite', object: RESOURCE_PHRASE.source, diff }))) {
       return refused('source')
     }
-    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`), body)
+    // `body` above filled the dialog and is NOT what is sent — see
+    // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
+    const merge = mergeSourceAfterConfirm(
+      'source', await capi('GET', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`)), `Syslog source ${SYSLOG_SOURCE_ID}`,
+      SOURCE_SPEC, SOURCE_SERVER_OWNED, diff,
+    )
+    if ('stop' in merge) return merge.stop
+    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`), merge.body)
     return r.status === 200
-      ? { key: 'source', action: 'updated', detail: diff.map((d) => d.key).join(', ') }
+      ? { key: 'source', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
       : { key: 'source', action: 'error', detail: errText(r) }
   }
   if (!(await agreed(ctx.confirm, { key: 'source', action: 'create', object: RESOURCE_PHRASE.source, diff: [] }))) {
@@ -943,14 +1109,49 @@ async function ensureRoute(ctx: EnsureCtx): Promise<StepResult> {
     return refused('route')
   }
 
-  const routes = obj.routes.slice()
-  // The merged entry, which is what the diff above described.
-  if (merged) routes[at] = merged
+  // ── THE TABLE THAT IS SENT IS THE TABLE READ AFTER THE ANSWER ─────────────
+  //
+  // `obj` above filled the dialog and is NOT what is sent. This PATCH replaces
+  // the group's ENTIRE routing table, so a table read before a user-paced
+  // confirmation reverts every route another admin added, reordered or deleted
+  // while that dialog was open — the worst instance of the hazard written out
+  // at `mergeSourceAfterConfirm`, because one request carries every route in
+  // the group rather than one object. Read that header before wiring `confirm`.
+  const what = `route ${SYSLOG_ROUTE_ID} in ${ctx.group}`
+  const fresh = await readRoutes(ctx.group)
+  if (!fresh) return { key: 'route', action: 'error', detail: reReadFailed(`the routing table of ${ctx.group}`) }
+  const freshAt = fresh.routes.findIndex(isOurRoute)
+  if ((freshAt !== -1) !== (at !== -1)) {
+    // The approved ACTION moved, not just its diff: our route appeared or
+    // disappeared while the dialog was open, so "add it above the catch-all"
+    // and "correct it where it sits" are no longer the same press.
+    return {
+      key: 'route',
+      action: 'error',
+      detail:
+        `not applied — ${what} was ${at !== -1 ? 'removed from' : 'added to'} the routing table while that confirmation was open, so the ` +
+        'change you approved is not the change that would now be applied. Look at the routing table in Cribl and re-apply.',
+    }
+  }
+  const freshMerged = freshAt !== -1 ? (mergeSpec(fresh.routes[freshAt], ROUTE_SPEC) as Record<string, unknown>) : null
+  const freshDiff = freshMerged ? bodyDiff(fresh.routes[freshAt], freshMerged) : []
+  if (freshAt !== -1) {
+    if (freshDiff.length === 0) {
+      return { key: 'route', action: 'exists', detail: 'nothing left to change — it was applied while that confirmation was open' }
+    }
+    if (!sameDiff(diff, freshDiff)) return { key: 'route', action: 'error', detail: diffMovedNote(what, diff, freshDiff) }
+  }
+
+  const routes = fresh.routes.slice()
+  // The merged entry, which is what the diff above described — merged onto the
+  // second read, so a field somebody else set on our route in the meantime is
+  // carried forward rather than reverted.
+  if (freshMerged) routes[freshAt] = freshMerged
   else routes.splice(insertionIndex(routes), 0, ROUTE_SPEC)
 
-  const r = await capi('PATCH', g(ctx.group, `/routes/${obj.id}`), { ...obj, routes })
+  const r = await capi('PATCH', g(ctx.group, `/routes/${fresh.id}`), { ...fresh, routes })
   if (r.status !== 200) return { key: 'route', action: 'error', detail: errText(r) }
-  return { key: 'route', action: at !== -1 ? 'updated' : 'created' }
+  return { key: 'route', action: freshAt !== -1 ? 'updated' : 'created' }
 }
 
 // --- Deploy ---------------------------------------------------------------
@@ -1051,7 +1252,14 @@ export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promi
   // them belongs to this group — otherwise every commit anywhere on the leader
   // would light this up.
   const changed = await filesChangedSince(deployed)
-  if (changed === null) return head // endpoint unavailable: fall back to the coarse signal
+  // Endpoint unavailable: answer null, like every other "could not tell" above.
+  // This used to return `head` — a repo-wide HEAD presented to the user as a
+  // commit "committed to ${group} but never deployed", on the strength of no
+  // group evidence at all. The offer it feeds is a deploy that restarts that
+  // group's Worker Processes, and the whole point of the offer is that the user
+  // can trust it; a claim derived from a signal that cannot distinguish this
+  // group from any other is not one.
+  if (changed === null) return null
   if (!changed.some((p) => pathInGroup(p, group))) return null
   return head
 }
@@ -1107,6 +1315,15 @@ async function deployStrandedCommit(
   // When the commit memory is empty — a fresh install, or a store that has
   // never been written — nothing is ours, so nothing is deployed. That is the
   // right default: silence is not consent.
+  //
+  // AND THE OWNERSHIP CHECK IS ON THE HASH, NOT ON THE RANGE. `PATCH …/deploy`
+  // takes a VERSION: it moves the group to this commit, so every commit anybody
+  // made between the group's deployed `configVersion` and this hash goes live
+  // with it. Knowing we made the LAST commit is not knowing what is in the
+  // range, and no file list can narrow a deploy. There is nothing to fix in
+  // code — the app cannot un-commit somebody else's work — so the dialog says
+  // it instead: DEPLOY_CONSEQUENCES in cribl/landing.ts, third sentence, which
+  // is on every deploy confirmation in the app.
   const mem = await loadCommitMemory()
   const ours = new Set(Object.values(mem[group] ?? {}).map((c) => c.hash))
   if (!ours.has(stranded)) {

@@ -995,11 +995,29 @@ export const LANDING_TERMS: Readonly<Record<'landingLag' | 'accelerationTier' | 
     'Federated Search v2 is the newer Cribl Search reader for Lake datasets. It is what can read a dataset holding both Parquet and JSON objects, which is why the Parquet migration needs it. Switching a dataset between readers changes nothing about the data itself.',
 })
 
-/** The consequence sentences a deploy confirmation must carry, in the order a
- *  person needs them. Written here so the dialog cannot paraphrase them. */
+/**
+ * The consequence sentences a deploy confirmation must carry, in the order a
+ * person needs them. Written here so the dialog cannot paraphrase them.
+ *
+ * EVERY DEPLOY SITE IN THE APP, which is why the file sentence is now about
+ * whole files rather than about `outputs.yml` by name. It used to read "The
+ * commit includes every pending change to this group's outputs.yml", which was
+ * true and was the only correct statement of the class anywhere in this app —
+ * but Guided Setup commits `inputs.yml`, `routes.yml` and a pipeline directory
+ * as well, and it was telling people the opposite. A dialog names its own paths
+ * above; this says what a commit does to whatever is named.
+ *
+ * AND A DEPLOY IS A VERSION, NOT A DELTA. `PATCH …/deploy` takes `{version}`
+ * and moves the group to that commit. Every commit anybody made between the
+ * group's current `configVersion` and that hash goes live with it — no file
+ * list prevents that, and this app cannot un-commit somebody else's work. Both
+ * deploy dialogs denied it by omission and Guided Setup's stranded-commit line
+ * denied it outright ("It also deploys commit #X", singular).
+ */
 export const DEPLOY_CONSEQUENCES: readonly string[] = Object.freeze([
   'Deploying restarts this worker group’s Worker Processes.',
-  'The commit includes every pending change to this group’s outputs.yml — including anybody else’s unfinished work in the same file.',
+  'A commit takes whole files, never single objects, so anybody else’s uncommitted work in the files named above is committed and deployed with this change.',
+  'A deploy moves the group to a commit rather than applying one change: every commit anybody made on this Leader between the commit this group is running and the one this press creates goes live with it.',
   'A source with onBackpressure "block" can lose seconds of data across the restart. The syslog source in this stack is one.',
 ])
 
