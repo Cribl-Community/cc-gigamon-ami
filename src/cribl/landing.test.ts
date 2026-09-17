@@ -29,11 +29,13 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  applyDatasetEdit,
   applyDestinationEdit,
   datasetSpec,
   DATASET_DESCRIPTION,
   DEFAULT_PARTITION_LIMITS,
   DEFAULT_PROFILE,
+  DATASET_READONLY_KEYS,
   destinationSpec,
   DESTINATION_READONLY_KEYS,
   diffDestination,
@@ -283,6 +285,64 @@ describe('applyDestinationEdit', () => {
   it('does not mutate the body it was given', () => {
     const before = JSON.stringify(live)
     applyDestinationEdit(live, { set: { maxFileSizeMB: 32 }, remove: ['compress'] })
+    expect(JSON.stringify(live)).toBe(before)
+  })
+})
+
+describe('applyDatasetEdit', () => {
+  const live = {
+    id: 'gigamon_ami',
+    description: 'Gigamon AMI flow records',
+    retentionPeriodInDays: 30,
+    format: 'json',
+    bucketName: 'lake-example-workspace',
+    viewName: 'gigamon_ami-read-view',
+    httpDAUsed: false,
+    acceleratedFields: ['app_name'],
+    searchConfig: { searchVersion: 'v1' },
+    cacheConnection: { cacheRef: 'lh-1', createdAt: 1789000000000, retentionInDays: 7 },
+    metrics: { currentSizeBytes: 111184359155, metricsDate: '2026-09-13' },
+    deletionStartedAt: 1789000000001,
+  }
+
+  it('keeps every field the edit does not mention', () => {
+    // Nobody has measured whether a Lake PATCH merges or replaces, so under one
+    // of the two readings a key missing here is a key deleted from a live
+    // customer dataset — retention, partitions, the storage binding, the lot.
+    const body = applyDatasetEdit(live, { retentionPeriodInDays: 90 })
+    expect(body.retentionPeriodInDays).toBe(90)
+    expect(body.acceleratedFields).toEqual(['app_name'])
+    expect(body.searchConfig).toEqual({ searchVersion: 'v1' })
+    expect(body.bucketName).toBe('lake-example-workspace')
+    expect(body.description).toBe('Gigamon AMI flow records')
+    expect(body.id).toBe('gigamon_ami')
+  })
+
+  it('drops the two keys that are not stored configuration, and only those', () => {
+    const body = applyDatasetEdit(live, { description: 'x' })
+    expect(body).not.toHaveProperty('metrics')
+    expect(body).not.toHaveProperty('deletionStartedAt')
+    expect(DATASET_READONLY_KEYS).toEqual(['metrics', 'deletionStartedAt'])
+  })
+
+  it('keeps the fields that merely LOOK derived, on purpose', () => {
+    // The asymmetry this list is written around: under the partial reading a
+    // stripped key survives, under the replacement reading it is deleted. So
+    // "strip it to be safe" is not the safe option here, and `viewName`,
+    // `httpDAUsed` and `cacheConnection` ride along untouched rather than being
+    // guessed at — the same trade DESTINATION_READONLY_KEYS makes with
+    // `notifications`.
+    const body = applyDatasetEdit(live, { description: 'x' })
+    expect(body.viewName).toBe('gigamon_ami-read-view')
+    expect(body).toHaveProperty('httpDAUsed')
+    // Verbatim, not rebuilt: A-SP23 measured a sibling endpoint replacing a
+    // sub-object wholesale, so a hand-built one would drop fields.
+    expect(body.cacheConnection).toEqual(live.cacheConnection)
+  })
+
+  it('does not mutate the body it was given', () => {
+    const before = JSON.stringify(live)
+    applyDatasetEdit(live, { retentionPeriodInDays: 7 })
     expect(JSON.stringify(live)).toBe(before)
   })
 })

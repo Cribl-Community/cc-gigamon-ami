@@ -22,7 +22,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { destinationSpec, DEFAULT_PROFILE, FLUSH_PRESETS, type LandingProfile } from './landing'
-import { LAKE_ADDRESSING } from './lake'
+import { LAKE_ADDRESSING, type LakeDataset } from './lake'
 import {
   CAPABILITIES,
   commitAndDeployDestination,
@@ -67,6 +67,31 @@ const LIVE_DESTINATION = {
   status: { health: 'green' },
 }
 
+/**
+ * The live Lake dataset, shaped like the one measured on the workspace.
+ *
+ * EVERY KEY HERE EXCEPT THE TWO BEING EDITED IS A KEY A ONE-FIELD PATCH WOULD
+ * DELETE if this endpoint turns out to replace rather than merge — which is the
+ * whole subject of the read-modify-write tests below. `bucketName` and
+ * `viewName` are verbatim from the measured body; `acceleratedFields`,
+ * `searchConfig` and `cacheConnection` are the fields Phase 4 needs and the ones
+ * most expensive to lose; `metrics` and `deletionStartedAt` are the two the body
+ * must NOT carry back.
+ */
+const LIVE_DATASET = {
+  id: 'gigamon_ami',
+  description: 'old',
+  format: 'json',
+  retentionPeriodInDays: 30,
+  bucketName: 'lake-example-workspace',
+  viewName: 'gigamon_ami-read-view',
+  httpDAUsed: false,
+  acceleratedFields: ['app_name'],
+  searchConfig: { searchVersion: 'v1', datatypes: ['cribl_lake'] },
+  cacheConnection: { cacheRef: 'lh-1', createdAt: 1789000000000, retentionInDays: 7 },
+  metrics: { currentSizeBytes: 111184359155, metricsDate: '2026-09-13' },
+}
+
 interface WorldOpts {
   /** Status (and optional body) per exact path, so one endpoint can be broken. */
   answers?: Record<string, [number, unknown]>
@@ -74,12 +99,19 @@ interface WorldOpts {
   pending?: string[]
   /** Commit hash `/version/commit` answers with; null = "nothing to commit". */
   commit?: string | null
+  /** What the dataset GET answers, before anything has been written. */
+  dataset?: Record<string, unknown>
+  /** What the dataset GET answers ONCE A PATCH HAS LANDED — the only way to
+   *  stage the two cases a writer's post-write re-read exists for: somebody
+   *  else's value being there, and the re-read itself being refused. */
+  afterWrite?: [number, unknown]
 }
 
 /** A workspace with the stack already there, so a test only says what differs. */
 function stubWorld(opts: WorldOpts = {}): Call[] {
-  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890' } = opts
+  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite } = opts
   const calls: Call[] = []
+  let datasetPatched = false
 
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -102,8 +134,10 @@ function stubWorld(opts: WorldOpts = {}): Call[] {
       case 'GET /products/lake/lakes/default/datasets':
         return reply(200, { items: [{ id: 'gigamon_ami' }] })
       case `GET ${DATASET_PATH}`:
-        return reply(200, { items: [{ id: 'gigamon_ami', format: 'json', retentionPeriodInDays: 30, description: 'old', metrics: { currentSizeBytes: 111184359155, metricsDate: '2026-09-13' } }] })
+        if (datasetPatched && afterWrite) return reply(afterWrite[0], afterWrite[1])
+        return reply(200, { items: [dataset] })
       case `PATCH ${DATASET_PATH}`:
+        datasetPatched = true
         return reply(200, { items: [] })
       case 'GET /m/default_search/search/datasets/gigamon_ami':
         return reply(200, { items: [{ id: 'gigamon_ami', searchVersion: 'v1', lakeStorageFormat: 'json' }] })
@@ -340,20 +374,142 @@ describe('setRetention', () => {
     expect(irreversible).toBe(false)
   })
 
-  it('sends only the field it changes', async () => {
+  it('sends the whole live dataset back with only retention changed', async () => {
+    // THE TEST THIS CHANGE EXISTS FOR. Nobody has measured whether a Lake PATCH
+    // merges or replaces (CAPABILITIES.datasetPatchIsPartial is null), so a body
+    // carrying one field is a body that deletes everything else on the dataset
+    // under one of the two readings — and A-SP23 measured exactly that on
+    // `PATCH /search/saved/{id}` in this same product.
     const calls = stubWorld()
     await setRetention(90, { current: 30, confirm: yes })
     const patch = writes(calls).find((c) => c.path === DATASET_PATH)
     expect(patch?.method).toBe('PATCH')
-    expect(patch?.body).toEqual({ retentionPeriodInDays: 90 })
+    const body = patch?.body as Record<string, unknown>
+    expect(body.retentionPeriodInDays).toBe(90)
+    // Every field the read returned, back untouched.
+    expect(body.acceleratedFields).toEqual(['app_name'])
+    expect(body.searchConfig).toEqual({ searchVersion: 'v1', datatypes: ['cribl_lake'] })
+    expect(body.cacheConnection).toEqual({ cacheRef: 'lh-1', createdAt: 1789000000000, retentionInDays: 7 })
+    expect(body.bucketName).toBe('lake-example-workspace')
+    expect(body.viewName).toBe('gigamon_ami-read-view')
+    expect(body.description).toBe('old')
+    expect(body.format).toBe('json')
+    expect(body.id).toBe('gigamon_ami')
+  })
+
+  it('drops the keys Cribl computes rather than stores, and nothing else', async () => {
+    const calls = stubWorld({ dataset: { ...LIVE_DATASET, deletionStartedAt: 1789000000001 } })
+    await setRetention(90, { current: 30, confirm: yes })
+    const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
+    // A daily snapshot the `?includeMetrics=true` read asks for, not a stored
+    // field: echoing yesterday's size back is a claim about the dataset that is
+    // false by the time it lands.
+    expect(body).not.toHaveProperty('metrics')
+    // The deletion marker. Neither re-asserting it nor clearing it is a decision
+    // a retention edit gets to make.
+    expect(body).not.toHaveProperty('deletionStartedAt')
+    // `httpDAUsed` looks derived too and is DELIBERATELY still here: under the
+    // replacement reading a stripped key is a deleted key, so this list holds
+    // only what is provably not configuration (see DATASET_READONLY_KEYS).
+    expect(body).toHaveProperty('httpDAUsed')
+  })
+
+  it('reads the dataset itself rather than trusting what the panel handed it', async () => {
+    // The config plane is shared. A body merged onto a snapshot from the panel's
+    // last refresh writes back the stale value of every field another admin has
+    // changed since — the same data loss, arriving by a longer route.
+    const stale: LakeDataset = {
+      id: 'gigamon_ami',
+      description: 'stale',
+      format: 'json',
+      retentionPeriodInDays: 365,
+      acceleratedFields: [],
+      searchConfig: null,
+      deletionStartedAt: null,
+      metrics: { currentSizeBytes: 1, metricsDate: '2020-01-01' },
+      raw: Object.freeze({ id: 'gigamon_ami', retentionPeriodInDays: 365 }),
+    }
+    const calls = stubWorld()
+    let size: number | null = null
+    await setRetention(90, { current: 30, dataset: stale, confirm: (ctx) => { size = ctx.sizeBytes; return true } })
+
+    const order = calls.filter((c) => c.path.startsWith(DATASET_PATH)).map((c) => c.method)
+    expect(order.slice(0, 2)).toEqual(['GET', 'PATCH'])
+    const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
+    expect(body.acceleratedFields).toEqual(['app_name'])
+    // …and the confirmation is told the size from that same read, so a decrease
+    // names the loss in the numbers the write is about to act on.
+    expect(size).toBe(111184359155)
+  })
+
+  it('WRITES NOTHING AT ALL when the dataset could not be read', async () => {
+    // The easy bug to introduce while fixing this one, and the destructive case
+    // itself: a failed read followed by a one-field PATCH. There is no fallback
+    // and there must not be one.
+    for (const [status, expected] of [
+      [403, 'GET on /products/lake/lakes/default/datasets/gigamon_ami'],
+      [404, 'no gigamon_ami dataset'],
+      [500, 'could not be read'],
+    ] as const) {
+      const calls = stubWorld({ answers: { [DATASET_PATH]: [status, { message: 'leader unavailable' }] } })
+      const r = await setRetention(90, { current: 30, confirm: yes })
+      expect(writes(calls), String(status)).toEqual([])
+      expect(r.ok, String(status)).toBe(false)
+      expect(r.steps[0].detail, String(status)).toContain('Nothing was sent')
+      expect(r.steps[0].detail, String(status)).toContain(expected)
+    }
+  })
+
+  it('classifies against the live retention, not the number the panel is holding', async () => {
+    // The panel thinks it is 90; Cribl says 30. Asking for 30 is a no-op about
+    // the dataset, and reporting it as a change would send a PATCH for nothing.
+    const calls = stubWorld()
+    const r = await setRetention(30, { current: 90, confirm: yes })
+    expect(r).toMatchObject({ noop: true, ok: true })
+    expect(writes(calls)).toEqual([])
   })
 
   it('reports Cribl’s refusal as an error step rather than as success', async () => {
-    stubWorld({ answers: { [`PATCH ${DATASET_PATH}`]: [403, { message: 'Not authorized or licensed to perform this action.' }] } })
+    const calls = stubWorld({ answers: { [`PATCH ${DATASET_PATH}`]: [403, { message: 'Not authorized or licensed to perform this action.' }] } })
     const r = await setRetention(90, { current: 30, confirm: yes })
     expect(r.ok).toBe(false)
     expect(r.steps[0]).toMatchObject({ status: 'error' })
     expect(r.steps[0].detail).toContain('Not authorized')
+    // A write that never landed has nothing to verify, so the check does not run.
+    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith(DATASET_PATH))).toHaveLength(1)
+  })
+
+  it('re-reads afterwards and reports a value somebody else wrote', async () => {
+    // There is no ETag and no version on this object, so a write cannot be made
+    // conditional. Re-reading is the only check available, and saying nothing
+    // would report this run's optimism as the state of the workspace.
+    const calls = stubWorld({ afterWrite: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 7 }] }] })
+    const r = await setRetention(90, { current: 30, confirm: yes })
+    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith(DATASET_PATH))).toHaveLength(2)
+    expect(r.steps[0]).toMatchObject({ status: 'applied', raced: true })
+    expect(r.steps[0].detail).toContain('7')
+    expect(r.steps[0].detail).toContain('no ETag')
+    // Cribl accepted the request. A race is not a failed write, and calling it
+    // one would send somebody looking for a refusal that never happened.
+    expect(r.ok).toBe(true)
+  })
+
+  it('says it could not confirm, rather than reporting an unverified success', async () => {
+    const r = await (async () => {
+      stubWorld({ afterWrite: [500, { message: 'leader unavailable' }] })
+      return setRetention(90, { current: 30, confirm: yes })
+    })()
+    expect(r.steps[0]).toMatchObject({ status: 'applied' })
+    expect(r.steps[0].raced).toBeUndefined()
+    expect(r.steps[0].detail).toContain('could not re-read')
+  })
+
+  it('agrees with itself when the re-read shows what was sent', async () => {
+    const r = await (async () => {
+      stubWorld({ afterWrite: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 90 }] }] })
+      return setRetention(90, { current: 30, confirm: yes })
+    })()
+    expect(r.steps[0]).toEqual({ key: 'retention', status: 'applied', detail: '30 → 90 days' })
   })
 })
 
@@ -378,10 +534,45 @@ describe('setDescription', () => {
     expect(writes(calls)).toEqual([])
   })
 
-  it('sends only the description', async () => {
+  it('sends the whole live dataset back with only the description changed', async () => {
+    // The field is cosmetic; the body it rides in is not. Under the replacement
+    // reading of this endpoint a one-field `{description}` PATCH is the cheapest
+    // way to delete a dataset's retention and partitions — which would make the
+    // safest-looking button on the panel the most dangerous one.
     const calls = stubWorld()
     await setDescription('new words', { current: 'old', confirm: () => true })
-    expect(writes(calls).find((c) => c.path === DATASET_PATH)?.body).toEqual({ description: 'new words' })
+    const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
+    expect(body.description).toBe('new words')
+    expect(body.retentionPeriodInDays).toBe(30)
+    expect(body.acceleratedFields).toEqual(['app_name'])
+    expect(body.searchConfig).toEqual({ searchVersion: 'v1', datatypes: ['cribl_lake'] })
+    expect(body).not.toHaveProperty('metrics')
+  })
+
+  it('writes nothing when the dataset could not be read', async () => {
+    const calls = stubWorld({ answers: { [DATASET_PATH]: [403, {}] } })
+    const r = await setDescription('new words', { current: 'old', confirm: () => true })
+    expect(writes(calls)).toEqual([])
+    expect(r.ok).toBe(false)
+    expect(r.steps[0].detail).toContain('Nothing was sent')
+  })
+
+  it('skips against the LIVE description, not the one the panel is holding', async () => {
+    const calls = stubWorld()
+    // Cribl says 'old' and the panel thinks it says something else. "Already says
+    // this" has to be a fact about the dataset rather than about this session.
+    expect(await setDescription('old', { current: 'something else', confirm: () => true })).toMatchObject({ noop: true })
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('reports a description somebody else wrote between the change and the re-read', async () => {
+    const r = await (async () => {
+      stubWorld({ afterWrite: [200, { items: [{ ...LIVE_DATASET, description: 'theirs' }] }] })
+      return setDescription('new words', { current: 'old', confirm: () => true })
+    })()
+    expect(r.steps[0]).toMatchObject({ status: 'applied', raced: true })
+    expect(r.steps[0].detail).toContain('theirs')
+    expect(r.ok).toBe(true)
   })
 })
 
@@ -627,11 +818,22 @@ describe('addressing', () => {
 
 // ── What these tests could not assert, and why ──────────────────────────────
 //
-//   * THAT A LAKE PATCH IS PARTIAL. `setRetention` and `setDescription` each send
-//     one field, on claim C6, which is inferred from the spec's example bodies.
-//     If the endpoint is a full replacement, both of them DELETE every other
-//     field on the dataset and every test above still passes. The cheapest probe
-//     is a live 30 → 30 no-op followed by a full re-read (Preview 3.1).
+//   * WHETHER A LAKE PATCH IS PARTIAL. Still unmeasured, and the tests above are
+//     written so that it no longer matters: both writers GET the dataset, overlay
+//     the one edited field and send the whole body, which is correct under either
+//     semantics. What these tests CAN prove is that the body carries every field
+//     the read returned, and that a read this app was refused sends nothing at
+//     all. What they cannot prove is what a real server does with that body —
+//     whether it accepts `viewName` and `cacheConnection` echoed back, whether
+//     stripping `metrics` was necessary or merely harmless, and whether a no-op
+//     PATCH with an identical body dirties the Leader's config. Preview 3.1 (a
+//     30 → 30 no-op, then a full re-read and diff) still has to run; it is now a
+//     confirmation that this app kept the dataset whole rather than the thing
+//     deciding whether the phase was safe to ship.
+//   * THAT THE RACE REPORTING CATCHES A RACE. The re-read is stubbed, so what is
+//     proved is that a disagreement is surfaced rather than swallowed. A real
+//     lost update needs two admins and no ETag to make it conditional on, which
+//     is exactly why this app reports one instead of preventing it.
 //   * THAT THE PATCHED DESTINATION STILL DELIVERS. "The body went out with the
 //     right keys" is not "data still lands". A Green health chip and a dead feed
 //     look identical from here; the check is a landing-lag measurement after the

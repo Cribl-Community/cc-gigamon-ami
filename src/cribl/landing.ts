@@ -514,6 +514,10 @@ export function pathFilterRows(kinds: readonly LakeObjectKind[]): PathFilterRow[
  * endpoint is only *likely* partial (claim C6, inferred from the spec's example
  * bodies and nothing else), so every key this app sends is a key it is betting
  * it understands. Sending nothing is the version of that bet with no downside.
+ *
+ * NOT THE BODY ANY LAKE PATCH SENDS. The two writers in cribl/lakeLanding.ts
+ * build theirs with `applyDatasetEdit` from a live read, precisely so that the
+ * bet above does not have to be won. This spec is the CREATION body.
  */
 export function datasetSpec(profile: LandingProfile): Record<string, unknown> {
   const spec: Record<string, unknown> = {
@@ -715,6 +719,89 @@ export function applyDestinationEdit(current: Record<string, unknown>, edit: Des
   // it identically or the body sent stops matching the diff approved.
   for (const key of edit.remove) delete body[key]
   return body
+}
+
+// ── The Lake dataset's read-modify-write ────────────────────────────────────
+
+/**
+ * Keys the live Lake dataset GET carries that must NOT be PATCHed back.
+ *
+ * READ THE ASYMMETRY BEFORE ADDING TO THIS LIST, because it runs the opposite
+ * way from every other "strip it to be safe" list. Nobody has measured whether
+ * PATCH on this endpoint is partial or a full replacement — that is
+ * `CAPABILITIES.datasetPatchIsPartial` in cribl/lakeLanding.ts, and it is still
+ * `null` — and the two readings make a strip mean opposite things:
+ *
+ *   * partial     — a stripped key is simply not mentioned, and survives;
+ *   * replacement — a stripped key is DELETED from the customer's dataset.
+ *
+ * So stripping is not the cautious option here; sending back what Cribl returned
+ * is. This list holds only keys that are provably not stored configuration, and
+ * anything merely suspicious rides along untouched — the same trade
+ * `DESTINATION_READONLY_KEYS` makes with `notifications`, made here for a
+ * stronger reason. Both keys come from the 4.19.0 spec's `CriblLakeDataset` plus
+ * the live body measured on the one workspace anybody has read.
+ *
+ *   `metrics` — not configuration, and not part of the stored object at all: it
+ *     is in the response only because cribl/lake.ts asks for
+ *     `?includeMetrics=true`, and it is a daily server-computed snapshot
+ *     (`currentSizeBytes`, `metricsDate`). Echoing yesterday's size back is
+ *     either ignored or persisted as a claim about the dataset that is false.
+ *   `deletionStartedAt` — the deletion marker, a server-stamped timestamp.
+ *     Absent on a live dataset, so dropping it normally changes nothing; on one
+ *     whose deletion has begun, neither echoing it back nor clearing it is a
+ *     decision a retention edit gets to make, and nothing in this app deletes a
+ *     dataset.
+ *
+ * KEPT ON PURPOSE — and the ones I am NOT sure about, named rather than quietly
+ * included:
+ *
+ *   `id` — kept. The update schema calls it optional and the path parameter
+ *     authoritative, but it is the ONE required property of the object, so a
+ *     full replacement missing it is the body most likely to be rejected.
+ *     Sending the value the path already names is safe under either reading.
+ *   `bucketName` / `storageLocationId` — kept. This is which bucket backs the
+ *     dataset. Under the replacement reading, dropping it unbinds the dataset
+ *     from its own data, which is the worst outcome available here.
+ *   `viewName` — kept, UNSURE. It looks derived (`gigamon_ami-read-view` on the
+ *     measured workspace; the spec calls it the Dataset's ClickHouse view on the
+ *     Lakehouse) but it is a writable property in the same schema. Being wrong
+ *     by keeping it costs nothing observable; being wrong by stripping it costs
+ *     a view binding.
+ *   `httpDAUsed` — kept, UNSURE. Reads as a derived fact ("the Dataset IS used
+ *     by Direct Access HTTP") and is writable in the same schema. Same trade.
+ *   `cacheConnection` — kept VERBATIM, UNSURE. It carries a server-stamped
+ *     `createdAt` and a transient `migrationQueryId`, and A-SP23 measured a
+ *     sibling endpoint in this product replacing a sub-object WHOLESALE rather
+ *     than merging it — so a hand-rebuilt one would drop fields. Sending back
+ *     exactly what was read is the only version of this with no opinion in it.
+ *
+ * Preview check 3.1 is what turns any of the above from reasoning into a
+ * measurement. Until it runs, this list is an argument, and it is written out so
+ * that it can be argued with.
+ */
+export const DATASET_READONLY_KEYS: readonly string[] = Object.freeze(['metrics', 'deletionStartedAt'])
+
+/**
+ * The full body to PATCH on the Lake dataset: what Cribl just returned, with the
+ * edited fields overlaid and the derived ones dropped.
+ *
+ * The counterpart of `applyDestinationEdit`, and deliberately simpler: a dataset
+ * edit in this phase sets fields and never removes one, so there is no `remove`
+ * list and no ordering question between setting and deleting a key. If a control
+ * ever needs to take a key away, it takes a `DestinationEdit`-shaped argument and
+ * this function grows the same "remove wins, after the assign" rule — it does not
+ * get an overlay of `undefined`, which JSON.stringify drops.
+ *
+ * The caller must pass a body it read ITSELF, moments ago. That is not a style
+ * note: a merge onto a stale read writes back the stale values of every field
+ * somebody else has changed since, which is the same data loss this function
+ * exists to prevent, arriving by a longer route.
+ */
+export function applyDatasetEdit(current: Record<string, unknown>, edit: Record<string, unknown>): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...current }
+  for (const key of DATASET_READONLY_KEYS) delete body[key]
+  return Object.assign(body, edit)
 }
 
 // ── The sentences ───────────────────────────────────────────────────────────

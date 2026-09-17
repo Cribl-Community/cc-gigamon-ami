@@ -25,7 +25,48 @@
 //      `capi('PATCH'…)` out of the source and refuses to pass until each site is
 //      named in cribl/authz.ts with the control that owns it. A generic
 //      `write(method, path, body)` helper would be invisible to it, which is the
-//      same as ungated.
+//      same as ungated. It is also why the two Lake PATCHes below are written out
+//      twice instead of sharing one helper: the READ around them is shared, the
+//      write is not.
+//
+//   4. EVERY WRITE IS A READ-MODIFY-WRITE, AND A FAILED READ CANCELS IT.
+//      Not "falls back to sending just the edited field" — that is precisely the
+//      destructive case. See below.
+//
+// ── WHY THE LAKE WRITERS GET THE DATASET FIRST ──────────────────────────────
+// They used to send one field each — `{retentionPeriodInDays}`,
+// `{description}` — on claim C6: that this endpoint updates only the fields it
+// is given. C6 was inferred from the spec's example bodies and nothing else.
+//
+// The optimistic reading of a Cribl PATCH has already been disproved once in
+// this workspace. A-SP23 measured `PATCH /search/saved/{id}` in this same
+// product: a body carrying only the schema-required fields answered 200 and
+// DELETED `schedule`, `earliest`, `latest` and `description`, unscheduling the
+// search forever with nothing on screen to say so. If the Lake endpoint behaves
+// the same way, a one-field PATCH here deletes retention, partitions,
+// `searchConfig`, the storage binding and the description from a live dataset
+// every dashboard in this app reads — and every test in this repo still passes,
+// because a stub cannot know what a real server drops.
+//
+// So both writers now GET the dataset, overlay the one edited field onto what
+// came back, and PATCH the whole body. That is correct under EITHER semantics:
+// a partial endpoint sees the values it already holds, a replacing one gets
+// everything back. It does not need C6 answered, which is the point —
+// `CAPABILITIES.datasetPatchIsPartial` stays `null` because it is still
+// unmeasured, and nothing here depends on it any more.
+//
+// WHAT IT COSTS: two extra GETs per applied edit — one to merge onto, one to
+// re-read afterwards and report a value somebody else wrote. Against that: the
+// alternative way to learn these semantics is to discover them on a customer's
+// live dataset configuration, which cannot be undone, because Lake datasets are
+// under no version control and there is no commit to revert.
+//
+// THIS DOES NOT RETIRE PREVIEW CHECK 3.1 (the 30 → 30 no-op, then a full re-read
+// and diff). It changes what that check is FOR. It was the thing that decided
+// whether this phase was safe to ship; it is now the measurement that confirms
+// this app kept the dataset whole, and it still has to run. Whether a no-op
+// PATCH with an identical body dirties the Leader's config is a separate open
+// question and is not answered here either.
 //
 // ── WHAT THIS PHASE DELIBERATELY DOES NOT WRITE ─────────────────────────────
 // There is no `setSearchVersion` and no `setPartitions`. Both were specified,
@@ -49,6 +90,7 @@
 import { capi, errText, groupPath, type CapiInit } from './capi'
 import { appendLog, getDoc, putDoc } from './kv'
 import {
+  applyDatasetEdit,
   applyDestinationEdit,
   diffDestination,
   retentionChange,
@@ -324,6 +366,18 @@ export interface WriteStep {
   key: string
   status: StepStatus
   detail?: string
+  /**
+   * Cribl accepted the write and the re-read afterwards disagreed with it.
+   *
+   * NOT an error, and `ok` stays true: the request succeeded. It means somebody
+   * else wrote the same object in between, and their value is the one in force.
+   * These endpoints carry no ETag and no version, so a write cannot be made
+   * conditional on what was read — re-reading afterwards is the only check
+   * available, and this flag is the whole of what it produces. Phase 2's
+   * `accel/provision.ts` reports the same thing the same way; the alternative,
+   * retrying, would turn a race nobody can detect into one nobody can reproduce.
+   */
+  raced?: boolean
 }
 
 export interface WriteOutcome {
@@ -357,6 +411,69 @@ async function confirmed<T>(confirm: Confirm<T>, context: T): Promise<boolean> {
   }
 }
 
+// ── What both Lake writers do around their PATCH ────────────────────────────
+
+/**
+ * Read the dataset for a writer, or say why nothing may be sent.
+ *
+ * THE MOST IMPORTANT FUNCTION IN THIS FILE, and it is important for what it does
+ * NOT do. There is no fallback. A caller that treated a refused read as
+ * permission to send just the edited field would be performing exactly the write
+ * this whole read-modify-write exists to prevent, on the workspace least likely
+ * to tolerate it — one where this account is already being refused something.
+ * The failure step says "Nothing was sent" first, because that is the fact the
+ * person needs before any of the rest of the sentence.
+ *
+ * Always called fresh, never from a value the panel read on mount: the config
+ * plane is shared, and a dataset read three minutes ago is another admin's
+ * snapshot as far as this app can tell.
+ */
+async function readDatasetForWrite(key: string, init: CapiInit): Promise<{ dataset: LakeDataset } | { failure: WriteStep }> {
+  const live = await getDataset(init)
+  if (live.outcome === 'ok' && live.value) return { dataset: live.value }
+
+  const why =
+    live.outcome === 'not-readable'
+      ? `this account needs GET on ${live.object}. Changing one field means sending the whole dataset back, so a write this app cannot read first is a write that would delete everything it could not see.`
+      : live.outcome === 'absent'
+        ? `there is no ${DATASET_ID} dataset to change. Create it from the onboarding panel above.`
+        : `the ${DATASET_ID} dataset could not be read${live.detail ? ` — ${live.detail}` : '.'}`
+  return { failure: { key, status: 'error', detail: `Nothing was sent: ${why}` } }
+}
+
+/**
+ * Re-read the dataset after a write and report what it actually holds.
+ *
+ * `unconfirmed` and `raced` are different answers and neither is a failure of
+ * the write: the first means this app could not look, the second means it looked
+ * and somebody else's value was there. Reporting both as "applied" with no
+ * detail would be this run's optimism rather than the workspace.
+ */
+async function reReadDataset<T>(
+  read: (dataset: LakeDataset) => T,
+  expected: T,
+  init: CapiInit,
+): Promise<{ unconfirmed: true } | { unconfirmed: false; raced: boolean; now: T }> {
+  const after = await getDataset(init)
+  if (after.outcome !== 'ok' || !after.value) return { unconfirmed: true }
+  const now = read(after.value)
+  return { unconfirmed: false, raced: now !== expected, now }
+}
+
+/** The sentence a raced step carries. Names both values, because "somebody else
+ *  wrote this" is only actionable once you can see what they wrote. */
+function racedNote(sent: string, now: unknown): string {
+  return (
+    `Cribl accepted ${sent} and then reported ${JSON.stringify(now)}. Somebody else wrote this dataset between the change and the re-read — ` +
+    `this endpoint carries no ETag and no version, so a write cannot be made conditional on what was read, and their value is the one in force. ` +
+    `Nothing here retries: read the row and decide.`
+  )
+}
+
+/** What a step says when the write landed and the check could not run. Not a
+ *  failure, and not success reported as if it had been verified. */
+const UNCONFIRMED_NOTE = 'Cribl accepted it. This app could not re-read the dataset afterwards, so nothing here has confirmed what it now holds.'
+
 // ── Writer 1: retention ─────────────────────────────────────────────────────
 
 export interface RetentionConfirmContext {
@@ -378,33 +495,59 @@ export interface RetentionConfirmContext {
  * cribl/landing.ts carries the sentence; this function refuses to send anything
  * it called a problem.
  *
- * PARTIAL PATCH, ASSUMED. Claim C6 — that this endpoint updates only the fields
- * it is given — is inferred from the spec's example bodies and nothing else, and
- * every Lake editor in this phase rests on it. That is why the cheapest possible
- * probe is a 30 → 30 no-op and why it is the first Preview check (3.1): if a
- * re-read afterwards shows `acceleratedFields` or `searchConfig` gone, C6 is
- * false and this function has to GET-merge-PATCH the way the Stream ones do.
+ * READ-MODIFY-WRITE, per rule 4 and the header's A-SP23 note. The dataset is
+ * read HERE, the edited field is overlaid onto what came back, and the whole
+ * body goes out — which is right whether or not this endpoint is partial. If the
+ * read is refused, nothing is sent at all; a one-field PATCH after a failed read
+ * is the destructive case, not the degraded one.
  */
 export async function setRetention(
   days: number,
   opts: { current: number; dataset?: LakeDataset | null; confirm: Confirm<RetentionConfirmContext>; init?: CapiInit },
 ): Promise<WriteOutcome> {
-  const change = retentionChange(opts.current, days)
-  if (change.problems.length > 0) return outcome([{ key: 'retention', status: 'error', detail: change.problems.join(' ') }])
+  const init = opts.init ?? {}
+  // Refuse a value Cribl Lake would refuse BEFORE spending the read. This check
+  // depends only on `days`, so the panel's `current` is good enough for it.
+  const proposed = retentionChange(opts.current, days)
+  if (proposed.problems.length > 0) return outcome([{ key: 'retention', status: 'error', detail: proposed.problems.join(' ') }])
+
+  const live = await readDatasetForWrite('retention', init)
+  if ('failure' in live) return outcome([live.failure])
+  const dataset = live.dataset
+
+  // Classified against the LIVE value, not the panel's. `opts.current` was read
+  // when the panel last refreshed; if another admin has changed retention since,
+  // a no-op decided on that number reports "already this value" about a dataset
+  // that says something else, and a decrease would be measured from the wrong
+  // starting point in the one confirmation that has to be exact.
+  const change = retentionChange(dataset.retentionPeriodInDays ?? opts.current, days)
   if (change.direction === 'none') return outcome([{ key: 'retention', status: 'skipped', detail: 'Retention is already this value.' }])
 
   const proceed = await confirmed(opts.confirm, {
     change,
     datasetId: DATASET_ID,
-    sizeBytes: opts.dataset?.metrics?.currentSizeBytes ?? null,
-    metricsDate: opts.dataset?.metrics?.metricsDate ?? null,
+    // From the read this function just made, falling back to whatever the panel
+    // was given. Both carry the day the snapshot was computed, so neither can be
+    // rendered as a claim about right now.
+    sizeBytes: dataset.metrics?.currentSizeBytes ?? opts.dataset?.metrics?.currentSizeBytes ?? null,
+    metricsDate: dataset.metrics?.metricsDate ?? opts.dataset?.metrics?.metricsDate ?? null,
   })
   if (!proceed) return outcome([{ key: 'retention', status: 'cancelled' }])
 
-  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, { retentionPeriodInDays: days }, opts.init ?? {})
+  const body = applyDatasetEdit({ ...dataset.raw }, { retentionPeriodInDays: days })
+  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, body, init)
   const step: WriteStep = isOk(r.status)
     ? { key: 'retention', status: 'applied', detail: `${change.from} → ${change.to} days` }
     : { key: 'retention', status: 'error', detail: errText(r) }
+
+  if (step.status === 'applied') {
+    const check = await reReadDataset((d) => d.retentionPeriodInDays, days, init)
+    if (check.unconfirmed) step.detail = `${step.detail} — ${UNCONFIRMED_NOTE}`
+    else if (check.raced) {
+      step.raced = true
+      step.detail = racedNote(`${change.from} → ${change.to} days`, check.now)
+    }
+  }
   void audit('lake_landing.retention', { dataset: DATASET_ID, before: change.from, after: change.to, step })
   return outcome([step])
 }
@@ -425,25 +568,51 @@ export interface DescriptionConfirmContext {
  * makes it the one an admin can safely use to find out whether they are allowed
  * to write to Lake at all — before they try it on retention. It is confirmed like
  * everything else, because it still overwrites a field on a shared object.
+ *
+ * AND IT IS A READ-MODIFY-WRITE FOR THE SAME REASON THE RETENTION ONE IS. The
+ * field being changed is cosmetic; the body it rides in is not. Under the
+ * replacement reading of this endpoint, a one-field `{description}` PATCH is the
+ * cheapest possible way to delete a dataset's retention and partitions — which
+ * would make the "safe one to try first" the most dangerous button on the panel.
  */
 export async function setDescription(
   description: string,
   opts: { current: string | null; confirm: Confirm<DescriptionConfirmContext>; init?: CapiInit },
 ): Promise<WriteOutcome> {
+  const init = opts.init ?? {}
   const after = description.trim()
   if (!after) return outcome([{ key: 'description', status: 'error', detail: 'A description with no text in it.' }])
-  if (after === (opts.current ?? '')) {
+
+  const live = await readDatasetForWrite('description', init)
+  if ('failure' in live) return outcome([live.failure])
+  const dataset = live.dataset
+
+  // Against the live description, for the reason `setRetention` gives: the
+  // panel's copy may be somebody else's stale snapshot, and "already says this"
+  // has to be a fact about the dataset rather than about this session.
+  const before = dataset.description ?? opts.current
+  if (after === (dataset.description ?? '')) {
     return outcome([{ key: 'description', status: 'skipped', detail: 'The description already says this.' }])
   }
 
-  const proceed = await confirmed(opts.confirm, { datasetId: DATASET_ID, before: opts.current, after })
+  const proceed = await confirmed(opts.confirm, { datasetId: DATASET_ID, before, after })
   if (!proceed) return outcome([{ key: 'description', status: 'cancelled' }])
 
-  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, { description: after }, opts.init ?? {})
+  const body = applyDatasetEdit({ ...dataset.raw }, { description: after })
+  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, body, init)
   const step: WriteStep = isOk(r.status)
     ? { key: 'description', status: 'applied' }
     : { key: 'description', status: 'error', detail: errText(r) }
-  void audit('lake_landing.description', { dataset: DATASET_ID, before: opts.current, after, step })
+
+  if (step.status === 'applied') {
+    const check = await reReadDataset((d) => d.description, after, init)
+    if (check.unconfirmed) step.detail = UNCONFIRMED_NOTE
+    else if (check.raced) {
+      step.raced = true
+      step.detail = racedNote('the new description', check.now)
+    }
+  }
+  void audit('lake_landing.description', { dataset: DATASET_ID, before, after, step })
   return outcome([step])
 }
 
@@ -725,7 +894,7 @@ export const CAPABILITIES: Readonly<Record<CapabilityId, Capability>> = Object.f
     question:
       'Does PATCH on a Lake dataset update only the fields it is given, or does it replace the object and drop everything omitted? Claim C6 says partial, inferred from the spec’s example bodies and nothing else.',
     meanwhile:
-      'setRetention and setDescription each send one field. If a 30 → 30 no-op turns out to lose acceleratedFields or searchConfig, both writers have to GET-merge-PATCH like the Stream ones, and every Lake editor in this phase is unsafe until they do.',
+      'NOTHING DEPENDS ON THE ANSWER ANY MORE, which is why this one is worth reading twice. setRetention and setDescription GET the dataset, overlay the one edited field and PATCH the whole body back, so they are correct under either semantics — a partial endpoint is handed values it already holds, a replacing one is handed everything. This flag is now evidence about the API, not a load-bearing assumption. It stays null because nobody has measured it, and Preview 3.1 (a 30 → 30 no-op, then a full re-read and diff) still has to run: it no longer decides whether the phase is safe, it confirms this app kept the dataset whole.',
   },
   lakeSearchConfigPropagates: {
     answer: null,

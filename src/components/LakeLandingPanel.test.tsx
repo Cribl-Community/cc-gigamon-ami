@@ -762,7 +762,12 @@ describe('no write without a confirmation', () => {
     await press(buttonNamed('Yes, raise it'))
     const written = criblWrites(calls)
     expect(written.map((c) => `${c.method} ${c.path}`)).toEqual([`PATCH ${DATASET}`])
-    expect(written[0].body).toEqual({ retentionPeriodInDays: 45 })
+    // The whole dataset, with retention overlaid — not `{retentionPeriodInDays}`
+    // alone. Which fields ride along is cribl/lakeLanding.test.ts's subject; what
+    // this panel test still owns is that ONE write goes out, and only after the
+    // dialog was answered.
+    expect((written[0].body as Record<string, unknown>).retentionPeriodInDays).toBe(45)
+    expect(written[0].body).toHaveProperty('id', 'gigamon_ami')
     expect(dataset.retentionPeriodInDays).toBe(45)
   })
 
