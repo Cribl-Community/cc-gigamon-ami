@@ -1,11 +1,31 @@
 import { useState, type ReactNode } from 'react'
-import { useSearch } from '../cribl/useSearch'
+import { useAccelEnabled, useSearch, type UseSearchState } from '../cribl/useSearch'
 import { VOLUME_QUERY, METRICS_QUERY, LAKE_TOTAL_QUERY } from '../queries/dataFlow'
 import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
+import { capSecondsFor } from '../cribl/search'
+import type { AccelId } from '../cribl/accel/manifest'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
-import { PanelInfo } from '../components/PanelInfo'
+import { asOf, PanelInfo, type ComputedFrom } from '../components/PanelInfo'
 import { DopDiagram, type DopNode, type HopId, type HopState, type InfoKey, type SlotId } from '../components/DopDiagram'
 import { toNum, fmtCount, fmtBytes, windowSeconds } from '../lib/format'
+
+/**
+ * The scheduled search that serves the Cribl Lake card, and the window it reads.
+ *
+ * THE MOST EXPENSIVE QUERY IN THIS APP: 9,297.7 billable CPU-s a run, 15–24 runs
+ * a day, for a figure that changes once a day at most. Phase 2 points the card at
+ * a daily scheduled run of the SAME query string instead — 0.2 CPU-s to read —
+ * and falls back to running it live whenever that run is missing, unfinished or
+ * too old to date. The fallback is normal on a fresh install: nothing has been
+ * scheduled yet, and the card behaves exactly as it did before.
+ */
+const LAKE_ACCEL: AccelId = 'gno_lake_30d_c1d'
+/** Pinned, and NOT the page's range: this card reports what the dataset holds
+ *  over its retention period. The scheduled run reads the same window. */
+const LAKE_EARLIEST = '-30d'
+/** The schedule in words, for the card's ⓘ. DataFlow.test.tsx holds this against
+ *  the manifest's own cron, so changing one forces the other. */
+export const LAKE_CADENCE = 'once a day, at 00:10 UTC'
 
 /** Volume figures for the current window, shared by every stage. */
 interface Volume {
@@ -28,6 +48,12 @@ interface Volume {
   lakeTotalLoading: boolean
   /** False when the retention query returned no row — not the same as zero. */
   lakeTotalKnown: boolean
+  /** Epoch ms the scheduled run that produced this total finished; null when the
+   *  query ran live for this page. A figure from a stored run is never shown
+   *  undated — that is the whole safety argument for reading one. */
+  lakeTotalAt: number | null
+  /** That run is older than its schedule promises. */
+  lakeTotalStale: boolean
 }
 
 interface StageLink {
@@ -126,6 +152,48 @@ const STAGES: Stage[] = [
 ]
 
 /**
+ * The line under the Lake total — and, once that total can come from yesterday's
+ * scheduled run, the place its date has to appear.
+ *
+ * ONE LINE, not two. The card's label band is 12px per line and the provenance
+ * chip sits 15px under the first one, so a second label line is drawn on top of
+ * the chip. The "30d retention" it gives up when dated is still on this page
+ * twice — in the toolbar note and in the stage's own ⓘ — while "as of" is a fact
+ * about THIS number that appears nowhere else.
+ */
+export function lakeHeldLabel(
+  v: Pick<Volume, 'lakeTotalEvents' | 'lakeTotalAt' | 'lakeTotalStale'>,
+  now?: number,
+): string {
+  const held = `${fmtCount(v.lakeTotalEvents)} events held`
+  const when = asOf(v.lakeTotalAt, now)
+  if (!when) return `${held} · 30d retention`
+  return `${held} · as of ${when}${v.lakeTotalStale ? ' (overdue)' : ''}`
+}
+
+/**
+ * Block 4 of the Cribl Lake card's ⓘ: which run produced the figure on it.
+ *
+ * "Open in Search" is deliberately the answer to "how do I get a live one"
+ * rather than a button on this page. A live run of this query bills 9,297.7
+ * CPU-s; offering that as a click beside the card would hand every viewer the
+ * cost this phase exists to remove, and Cribl Search is where a person who
+ * really wants it can see what it is doing and stop it.
+ */
+export function lakeComputed(lakeTotal: Pick<UseSearchState, 'source' | 'at' | 'stale' | 'note'>): ComputedFrom {
+  return {
+    source: lakeTotal.source,
+    at: lakeTotal.at,
+    stale: lakeTotal.stale,
+    cadence: LAKE_CADENCE,
+    window: 'the last 30 days',
+    fallback: lakeTotal.note,
+    live: 'use “Open in Search” above — a live 30-day total is this app’s most expensive query, so it runs in Cribl Search where you can watch it and stop it',
+    capSeconds: capSecondsFor(LAKE_EARLIEST),
+  }
+}
+
+/**
  * Diagram nodes. The Cribl stages deliberately report the same event count —
  * that IS the point: nothing is dropped between source, pipeline, Lake and
  * Search. Only the framing changes per node. Title and label lines are authored
@@ -163,7 +231,7 @@ function buildNodes(v: Volume): Record<SlotId, DopNode> {
       label: v.lakeTotalLoading
         ? ['totalling dataset… · 30d retention']
         : v.lakeTotalKnown
-          ? [`${fmtCount(v.lakeTotalEvents)} events held · 30d retention`]
+          ? [lakeHeldLabel(v)]
           : ['retention total unavailable'],
       from: 'cribl',
     },
@@ -187,18 +255,21 @@ function buildNodes(v: Volume): Record<SlotId, DopNode> {
  * click away on the diagram itself rather than only on the selected stage below.
  * Destinations and Cribl Lake are two halves of the same stage, so they share one.
  */
-function stageInfo(): Partial<Record<InfoKey, ReactNode>> {
-  const of = (id: string) => {
+function stageInfo(lake: ComputedFrom): Partial<Record<InfoKey, ReactNode>> {
+  const of = (id: string, computed?: ComputedFrom) => {
     const s = STAGES.find((x) => x.id === id)!
-    return <PanelInfo about={s.purpose} aboutHeading="What this stage does" links={s.links} />
+    return <PanelInfo about={s.purpose} aboutHeading="What this stage does" links={s.links} computed={computed} />
   }
   return {
     gigasmart: of('gigasmart'),
     amx: of('amx'),
     sources: of('datagen'),
     stream: of('pipeline'),
+    // Only the Cribl Lake card carries a figure that may come from a scheduled
+    // run; Destinations shares this stage's prose but reports what the selected
+    // window wrote, live, so it gets no "how this was computed" block.
     destinations: of('lake'),
-    lake: of('lake'),
+    lake: of('lake', lake),
     search: of('search'),
     app: of('app'),
   }
@@ -225,13 +296,18 @@ function hopStates(v: Volume): Record<HopId, HopState> {
 export function DataFlow() {
   const [sel, setSel] = useState<string>('datagen')
   const { range, setRange } = useDashboard()
+  // Per-viewer: a reader who has turned acceleration off pays for the live
+  // 30-day scan on every visit, which is the price stated beside that switch.
+  const accelEnabled = useAccelEnabled()
   // Record-derived volume (what the AMI data itself says).
   const agg = useSearch(VOLUME_QUERY)
   // Cribl's own component telemetry for the Cribl stages.
   const met = useSearch(METRICS_QUERY)
   // Lake total is deliberately pinned to the retention period, NOT the page
   // range, and loads independently so its ~17s scan never blocks the diagram.
-  const lakeTotal = useSearch(LAKE_TOTAL_QUERY, { earliest: '-30d' })
+  // It is served by a daily scheduled run of this same string where there is one
+  // (LAKE_ACCEL) and runs live where there is not — see the header.
+  const lakeTotal = useSearch(LAKE_TOTAL_QUERY, { earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, accelEnabled })
   const row = agg.rows[0]
   const mrow = met.rows[0]
   const lrow = lakeTotal.rows[0]
@@ -252,6 +328,8 @@ export function DataFlow() {
     lakeTotalBytes: toNum(lrow?.total_bytes),
     lakeTotalLoading: lakeTotal.loading,
     lakeTotalKnown: !!lrow,
+    lakeTotalAt: lakeTotal.at,
+    lakeTotalStale: lakeTotal.stale,
   }
   const loading = agg.loading || met.loading
   const selected = STAGES.find((s) => s.id === sel)!
@@ -287,7 +365,9 @@ export function DataFlow() {
           <span className="prov prov-cribl">Cribl metrics</span> = live component telemetry from{' '}
           <code>cribl_metrics</code>; <span className="prov prov-records">from records</span> = computed from the
           AMI data itself. Every figure is scoped to the range above, except the <em>Cribl Lake</em> card, which reports
-          the full 30-day retention.
+          the full 30-day retention{lakeTotal.source === 'schedule'
+            ? <> from a scheduled daily run — the card says when that run finished, and its <strong>ⓘ</strong> says why</>
+            : <> by totalling thirty days now</>}.
         </span>
       </div>
 
@@ -301,7 +381,7 @@ export function DataFlow() {
         selected={sel}
         onSelect={setSel}
         loading={loading}
-        info={stageInfo()}
+        info={stageInfo(lakeComputed(lakeTotal))}
       />
 
       <section className="panel">

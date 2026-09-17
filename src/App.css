@@ -1883,3 +1883,81 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .sl-note-ok { border-color: var(--gm-st-success); color: var(--gm-fg); }
 .sl-note-warn { border-color: var(--gm-st-warning); color: var(--gm-fg); }
 .sl-note-err { border-color: var(--gm-st-danger); color: var(--gm-fg); }
+
+/* ---------- Acceleration (Guided Setup section 3) ----------
+   Three things here and nothing else: a preset list, a table that is mostly
+   `.dtable`, and the estimate. Every value is a step from the scales at the top
+   of this file — where none fitted, the step was added there rather than a bare
+   px written here. */
+.ac-presets {
+  display: flex; flex-direction: column; gap: var(--gm-sp-12);
+  margin: 0 0 var(--gm-sp-16); padding: var(--gm-sp-12) var(--gm-sp-14);
+  border: 1px solid var(--gm-border); border-radius: var(--gm-radius);
+}
+.ac-presets-legend {
+  padding: 0 var(--gm-sp-6);
+  font-size: var(--gm-fs-10); text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--gm-fg-subtle);
+}
+.ac-preset { display: flex; align-items: flex-start; gap: var(--gm-sp-10); }
+.ac-preset input { margin-top: var(--gm-sp-2); flex: none; }
+.ac-preset-text { display: flex; flex-direction: column; gap: var(--gm-sp-2); min-width: 0; cursor: pointer; }
+.ac-preset-name { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium'); color: var(--gm-fg); }
+.ac-preset-why { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.45; max-width: 78ch; }
+/* Dimmed, but the REASON stays at full strength: the row exists to be read, and
+   fading the sentence that says why it is unavailable would fade the only thing
+   on it worth anything. The input keeps aria-disabled rather than `disabled`
+   (see AccelPanel.tsx), so it is still reachable and still announced. */
+.ac-preset-off .ac-preset-name { color: var(--gm-fg-subtle); }
+.ac-preset-off input { opacity: 0.5; }
+
+.ac-tablewrap { overflow-x: auto; }
+/* The identity cell stacks the panel it serves over the search id, so the id is
+   present for anyone quoting it without being the thing the eye lands on. */
+.ac-serves { display: flex; flex-direction: column; gap: var(--gm-sp-2); }
+.ac-serves-name { color: var(--gm-fg); font-size: var(--gm-fs-12); }
+.ac-serves-id { font-family: var(--gm-mono); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
+.ac-lastrun { display: flex; flex-direction: column; gap: var(--gm-sp-2); }
+.ac-lastrun-cost { font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); }
+/* Health is a WORD first; the colour only repeats what the word already said.
+   `unknown` stays at subtle ink rather than taking a status colour, because
+   "this app cannot tell" is not a severity. */
+.ac-health-ok { color: var(--gm-st-success); }
+.ac-health-warn { color: var(--gm-st-warning); }
+.ac-health-bad { color: var(--gm-st-danger); }
+.ac-health-unknown { color: var(--gm-fg-subtle); }
+.ac-noaction { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
+/* The per-row sentence. `.dtable` sets `white-space: nowrap` on every cell, so
+   this row has to put it back or a two-clause explanation scrolls the table. */
+.ac-noterow td {
+  white-space: normal; padding-top: 0; padding-left: 0;
+  font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); line-height: 1.45;
+}
+
+.ac-estimate {
+  margin-top: var(--gm-sp-16); padding-top: var(--gm-sp-12);
+  border-top: 1px solid var(--gm-border);
+  display: flex; flex-direction: column; gap: var(--gm-sp-8);
+}
+.ac-estimate-head {
+  margin: 0; font-size: var(--gm-fs-11); font-weight: token('core.fontWeight.medium');
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--gm-fg-subtle);
+}
+.ac-estimate-figure { margin: 0; font-size: var(--gm-fs-18); color: var(--gm-fg); }
+/* The qualifier rides at body size beside the headline rather than under it: an
+   assumed frequency that reads as a footnote is a footnote nobody reads. */
+.ac-estimate-flag { font-size: var(--gm-fs-12); color: var(--gm-st-warning); }
+.ac-estimate-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--gm-sp-6); }
+.ac-estimate-rows li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--gm-sp-4) var(--gm-sp-10); }
+.ac-estimate-what { font-size: var(--gm-fs-12); color: var(--gm-fg); }
+.ac-estimate-saved { font-size: var(--gm-fs-12); color: var(--gm-fg); font-variant-numeric: tabular-nums; }
+.ac-estimate-basis { flex: 1 1 320px; min-width: 0; font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); line-height: 1.45; }
+
+.ac-note { margin: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; max-width: 82ch; }
+.ac-note-bad { color: var(--gm-st-danger); }
+.ac-actions { flex-direction: row; flex-wrap: wrap; align-items: center; margin-top: var(--gm-sp-16); }
+.ac-link { font-size: var(--gm-fs-12); color: token('color.foreground.info.default'); }
+.ac-left { margin-top: var(--gm-sp-12); display: flex; flex-direction: column; gap: var(--gm-sp-6); }
+.ac-left-rows { margin: 0; padding: 0 0 0 var(--gm-sp-16); display: flex; flex-direction: column; gap: var(--gm-sp-4); }
+.ac-left-rows li { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.45; max-width: 82ch; }
+.ac-left-rows code { font-family: var(--gm-mono); color: var(--gm-fg); }

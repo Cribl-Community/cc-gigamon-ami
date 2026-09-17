@@ -121,14 +121,14 @@ const PILL_PAIRS: Pair[] = [
     fg: "token('color.foreground.success.default')",
     bg: PANEL,
     threshold: 4.5,
-    where: '<StatusPill state="present">',
+    where: '<StatusPill> for present / enabled',
   },
   {
     what: 'StatusPill: warning',
     fg: "token('color.foreground.warning.default')",
     bg: PANEL,
     threshold: 4.5,
-    where: '<StatusPill> for skipped / unreadable / derived / high',
+    where: '<StatusPill> for skipped / unreadable / differs / foreign / derived / high',
   },
   {
     what: 'StatusPill: danger',
@@ -156,7 +156,7 @@ const PILL_PAIRS: Pair[] = [
     fg: "token('color.foreground.default')",
     bg: PANEL,
     threshold: 4.5,
-    where: '<StatusPill> for absent / checking / low',
+    where: '<StatusPill> for absent / checking / paused / low',
   },
 ]
 

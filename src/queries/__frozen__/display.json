@@ -19,7 +19,7 @@
     "prose": 15,
     "modules": 129,
     "catalogs": 13,
-    "states": 26,
+    "states": 27,
     "passthrough": 3,
     "unbound": 21
   },
@@ -106,6 +106,7 @@
     },
     "src/tabs/FieldExplorer.tsx": {
       "family": "'All'",
+      "liveOnly": "false",
       "nonce": "0",
       "open": "null",
       "search": "''"
@@ -488,9 +489,10 @@
           "ref": "LAKE_TOTAL_QUERY",
           "shape": "query",
           "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0))",
-          "options": "{ earliest: '-30d' }",
+          "options": "{ earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, accelEnabled }",
           "optionsValue": {
-            "earliest": "-30d"
+            "earliest": "-30d",
+            "accel": "gno_lake_30d_c1d"
           }
         }
       },
@@ -840,7 +842,7 @@
           "query": "dataset=\"gigamon_ami\" | limit 5000",
           "reads": "(unbound)",
           "info": "The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values.",
-          "note": "`${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`"
+          "note": "`${sampleNote(state, { following: liveOnly, label: range.label })} · ${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`"
         }
       },
       "searches": {
@@ -848,7 +850,7 @@
           "ref": "FEED_SAMPLE_QUERY",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | limit 5000",
-          "options": "{ earliest: range.earliest, signal: ctrl.signal, costSlot: summariesCost }"
+          "options": "{ earliest: accelOn ? SAMPLE_ENTRY.earliest : range.earliest, latest: accelOn ? SAMPLE_ENTRY.latest : 'now', signal: ctrl.signal, costSlot: summariesCost }"
         },
         "runSearch(PRESENCE_QUERY)": {
           "ref": "PRESENCE_QUERY",

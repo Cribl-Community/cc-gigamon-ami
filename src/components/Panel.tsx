@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { PanelInfo } from './PanelInfo'
+import { PanelInfo, type ComputedFrom } from './PanelInfo'
 
 interface PanelProps {
   title?: ReactNode
@@ -8,6 +8,24 @@ interface PanelProps {
   info?: string
   /** Cribl Search (KQL) query behind the panel, revealed in the ⓘ popover. */
   query?: string
+  /**
+   * Where the figure actually came from — a stored run of a scheduled search, or
+   * a live query — and when.
+   *
+   * Forwarded rather than left to the call site because of what happens when it
+   * is not. A panel needing block 4 had to build its own <PanelInfo> inside
+   * `title`, which moved `query=` off this element; the extractor reads `info=`
+   * and `note=` from whichever element carries `query=`, so both silently left
+   * src/queries/__frozen__/display.json — the ⓘ still rendered, and the gate
+   * that proves its words stopped watching them. Three forwarded props are
+   * cheaper than a second way of building an ⓘ.
+   */
+  computed?: ComputedFrom
+  /** The ⓘ trigger's accessible name, where the default understates what the
+   *  popover carries. */
+  infoLabel?: string
+  /** The popover's own accessible name, likewise. */
+  infoDialogLabel?: string
   /** Re-run just this panel's query (per-panel refresh, no page reload). */
   onRefresh?: () => void
   /** Whether this panel's query is currently running (spins the refresh icon). */
@@ -30,7 +48,7 @@ function RefreshIcon() {
 /** A titled dashboard panel (card). The ⓘ next to the title opens a popover
  *  explaining the panel and revealing the exact Cribl Search query behind it.
  *  An optional refresh button re-runs only this panel's query. */
-export function Panel({ title, note, info, query, onRefresh, refreshing, children, className = '', tourId }: PanelProps) {
+export function Panel({ title, note, info, query, computed, infoLabel, infoDialogLabel, onRefresh, refreshing, children, className = '', tourId }: PanelProps) {
   const hasHeader = title || note || onRefresh
   return (
     <section className={`panel ${className}`} data-tour={tourId}>
@@ -39,7 +57,15 @@ export function Panel({ title, note, info, query, onRefresh, refreshing, childre
           {title && (
             <h3 className="panel-title">
               {title}
-              {(info || query) && <PanelInfo about={info} query={query} />}
+              {(info || query) && (
+                <PanelInfo
+                  about={info}
+                  query={query}
+                  computed={computed}
+                  label={infoLabel}
+                  dialogLabel={infoDialogLabel}
+                />
+              )}
             </h3>
           )}
           <span className="panel-head-right">

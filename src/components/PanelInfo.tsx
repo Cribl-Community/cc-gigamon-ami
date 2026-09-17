@@ -2,6 +2,35 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 
+/**
+ * The clock a panel dates a stored result by: `14:07`, or `17 Sep 00:10` when
+ * the run is not from today.
+ *
+ * The date is not decoration. The Lake total's schedule fires once a day at
+ * 00:10 UTC, so "as of 00:10" read at ten at night is ambiguous by exactly the
+ * amount that matters — and a schedule that stopped firing a week ago would
+ * otherwise show a plausible time of day forever. Same calendar day: the time
+ * alone, which is what a reader glancing at an hourly sample wants.
+ *
+ * It lives here, beside the ⓘ block that renders it, rather than in
+ * cribl/useSearch.ts, so that a tab test which mocks the hook still gets the
+ * real formatter — and so the two panels and the popover cannot drift into two
+ * spellings of the same timestamp.
+ */
+export function asOf(at: number | null, now: number = Date.now()): string | null {
+  if (at === null || !Number.isFinite(at)) return null
+  const then = new Date(at)
+  // 24-hour, in the viewer's own zone. The zone is theirs because "as of" is a
+  // question about their clock; the 24-hour form is fixed because the cadence
+  // beside it is stated in UTC ("at 00:10 UTC"), and one of the two reading
+  // "12:10 AM" is an invitation to compare them wrongly.
+  const clock = then.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+  const today = new Date(now)
+  const sameDay =
+    then.getFullYear() === today.getFullYear() && then.getMonth() === today.getMonth() && then.getDate() === today.getDate()
+  return sameDay ? clock : `${then.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${clock}`
+}
+
 interface Props {
   /** Plain-English "what this shows". */
   about?: string
@@ -19,6 +48,102 @@ interface Props {
    * a caller that knows the panel's title should pass the better one.
    */
   dialogLabel?: string
+  /** When the figure was produced, and by which run — see `ComputedFrom`. */
+  computed?: ComputedFrom
+}
+
+/**
+ * Block 4: where the number actually came from, for a panel served by a
+ * scheduled search.
+ *
+ * WHY THIS IS A BLOCK OF ITS OWN AND NOT A SENTENCE IN `about`. The other three
+ * blocks are fixed: they say what the panel shows and hand over the query. This
+ * one is the only part of an ⓘ whose truth changes between two page loads —
+ * the same panel, the same query, answered on Tuesday by a stored run and on
+ * Wednesday by a live one because the schedule had not fired yet. Written into
+ * `about` it would be prose claiming something that is sometimes false.
+ *
+ * THE QUERY ABOVE IT DOES NOT CHANGE, and that is the point. A scheduled search
+ * runs the panel's own query string, character for character (accel/manifest.ts
+ * imports it from src/queries rather than restating it), so the ⓘ's provenance
+ * claim survives Phase 2 intact. What acceleration changes is WHEN the string
+ * ran — so that is what this block says, in the reader's own terms: not a run
+ * you triggered, here is when it happened, and here is how to get one you did.
+ *
+ * It is also where the running-time cap gets its plain-language line (Phase
+ * 0.5). The cap is a `set …` prefix the job body carries and the ⓘ deliberately
+ * never shows, so a panel that reports "Search stopped" is otherwise
+ * unexplainable without putting a second, unfrozen query fragment beside the
+ * frozen KQL. In words it explains the stop and shows no syntax at all.
+ */
+export interface ComputedFrom {
+  /** Where the figure beside this ⓘ came from on THIS page load. */
+  source: 'schedule' | 'live'
+  /** Epoch ms the answering run finished. Null on a live read. */
+  at?: number | null
+  /** That stored run is older than its schedule promises. */
+  stale?: boolean
+  /** How often the scheduled run fires, in words: `once a day, at 00:10 UTC`. */
+  cadence: string
+  /** The window the query reads, in words: `the last 30 days`. */
+  window: string
+  /** Why the stored run was not used, when it was not — one of
+   *  accel/read.ts's own sentences, which are written to be read by a customer.
+   *  An API response never reaches this prop. */
+  fallback?: string | null
+  /** How to get a figure computed right now, named after the control that does
+   *  it: `use “Open in Search” above`. */
+  live?: string
+  /** Seconds a live run of this query is allowed before Cribl stops it. */
+  capSeconds?: number
+}
+
+/** The cap as a reader would say it, never as the `set …` syntax that carries it. */
+function capWords(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'its time limit'
+  // An installer may set a cap as low as MIN_CAP_SECONDS (30), so seconds are a
+  // real answer here, not a hypothetical one.
+  if (seconds < 60) return `${Math.round(seconds)} seconds`
+  const minutes = Math.round(seconds / 60)
+  return minutes === 1 ? 'a minute' : `${minutes} minutes`
+}
+
+/**
+ * The sentences of block 4, in order.
+ *
+ * Exported as a pure function because this is the one part of an ⓘ that the
+ * display freeze cannot hold: scripts/extract-queries.mjs freezes prose where it
+ * is WRITTEN (an `info=` or `about=` attribute at the call site), and these
+ * words are written here, in the component. A test pins them instead.
+ */
+export function computedLines(c: ComputedFrom, now: number = Date.now()): string[] {
+  const lines: string[] = []
+  if (c.source === 'schedule') {
+    lines.push(
+      `This figure did not come from a query run when the page loaded. Cribl runs the query above on a schedule — ${c.cadence} — over ${c.window}, and this panel read the result that run stored.`,
+    )
+    const when = asOf(c.at ?? null, now)
+    lines.push(
+      when
+        ? `The run it read finished at ${when}.`
+        : 'This app could not tell when that run finished.',
+    )
+    if (c.stale) {
+      lines.push(
+        'That is older than this schedule promises, so the schedule may have stopped firing — check the acceleration status in Guided Setup.',
+      )
+    }
+  } else {
+    if (c.fallback) lines.push(c.fallback)
+    lines.push(`The query above ran over ${c.window} when the page loaded, so this figure is as new as the page.`)
+  }
+  if (c.live) lines.push(`To see the figure computed against live data, ${c.live}.`)
+  if (c.capSeconds !== undefined) {
+    lines.push(
+      `Cribl stops a live run of this query if it is still going after ${capWords(c.capSeconds)}; a panel whose query was stopped says so instead of showing a number.`,
+    )
+  }
+  return lines
 }
 
 function OpenIcon() {
@@ -123,7 +248,7 @@ function pretty(q: string): string {
  *    query. Nothing dispatches for those, so the popover follows the anchor on
  *    an animation frame instead of waiting to be told.
  */
-export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel }: Props) {
+export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed }: Props) {
   const { range } = useDashboard()
   const [open, setOpen] = useState(false)
   const [place, setPlace] = useState<Placement>({ top: 0, left: 0, side: 'below' })
@@ -301,6 +426,17 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
               >
                 <pre className="pinfo-code">{pretty(query)}</pre>
               </a>
+            </div>
+          )}
+          {computed && (
+            /* Last, under the KQL, because every sentence in it is about "the
+               query above". The popover scrolls when it has to clamp, so nothing
+               here is unreachable — see placePopover. */
+            <div className="pinfo-block">
+              <div className="pinfo-h">How this was computed</div>
+              {computedLines(computed).map((line) => (
+                <p key={line} className="pinfo-about">{line}</p>
+              ))}
             </div>
           )}
         </div>
