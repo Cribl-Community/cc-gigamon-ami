@@ -804,6 +804,67 @@ export function applyDatasetEdit(current: Record<string, unknown>, edit: Record<
   return Object.assign(body, edit)
 }
 
+/** One key that moved between two reads of the same dataset. */
+export interface DriftRow {
+  key: string
+  /** What the earlier read held — the value a person's confirmation described. */
+  before: unknown
+  /** What the later read holds — the value a merge would carry. */
+  after: unknown
+}
+
+/**
+ * What changed about the dataset between two reads, in the only terms that
+ * matter: the body this edit would SEND.
+ *
+ * WHY IT COMPARES MERGED BODIES RATHER THAN RAW ONES, which is the whole design
+ * of this function. `applyDatasetEdit` already decides exactly two things — which
+ * keys are dropped as server-derived, and which are overlaid by the edit — and
+ * running it on both reads makes this comparison inherit both decisions instead
+ * of restating them in a second list that can drift from the first:
+ *
+ *   * IGNORED, because they are not stored configuration and move on their own:
+ *     every key in `DATASET_READONLY_KEYS` — `metrics`, which is a daily
+ *     server-computed size snapshot the `?includeMetrics=true` read asks for and
+ *     which changes without anybody touching the dataset, and
+ *     `deletionStartedAt`, a server-stamped marker. Comparing those would refuse
+ *     every write on a busy dataset, and a refusal that fires when nothing
+ *     happened teaches people to click past the one that matters.
+ *   * IGNORED, because it is the edit: whatever key the caller is setting. If
+ *     another admin set retention to the same value this write is setting, that
+ *     is a no-op and not a conflict — the overlay puts the same value on both
+ *     sides, so it cannot appear here.
+ *   * COMPARED — everything else the GET returned, whether or not this app has
+ *     heard of it: `retentionPeriodInDays`, `description`, `acceleratedFields`,
+ *     `searchConfig`, `storageLocationId`/`bucketName`, `viewName`,
+ *     `cacheConnection`, `httpDAUsed`, `format`, `id`, and any key a future Cribl
+ *     release adds. That is deliberate and is the same asymmetry
+ *     `DATASET_READONLY_KEYS` is built on: under the replacement reading of this
+ *     endpoint every one of those is a key a merge onto a stale read would
+ *     overwrite, so a key nobody here recognises is exactly the key worth
+ *     refusing over.
+ *
+ * A key APPEARING or DISAPPEARING between the reads is drift too, reported with
+ * `undefined` on the side that lacked it — `acceleratedFields` being cleared is
+ * the case, and an absent-vs-empty distinction is one this app must not smooth
+ * over.
+ *
+ * Keys are sorted so two runs of the same conflict read the same way.
+ */
+export function datasetMergeDrift(
+  first: Record<string, unknown>,
+  second: Record<string, unknown>,
+  edit: Record<string, unknown>,
+): DriftRow[] {
+  const a = applyDatasetEdit({ ...first }, edit)
+  const b = applyDatasetEdit({ ...second }, edit)
+  const rows: DriftRow[] = []
+  for (const key of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+    if (!sameValue(a[key], b[key])) rows.push({ key, before: a[key], after: b[key] })
+  }
+  return rows
+}
+
 // ── The sentences ───────────────────────────────────────────────────────────
 
 /** What the panel renders when a diff comes back empty. Said as a fact about

@@ -55,11 +55,46 @@
 // `CAPABILITIES.datasetPatchIsPartial` stays `null` because it is still
 // unmeasured, and nothing here depends on it any more.
 //
-// WHAT IT COSTS: two extra GETs per applied edit — one to merge onto, one to
-// re-read afterwards and report a value somebody else wrote. Against that: the
-// alternative way to learn these semantics is to discover them on a customer's
-// live dataset configuration, which cannot be undone, because Lake datasets are
-// under no version control and there is no commit to revert.
+// ── AND WHY THEY GET IT TWICE: THE DIALOG IS THE WINDOW ─────────────────────
+// The first version of that read-modify-write had a defect worse than the one
+// it closed, and it is worth reading slowly, because it is invisible in every
+// test that does not stage two admins.
+//
+// The sequence was GET → confirm → merge onto the GET → PATCH, and the
+// confirmation in the middle is USER-PACED AND UNBOUNDED: it parks on a Modal
+// until somebody answers, and a retention DECREASE additionally requires typing
+// the dataset id. Minutes are ordinary. So the body merged onto was the dataset
+// as it looked BEFORE the dialog opened. Admin A presses Apply; admin B — or A's
+// own second tab, or anything else on this shared config plane — changes the
+// description, the partitions, `searchConfig` or the storage binding; A clicks
+// Yes; the PATCH writes A's pre-dialog values for all of those back over B's.
+// B's change is gone, silently, under a success toast. That is loss under EITHER
+// PATCH semantics, and under the partial reading it is strictly WORSE than the
+// one-field PATCH it replaced, which could not touch those keys at all.
+// `readDatasetForWrite` below states the rule the code then broke: a dataset
+// read three minutes ago is another admin's snapshot as far as this app can tell.
+//
+// So the sequence is now GET → confirm → GET AGAIN → COMPARE → merge onto the
+// SECOND read → PATCH. The second read is the merge source and nothing earlier
+// may be merged from; a failed second read aborts exactly as a failed first one
+// does. If anything other than the field being edited moved between the two
+// reads, NOTHING IS SENT and the step names what moved — not a silent re-merge,
+// because the person approved a dialog describing a dataset that no longer
+// exists, and re-merging would apply their approval to a different change than
+// the one they read.
+//
+// WHAT IT COSTS: THREE GETs PER APPLIED EDIT — one to classify the change and
+// fill the dialog, one to merge onto after the answer, one to re-read afterwards
+// and report a value somebody else wrote. Against that: the alternative is
+// silently reverting another admin's work, on a dataset under no version control
+// with no commit to revert. A config-plane edit behind a typed confirmation is
+// not a hot path, and the two extra GETs are not on any render or timer — they
+// happen once, on a press somebody already sat through a dialog for.
+//
+// THE THIRD LAKE WRITER STILL HAS THIS WINDOW. `updateDestination` reads the
+// destination, confirms, and merges onto the PRE-DIALOG body in exactly the same
+// shape — see the note at that function. It is not closed here and the reason is
+// written there rather than left for somebody to find.
 //
 // THIS DOES NOT RETIRE PREVIEW CHECK 3.1 (the 30 → 30 no-op, then a full re-read
 // and diff). It changes what that check is FOR. It was the thing that decided
@@ -92,11 +127,13 @@ import { appendLog, getDoc, putDoc } from './kv'
 import {
   applyDatasetEdit,
   applyDestinationEdit,
+  datasetMergeDrift,
   diffDestination,
   retentionChange,
   DEFAULT_PARTITION_LIMITS,
   type DestinationEdit,
   type DiffRow,
+  type DriftRow,
   type LandingProfile,
   type PartitionLimits,
   type RetentionChange,
@@ -442,6 +479,62 @@ async function readDatasetForWrite(key: string, init: CapiInit): Promise<{ datas
 }
 
 /**
+ * The body to PATCH, read AFTER the confirmation answered true — or the reason
+ * nothing may be sent.
+ *
+ * THIS IS THE FUNCTION THAT CLOSES THE STALE-MERGE WINDOW, and the ordering is
+ * the whole of it: the caller's first read classified the change and filled the
+ * dialog, and is now minutes old; this read is the merge source, and nothing
+ * earlier is merged from anywhere in this module.
+ *
+ * TWO WAYS IT REFUSES, AND NEITHER IS A FALLBACK:
+ *
+ *   * THE READ FAILED. Same answer as a failed first read, same sentence, for
+ *     the same reason — sending the edited field on its own after a read this
+ *     app was refused is the destructive case, not the degraded one.
+ *   * THE DATASET MOVED. Anything other than the edited field differing between
+ *     the two reads means the person approved a dialog describing a dataset that
+ *     no longer exists. It is NOT re-merged and sent: their approval was for the
+ *     change they read, and applying it to a different one is the consent this
+ *     dialog exists to obtain being spent on something else. They are told what
+ *     moved and can look and try again — which is a decision a person can make
+ *     and this function cannot.
+ *
+ * `datasetMergeDrift` in cribl/landing.ts decides which keys that comparison
+ * covers and which are ignored as server-derived; the reasoning is there,
+ * beside the `DATASET_READONLY_KEYS` list it is built out of.
+ */
+async function mergeSourceAfterConfirm(
+  key: string,
+  before: LakeDataset,
+  edit: Record<string, unknown>,
+  init: CapiInit,
+): Promise<{ body: Record<string, unknown> } | { failure: WriteStep }> {
+  const live = await readDatasetForWrite(key, init)
+  if ('failure' in live) return live
+
+  const drift = datasetMergeDrift({ ...before.raw }, { ...live.dataset.raw }, edit)
+  if (drift.length > 0) return { failure: { key, status: 'error', detail: driftNote(drift) } }
+
+  return { body: applyDatasetEdit({ ...live.dataset.raw }, edit) }
+}
+
+/** The sentence a refused write carries. Names the keys AND both values: "it
+ *  changed" is not actionable until you can see what it changed to, and the
+ *  person is being asked to look and decide rather than to retry blindly. */
+function driftNote(drift: readonly DriftRow[]): string {
+  const moved = drift
+    .map((d) => `${d.key} (${JSON.stringify(d.before) ?? 'absent'} → ${JSON.stringify(d.after) ?? 'absent'})`)
+    .join(', ')
+  return (
+    `Nothing was sent: the ${DATASET_ID} dataset changed while that confirmation was open — ${moved}. ` +
+    `Changing one field means sending the whole dataset back, so applying what you approved would write the values you were shown ` +
+    `back over somebody else's. This endpoint carries no ETag and no version, so there is no way to make the write conditional and no ` +
+    `way to merge the two safely. Nothing here retries: look at the dataset and try again.`
+  )
+}
+
+/**
  * Re-read the dataset after a write and report what it actually holds.
  *
  * `unconfirmed` and `raced` are different answers and neither is a failure of
@@ -534,8 +627,14 @@ export async function setRetention(
   })
   if (!proceed) return outcome([{ key: 'retention', status: 'cancelled' }])
 
-  const body = applyDatasetEdit({ ...dataset.raw }, { retentionPeriodInDays: days })
-  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, body, init)
+  // THE MERGE SOURCE IS READ HERE, AFTER THE ANSWER — never `dataset`, which is
+  // the body that filled the dialog and is as old as the dialog was open. A
+  // typed-confirmation decrease can sit here for minutes.
+  const edit = { retentionPeriodInDays: days }
+  const merge = await mergeSourceAfterConfirm('retention', dataset, edit, init)
+  if ('failure' in merge) return outcome([merge.failure])
+
+  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, merge.body, init)
   const step: WriteStep = isOk(r.status)
     ? { key: 'retention', status: 'applied', detail: `${change.from} → ${change.to} days` }
     : { key: 'retention', status: 'error', detail: errText(r) }
@@ -598,8 +697,13 @@ export async function setDescription(
   const proceed = await confirmed(opts.confirm, { datasetId: DATASET_ID, before, after })
   if (!proceed) return outcome([{ key: 'description', status: 'cancelled' }])
 
-  const body = applyDatasetEdit({ ...dataset.raw }, { description: after })
-  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, body, init)
+  // Same window, same close. The field is cosmetic; the body it rides in carries
+  // retention, partitions and the storage binding, so merging onto a pre-dialog
+  // read here reverts somebody else's retention change with a typo fix.
+  const merge = await mergeSourceAfterConfirm('description', dataset, { description: after }, init)
+  if ('failure' in merge) return outcome([merge.failure])
+
+  const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, merge.body, init)
   const step: WriteStep = isOk(r.status)
     ? { key: 'description', status: 'applied' }
     : { key: 'description', status: 'error', detail: errText(r) }
@@ -647,6 +751,27 @@ export interface DestinationConfirmContext {
  * destination PATCH is a full replacement, so the body sent is the live object
  * with the edit applied; computing the diff from a body the panel read a minute
  * ago would show somebody a diff against a destination that has since changed.
+ *
+ * ── THIS WRITER STILL HAS THE STALE-MERGE WINDOW THE TWO LAKE WRITERS CLOSED ─
+ * The read above is the merge source AND it is on the far side of a user-paced
+ * dialog, which is exactly the defect described in this file's header: while the
+ * confirmation is open, somebody else's edit to `environment`, `notifications`,
+ * a TLS setting or anything else on this object is reverted by the PATCH, under
+ * a full-replacement semantics that is DOCUMENTED here rather than merely
+ * suspected. Two things, and only two, make it less bad than the Lake one was:
+ * this write commits and deploys, so the previous body is in the group's Git
+ * history and can be reverted, and the diff the dialog showed is recomputable.
+ *
+ * IT IS NOT CLOSED IN THE SAME COMMIT, and the reason is a measurement nobody
+ * has: the Lake refusal works because `DATASET_READONLY_KEYS` says which keys
+ * move on their own, so a comparison can ignore them and still mean something.
+ * Nothing in this repo knows the equivalent for a Stream output — `status` is
+ * the one key known to be server-computed and there may be others — and a
+ * refusal built on a guessed list would fire on a field nobody touched, which is
+ * the failure that teaches people to distrust the refusal that matters. The fix
+ * is the same three-step shape (`mergeSourceAfterConfirm` above, with
+ * `applyDestinationEdit`/`DESTINATION_READONLY_KEYS` in place of the dataset
+ * pair) the moment a Preview capture says what a live output GET returns twice.
  */
 export async function updateDestination(
   group: string,

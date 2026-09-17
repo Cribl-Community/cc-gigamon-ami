@@ -105,13 +105,24 @@ interface WorldOpts {
    *  stage the two cases a writer's post-write re-read exists for: somebody
    *  else's value being there, and the re-read itself being refused. */
   afterWrite?: [number, unknown]
+  /**
+   * What the dataset GET answers from the SECOND read onward, before any PATCH.
+   *
+   * This is the other admin. A Lake writer reads once to fill the dialog and
+   * again after the answer, and everything between those two reads is time
+   * somebody sat in front of a Modal — so this is the only way to stage the
+   * window that used to lose their write, and the only way to prove the
+   * comparison that now closes it.
+   */
+  betweenReads?: [number, unknown]
 }
 
 /** A workspace with the stack already there, so a test only says what differs. */
 function stubWorld(opts: WorldOpts = {}): Call[] {
-  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite } = opts
+  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite, betweenReads } = opts
   const calls: Call[] = []
   let datasetPatched = false
+  let datasetReads = 0
 
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -134,7 +145,9 @@ function stubWorld(opts: WorldOpts = {}): Call[] {
       case 'GET /products/lake/lakes/default/datasets':
         return reply(200, { items: [{ id: 'gigamon_ami' }] })
       case `GET ${DATASET_PATH}`:
+        datasetReads += 1
         if (datasetPatched && afterWrite) return reply(afterWrite[0], afterWrite[1])
+        if (datasetReads >= 2 && betweenReads) return reply(betweenReads[0], betweenReads[1])
         return reply(200, { items: [dataset] })
       case `PATCH ${DATASET_PATH}`:
         datasetPatched = true
@@ -433,8 +446,10 @@ describe('setRetention', () => {
     let size: number | null = null
     await setRetention(90, { current: 30, dataset: stale, confirm: (ctx) => { size = ctx.sizeBytes; return true } })
 
+    // TWO GETs BEFORE THE PATCH, not one: the first fills the dialog, the second
+    // is taken after the answer and is the only thing merged onto.
     const order = calls.filter((c) => c.path.startsWith(DATASET_PATH)).map((c) => c.method)
-    expect(order.slice(0, 2)).toEqual(['GET', 'PATCH'])
+    expect(order.slice(0, 3)).toEqual(['GET', 'GET', 'PATCH'])
     const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
     expect(body.acceleratedFields).toEqual(['app_name'])
     // …and the confirmation is told the size from that same read, so a decrease
@@ -475,8 +490,9 @@ describe('setRetention', () => {
     expect(r.ok).toBe(false)
     expect(r.steps[0]).toMatchObject({ status: 'error' })
     expect(r.steps[0].detail).toContain('Not authorized')
-    // A write that never landed has nothing to verify, so the check does not run.
-    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith(DATASET_PATH))).toHaveLength(1)
+    // Two reads — the dialog's and the merge source's — and no third: a write
+    // that never landed has nothing to verify, so the check does not run.
+    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith(DATASET_PATH))).toHaveLength(2)
   })
 
   it('re-reads afterwards and reports a value somebody else wrote', async () => {
@@ -485,7 +501,8 @@ describe('setRetention', () => {
     // would report this run's optimism as the state of the workspace.
     const calls = stubWorld({ afterWrite: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 7 }] }] })
     const r = await setRetention(90, { current: 30, confirm: yes })
-    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith(DATASET_PATH))).toHaveLength(2)
+    // Three: the dialog's, the merge source's, and this check.
+    expect(calls.filter((c) => c.method === 'GET' && c.path.startsWith(DATASET_PATH))).toHaveLength(3)
     expect(r.steps[0]).toMatchObject({ status: 'applied', raced: true })
     expect(r.steps[0].detail).toContain('7')
     expect(r.steps[0].detail).toContain('no ETag')
@@ -572,6 +589,143 @@ describe('setDescription', () => {
     })()
     expect(r.steps[0]).toMatchObject({ status: 'applied', raced: true })
     expect(r.steps[0].detail).toContain('theirs')
+    expect(r.ok).toBe(true)
+  })
+})
+
+// ── The window between the dialog and the write ─────────────────────────────
+//
+// THE DEFECT THESE TESTS EXIST FOR was introduced by the commit that made these
+// two writers read-modify-write, and it was worse than the one that change
+// closed. The sequence was GET → confirm → merge onto the GET → PATCH, and the
+// confirmation is a Modal a person answers at their own pace — minutes, for a
+// retention decrease, which additionally requires typing the dataset id. So the
+// body merged onto was the dataset as it looked before the dialog opened, and
+// anybody else's edit to `description`, `acceleratedFields`, `searchConfig` or
+// the storage binding in that interval was written back over, silently, with a
+// success toast.
+//
+// Every test below stages the other admin with `betweenReads`, which is the only
+// way to see any of this: with one admin, a stale merge and a fresh one produce
+// identical bodies, which is exactly why the defect survived a green suite.
+//
+// AND ONE THING TO READ BEFORE LOOKING FOR A TEST THAT IS NOT HERE. When a write
+// DOES proceed, "merged from the second read" and "merged from the first" are
+// byte-identical by construction: the comparison covers precisely the keys the
+// PATCH body carries — both go through `applyDatasetEdit`, so both drop the same
+// server-derived keys and overlay the same edit — so any difference that could
+// distinguish them is a difference that blocks the write. The observable
+// guarantee is therefore the pair below: a second GET happens after the answer
+// and before the PATCH, and ANY difference between the two reads stops it.
+
+describe('the stale-merge window', () => {
+  const yes = () => true
+
+  it('reads again after the answer, and that read is what the PATCH is built from', async () => {
+    const calls = stubWorld()
+    await setRetention(90, { current: 30, confirm: yes })
+    // GET (fills the dialog) · GET (the merge source) · PATCH · GET (the check).
+    expect(calls.filter((c) => c.path.startsWith(DATASET_PATH)).map((c) => c.method)).toEqual(['GET', 'GET', 'PATCH', 'GET'])
+    const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
+    expect(body.retentionPeriodInDays).toBe(90)
+    expect(body.acceleratedFields).toEqual(['app_name'])
+  })
+
+  it('spends no second read on a refusal', async () => {
+    // The re-read is the merge source, and a cancelled write has nothing to
+    // merge. One GET, and it is the one that filled the dialog.
+    const calls = stubWorld()
+    await setRetention(90, { current: 30, confirm: () => false })
+    expect(calls.filter((c) => c.path.startsWith(DATASET_PATH))).toHaveLength(1)
+  })
+
+  it('BLOCKS THE WRITE when anything else moved while the dialog was open, and says what moved', async () => {
+    // Admin B changed the description while A was reading the retention dialog.
+    // A's approval was for a dataset that no longer exists, so it is not applied
+    // to this one — silently re-merging and proceeding would spend their consent
+    // on a different change than the one they read.
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, description: 'B was here' }] }] })
+    const r = await setRetention(90, { current: 30, confirm: yes })
+    expect(writes(calls)).toEqual([])
+    expect(r.ok).toBe(false)
+    expect(r.steps[0]).toMatchObject({ key: 'retention', status: 'error' })
+    expect(r.steps[0].detail).toContain('Nothing was sent')
+    // Named, with BOTH values: "it changed" is not actionable until you can see
+    // what it changed to.
+    expect(r.steps[0].detail).toContain('description')
+    expect(r.steps[0].detail).toContain('"old"')
+    expect(r.steps[0].detail).toContain('"B was here"')
+  })
+
+  it('blocks on a key it has never heard of, and on one that disappeared', async () => {
+    // Under the replacement reading of this endpoint, a key this app does not
+    // recognise is exactly the key a stale merge would delete.
+    const { acceleratedFields: _dropped, ...withoutPartitions } = LIVE_DATASET
+    for (const moved of [{ ...LIVE_DATASET, somethingCriblAddedLater: 42 }, withoutPartitions]) {
+      const calls = stubWorld({ betweenReads: [200, { items: [moved] }] })
+      const r = await setRetention(90, { current: 30, confirm: yes })
+      expect(writes(calls)).toEqual([])
+      expect(r.ok).toBe(false)
+    }
+  })
+
+  it('does not call the edited field a conflict — the same value from somebody else is a no-op', async () => {
+    // B set retention to 90 while A was deciding to set it to 90. There is
+    // nothing to lose and nothing to refuse.
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 90 }] }] })
+    const r = await setRetention(90, { current: 30, confirm: yes })
+    const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
+    expect(body?.retentionPeriodInDays).toBe(90)
+    expect(r.ok).toBe(true)
+  })
+
+  it('does not block on a field Cribl recomputes on its own', async () => {
+    // `metrics` is a daily server-computed snapshot the read asks for, not
+    // stored configuration. Refusing on it would refuse every write on a busy
+    // dataset, which trains people to distrust the refusal that matters.
+    const calls = stubWorld({
+      betweenReads: [200, { items: [{ ...LIVE_DATASET, metrics: { currentSizeBytes: 999, metricsDate: '2026-09-17' } }] }],
+    })
+    await setRetention(90, { current: 30, confirm: yes })
+    const patch = writes(calls).find((c) => c.path === DATASET_PATH)
+    expect(patch).toBeDefined()
+    expect(patch!.body).not.toHaveProperty('metrics')
+  })
+
+  it('SENDS NOTHING when the second read fails, and never falls back to the first', async () => {
+    // The first read succeeded, so the first read's body is sitting right there.
+    // Merging onto it is the destructive case this whole sequence exists to
+    // prevent, arriving as a convenience.
+    for (const status of [403, 500]) {
+      const calls = stubWorld({ betweenReads: [status, { message: 'leader unavailable' }] })
+      const r = await setRetention(90, { current: 30, confirm: yes })
+      expect(writes(calls), String(status)).toEqual([])
+      expect(r.ok, String(status)).toBe(false)
+      expect(r.steps[0].detail, String(status)).toContain('Nothing was sent')
+    }
+  })
+
+  it('closes the same window on the description, which rides in the same body', async () => {
+    // The field is cosmetic; the body carries retention, partitions and the
+    // storage binding. A typo fix must not revert somebody's retention change.
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 7 }] }] })
+    const r = await setDescription('new words', { current: 'old', confirm: yes })
+    expect(writes(calls)).toEqual([])
+    expect(r.ok).toBe(false)
+    expect(r.steps[0].detail).toContain('retentionPeriodInDays')
+
+    const clean = stubWorld()
+    await setDescription('new words', { current: 'old', confirm: yes })
+    expect(clean.filter((c) => c.path.startsWith(DATASET_PATH)).map((c) => c.method)).toEqual(['GET', 'GET', 'PATCH', 'GET'])
+  })
+
+  it('leaves the post-write race check doing its own, different job', async () => {
+    // Two checks, two windows. This one is AFTER the PATCH, it never blocks
+    // anything, and it reports rather than refuses — the write already landed.
+    const calls = stubWorld({ afterWrite: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 7 }] }] })
+    const r = await setRetention(90, { current: 30, confirm: yes })
+    expect(writes(calls).some((c) => c.path === DATASET_PATH)).toBe(true)
+    expect(r.steps[0]).toMatchObject({ status: 'applied', raced: true })
     expect(r.ok).toBe(true)
   })
 })
@@ -830,6 +984,17 @@ describe('addressing', () => {
 //     30 → 30 no-op, then a full re-read and diff) still has to run; it is now a
 //     confirmation that this app kept the dataset whole rather than the thing
 //     deciding whether the phase was safe to ship.
+//   * THAT `updateDestination` HAS NO STALE-MERGE WINDOW. IT STILL DOES, and no
+//     test here covers it, because nothing here fixes it. It reads the
+//     destination, opens the same user-paced dialog, and merges onto the
+//     PRE-DIALOG body — the defect the tests above exist for, on an endpoint
+//     whose PATCH is documented as a full replacement rather than merely
+//     suspected of being one. Two things make it less bad and neither makes it
+//     fine: the write commits and deploys, so the previous body is in the
+//     group's Git history, and the diff is recomputable. Closing it needs the
+//     one thing the dataset had and a Stream output does not — a measured list
+//     of which keys move on their own, so a refusal cannot fire on a field
+//     nobody touched. The note on that function says the same thing at the site.
 //   * THAT THE RACE REPORTING CATCHES A RACE. The re-read is stubbed, so what is
 //     proved is that a disagreement is surfaced rather than swallowed. A real
 //     lost update needs two admins and no ETag to make it conditional on, which

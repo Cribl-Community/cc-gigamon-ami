@@ -31,6 +31,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyDatasetEdit,
   applyDestinationEdit,
+  datasetMergeDrift,
   datasetSpec,
   DATASET_DESCRIPTION,
   DEFAULT_PARTITION_LIMITS,
@@ -344,6 +345,91 @@ describe('applyDatasetEdit', () => {
     const before = JSON.stringify(live)
     applyDatasetEdit(live, { retentionPeriodInDays: 7 })
     expect(JSON.stringify(live)).toBe(before)
+  })
+})
+
+describe('datasetMergeDrift', () => {
+  // The comparison that decides whether a confirmed write may still be sent. The
+  // writers in cribl/lakeLanding.ts read the dataset once to fill the dialog and
+  // again after the answer; this is what says whether the second read is still
+  // the dataset the person approved. It is a pure function precisely so the key
+  // selection — what is compared, what is ignored — can be pinned here rather
+  // than inferred from a stubbed HTTP sequence.
+  const live = {
+    id: 'gigamon_ami',
+    description: 'old',
+    retentionPeriodInDays: 30,
+    acceleratedFields: ['app_name'],
+    searchConfig: { searchVersion: 'v1', datatypes: ['cribl_lake'] },
+    storageLocationId: 'cribl_lake',
+    metrics: { currentSizeBytes: 1, metricsDate: '2026-09-13' },
+  }
+  const edit = { retentionPeriodInDays: 90 }
+
+  it('is empty when the two reads agree', () => {
+    expect(datasetMergeDrift(live, { ...live }, edit)).toEqual([])
+  })
+
+  it('ignores the field being edited — the same value from somebody else is a no-op', () => {
+    // Another admin setting retention to what this write is setting it to is not
+    // a conflict. There is nothing to lose by proceeding.
+    expect(datasetMergeDrift(live, { ...live, retentionPeriodInDays: 90 }, edit)).toEqual([])
+    // …and not a conflict when they set it to something else either: the overlay
+    // replaces it on both sides, and the post-write re-read is what reports a
+    // value somebody else wrote.
+    expect(datasetMergeDrift(live, { ...live, retentionPeriodInDays: 7 }, edit)).toEqual([])
+  })
+
+  it('ignores the keys Cribl recomputes rather than stores', () => {
+    // `metrics` is a daily server-computed snapshot and `deletionStartedAt` a
+    // server-stamped marker; neither is stored configuration, and both can move
+    // without anybody touching the dataset. Comparing them would refuse every
+    // write on a busy dataset — and a refusal that fires when nothing happened
+    // is how people learn to click past the one that matters. The list is
+    // DATASET_READONLY_KEYS itself, reached through `applyDatasetEdit`, so it
+    // cannot drift from the one deciding what the PATCH body carries.
+    expect(datasetMergeDrift(live, { ...live, metrics: { currentSizeBytes: 999, metricsDate: '2026-09-17' } }, edit)).toEqual([])
+    expect(datasetMergeDrift(live, { ...live, deletionStartedAt: 1789000000001 }, edit)).toEqual([])
+  })
+
+  it('reports every other key that moved, with both values', () => {
+    const drift = datasetMergeDrift(live, { ...live, description: 'theirs', storageLocationId: 'other_bucket' }, edit)
+    expect(drift).toEqual([
+      { key: 'description', before: 'old', after: 'theirs' },
+      { key: 'storageLocationId', before: 'cribl_lake', after: 'other_bucket' },
+    ])
+  })
+
+  it('reports a key that appeared and a key that vanished', () => {
+    // Absent and empty are different, and a cleared `acceleratedFields` is
+    // exactly the change a stale merge would put back.
+    const { acceleratedFields: _gone, ...without } = live
+    expect(datasetMergeDrift(live, without, edit)).toEqual([{ key: 'acceleratedFields', before: ['app_name'], after: undefined }])
+    expect(datasetMergeDrift(live, { ...live, viewName: 'v' }, edit)).toEqual([{ key: 'viewName', before: undefined, after: 'v' }])
+  })
+
+  it('compares nested values structurally, not by reference', () => {
+    // `searchConfig` and `cacheConnection` come back as fresh objects on every
+    // read. A reference comparison would refuse every write, every time.
+    expect(datasetMergeDrift(live, { ...live, searchConfig: { datatypes: ['cribl_lake'], searchVersion: 'v1' } }, edit)).toEqual([])
+    const drift = datasetMergeDrift(live, { ...live, searchConfig: { searchVersion: 'v2', datatypes: ['cribl_lake'] } }, edit)
+    expect(drift.map((d) => d.key)).toEqual(['searchConfig'])
+  })
+
+  it('compares a key nothing in this app has ever heard of', () => {
+    // Not a curiosity: under the replacement reading of this endpoint, a key
+    // this app does not recognise is a key a stale merge would delete, and it is
+    // the one nobody would think to look for afterwards.
+    expect(datasetMergeDrift(live, { ...live, somethingCriblAddedLater: 42 }, edit).map((d) => d.key)).toEqual(['somethingCriblAddedLater'])
+  })
+
+  it('does not mutate either body it was given', () => {
+    const first = JSON.stringify(live)
+    const second = { ...live, description: 'theirs' }
+    const secondBefore = JSON.stringify(second)
+    datasetMergeDrift(live, second, edit)
+    expect(JSON.stringify(live)).toBe(first)
+    expect(JSON.stringify(second)).toBe(secondBefore)
   })
 })
 
