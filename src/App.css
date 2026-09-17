@@ -1381,6 +1381,68 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .cdlg-ttc { display: flex; flex-direction: column; gap: var(--gm-sp-8); margin-top: var(--gm-sp-16); padding-top: var(--gm-sp-12); border-top: 1px solid var(--gm-border); }
 .cdlg-req { margin: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
 
+/* DiffTable (components/DiffTable.tsx). The before→after inside a confirmation.
+   The plan calls this family `.kv-diff`; the shipped prefix is `.kvd`, which is
+   the form every other family here takes — `.cdlg`, `.jw`, `.ac`, `.gs`.
+
+   IT IS A `.dtable`, so almost none of it is written twice: the caption, the
+   `scope="col"` heads, `scope="row"` on the field name, the 10px uppercase
+   column heads and the row rule are all that family's contract. What follows is
+   only the four things a diff needs that a data table does not.
+
+   ONE DEPARTURE FROM THAT CONTRACT, deliberate: the caption is VISIBLE rather
+   than `.sr-only`. Everywhere else a `.dtable` is the only table in its panel
+   and the caption names it for people who cannot see that. Here a three-object
+   PATCH stacks three of these inside one dialog, and which object each one
+   belongs to is the first thing ANY reader needs — so the caption is on screen
+   and is still the table's accessible name, one string doing both jobs instead
+   of a heading plus a hidden twin that drift apart in the next edit.
+
+   NOT uppercase, unlike `.cdlg-head` beside it: this caption carries a Cribl
+   object id, and an id shouted in capitals is an id nobody can check against the
+   one in their own config. */
+.kvd-cap {
+  caption-side: top; text-align: left;
+  padding-bottom: var(--gm-sp-6);
+  font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.medium'); color: var(--gm-fg);
+}
+/* `.dtable` sets `white-space: nowrap` on every cell, which is right for a job
+   id and wrong for a destination body: one 300-character `pathExpression` would
+   push the field names off screen and make a customer approve a change by
+   scrolling. Values wrap instead, and the container below still scrolls when a
+   single unbroken token is wider than the dialog. Clipped text in a
+   confirmation is somebody agreeing to what they could not read.
+   Qualified by element because `.dtable th, .dtable td` is (0,1,1) and would
+   otherwise win. */
+.dtable td.kvd-val {
+  white-space: normal; overflow-wrap: anywhere; vertical-align: top;
+  font-family: var(--gm-mono); font-size: var(--gm-fs-11);
+  max-width: 28ch;
+}
+.kvd-wrap { overflow-x: auto; }
+/* "Not set" and "empty" are different facts about a configuration key and a
+   blank cell states neither. Subtle ink because they are the absence of a
+   value, not a value — the same secondary text as `.cdlg-res-detail`, measured
+   on the modal surface in src/app/contrast.test.ts. */
+.kvd-absent { color: var(--gm-fg-subtle); }
+/* The change as a WORD; the ink is the third signal, after the word and the
+   glyph. These are the same three `color.foreground.*.default` that the action
+   pills a few rules up already draw on this same modal surface, so
+   src/app/contrast.test.ts's DIALOG_PAIRS block measures them as they are
+   painted here and no row was added for a pairing it already computes. Two
+   consequences worth knowing before moving either: a failure names the PILL
+   rule, not this one; and a caller that draws this table on `--gm-panel` — the
+   step log, the parity comparison — is on a surface these are NOT measured
+   against and owes three rows there. */
+.kvd-state { white-space: nowrap; }
+.kvd-added { color: token('color.foreground.success.default'); }
+.kvd-removed { color: token('color.foreground.danger.default'); }
+.kvd-changed { color: token('color.foreground.warning.default'); }
+/* No colour claim to make: nothing is happening to this key. */
+.kvd-unchanged { color: var(--gm-fg-subtle); }
+/* The no-op. A sentence, never a table with no rows in it. */
+.kvd-empty { margin: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+
 /* GatedControl (components/GatedControl.tsx). The wrapper carries no look of its
    own — a gated button has to be indistinguishable from the plain one it
    replaced — it only stacks the refusal note under the button it belongs to,

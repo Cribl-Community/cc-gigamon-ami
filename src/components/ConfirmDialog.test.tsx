@@ -27,7 +27,7 @@
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ConfirmDialog, type ConfirmResource } from './ConfirmDialog'
+import { ConfirmDialog, type ConfirmResource, type DiffEntry } from './ConfirmDialog'
 import { GatedControl } from './GatedControl'
 import { resetDenials } from '../cribl/authz'
 
@@ -82,6 +82,7 @@ const REMOVE_RESOURCES: ConfirmResource[] = [
 
 interface HarnessProps {
   resources?: ConfirmResource[]
+  diff?: DiffEntry[]
   typeToConfirm?: { value: string; label: string } | null
   irreversible?: { why: string } | null
   consequences?: string[]
@@ -93,7 +94,7 @@ interface HarnessProps {
  * beside it. The trigger staying mounted is the point — it is what focus is
  * restored TO, and the old inline confirmation replaced it.
  */
-function Harness({ resources = REMOVE_RESOURCES, typeToConfirm, irreversible, consequences, run }: HarnessProps) {
+function Harness({ resources = REMOVE_RESOURCES, diff, typeToConfirm, irreversible, consequences, run }: HarnessProps) {
   const [open, setOpen] = useState(false)
   return (
     <div>
@@ -102,6 +103,7 @@ function Harness({ resources = REMOVE_RESOURCES, typeToConfirm, irreversible, co
         isOpen={open}
         title="Delete the Gigamon AMI syslog resources from Cribl Stream worker group default"
         resources={resources}
+        diff={diff}
         irreversible={irreversible ?? undefined}
         consequences={consequences ?? ['Cribl Lake destination gigamon_lake and dataset gigamon_ami are kept.']}
         undo="Deploy onboarding stack, on this tab, rebuilds all three."
@@ -279,6 +281,102 @@ describe('ConfirmDialog — the mechanism behind the trap', () => {
   })
 })
 
+describe('ConfirmDialog — the before→after', () => {
+  // Phase 1 shipped this dialog with no `diff` prop at all and said so in the
+  // header, for want of a caller. Phase 3's retention edit is the caller, and
+  // what these assert is the half a caller cannot supply for itself: that the
+  // values land inside the region the dialog announces, in an order that reads,
+  // and that the NO-OP case says so out loud.
+
+  const DATASET: ConfirmResource[] = [
+    { action: 'replace', kind: 'Cribl Lake dataset', id: 'gigamon_ami' },
+  ]
+  const RETENTION: DiffEntry[] = [
+    { resourceId: 'gigamon_ami', key: 'retentionPeriodInDays', before: '30', after: '7' },
+  ]
+  const tables = () => [...document.body.querySelectorAll('[role="dialog"] table')]
+
+  it('renders nothing at all when the caller has no diff to show', async () => {
+    await open({ run: noop })
+    // The teardown is a delete list and the deploy is additive; neither has a
+    // before→after. A dialog that grew an empty "Before and after" section for
+    // them would be the present-and-ignored prop Phase 1 refused to add.
+    expect(tables().length).toBe(0)
+    expect(dialog()!.textContent).not.toContain('Before and after')
+  })
+
+  it('puts the values inside what the dialog announces, after the objects and before the undo', async () => {
+    await open({ run: noop, resources: DATASET, diff: RETENTION })
+    const id = dialog()!.getAttribute('aria-describedby')
+    const text = document.getElementById(id!)!.textContent ?? ''
+    const at = (needle: string) => {
+      const i = text.indexOf(needle)
+      expect(i, `"${needle}" is not in the described-by region at all`).toBeGreaterThanOrEqual(0)
+      return i
+    }
+    // A value somebody is approving is not a detail they can be expected to go
+    // looking for. The object list says WHICH things change; this says what they
+    // become; `undo` says what puts it back, and only makes sense last.
+    expect(at('What will change')).toBeLessThan(at('Before and after'))
+    expect(at('Before and after')).toBeLessThan(at('retentionPeriodInDays'))
+    expect(at('retentionPeriodInDays')).toBeLessThan(at('rebuilds all three'))
+  })
+
+  it('says nothing changes for a no-op, rather than drawing an empty table', async () => {
+    await open({ run: noop, resources: DATASET, diff: [] })
+    // The 30 → 30 retention Apply. An empty array is the caller reporting that
+    // it computed a diff and it came back empty, which is a different fact from
+    // having no diff — and the only one of the two the reader needs told.
+    expect(dialog()!.textContent).toContain('Before and after')
+    expect(tables().length, 'the no-op drew a table with no rows in it').toBe(0)
+    expect(dialog()!.textContent).toContain('Nothing changes')
+    expect(dialog()!.textContent, 'the no-op did not say which object it was about')
+      .toContain('Cribl Lake dataset gigamon_ami')
+  })
+
+  it('points a no-op at the list above it when more than one object is named', async () => {
+    await open({ run: noop, diff: [] })
+    // Three resources, so naming one would be wrong and naming all three would
+    // repeat the list directly above.
+    expect(dialog()!.textContent).toContain('Every object listed above')
+  })
+
+  it('draws one table per resource, captioned with the object it belongs to', async () => {
+    await open({
+      run: noop,
+      resources: [
+        { action: 'replace', kind: 'Cribl Lake dataset', id: 'gigamon_ami' },
+        { action: 'replace', kind: 'Destination', id: 'gigamon_lake', group: 'default' },
+      ],
+      diff: [
+        { resourceId: 'gigamon_ami', key: 'retentionPeriodInDays', before: '30', after: '7' },
+        { resourceId: 'gigamon_lake', key: 'maxFileSizeMB', before: '32', after: '128' },
+        { resourceId: 'gigamon_ami', key: 'description', after: 'Gigamon AMI flow records' },
+      ],
+    })
+    const captions = tables().map((t) => t.querySelector('caption')?.textContent)
+    // Keyed to the resource, not flattened: a reader should never have to work
+    // out which of two PATCHed objects a key belongs to.
+    expect(captions).toEqual(['Cribl Lake dataset gigamon_ami', 'Destination gigamon_lake'])
+    expect(tables()[0].querySelectorAll('tbody tr').length).toBe(2)
+    expect(tables()[1].querySelectorAll('tbody tr').length).toBe(1)
+  })
+
+  it('still shows a change keyed to a resource it was never told about', async () => {
+    await open({
+      run: noop,
+      resources: DATASET,
+      diff: [{ resourceId: 'gigamon_lake', key: 'maxFileSizeMB', before: '32', after: '128' }],
+    })
+    // The caller made a mistake; hiding the row would make the customer pay for
+    // it, by approving a change the dialog decided not to mention. The bare id
+    // is also what makes the mistake visible in review.
+    expect(tables().length).toBe(1)
+    expect(tables()[0].querySelector('caption')?.textContent).toBe('gigamon_lake')
+    expect(dialog()!.textContent).toContain('maxFileSizeMB')
+  })
+})
+
 describe('ConfirmDialog — type to confirm', () => {
   const TTC = { value: 'default', label: 'To confirm, type the worker group name default' }
 
@@ -411,3 +509,18 @@ function type(value: string) {
 //     dialog state to test. S8 describes one for callers that keep it open.
 //   * ESCAPE'S DEFAULT IS PREVENTED, so it does not also close something behind
 //     the app. `cancelable` is honoured here but nothing else listens.
+//   * THAT A DIFF READS AS A TABLE TO A SCREEN READER. That `<caption>` becomes
+//     the table's accessible name, and that `scope` produces
+//     table → row → rowheader + cell, are claims about assistive technology;
+//     the markup is asserted here and in DiffTable.test.tsx, and Preview check
+//     7.4 reads the tree. Nor does anything here check that four columns of
+//     configuration values fit inside Capra's Modal at ~400 px — no layout.
+//   * THAT `irreversible` AND `typeToConfirm` COMPOSE INTO A HARDER
+//     CONFIRMATION. They are two independent props: nothing requires the one
+//     that says "this cannot be undone" to also demand the literal, and the
+//     type-to-confirm field sits OUTSIDE the described-by region by design
+//     (App.css says why), so it does not point at the irreversibility sentence
+//     either. Preview check 4.3 wants that `aria-describedby`; it is not wired,
+//     and a retention decrease being "confirmed harder than the others" is at
+//     present a property of what its caller passes, not one this component
+//     enforces.
