@@ -30,6 +30,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyDatasetEdit,
+  confirmationStillHolds,
+  sameDiff,
   applyDestinationEdit,
   datasetMergeDrift,
   datasetSpec,
@@ -370,14 +372,16 @@ describe('datasetMergeDrift', () => {
     expect(datasetMergeDrift(live, { ...live }, edit)).toEqual([])
   })
 
-  it('ignores the field being edited — the same value from somebody else is a no-op', () => {
-    // Another admin setting retention to what this write is setting it to is not
-    // a conflict. There is nothing to lose by proceeding.
+  it('CANNOT SEE the field being edited at all, in either direction', () => {
+    // The overlay puts the same value on both sides, so the edited key is
+    // invisible here whatever it did in between — including the move that
+    // destroys data. That is not this function's job and it is deliberately not
+    // given one: `confirmationStillHolds` below is the check that covers it, and
+    // `mergeSourceAfterConfirm` runs that one FIRST. This test exists so that
+    // the next reader of the exclusion finds the limit pinned rather than the
+    // reassurance the first version of it carried.
     expect(datasetMergeDrift(live, { ...live, retentionPeriodInDays: 90 }, edit)).toEqual([])
-    // …and not a conflict when they set it to something else either: the overlay
-    // replaces it on both sides, and the post-write re-read is what reports a
-    // value somebody else wrote.
-    expect(datasetMergeDrift(live, { ...live, retentionPeriodInDays: 7 }, edit)).toEqual([])
+    expect(datasetMergeDrift(live, { ...live, retentionPeriodInDays: 365 }, edit)).toEqual([])
   })
 
   it('ignores the keys Cribl recomputes rather than stores', () => {
@@ -430,6 +434,105 @@ describe('datasetMergeDrift', () => {
     datasetMergeDrift(live, second, edit)
     expect(JSON.stringify(live)).toBe(first)
     expect(JSON.stringify(second)).toBe(secondBefore)
+  })
+})
+
+describe('confirmationStillHolds', () => {
+  // THE CHECK THAT COVERS WHAT `datasetMergeDrift` STRUCTURALLY CANNOT: the
+  // field being edited. A confirmation is a sentence about one before → after,
+  // and the `before` is what decides both the words and the gates — so if it
+  // moves, the answer somebody gave is an answer to a question that is no longer
+  // being asked. Pure, so the three verdicts are pinned here rather than
+  // inferred from a stubbed HTTP sequence.
+
+  it('holds when the before has not moved', () => {
+    expect(confirmationStillHolds(30, 30, 60).verdict).toBe('holds')
+  })
+
+  it('calls a move to the TARGET a no-op, which is the one exception', () => {
+    // Somebody else applied exactly the change that was approved. Nothing left
+    // to send, and nothing to warn anybody about.
+    expect(confirmationStillHolds(30, 60, 60).verdict).toBe('noop')
+  })
+
+  it('VOIDS THE CONFIRMATION when the before moved anywhere else — the case that deletes data', () => {
+    // Live 30. A is shown "raise retention from 30 to 60 days — nothing is
+    // deleted", which carries no typed gate because an increase needs none. B
+    // sets 365. Sending 60 now deletes 305 days of a customer's events under a
+    // sentence that promised the opposite. The verdict is not "stale": there is
+    // no refreshed version of that sentence that A ever read.
+    const check = confirmationStillHolds(30, 365, 60)
+    expect(check.verdict).toBe('void')
+    // Both values, because the caller's sentence has to name them.
+    expect(check.shown).toBe(30)
+    expect(check.now).toBe(365)
+    expect(check.target).toBe(60)
+  })
+
+  it('does not treat an unmoved before as a no-op even when it already equals the target', () => {
+    // "Already this value" is the writer's own check and it runs before the
+    // dialog opens. Answering `noop` here would hide a genuinely unmoved object
+    // behind the sentence written for somebody else's write.
+    expect(confirmationStillHolds(60, 60, 60).verdict).toBe('holds')
+  })
+
+  it('compares strings and absence, not only numbers', () => {
+    // `setDescription` shows a `before` too, and an absent description is a
+    // different claim from an empty one.
+    expect(confirmationStillHolds('old', 'old', 'new').verdict).toBe('holds')
+    expect(confirmationStillHolds('old', 'theirs', 'new').verdict).toBe('void')
+    expect(confirmationStillHolds('old', 'new', 'new').verdict).toBe('noop')
+    expect(confirmationStillHolds(null, null, 'new').verdict).toBe('holds')
+    expect(confirmationStillHolds(null, '', 'new').verdict).toBe('void')
+  })
+
+  it('compares structurally, so a re-read object is not a conflict', () => {
+    expect(confirmationStillHolds({ a: 1, b: 2 }, { b: 2, a: 1 }, { a: 9 }).verdict).toBe('holds')
+    expect(confirmationStillHolds({ a: 1 }, { a: 2 }, { a: 9 }).verdict).toBe('void')
+  })
+})
+
+describe('sameDiff', () => {
+  // What lets `updateDestination` refuse a moved destination without a list of
+  // the keys a Stream output moves on its own — the measurement that kept that
+  // window open. The diff IS what the person read, so comparing diffs refuses on
+  // exactly what was on screen and on nothing else.
+  const live = { maxFileSizeMB: 5, compress: 'gzip', status: { health: 'green' } }
+  const edit = { set: { maxFileSizeMB: 32 }, remove: [] as string[] }
+
+  it('is true for two diffs of the same edit against the same object', () => {
+    expect(sameDiff(diffDestination(live, edit), diffDestination({ ...live }, edit))).toBe(true)
+  })
+
+  it('is true when only a field the edit does not touch moved', () => {
+    // A server-derived field — and any field nobody guessed at — changes no row.
+    // This is the false refusal the key list was needed to avoid, and it does not
+    // happen. The merge is onto the second read, so their value is carried
+    // forward rather than reverted.
+    const moved = { ...live, status: { health: 'red' }, environment: 'staging' }
+    expect(sameDiff(diffDestination(live, edit), diffDestination(moved, edit))).toBe(true)
+  })
+
+  it('is false when the before of an approved row moved', () => {
+    // Somebody else set maxFileSizeMB to 64 while the dialog was open. The row
+    // that was approved said 5 → 32; the row that would apply says 64 → 32.
+    expect(sameDiff(diffDestination(live, edit), diffDestination({ ...live, maxFileSizeMB: 64 }, edit))).toBe(false)
+  })
+
+  it('is false when a row appears or disappears', () => {
+    const both = { set: { maxFileSizeMB: 32, compress: 'none' }, remove: [] as string[] }
+    expect(sameDiff(diffDestination(live, both), diffDestination({ ...live, compress: 'none' }, both))).toBe(false)
+    const { compress: _gone, ...withoutCompress } = live
+    expect(sameDiff(diffDestination(live, { set: {}, remove: ['compress'] }), diffDestination(withoutCompress, { set: {}, remove: ['compress'] }))).toBe(
+      false,
+    )
+  })
+
+  it('compares row values structurally', () => {
+    const a = [{ key: 'x', kind: 'changed' as const, before: { a: 1, b: 2 }, after: 3 }]
+    const b = [{ key: 'x', kind: 'changed' as const, before: { b: 2, a: 1 }, after: 3 }]
+    expect(sameDiff(a, b)).toBe(true)
+    expect(sameDiff(a, [{ ...a[0], kind: 'added' as const }])).toBe(false)
   })
 })
 

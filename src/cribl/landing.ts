@@ -830,10 +830,32 @@ export interface DriftRow {
  *     `deletionStartedAt`, a server-stamped marker. Comparing those would refuse
  *     every write on a busy dataset, and a refusal that fires when nothing
  *     happened teaches people to click past the one that matters.
- *   * IGNORED, because it is the edit: whatever key the caller is setting. If
- *     another admin set retention to the same value this write is setting, that
- *     is a no-op and not a conflict — the overlay puts the same value on both
- *     sides, so it cannot appear here.
+ *   * IGNORED, because it is the edit: whatever key the caller is setting. The
+ *     overlay puts the same value on both sides, so that key cannot appear here
+ *     whatever it did in between. THAT EXCLUSION IS NOT SAFE ON ITS OWN AND THIS
+ *     FUNCTION DOES NOT MAKE IT SAFE — read the next paragraph before reusing
+ *     it, because the first version of it lost data.
+ *
+ * WHY THE EXCLUDED KEY STILL HAS TO BE CHECKED, BY SOMEBODY ELSE. The exclusion
+ * was originally justified as "another admin setting retention to the value you
+ * are setting is a no-op, not a conflict". That is true of exactly one move —
+ * the move TO THE TARGET — and this function cannot tell that move from any
+ * other, because after the overlay every value of the edited key looks the same.
+ * The move that is not a no-op is the one that destroys data: live 30, admin A
+ * approves a dialog reading "raise retention from 30 to 60 days — nothing is
+ * deleted" and carrying NO typed confirmation because an increase needs none,
+ * admin B sets 365, A clicks Yes, and the 60 that goes out deletes 305 days of a
+ * customer's events under a sentence that promised the opposite. The `before` a
+ * confirmation names is load-bearing: it decides the words AND the gates, so if
+ * it moves the confirmation is void rather than merely stale.
+ *
+ * SO THE CALLER OWNS THE EDITED KEY, through `confirmationStillHolds` below, and
+ * the two checks are deliberately separate rather than folded together: this one
+ * answers "did the rest of the object move" and has no idea what the edit means,
+ * that one answers "is the sentence somebody read still true" and needs the
+ * shown `before` and the target, which are facts about the dialog and not about
+ * the two bodies. `cribl/lakeLanding.ts#mergeSourceAfterConfirm` runs
+ * `confirmationStillHolds` FIRST, so the more dangerous move is the one reported.
  *   * COMPARED — everything else the GET returned, whether or not this app has
  *     heard of it: `retentionPeriodInDays`, `description`, `acceleratedFields`,
  *     `searchConfig`, `storageLocationId`/`bucketName`, `viewName`,
@@ -863,6 +885,92 @@ export function datasetMergeDrift(
     if (!sameValue(a[key], b[key])) rows.push({ key, before: a[key], after: b[key] })
   }
   return rows
+}
+
+// ── Is the confirmation somebody answered still about this object? ──────────
+
+/**
+ * What the second read says about the sentence the person read.
+ *
+ *   * `holds` — the `before` has not moved. Proceed.
+ *   * `noop`  — it moved TO THE TARGET. Somebody else already did this; there is
+ *               nothing left to apply and nothing to refuse. Send nothing, and
+ *               report it as a no-op rather than as a conflict.
+ *   * `void`  — it moved to anything else. The confirmation described a change
+ *               that no longer exists. Send nothing.
+ */
+export type ConfirmationVerdict = 'holds' | 'noop' | 'void'
+
+export interface ConfirmationCheck {
+  verdict: ConfirmationVerdict
+  /** The `before` the dialog was built from and showed. */
+  shown: unknown
+  /** The `before` the object holds now. */
+  now: unknown
+  /** What this write would set it to. */
+  target: unknown
+}
+
+/**
+ * Whether a confirmation a person answered still describes the change it named.
+ *
+ * A CONFIRMATION IS A SENTENCE ABOUT A SPECIFIC before → after, AND IF `before`
+ * MOVES THE CONFIRMATION IS VOID. Not stale — void. The distinction is the whole
+ * function: a stale value can be refreshed and the intent re-applied, and that is
+ * what the first attempt at this did. But the shown `before` is what the sentence
+ * was derived from and it is also what the GATES were derived from. In this app a
+ * retention increase renders "Reversible — nothing is deleted by an increase" and
+ * demands nothing typed; a decrease renders the irreversible warning and demands
+ * the dataset id. Re-deriving against the new `before` can silently convert the
+ * first into the second, which is a data deletion applied under an approval that
+ * was given for the opposite, with the one gate built for it skipped.
+ *
+ * So there is no third answer here and no re-prompt: `void` means the caller
+ * sends nothing and says what moved. Re-asking from inside a dialog somebody has
+ * already dismissed is the failure this whole sequence has been chasing.
+ *
+ * `noop` is the one genuine exception and it is narrow — the value moved to
+ * EXACTLY what this write would set. Then the change the person approved is
+ * already in force, the target is unambiguous, and sending the PATCH would be
+ * describing a change that has no effect. That is the only move the previous
+ * blanket exclusion of the edited key got right.
+ *
+ * Structural comparison, not `===`, so this works on a description string, a
+ * retention number and any future field whose value is an object.
+ */
+export function confirmationStillHolds(shown: unknown, now: unknown, target: unknown): ConfirmationCheck {
+  // `holds` is tested first on purpose. If nothing moved, this is not a no-op
+  // even when `shown` already equals `target` — that case is the caller's own
+  // "already this value" check, which runs before the dialog is ever opened.
+  const verdict: ConfirmationVerdict = sameValue(shown, now) ? 'holds' : sameValue(now, target) ? 'noop' : 'void'
+  return { verdict, shown, now, target }
+}
+
+/**
+ * Whether two diffs describe the same change, row for row and in order.
+ *
+ * WHAT LETS THE DESTINATION WRITER REFUSE WITHOUT A READ-ONLY KEY LIST. The Lake
+ * refusal can compare whole bodies because `DATASET_READONLY_KEYS` names the keys
+ * that move on their own; nothing in this repo knows the equivalent for a Stream
+ * output beyond `status`, and a refusal built on a guessed list fires on fields
+ * nobody touched, which is how people learn to distrust the refusal that matters.
+ *
+ * Comparing DIFFS needs no such list. `diffDestination` already encodes this
+ * app's notion of what is meaningful — it is the thing the person actually read —
+ * so a server-derived field moving between the two reads changes no row here, and
+ * anything that DOES change a row is by construction something this app thought
+ * meaningful enough to show them. Refuse on that and the refusal can only fire on
+ * a change to the approved change itself.
+ *
+ * Order matters and is not a weakness: `diffDestination` sorts its keys, so two
+ * diffs of the same edit against the same object are identical row for row.
+ */
+export function sameDiff(a: readonly DiffRow[], b: readonly DiffRow[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((row, i) => {
+    const other = b[i]
+    return row.key === other.key && row.kind === other.kind && sameValue(row.before, other.before) && sameValue(row.after, other.after)
+  })
 }
 
 // ── The sentences ───────────────────────────────────────────────────────────

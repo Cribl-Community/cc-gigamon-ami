@@ -77,11 +77,40 @@
 // So the sequence is now GET → confirm → GET AGAIN → COMPARE → merge onto the
 // SECOND read → PATCH. The second read is the merge source and nothing earlier
 // may be merged from; a failed second read aborts exactly as a failed first one
-// does. If anything other than the field being edited moved between the two
-// reads, NOTHING IS SENT and the step names what moved — not a silent re-merge,
-// because the person approved a dialog describing a dataset that no longer
-// exists, and re-merging would apply their approval to a different change than
-// the one they read.
+// does. If anything moved between the two reads, NOTHING IS SENT and the step
+// names what moved — not a silent re-merge, because the person approved a dialog
+// describing a dataset that no longer exists, and re-merging would apply their
+// approval to a different change than the one they read.
+//
+// ── AND THE FIELD BEING EDITED IS PART OF "ANYTHING" ────────────────────────
+// The first version of that comparison EXCLUDED the edited key, reasoning that
+// another admin setting retention to the value you are setting is a no-op rather
+// than a conflict. That is true of exactly one move — the move TO THE TARGET —
+// and the exclusion covered every other move with it, which opened a hole worse
+// than the one the comparison closed.
+//
+// Live 30. Admin A presses Apply for 60 and reads a dialog saying "raise
+// retention from 30 to 60 days — nothing is deleted by an increase", which
+// carries no irreversibility warning and no typed confirmation, because an
+// increase needs neither. Admin B sets 365. A clicks Yes. The PATCH sends 60 and
+// CRIBL LAKE DELETES 305 DAYS of the customer's events — irreversibly, under a
+// sentence that promised the opposite, past the one gate this app built for
+// exactly this write. The step then reported "30 → 60 days" and the audit
+// recorded `before: 30`; both were false records of a destructive act.
+//
+// THE RULE, which is general and is not about retention: A CONFIRMATION
+// DESCRIBES A SPECIFIC before → after, AND IF `before` MOVES WHILE THE DIALOG IS
+// OPEN THE CONFIRMATION IS VOID — because the sentence that was read, and the
+// gates that sentence carried, were both derived from a value that is no longer
+// true. Only a move TO THE TARGET is a genuine no-op. `confirmationStillHolds`
+// in cribl/landing.ts is that rule; both Lake writers run it, and so does the
+// destination writer, which shows a `before` in every row of its diff.
+//
+// AND THE ANSWER IS ALWAYS REFUSE, NEVER RE-PROMPT. Re-deriving a new
+// confirmation from a dialog somebody has already dismissed spends their answer
+// on a question they were not asked, which is the failure this whole sequence
+// has been chasing. They are told what the value was when they were asked, what
+// it is now, and that nothing was sent.
 //
 // WHAT IT COSTS: THREE GETs PER APPLIED EDIT — one to classify the change and
 // fill the dialog, one to merge onto after the answer, one to re-read afterwards
@@ -91,10 +120,16 @@
 // not a hot path, and the two extra GETs are not on any render or timer — they
 // happen once, on a press somebody already sat through a dialog for.
 //
-// THE THIRD LAKE WRITER STILL HAS THIS WINDOW. `updateDestination` reads the
-// destination, confirms, and merges onto the PRE-DIALOG body in exactly the same
-// shape — see the note at that function. It is not closed here and the reason is
-// written there rather than left for somebody to find.
+// THE THIRD WRITER IS CLOSED THE SAME WAY, ON A DIFFERENT COMPARISON.
+// `updateDestination` also reads twice, but it compares the DIFF rather than the
+// body: `diffDestination` against the first read and against the second, and it
+// refuses unless the change somebody approved is the change that would now be
+// applied. That needs no equivalent of `DATASET_READONLY_KEYS` — which is what
+// held it open, since nothing here knows which keys a Stream output moves on its
+// own — because a server-derived field moving changes no diff row, and anything
+// that changes a row is by construction something this app showed them. The
+// merge is still onto the second read, so a key nobody recognises that moved in
+// between is carried forward rather than reverted.
 //
 // THIS DOES NOT RETIRE PREVIEW CHECK 3.1 (the 30 → 30 no-op, then a full re-read
 // and diff). It changes what that check is FOR. It was the thing that decided
@@ -127,10 +162,13 @@ import { appendLog, getDoc, putDoc } from './kv'
 import {
   applyDatasetEdit,
   applyDestinationEdit,
+  confirmationStillHolds,
   datasetMergeDrift,
   diffDestination,
   retentionChange,
+  sameDiff,
   DEFAULT_PARTITION_LIMITS,
+  type ConfirmationCheck,
   type DestinationEdit,
   type DiffRow,
   type DriftRow,
@@ -487,36 +525,94 @@ async function readDatasetForWrite(key: string, init: CapiInit): Promise<{ datas
  * dialog, and is now minutes old; this read is the merge source, and nothing
  * earlier is merged from anywhere in this module.
  *
- * TWO WAYS IT REFUSES, AND NEITHER IS A FALLBACK:
+ * THREE WAYS IT REFUSES, AND NONE OF THEM IS A FALLBACK:
  *
  *   * THE READ FAILED. Same answer as a failed first read, same sentence, for
  *     the same reason — sending the edited field on its own after a read this
  *     app was refused is the destructive case, not the degraded one.
- *   * THE DATASET MOVED. Anything other than the edited field differing between
- *     the two reads means the person approved a dialog describing a dataset that
- *     no longer exists. It is NOT re-merged and sent: their approval was for the
- *     change they read, and applying it to a different one is the consent this
- *     dialog exists to obtain being spent on something else. They are told what
- *     moved and can look and try again — which is a decision a person can make
- *     and this function cannot.
+ *   * THE FIELD BEING EDITED MOVED, to anything but the value being set. The
+ *     confirmation is VOID: the sentence the person read, and the gates that
+ *     sentence carried, were both derived from a `before` that is no longer
+ *     true. See `confirmationStillHolds` in cribl/landing.ts — this is the check
+ *     that stops an approved increase arriving as a deletion.
+ *   * ANY OTHER KEY MOVED. The person approved a dialog describing a dataset
+ *     that no longer exists. It is NOT re-merged and sent: their approval was
+ *     for the change they read, and applying it to a different one is the
+ *     consent this dialog exists to obtain being spent on something else. They
+ *     are told what moved and can look and try again — which is a decision a
+ *     person can make and this function cannot.
  *
- * `datasetMergeDrift` in cribl/landing.ts decides which keys that comparison
- * covers and which are ignored as server-derived; the reasoning is there,
- * beside the `DATASET_READONLY_KEYS` list it is built out of.
+ * AND ONE WAY IT STOPS WITHOUT REFUSING: the field moved to EXACTLY the value
+ * this write would set. Somebody else already applied the approved change, so
+ * there is nothing left to send and nothing to warn anybody about. `skipped`,
+ * not `error`.
+ *
+ * THE ORDER OF THE TWO COMPARISONS IS DELIBERATE. `confirmationStillHolds` runs
+ * first, because `datasetMergeDrift` cannot see the edited key at all and a
+ * retention that went 30 → 365 would otherwise be reported as "the description
+ * changed" — the least dangerous of the two moves named, and the other one
+ * silent. `datasetMergeDrift` in cribl/landing.ts decides which keys the second
+ * comparison covers and which are ignored as server-derived; the reasoning is
+ * there, beside the `DATASET_READONLY_KEYS` list it is built out of, along with
+ * why its exclusion of the edited key is only safe because of the check here.
  */
 async function mergeSourceAfterConfirm(
   key: string,
   before: LakeDataset,
   edit: Record<string, unknown>,
+  approved: ApprovedBefore,
   init: CapiInit,
-): Promise<{ body: Record<string, unknown> } | { failure: WriteStep }> {
+): Promise<{ body: Record<string, unknown> } | { stop: WriteStep }> {
   const live = await readDatasetForWrite(key, init)
-  if ('failure' in live) return live
+  if ('failure' in live) return { stop: live.failure }
+
+  const still = confirmationStillHolds(approved.shown, approved.now(live.dataset), approved.target)
+  if (still.verdict === 'noop') return { stop: { key, status: 'skipped', detail: approved.alreadyThere } }
+  if (still.verdict === 'void') return { stop: { key, status: 'error', detail: voidNote(approved, still) } }
 
   const drift = datasetMergeDrift({ ...before.raw }, { ...live.dataset.raw }, edit)
-  if (drift.length > 0) return { failure: { key, status: 'error', detail: driftNote(drift) } }
+  if (drift.length > 0) return { stop: { key, status: 'error', detail: driftNote(drift) } }
 
   return { body: applyDatasetEdit({ ...live.dataset.raw }, edit) }
+}
+
+/**
+ * What the writer told the person, in the terms the second read can be checked
+ * against.
+ *
+ * `shown` is not "the value at the time of the first read" — it is the value the
+ * DIALOG NAMED, which is what the person's answer is an answer about. For
+ * retention that is `change.from`, which is what the sentence and the gates were
+ * built out of; for the description it is the `before` the dialog rendered and
+ * the audit trail will record. Deriving it from anything else would check a
+ * different claim than the one that was made.
+ */
+interface ApprovedBefore {
+  /** The `before` the dialog named. */
+  shown: unknown
+  /** The same field, out of the read taken after the answer. */
+  now: (live: LakeDataset) => unknown
+  /** What this write would set it to. */
+  target: unknown
+  /** What the field is called in a sentence. */
+  label: string
+  /** What is at stake in this particular field having moved. */
+  stakes: string
+  /** The sentence for the one genuine no-op: somebody else set the target. */
+  alreadyThere: string
+}
+
+/** The sentence a VOIDED confirmation carries. It has to say three things and
+ *  they are all facts rather than advice: what the value was when they were
+ *  asked, what it is now, and that nothing was sent. */
+function voidNote(approved: ApprovedBefore, check: ConfirmationCheck): string {
+  const was = JSON.stringify(check.shown) ?? 'absent'
+  const now = JSON.stringify(check.now) ?? 'absent'
+  return (
+    `Nothing was sent: that confirmation said the ${DATASET_ID} dataset's ${approved.label} was ${was}, and it is ${now} now — somebody ` +
+    `changed it while the dialog was open. A confirmation describes one before → after, so this one is void rather than stale: ${approved.stakes} ` +
+    `Nothing here re-asks either, because the dialog that would be re-derived is one you have already dismissed. Look at the dataset and decide again.`
+  )
 }
 
 /** The sentence a refused write carries. Names the keys AND both values: "it
@@ -630,9 +726,36 @@ export async function setRetention(
   // THE MERGE SOURCE IS READ HERE, AFTER THE ANSWER — never `dataset`, which is
   // the body that filled the dialog and is as old as the dialog was open. A
   // typed-confirmation decrease can sit here for minutes.
+  //
+  // AND RETENTION ITSELF IS RE-CHECKED AGAINST THAT READ, which is the one thing
+  // `datasetMergeDrift` structurally cannot do. `change` above decided both what
+  // the dialog SAID and which gates it carried: an increase renders "Reversible
+  // — nothing is deleted by an increase" and demands nothing typed. If the live
+  // value moved past `days` while that dialog was open, the increase somebody
+  // approved is now a DECREASE, and sending it deletes the difference under a
+  // sentence that promised it would not and without the gate built for it.
   const edit = { retentionPeriodInDays: days }
-  const merge = await mergeSourceAfterConfirm('retention', dataset, edit, init)
-  if ('failure' in merge) return outcome([merge.failure])
+  const merge = await mergeSourceAfterConfirm(
+    'retention',
+    dataset,
+    edit,
+    {
+      // `change.from`, not the raw field: it is what the dialog put on screen,
+      // it is what `change.direction` was computed from, and it is what the step
+      // and the audit entry below report. Checking anything else would confirm a
+      // claim nobody was shown.
+      shown: change.from,
+      now: (live) => live.retentionPeriodInDays ?? opts.current,
+      target: days,
+      label: 'retention',
+      stakes:
+        `the sentence you read and the gates it carried were both derived from ${change.from} days, so an increase approved against ` +
+        `${change.from} can be a deletion against what is there now — arriving without the typed confirmation a decrease demands.`,
+      alreadyThere: `Nothing was sent: somebody else set retention to ${days} days while that confirmation was open, which is the value you asked for.`,
+    },
+    init,
+  )
+  if ('stop' in merge) return outcome([merge.stop])
 
   const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, merge.body, init)
   const step: WriteStep = isOk(r.status)
@@ -647,6 +770,14 @@ export async function setRetention(
       step.detail = racedNote(`${change.from} → ${change.to} days`, check.now)
     }
   }
+  // `change.from` IS RE-CONFIRMED BY THE TIME EITHER OF THESE IS WRITTEN. Every
+  // path that could reach here with a `from` the dataset had already stopped
+  // moved past — `mergeSourceAfterConfirm` returns a `stop` and this function
+  // returns above it. That matters twice over: the step detail is what the
+  // person reads, and the audit entry is the only record that this press
+  // happened at all, so a `before` that was true before the dialog and false
+  // when the PATCH went out would be a false record of a destructive act, which
+  // is worse than no record.
   void audit('lake_landing.retention', { dataset: DATASET_ID, before: change.from, after: change.to, step })
   return outcome([step])
 }
@@ -700,8 +831,27 @@ export async function setDescription(
   // Same window, same close. The field is cosmetic; the body it rides in carries
   // retention, partitions and the storage binding, so merging onto a pre-dialog
   // read here reverts somebody else's retention change with a typo fix.
-  const merge = await mergeSourceAfterConfirm('description', dataset, { description: after }, init)
-  if ('failure' in merge) return outcome([merge.failure])
+  //
+  // AND THE SAME RULE ABOUT `before`. Nothing is deleted by a description, so
+  // the stakes are smaller than retention's — but the dialog shows a `before`,
+  // the audit trail records it, and a replacement approved against one set of
+  // words is not an approval to overwrite a different set. The rule is general
+  // and is applied generally rather than at the one field that can destroy data.
+  const merge = await mergeSourceAfterConfirm(
+    'description',
+    dataset,
+    { description: after },
+    {
+      shown: before,
+      now: (live) => live.description ?? opts.current,
+      target: after,
+      label: 'description',
+      stakes: 'the words you approved were approved as a replacement for what was on the dataset then, not for what somebody has put there since.',
+      alreadyThere: 'Nothing was sent: somebody else set the description to these words while that confirmation was open.',
+    },
+    init,
+  )
+  if ('stop' in merge) return outcome([merge.stop])
 
   const r = await capi('PATCH', `${LAKE_ROOT}/datasets/${DATASET_ID}`, merge.body, init)
   const step: WriteStep = isOk(r.status)
@@ -716,6 +866,8 @@ export async function setDescription(
       step.detail = racedNote('the new description', check.now)
     }
   }
+  // `before` is re-confirmed here for the reason `setRetention` spells out: the
+  // only path that reaches this line is one where the second read agreed with it.
   void audit('lake_landing.description', { dataset: DATASET_ID, before, after, step })
   return outcome([step])
 }
@@ -739,6 +891,70 @@ export interface DestinationConfirmContext {
 }
 
 /**
+ * The destination body to build the PATCH from, read AFTER the answer — or the
+ * reason nothing may be sent.
+ *
+ * The counterpart of `mergeSourceAfterConfirm`, and it refuses on a different
+ * comparison for the reason written at `updateDestination`: diffs rather than
+ * bodies, so that no list of server-derived keys has to be guessed at.
+ *
+ * A FAILED SECOND READ SENDS NOTHING, exactly as a failed first one does. There
+ * is no fallback to `current`, which is sitting right there — that fallback is
+ * the stale merge this function exists to prevent, arriving as a convenience on
+ * the workspace least likely to tolerate it.
+ */
+async function destinationMergeSourceAfterConfirm(
+  group: string,
+  edit: DestinationEdit,
+  approved: readonly DiffRow[],
+  init: CapiInit,
+): Promise<{ current: Record<string, unknown> } | { stop: WriteStep }> {
+  const live = await getDestination(group, init)
+  if (live.outcome !== 'ok' || !live.value) {
+    return {
+      stop: {
+        key: 'destination',
+        status: 'error',
+        detail:
+          `Nothing was sent: ${DESTINATION_ID} in group ${group} could not be read again after that confirmation` +
+          `${live.detail ? ` — ${live.detail}` : '.'} A destination PATCH is a full replacement, so a write this app cannot read first is a ` +
+          `write that would delete everything it could not see.`,
+      },
+    }
+  }
+
+  const current = { ...live.value.raw } as Record<string, unknown>
+  const now = diffDestination(current, edit)
+  if (now.length === 0) {
+    return {
+      stop: {
+        key: 'destination',
+        status: 'skipped',
+        detail: `Nothing was sent: somebody applied these settings to ${DESTINATION_ID} while that confirmation was open, so there is nothing left to change.`,
+      },
+    }
+  }
+  if (!sameDiff(approved, now)) {
+    return { stop: { key: 'destination', status: 'error', detail: destinationDiffMovedNote(group, approved, now) } }
+  }
+  return { current }
+}
+
+/** The sentence a refused destination write carries. Both diffs, in the same
+ *  words the dialog used, because "it changed" is not actionable until you can
+ *  see the change you approved beside the one that would go out. */
+function destinationDiffMovedNote(group: string, approved: readonly DiffRow[], now: readonly DiffRow[]): string {
+  const say = (rows: readonly DiffRow[]) =>
+    rows.map((d) => `${d.key} (${JSON.stringify(d.before) ?? 'absent'} → ${JSON.stringify(d.after) ?? 'absent'})`).join(', ')
+  return (
+    `Nothing was sent: ${DESTINATION_ID} in group ${group} changed while that confirmation was open, and the change you approved is not the ` +
+    `change that would now be applied. Approved: ${say(approved)}. Would now apply: ${say(now)}. A confirmation describes one before → after, ` +
+    `so this one is void rather than stale, and nothing here re-asks from a dialog you have already dismissed. This endpoint carries no ETag ` +
+    `and no version, so the write cannot be made conditional. Look at the destination and try again.`
+  )
+}
+
+/**
  * Apply a destination edit, then commit and deploy it.
  *
  * ONE INTENT, ONE CONFIRMATION (§1.5 rule 7). The PATCH is useless without the
@@ -752,26 +968,34 @@ export interface DestinationConfirmContext {
  * with the edit applied; computing the diff from a body the panel read a minute
  * ago would show somebody a diff against a destination that has since changed.
  *
- * ── THIS WRITER STILL HAS THE STALE-MERGE WINDOW THE TWO LAKE WRITERS CLOSED ─
- * The read above is the merge source AND it is on the far side of a user-paced
- * dialog, which is exactly the defect described in this file's header: while the
- * confirmation is open, somebody else's edit to `environment`, `notifications`,
- * a TLS setting or anything else on this object is reverted by the PATCH, under
- * a full-replacement semantics that is DOCUMENTED here rather than merely
- * suspected. Two things, and only two, make it less bad than the Lake one was:
- * this write commits and deploys, so the previous body is in the group's Git
- * history and can be reverted, and the diff the dialog showed is recomputable.
+ * ── AND IT READS TWICE, FOR THE REASON THE LAKE WRITERS DO ──────────────────
+ * The first read fills the dialog. It is NOT the merge source: by the time the
+ * answer comes back it is as old as the dialog was open, and merging onto it
+ * would revert whatever somebody else did to `environment`, `notifications`, a
+ * TLS setting or anything else on this object — under a full-replacement
+ * semantics that is DOCUMENTED here rather than merely suspected.
  *
- * IT IS NOT CLOSED IN THE SAME COMMIT, and the reason is a measurement nobody
- * has: the Lake refusal works because `DATASET_READONLY_KEYS` says which keys
- * move on their own, so a comparison can ignore them and still mean something.
- * Nothing in this repo knows the equivalent for a Stream output — `status` is
- * the one key known to be server-computed and there may be others — and a
- * refusal built on a guessed list would fire on a field nobody touched, which is
- * the failure that teaches people to distrust the refusal that matters. The fix
- * is the same three-step shape (`mergeSourceAfterConfirm` above, with
- * `applyDestinationEdit`/`DESTINATION_READONLY_KEYS` in place of the dataset
- * pair) the moment a Preview capture says what a live output GET returns twice.
+ * WHAT IT COMPARES IS THE DIFF, NOT THE BODY, and that is the whole reason this
+ * could be closed without the measurement it was waiting for. The Lake refusal
+ * compares whole bodies because `DATASET_READONLY_KEYS` names the keys that move
+ * on their own; nothing here knows the equivalent for a Stream output beyond
+ * `status`, and a refusal built on a guessed list fires on fields nobody touched,
+ * which teaches people to distrust the refusal that matters. But `diffDestination`
+ * already encodes this app's notion of what is meaningful, and the diff is
+ * literally what the person read. So: compute it against the first read, compute
+ * it against the second, and refuse unless they are the same change. A
+ * server-derived field moving changes no row; anything that changes a row is by
+ * construction a change to the approved change. No key list, and the refusal can
+ * only fire on something that was on screen.
+ *
+ * THE MERGE IS STILL ONTO THE SECOND READ, which is what makes the narrow
+ * comparison safe: a key this app has never heard of that moved in between is
+ * not reverted, it is carried forward, because the body sent is built from the
+ * body that holds it.
+ *
+ * AN EMPTY SECOND DIFF IS A NO-OP, NOT A CONFLICT — somebody applied exactly
+ * these settings while the dialog was open, so there is nothing left to send.
+ * `skipped`, and no commit and no deploy ride along behind it.
  */
 export async function updateDestination(
   group: string,
@@ -803,7 +1027,10 @@ export async function updateDestination(
   })
   if (!proceed) return outcome([{ key: 'destination', status: 'cancelled' }])
 
-  const body = applyDestinationEdit(current, edit)
+  const merge = await destinationMergeSourceAfterConfirm(group, edit, diff, init)
+  if ('stop' in merge) return outcome([merge.stop])
+
+  const body = applyDestinationEdit(merge.current, edit)
   const r = await capi('PATCH', groupPath(group, `/system/outputs/${DESTINATION_ID}`), body, init)
   const patched: WriteStep = isOk(r.status)
     ? { key: 'destination', status: 'applied', detail: diff.map((d) => d.key).join(', ') }

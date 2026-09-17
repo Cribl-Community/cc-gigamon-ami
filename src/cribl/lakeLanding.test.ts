@@ -115,14 +115,19 @@ interface WorldOpts {
    * comparison that now closes it.
    */
   betweenReads?: [number, unknown]
+  /** The same, for the DESTINATION GET: what it answers from the second read
+   *  onward. `updateDestination` reads once to compute the diff the dialog shows
+   *  and again after the answer, so this is the other admin on that object. */
+  destBetweenReads?: [number, unknown]
 }
 
 /** A workspace with the stack already there, so a test only says what differs. */
 function stubWorld(opts: WorldOpts = {}): Call[] {
-  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite, betweenReads } = opts
+  const { answers = {}, pending = [OUTPUTS_YML], commit = 'abcdef1234567890', dataset = LIVE_DATASET, afterWrite, betweenReads, destBetweenReads } = opts
   const calls: Call[] = []
   let datasetPatched = false
   let datasetReads = 0
+  let destReads = 0
 
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -155,6 +160,8 @@ function stubWorld(opts: WorldOpts = {}): Call[] {
       case 'GET /m/default_search/search/datasets/gigamon_ami':
         return reply(200, { items: [{ id: 'gigamon_ami', searchVersion: 'v1', lakeStorageFormat: 'json' }] })
       case `GET ${DEST_PATH}`:
+        destReads += 1
+        if (destReads >= 2 && destBetweenReads) return reply(destBetweenReads[0], destBetweenReads[1])
         return reply(200, { items: [LIVE_DESTINATION] })
       case `PATCH ${DEST_PATH}`:
         return reply(200, { items: [] })
@@ -617,6 +624,18 @@ describe('setDescription', () => {
 // distinguish them is a difference that blocks the write. The observable
 // guarantee is therefore the pair below: a second GET happens after the answer
 // and before the PATCH, and ANY difference between the two reads stops it.
+//
+// ── AND THE SECOND HALF OF THESE TESTS IS A HOLE THE FIRST HALF LEFT OPEN ───
+// That comparison was written to EXCLUDE the field being edited, on the
+// reasoning that another admin setting retention to the value you are setting is
+// a no-op and not a conflict. True of one move, applied to all of them: live 30,
+// A approves a dialog reading "raise retention from 30 to 60 days — nothing is
+// deleted" which carries no typed gate because an increase needs none, B sets
+// 365, A clicks Yes, and 60 goes out and deletes 305 days of a customer's events.
+// The tests from `DOES NOT SEND AN INCREASE THAT HAS BECOME A DECREASE` onward
+// are for that, and the rule they pin is general: a confirmation describes one
+// before → after, so if `before` moves the confirmation is VOID, and only a move
+// TO THE TARGET is a genuine no-op.
 
 describe('the stale-merge window', () => {
   const yes = () => true
@@ -669,14 +688,147 @@ describe('the stale-merge window', () => {
     }
   })
 
-  it('does not call the edited field a conflict — the same value from somebody else is a no-op', async () => {
-    // B set retention to 90 while A was deciding to set it to 90. There is
-    // nothing to lose and nothing to refuse.
+  it('calls a move TO THE TARGET a no-op, sends nothing, and does not report it as a conflict', async () => {
+    // B set retention to 90 while A was deciding to set it to 90. The change A
+    // approved is already in force, so there is nothing left to send and nothing
+    // to warn anybody about. This is the ONE move the blanket exclusion of the
+    // edited key got right, and it is the only one kept.
     const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 90 }] }] })
     const r = await setRetention(90, { current: 30, confirm: yes })
-    const body = writes(calls).find((c) => c.path === DATASET_PATH)?.body as Record<string, unknown>
-    expect(body?.retentionPeriodInDays).toBe(90)
+    expect(writes(calls)).toEqual([])
     expect(r.ok).toBe(true)
+    expect(r.noop).toBe(true)
+    expect(r.steps[0]).toMatchObject({ key: 'retention', status: 'skipped' })
+    expect(r.steps[0].detail).toContain('90 days')
+  })
+
+  // ── THE CONFIRMATION IS VOID WHEN ITS `before` MOVED ──────────────────────
+  //
+  // The window above was closed with a comparison that EXCLUDED the field being
+  // edited, on the reasoning that another admin setting retention to the value
+  // you are setting is a no-op. That covered one move and let every other move
+  // of the same field through, which opened a hole worse than the one it closed.
+  // These are the tests for it. The first one is the one that destroys data.
+
+  it('DOES NOT SEND AN INCREASE THAT HAS BECOME A DECREASE — the case that deletes a customer’s events', async () => {
+    // THE TEST THIS WHOLE COMMIT IS FOR, spelled out because a shorter name
+    // would not carry it:
+    //
+    // Live retention is 30. Admin A presses Apply for 60 and reads a dialog
+    // saying "Raise retention from 30 to 60 days — Reversible: nothing is
+    // deleted by an increase." Because `change.direction` is `increase`, that
+    // dialog renders NO irreversibility warning and demands NO typed dataset id.
+    // While A is reading it, admin B sets retention to 365. A clicks Yes.
+    //
+    // If the 60 goes out, Cribl Lake deletes 305 days of the customer's ingested
+    // events, irreversibly, under a sentence that promised nothing would be
+    // deleted and past the one gate this app built for exactly this write. So
+    // the assertion is on the REQUESTS MADE, not on the answer: a function that
+    // PATCHed and then reported an error would pass a check of its own return
+    // value and would have destroyed the data.
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 365 }] }] })
+    const r = await setRetention(60, { current: 30, confirm: yes })
+    expect(writes(calls)).toEqual([])
+    expect(r.ok).toBe(false)
+    expect(r.steps[0]).toMatchObject({ key: 'retention', status: 'error' })
+    // Both values, and the fact that nothing went out. "It changed" is not
+    // actionable until you can see what you were asked about and what is there.
+    expect(r.steps[0].detail).toContain('Nothing was sent')
+    expect(r.steps[0].detail).toContain('30')
+    expect(r.steps[0].detail).toContain('365')
+  })
+
+  it('refuses a decrease whose before moved too, not only the increase', async () => {
+    // The rule is about the sentence, not about the direction. A decrease
+    // approved against 30 is a different decrease against 7, and the number in
+    // "the 23 days beyond the new window go" was computed from 30.
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 7 }] }] })
+    const r = await setRetention(14, { current: 30, confirm: yes })
+    expect(writes(calls)).toEqual([])
+    expect(r.steps[0].detail).toContain('Nothing was sent')
+  })
+
+  it('proceeds when the before did not move', async () => {
+    // `afterWrite` is the post-write re-read, a different check from this one —
+    // without it the stub keeps answering 30 and the step reports a race.
+    const calls = stubWorld({ afterWrite: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 60 }] }] })
+    const r = await setRetention(60, { current: 30, confirm: yes })
+    expect(writes(calls).map((c) => c.method)).toEqual(['PATCH'])
+    expect(r.steps[0]).toMatchObject({ status: 'applied', detail: '30 → 60 days' })
+  })
+
+  it('applies the same rule to the description, which shows a before too', async () => {
+    // Unchanged → proceeds. Moved to the target → no-op, nothing sent. Moved
+    // anywhere else → refused, nothing sent, both sets of words named.
+    const clean = stubWorld()
+    expect((await setDescription('new words', { current: 'old', confirm: yes })).steps[0].status).toBe('applied')
+    expect(writes(clean).map((c) => c.method)).toEqual(['PATCH'])
+
+    const already = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, description: 'new words' }] }] })
+    const noop = await setDescription('new words', { current: 'old', confirm: yes })
+    expect(writes(already)).toEqual([])
+    expect(noop.steps[0]).toMatchObject({ status: 'skipped' })
+    expect(noop.noop).toBe(true)
+
+    const moved = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, description: 'B was here' }] }] })
+    const r = await setDescription('new words', { current: 'old', confirm: yes })
+    expect(writes(moved)).toEqual([])
+    expect(r.steps[0]).toMatchObject({ status: 'error' })
+    expect(r.steps[0].detail).toContain('"old"')
+    expect(r.steps[0].detail).toContain('"B was here"')
+  })
+
+  it('reports the field that moved rather than one that moved beside it', async () => {
+    // Both checks fire. The retention one runs first on purpose: reporting "the
+    // description changed" while retention silently went 30 → 365 would name the
+    // harmless move and hide the dangerous one.
+    const calls = stubWorld({
+      betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 365, description: 'B was here' }] }],
+    })
+    const r = await setRetention(60, { current: 30, confirm: yes })
+    expect(writes(calls)).toEqual([])
+    expect(r.steps[0].detail).toContain('retention')
+    expect(r.steps[0].detail).toContain('365')
+  })
+
+  it('never re-prompts — one dialog, one answer, and a refusal instead of a second question', async () => {
+    // Silently re-deriving a confirmation from a dialog somebody has already
+    // dismissed is the failure this whole sequence has been chasing. The writer
+    // gets exactly one call and gets it before the second read.
+    const asked: number[] = []
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 365 }] }] })
+    await setRetention(60, {
+      current: 30,
+      confirm: () => {
+        asked.push(calls.filter((c) => c.path.startsWith(DATASET_PATH)).length)
+        return true
+      },
+    })
+    expect(asked).toEqual([1])
+  })
+
+  it('CANNOT WRITE A STALE `before` INTO THE AUDIT TRAIL', async () => {
+    // The step detail and the trail entry both carry `change.from`, computed
+    // from the read that filled the dialog. An audit entry recording `before:
+    // 30` for a write that actually cut 365 to 60 is a false record of a
+    // destructive act, which is worse than no record — so the only paths that
+    // reach either are ones where that value was re-confirmed.
+    const calls = stubWorld({ betweenReads: [200, { items: [{ ...LIVE_DATASET, retentionPeriodInDays: 365 }] }] })
+    const r = await setRetention(60, { current: 30, confirm: yes })
+    // `audit` is fire-and-forget, so give it the microtask it would have had.
+    await new Promise((done) => setTimeout(done, 0))
+    // No PATCH to the dataset, and no trail entry claiming one happened.
+    expect(writes(calls)).toEqual([])
+    expect(calls.filter((c) => c.path.startsWith('/kvstore/') && c.method !== 'GET')).toEqual([])
+    expect(r.steps[0].detail).not.toContain('30 → 60 days')
+
+    // And on the path that does write one, the `before` it carries was read
+    // again after the answer.
+    const applied = stubWorld()
+    await setRetention(60, { current: 30, confirm: yes })
+    await new Promise((done) => setTimeout(done, 0))
+    const entry = applied.find((c) => c.path.startsWith('/kvstore/') && c.method !== 'GET')
+    expect(JSON.stringify(entry?.body)).toContain('"before":30')
   })
 
   it('does not block on a field Cribl recomputes on its own', async () => {
@@ -832,6 +984,85 @@ describe('updateDestination', () => {
     expect(r.ok).toBe(false)
     expect(writes(calls)).toEqual([])
   })
+
+  // ── The same window, closed on a comparison of DIFFS rather than of bodies ──
+  //
+  // This writer waited a commit longer than the two Lake ones, for a stated
+  // reason: the Lake refusal compares whole bodies because DATASET_READONLY_KEYS
+  // names the keys that move on their own, and nothing here knows the equivalent
+  // for a Stream output beyond `status` — so a refusal built on a guessed list
+  // fires on fields nobody touched, which teaches people to distrust it.
+  //
+  // Comparing `diffDestination` against both reads needs no such list, which is
+  // what these tests are for: a field the edit does not touch moving must NOT
+  // refuse, and a change to an approved row must.
+
+  it('reads the destination again after the answer, and builds the body from that read', async () => {
+    const calls = stubWorld()
+    await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+    // GET (fills the dialog) · GET (the merge source) · PATCH.
+    expect(calls.filter((c) => c.path === DEST_PATH).map((c) => c.method)).toEqual(['GET', 'GET', 'PATCH'])
+  })
+
+  it('spends no second read on a refusal', async () => {
+    const calls = stubWorld()
+    await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => false })
+    expect(calls.filter((c) => c.path === DEST_PATH)).toHaveLength(1)
+  })
+
+  it('BLOCKS THE WRITE when the diff that would apply is not the diff that was approved', async () => {
+    // B set maxFileSizeMB to 64 while A was reading a dialog whose row said
+    // "5 → 32". The row that would now apply says "64 → 32", which is a
+    // different change to a delivery point both feeds write through — and the
+    // commit and deploy behind it would restart that group's Worker Processes
+    // for it.
+    const calls = stubWorld({ destBetweenReads: [200, { items: [{ ...LIVE_DESTINATION, maxFileSizeMB: 64 }] }] })
+    const r = await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+    expect(writes(calls)).toEqual([])
+    expect(r.ok).toBe(false)
+    expect(r.steps[0]).toMatchObject({ key: 'destination', status: 'error' })
+    expect(r.steps[0].detail).toContain('Nothing was sent')
+    // Both diffs, named: the one approved and the one that would go out.
+    expect(r.steps[0].detail).toContain('Approved')
+    expect(r.steps[0].detail).toContain('Would now apply')
+    expect(r.steps[0].detail).toContain('64')
+  })
+
+  it('DOES NOT refuse when a field the edit never touches moved — the false refusal the key list was needed to avoid', async () => {
+    // `status` is server-computed and `environment` is a key this app has no
+    // opinion about. Neither appears in the diff, so neither changes it, so
+    // neither refuses. And the body is merged onto the SECOND read, so their
+    // value is carried forward rather than reverted — which is what makes a
+    // comparison this narrow safe.
+    const moved = { ...LIVE_DESTINATION, status: { health: 'red' }, environment: 'staging' }
+    const calls = stubWorld({ destBetweenReads: [200, { items: [moved] }] })
+    const r = await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+    const body = writes(calls).find((c) => c.path === DEST_PATH)?.body as Record<string, unknown>
+    expect(r.steps[0].status).toBe('applied')
+    expect(body.environment).toBe('staging')
+    expect(body).not.toHaveProperty('status')
+  })
+
+  it('calls a destination somebody else already changed to these settings a no-op, and commits nothing', async () => {
+    const applied = { ...LIVE_DESTINATION, ...destinationSpec(balanced).set }
+    const calls = stubWorld({ destBetweenReads: [200, { items: [applied] }] })
+    const r = await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+    expect(writes(calls)).toEqual([])
+    expect(r.noop).toBe(true)
+    expect(r.steps[0]).toMatchObject({ key: 'destination', status: 'skipped' })
+  })
+
+  it('SENDS NOTHING when the second read fails, and never falls back to the first', async () => {
+    // The first read's body is sitting right there. Merging onto it is the stale
+    // merge this sequence exists to prevent, arriving as a convenience.
+    for (const status of [403, 500]) {
+      const calls = stubWorld({ destBetweenReads: [status, { message: 'leader unavailable' }] })
+      const r = await updateDestination(GROUP, destinationSpec(balanced), { confirm: () => true })
+      expect(writes(calls), String(status)).toEqual([])
+      expect(r.ok, String(status)).toBe(false)
+      expect(r.steps[0].detail, String(status)).toContain('Nothing was sent')
+    }
+  })
 })
 
 describe('commitAndDeployDestination', () => {
@@ -984,17 +1215,22 @@ describe('addressing', () => {
 //     30 → 30 no-op, then a full re-read and diff) still has to run; it is now a
 //     confirmation that this app kept the dataset whole rather than the thing
 //     deciding whether the phase was safe to ship.
-//   * THAT `updateDestination` HAS NO STALE-MERGE WINDOW. IT STILL DOES, and no
-//     test here covers it, because nothing here fixes it. It reads the
-//     destination, opens the same user-paced dialog, and merges onto the
-//     PRE-DIALOG body — the defect the tests above exist for, on an endpoint
-//     whose PATCH is documented as a full replacement rather than merely
-//     suspected of being one. Two things make it less bad and neither makes it
-//     fine: the write commits and deploys, so the previous body is in the
-//     group's Git history, and the diff is recomputable. Closing it needs the
-//     one thing the dataset had and a Stream output does not — a measured list
-//     of which keys move on their own, so a refusal cannot fire on a field
-//     nobody touched. The note on that function says the same thing at the site.
+//   * WHICH KEYS A LIVE STREAM OUTPUT MOVES ON ITS OWN. `updateDestination`'s
+//     stale-merge window is closed now, and it was closed WITHOUT that list:
+//     it compares `diffDestination` against both reads rather than the bodies,
+//     so a server-derived field moving changes no row and only a change to the
+//     approved change refuses. That is why the pair of tests above — a moved
+//     `status`/`environment` proceeding, a moved `maxFileSizeMB` refusing — is
+//     the whole of the claim. What is still unmeasured is the list itself, which
+//     `DESTINATION_READONLY_KEYS` needs for a different job: deciding what the
+//     PATCH body may carry back. It holds only `status`, against a design that
+//     also stripped `notifications`, and that question belongs to Preview 3.2.
+//   * THAT THE DIFF COMPARISON CATCHES EVERY MEANINGFUL MOVE. It catches exactly
+//     the moves `diffDestination` considers meaningful, which is the same set the
+//     dialog rendered — deliberately, since a refusal about something nobody was
+//     shown is one nobody can act on. A change to a key outside the edit is NOT
+//     refused; it is carried forward by the merge onto the second read, which is
+//     a different guarantee and is the one the `environment` test asserts.
 //   * THAT THE RACE REPORTING CATCHES A RACE. The re-read is stubbed, so what is
 //     proved is that a disagreement is surfaced rather than swallowed. A real
 //     lost update needs two admins and no ETag to make it conditional on, which
