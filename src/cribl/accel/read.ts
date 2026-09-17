@@ -50,6 +50,29 @@
 //     declare one.
 //   * THE `jobName=` PREDICATE IS MANDATORY. A read without a `jobName` or
 //     `jobId` predicate errors.
+//   * WHAT `jobName=` BINDS TO IS NOT KNOWN (claim V-23). A saved search has an
+//     id (`gno_lake_30d_c1d`) and a display name ('GNO · Lake total (30 days)'),
+//     and nobody has measured which of the two that predicate selects on —
+//     spike A-SP1 exists to settle it and has never been run. The plan's first
+//     answer was to make them equal; Phase 2 withdrew that, because an operator
+//     scanning a shared Saved Searches list has to be able to tell what a thing
+//     is before deciding it is safe to delete, and `gno_sample_2m_c1h` does not
+//     tell them.
+//
+//     So the read asks the id, and on ZERO ROWS asks the display name before it
+//     concludes there is no run. Getting this wrong in the other direction is
+//     the reason: keyed only on the id, a name-binding platform returns zero
+//     rows to both panels forever, the app reads that as "not run yet", falls
+//     back to live, renders the right number — and saves NOTHING, silently, for
+//     the entire life of the phase. The fallback costs one more stored-result
+//     read, 0.2 billable CPU-s, AND ONLY ON A MISS — a path that was already
+//     about to spend a live query's 754.9 or 9,297.7 CPU-s. That is the price
+//     anybody deleting this fallback is choosing to stop paying.
+//
+//     Which key answered is memoised per entry for the session (KEY_MEMO), so
+//     the loser is paid for once, and it is reported on every read (`key`) and
+//     summarised by `observedKeyBinding()` — which is the answer to V-23,
+//     readable off a running app instead of off a spike nobody ran.
 //   * NO `set allow_previous_results` PREFIX, EVER (decision A-D15). The result is
 //     already stored; that prefix is for live queries. For the avoidance of
 //     doubt about what search.ts adds on its own: `withExecPrefix` prefixes
@@ -133,6 +156,68 @@ const UNKNOWN_CADENCE_MS = 24 * 60 * 60 * 1000
 export type AccelSource = 'schedule' | 'live'
 
 /**
+ * Which of a saved search's two identifiers the `jobName=` predicate answered
+ * on. See V-23 in the header: this app does not know which one the platform
+ * binds to, so it finds out by asking.
+ */
+export type AccelReadKey = 'id' | 'name'
+
+/** Id first, always: it is what the plan specified and what the code everywhere
+ *  else keys on, so a session that pays for the fallback pays once. */
+const KEY_ORDER: readonly AccelReadKey[] = ['id', 'name']
+
+/**
+ * Which key answered, per entry, for this session.
+ *
+ * ONLY A SUCCESS IS REMEMBERED. Both keys coming back empty is not evidence
+ * about the binding — it is a schedule that has not produced a readable run —
+ * and memoising it as one would mean the panel never notices the first run when
+ * it arrives, which is the state every newly applied schedule starts in. So a
+ * miss teaches this map nothing and the next read asks both keys again; the map
+ * only ever shortens the work after something has actually been read.
+ *
+ * Module-level and per session on purpose. The binding is a property of the
+ * platform, not of an install, so it cannot go stale under a running tab; and
+ * keeping it out of the KV store keeps a measurement the app made for itself
+ * out of a document a customer's admin would have to reason about.
+ */
+const KEY_MEMO = new Map<AccelId, AccelReadKey>()
+
+/** Tests, and anything that wants the next read to re-measure. */
+export function resetAccelKeyMemo(): void {
+  KEY_MEMO.clear()
+}
+
+/**
+ * The answer to V-23 as far as this session has seen it, or null before any
+ * stored result has been read.
+ *
+ * Disagreement between entries answers null rather than a guess: if the id
+ * selected one entry's run and the display name selected the other's, the thing
+ * this function exists to report — "the predicate binds to X" — is not true, and
+ * the per-read `key` is the only honest answer left. Nobody has observed that;
+ * it is null-on-disagreement precisely so a surface can never report it as a
+ * measurement.
+ */
+export function observedKeyBinding(): AccelReadKey | null {
+  const seen = new Set(KEY_MEMO.values())
+  return seen.size === 1 ? [...seen][0] : null
+}
+
+/**
+ * How a status surface may say what the binding turned out to be.
+ *
+ * Written here, beside the thing that measured it, and phrased for the admin
+ * reading Guided Setup's acceleration table — the audience that can act on it.
+ * A panel's ⓘ has no use for this: it changes nothing about where the number
+ * came from or when it was produced.
+ */
+export const KEY_BINDING_NOTES: Readonly<Record<AccelReadKey, string>> = Object.freeze({
+  id: 'Stored results are selected by each scheduled search’s id.',
+  name: 'Stored results are selected by each scheduled search’s display name rather than its id.',
+})
+
+/**
  * Why the read ended up where it did. Everything except `fresh` and `stale`
  * means the live query ran.
  */
@@ -194,6 +279,15 @@ export interface AccelRead<T> {
   staleAfterMs: number
   /** `outcome === 'stale'`, hoisted because it is the one a panel branches on. */
   stale: boolean
+  /**
+   * Which identifier the `jobName=` predicate answered on — null on every live
+   * fallback, because nothing answered.
+   *
+   * `'name'` is not a degraded read: the rows are the same rows. It is EVIDENCE,
+   * and the only kind this app can collect for V-23 without running A-SP1 —
+   * which is why it is on the return value rather than in a log line.
+   */
+  key: AccelReadKey | null
   /** A sentence to render. Never contains Cribl's words — see NOTES. */
   note: string
 }
@@ -239,7 +333,33 @@ export interface AccelReadOptions<T> {
  */
 export function accelReadQuery(id: AccelId, tail?: string): string {
   if (!isAccelId(id)) throw new Error(`accel read: '${id}' is not an id this app owns`)
-  const head = `dataset="${VT_RESULTS}" jobName="${id}"`
+  return selectorQuery(id, tail)
+}
+
+/**
+ * The same query keyed on whichever of the two selectors is being tried.
+ *
+ * The name is validated against the manifest's own entry rather than against a
+ * pattern, and that is the deliberate difference from the id: an id has a shape
+ * (`isAccelId`), a human title does not, so the only honest check is "this is
+ * the exact string the manifest ships". The quote and backslash refusal is
+ * belt-and-braces for the day somebody adds an entry whose title contains one —
+ * a name is interpolated into query TEXT, so a title is an injection site the
+ * moment it stops being a literal in this repo.
+ */
+export function accelReadQueryOn(entry: AccelEntry, key: AccelReadKey, tail?: string): string {
+  if (key === 'id') return accelReadQuery(entry.id, tail)
+  const name = entry.name
+  const manifest = accelEntry(entry.id)
+  if (!name || name !== manifest.name) {
+    throw new Error(`accel read: '${name}' is not the manifest's name for '${entry.id}'`)
+  }
+  if (/["\\]/.test(name)) throw new Error(`accel read: the name for '${entry.id}' cannot be quoted safely`)
+  return selectorQuery(name, tail)
+}
+
+function selectorQuery(selector: string, tail?: string): string {
+  const head = `dataset="${VT_RESULTS}" jobName="${selector}"`
   const t = tail?.trim()
   return t ? `${head} ${t}` : head
 }
@@ -268,25 +388,32 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   const live = opts.live ?? (async () => (await liveSearch(entry, opts)).rows)
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
 
-  let result
+  let answered
   try {
-    result = await runSearch(accelReadQuery(id, opts.tail), {
-      earliest: FAST_EARLIEST,
-      latest: FAST_LATEST,
-      limit: opts.limit,
-      signal: opts.signal,
-      timeoutMs: FAST_TIMEOUT_MS,
-    })
+    answered = await onAnsweringKey(
+      entry,
+      opts.tail,
+      (query) =>
+        runSearch(query, {
+          earliest: FAST_EARLIEST,
+          latest: FAST_LATEST,
+          limit: opts.limit,
+          signal: opts.signal,
+          timeoutMs: FAST_TIMEOUT_MS,
+        }),
+      (r) => r.rows.length === 0,
+    )
   } catch (err) {
     if (aborted(err, opts.signal)) throw err
     warn(id, 'the stored-result read failed', err)
     return fallback(entry, 'unreadable', live, opts)
   }
 
-  if (result.rows.length === 0) return fallback(entry, await diagnose(id, opts), live, opts)
+  if (!answered) return fallback(entry, await diagnose(id, opts), live, opts)
+  const { result, key } = answered
 
   const named = String(result.rows[0][COL_JOB_NAME] ?? '')
-  if (named && named !== id) {
+  if (named && !namesThisEntry(entry, named)) {
     // Never observed; asserted anyway. If the predicate were ever ignored, a
     // panel would render another schedule's numbers with this one's ⓘ beside
     // them, which is the one thing this phase promised could not happen.
@@ -295,7 +422,7 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   }
 
   const sourceJobId = str(result.rows[0][COL_JOB_ID])
-  return dated(entry, stripVirtualColumns(result.rows), sourceJobId, live, opts)
+  return dated(entry, stripVirtualColumns(result.rows), sourceJobId, key, live, opts)
 }
 
 /**
@@ -314,21 +441,28 @@ export async function readAccelFieldSummaries(
   const live = opts.live ?? (() => liveFieldSummaries(entry, opts))
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
 
-  let result
+  let answered
   try {
-    result = await runFieldSummaries(accelReadQuery(id, opts.tail), {
-      earliest: FAST_EARLIEST,
-      latest: FAST_LATEST,
-      signal: opts.signal,
-      timeoutMs: FAST_TIMEOUT_MS,
-    })
+    answered = await onAnsweringKey(
+      entry,
+      opts.tail,
+      (query) =>
+        runFieldSummaries(query, {
+          earliest: FAST_EARLIEST,
+          latest: FAST_LATEST,
+          signal: opts.signal,
+          timeoutMs: FAST_TIMEOUT_MS,
+        }),
+      (r) => r.fields.length === 0,
+    )
   } catch (err) {
     if (aborted(err, opts.signal)) throw err
     warn(id, 'the stored-result field summaries failed', err)
     return fallback(entry, 'unreadable', live, opts)
   }
 
-  if (result.fields.length === 0) return fallback(entry, await diagnose(id, opts), live, opts)
+  if (!answered) return fallback(entry, await diagnose(id, opts), live, opts)
+  const { result, key } = answered
 
   // The run id, read off the virtual column's own summary before it is dropped.
   // Every row of a stored result carries the same `jobId`, so its one top value
@@ -346,10 +480,71 @@ export async function readAccelFieldSummaries(
     // widest real field.
     sampled: result.sampled,
   }
-  return dated(entry, data, sourceJobId, live, opts)
+  return dated(entry, data, sourceJobId, key, live, opts)
 }
 
 // ── The shared half ─────────────────────────────────────────────────────────
+
+/**
+ * Run the stored-result read on each key in turn until one answers, and
+ * remember the one that did.
+ *
+ * "Answers" means rows, not a 200: an empty result is what a wrong key looks
+ * like, and it is also what a schedule that has never fired looks like, which is
+ * the whole reason both keys have to be asked before `diagnose` is believed.
+ *
+ * THE SECOND READ IS NOT FREE, AND IT IS NOT EXPENSIVE. 0.2 billable CPU-s, on a
+ * path that has already established it has nothing to show and is therefore
+ * about to spend a live query — 754.9 CPU-s on the sample entry, 9,297.7 on the
+ * Lake total. Once either key has answered for an entry, this asks one.
+ *
+ * Errors are thrown, not swallowed: a 4xx on the first key is a broken read, not
+ * evidence that the key is wrong, and retrying the other one would turn one
+ * unreadable read into two.
+ */
+async function onAnsweringKey<T>(
+  entry: AccelEntry,
+  tail: string | undefined,
+  run: (query: string) => Promise<T>,
+  isEmpty: (result: T) => boolean,
+): Promise<{ result: T; key: AccelReadKey } | null> {
+  const known = KEY_MEMO.get(entry.id)
+  for (const key of known ? [known] : KEY_ORDER) {
+    const result = await run(accelReadQueryOn(entry, key, tail))
+    if (isEmpty(result)) continue
+    if (!known) rememberKey(entry.id, key)
+    return { result, key }
+  }
+  // Nothing on either key. Deliberately NOT memoised — see KEY_MEMO.
+  return null
+}
+
+function rememberKey(id: AccelId, key: AccelReadKey): void {
+  KEY_MEMO.set(id, key)
+  if (key === 'name') {
+    // Once per entry per session, because the memo is what stops it repeating.
+    // Logged as well as returned so the answer to V-23 is in a support bundle's
+    // console dump, where it will be read by whoever is asking why this app
+    // reads a saved search by its title.
+    console.info(
+      `Gigamon acceleration (${id}): the stored result answered to the schedule’s display name, not its id — ${KEY_BINDING_NOTES.name}`,
+    )
+  }
+}
+
+/**
+ * Whether a `jobName` column belongs to this entry — under either identifier.
+ *
+ * Both are accepted because the predicate that matched and the column that comes
+ * back are two separate unknowns: a platform that SELECTS on the display name
+ * may still STAMP the id (or the reverse), and treating that mismatch as a
+ * corrupt result would fall back to live on every read of a perfectly good one.
+ * The claim this check exists to defend is narrower and unchanged — that these
+ * rows are not some OTHER schedule's.
+ */
+function namesThisEntry(entry: AccelEntry, named: string): boolean {
+  return named === entry.id || named === entry.name
+}
 
 /**
  * Date a result, and decide whether it may be shown.
@@ -363,6 +558,7 @@ async function dated<T>(
   entry: AccelEntry,
   data: T,
   sourceJobId: string | null,
+  key: AccelReadKey,
   live: () => Promise<T>,
   opts: AccelReadOptions<T>,
 ): Promise<AccelRead<T>> {
@@ -383,6 +579,7 @@ async function dated<T>(
     ageMs,
     staleAfterMs,
     stale: outcome === 'stale',
+    key,
     note: NOTES[outcome],
   }
 }
@@ -447,6 +644,9 @@ async function fallback<T>(
     ageMs: null,
     staleAfterMs: opts.staleAfterMs ?? staleAfterMsFor(entry),
     stale: false,
+    // Nothing answered, so there is nothing to report a key for. A live read is
+    // not evidence about the binding in either direction.
+    key: null,
     note: NOTES[outcome],
   }
 }

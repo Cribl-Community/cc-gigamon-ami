@@ -30,18 +30,28 @@ import { accelEntry } from './manifest'
 import {
   FAST_EARLIEST,
   FAST_LATEST,
+  KEY_BINDING_NOTES,
   NOTES,
   STALE_FACTOR,
   VIRTUAL_COLUMNS,
   accelReadQuery,
+  accelReadQueryOn,
+  observedKeyBinding,
   readAccelFieldSummaries,
   readAccelRows,
+  resetAccelKeyMemo,
   staleAfterMsFor,
   stripVirtualColumns,
 } from './read'
 
 const LAKE = 'gno_lake_30d_c1d'
 const SAMPLE = 'gno_sample_2m_c1h'
+
+/** The human titles Phase 2 ships, which are NOT the ids — the whole reason the
+ *  read path has two keys to try. Read from the manifest rather than retyped,
+ *  so renaming an entry moves these tests with it. */
+const LAKE_NAME = accelEntry(LAKE).name
+const SAMPLE_NAME = accelEntry(SAMPLE).name
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
@@ -70,9 +80,15 @@ const srcRun = (over: Record<string, unknown> = {}) => ({
 })
 
 interface Cfg {
+  /** What a read keyed on the saved search's ID answers with. */
   vtRows?: Row[]
+  /** What a read keyed on its DISPLAY NAME answers with. A platform binds
+   *  `jobName=` to one or the other (V-23, unmeasured), so a fixture that sets
+   *  only one of these is a workspace where that key is the one that works. */
+  nameRows?: Row[]
   liveRows?: Row[]
   vtFields?: FieldSummary[]
+  nameFields?: FieldSummary[]
   liveFields?: FieldSummary[]
   /** Fail the `$vt_results` job submit with this status and body. */
   vtFail?: { status: number; body: unknown }
@@ -116,16 +132,21 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
       submits.push(body)
       const isVt = body.query.includes('$vt_results')
       if (isVt && cfg.vtFail) return res(cfg.vtFail.status, cfg.vtFail.body)
-      return res(200, { items: [{ id: isVt ? 'job-vt' : 'job-live' }] })
+      // Three job ids, so /results and /field-summaries can answer each key
+      // differently. None is a prefix of another: `job-vt` is, deliberately, not
+      // a substring of the name-keyed one.
+      const id = !isVt ? 'job-live' : keyOf(body.query) === 'name' ? 'job-nm' : 'job-vt'
+      return res(200, { items: [{ id }] })
     }
     if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
     if (u.includes('/results')) {
-      const rows = u.includes('job-vt') ? (cfg.vtRows ?? []) : (cfg.liveRows ?? [])
+      const rows = u.includes('job-nm') ? (cfg.nameRows ?? []) : u.includes('job-vt') ? (cfg.vtRows ?? []) : (cfg.liveRows ?? [])
       const ndjson = [JSON.stringify({ totalEventCount: rows.length, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n')
       return res(200, {}, ndjson)
     }
     if (u.includes('/field-summaries')) {
-      return res(200, { fields: u.includes('job-vt') ? (cfg.vtFields ?? []) : (cfg.liveFields ?? []) })
+      const fields = u.includes('job-nm') ? (cfg.nameFields ?? []) : u.includes('job-vt') ? (cfg.vtFields ?? []) : (cfg.liveFields ?? [])
+      return res(200, { fields })
     }
     if (u.includes('/search/jobs?')) {
       if (cfg.historyStatus) return res(cfg.historyStatus, { message: 'no' })
@@ -144,11 +165,25 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
 /** A read that finds a healthy, recent run. The baseline every failure varies. */
 const healthy: Cfg = { vtRows: [STORED], liveRows: [LIVE], jobs: { 'src-run-1': srcRun() } }
 
+/** Which identifier a submitted `$vt_results` query selected on. The ids are the
+ *  only `jobName=` values matching the `gno_` shape; a title is anything else. */
+const keyOf = (query: string): 'id' | 'name' =>
+  /jobName="gno_[a-z0-9_]+"/.test(query) ? 'id' : 'name'
+
 const vtSubmit = (s: Submitted[]) => s.find((x) => x.query.includes('$vt_results'))
 const liveSubmit = (s: Submitted[]) => s.find((x) => !x.query.includes('$vt_results'))
+const vtSubmits = (s: Submitted[]) => s.filter((x) => x.query.includes('$vt_results'))
+const vtKeys = (s: Submitted[]) => vtSubmits(s).map((x) => keyOf(x.query))
 
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  // The name-binding notice, which fires once per entry per session precisely
+  // because the memo below is what stops it repeating.
+  vi.spyOn(console, 'info').mockImplementation(() => {})
+  // The key memo is module-level and lives for a session. Cleared between tests
+  // so that one test's measurement cannot make another test's first read cheap
+  // — which would hide exactly the double-read this suite exists to pin.
+  resetAccelKeyMemo()
 })
 
 afterEach(() => {
@@ -350,6 +385,164 @@ describe('nothing to read', () => {
     const read = await readAccelRows(LAKE, { now: NOW })
     expect(read.outcome).toBe('no-run')
     expect(read.source).toBe('live')
+  })
+})
+
+describe('which identifier $vt_results answers to (V-23)', () => {
+  // NOBODY HAS MEASURED whether `jobName=` selects a saved search's id or its
+  // display name — A-SP1 was never run, and Phase 2 ships entries where the two
+  // differ. Keyed only on the id against a name-binding platform, both panels
+  // read zero rows forever, fall back to live, render the right number and save
+  // NOTHING. It fails safe and it fails silent, which is why the read asks both.
+
+  /** The same stored row as a name-binding platform would stamp it. */
+  const NAMED: Row = { ...STORED, jobName: LAKE_NAME }
+  /** A workspace where the id selects nothing and the title selects the run. */
+  const nameBinding: Cfg = { vtRows: [], nameRows: [NAMED], liveRows: [LIVE], jobs: { 'src-run-1': srcRun() }, history: [] }
+
+  it('asks the id first, and asks nothing else when it answers', async () => {
+    const { submits } = stub(healthy)
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(vtKeys(submits)).toEqual(['id'])
+    expect(read.key).toBe('id')
+    expect(read.source).toBe('schedule')
+  })
+
+  it('retries on the display name before concluding there is no run', async () => {
+    const { submits } = stub(nameBinding)
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(vtKeys(submits)).toEqual(['id', 'name'])
+    expect(read.source, 'a name-binding platform sent the panel to the live query').toBe('schedule')
+    expect(read.outcome).toBe('fresh')
+    expect(read.data).toEqual([{ total_events: 18_240_113, total_bytes: 9_412_886_144 }])
+    expect(liveSubmit(submits), 'the 9,297 CPU-s query ran anyway').toBeUndefined()
+  })
+
+  it('says which key answered, because that is the evidence V-23 wanted', async () => {
+    // Reported on the read rather than logged, so a status surface can state the
+    // binding as a fact somebody read off a running app.
+    expect(observedKeyBinding(), 'before anything has been read there is nothing to claim').toBeNull()
+    stub(nameBinding)
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(read.key).toBe('name')
+    expect(observedKeyBinding()).toBe('name')
+    expect(KEY_BINDING_NOTES.name).toContain('display name')
+  })
+
+  it('pays for the losing key once, then never again this session', async () => {
+    // 0.2 billable CPU-s a miss. Cheap, and not free — the memo is what keeps it
+    // from being charged on every paint of every accelerated panel.
+    const { submits } = stub(nameBinding)
+    await readAccelRows(LAKE, { now: NOW })
+    const afterFirst = vtSubmits(submits).length
+    const second = await readAccelRows(LAKE, { now: NOW })
+    expect(vtKeys(submits).slice(afterFirst)).toEqual(['name'])
+    expect(second.key).toBe('name')
+  })
+
+  it('does not memoise a genuine miss, so the first scheduled run is picked up when it arrives', async () => {
+    // A schedule that has just been applied answers nothing on EITHER key, and
+    // that is not a measurement. Remembered as one, the panel would be pinned to
+    // whichever key it guessed and could never notice the run that eventually
+    // lands.
+    const { submits } = stub({ vtRows: [], nameRows: [], liveRows: [LIVE], history: [] })
+    const first = await readAccelRows(LAKE, { now: NOW })
+    expect(first.outcome).toBe('no-run')
+    expect(first.source).toBe('live')
+    expect(first.key, 'nothing answered, so no key may be reported').toBeNull()
+    expect(vtKeys(submits)).toEqual(['id', 'name'])
+    expect(observedKeyBinding()).toBeNull()
+
+    vi.unstubAllGlobals()
+    const later = stub(nameBinding)
+    const next = await readAccelRows(LAKE, { now: NOW })
+    expect(vtKeys(later.submits), 'a later read was stuck on the key that failed').toEqual(['id', 'name'])
+    expect(next.source).toBe('schedule')
+    expect(next.key).toBe('name')
+  })
+
+  it('keeps one entry’s measurement out of the other’s', async () => {
+    // Per entry, not global: the memo shortens work for a search that has been
+    // read, and a second entry has to establish its own key. A leak here would
+    // send the sample entry straight to a key nothing had tested for it.
+    stub(nameBinding)
+    await readAccelRows(LAKE, { now: NOW })
+    vi.unstubAllGlobals()
+
+    const { submits } = stub({
+      vtFields: [{ name: 'src_ip', type: 'string', count: 5000, countDistinct: 40, countNull: 0, topValues: [] }],
+      jobs: { 'src-run-1': srcRun() },
+      history: [srcRun()],
+    })
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(vtKeys(submits)).toEqual(['id'])
+    expect(read.key).toBe('id')
+    expect(observedKeyBinding(), 'two entries disagreeing is not a binding to report').toBeNull()
+  })
+
+  it('submits the fallback at the same inert range, with no results directive', async () => {
+    // Everything true of the first read is true of the second: A-D15 does not
+    // get a pass because this one is a retry.
+    const { submits } = stub(nameBinding)
+    await readAccelRows(LAKE, { now: NOW })
+    const name = vtSubmits(submits)[1]
+    expect([name.earliest, name.latest]).toEqual([FAST_EARLIEST, FAST_LATEST])
+    expect(name.query).toBe(`set max_running_time_per_search=900; dataset="$vt_results" jobName="${LAKE_NAME}"`)
+    expect(name.query).not.toContain('allow_previous_results')
+    expect(name.query).not.toContain('allow_incomplete_results')
+  })
+
+  it('carries a caller’s tail onto the fallback too', async () => {
+    const { submits } = stub(nameBinding)
+    await readAccelRows(LAKE, { tail: '| limit 10', now: NOW })
+    for (const s of vtSubmits(submits)) expect(s.query.endsWith('| limit 10')).toBe(true)
+  })
+
+  it('falls back on the name on the field-summaries path as well', async () => {
+    const f = (name: string): FieldSummary => ({ name, type: 'string', count: 5000, countDistinct: 40, countNull: 0, topValues: [] })
+    const { submits } = stub({
+      vtFields: [],
+      nameFields: [f('src_ip'), { ...f('jobId'), countDistinct: 1, topValues: [{ value: 'src-run-1', count: 5000 }] }],
+      liveFields: [f('src_ip')],
+      jobs: { 'src-run-1': srcRun() },
+      history: [],
+    })
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(vtKeys(submits)).toEqual(['id', 'name'])
+    expect(read.source).toBe('schedule')
+    expect(read.key).toBe('name')
+    expect(read.data.fields.map((x) => x.name), 'the virtual columns still never reach a panel').toEqual(['src_ip'])
+  })
+
+  it('does not retry the other key when the read itself failed', async () => {
+    // An empty answer is evidence about the key; a 400 is evidence about the
+    // read. Retrying here would turn one broken request into two.
+    const { submits } = stub({ vtFail: { status: 400, body: { message: 'nope' } }, liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(vtSubmits(submits)).toHaveLength(1)
+    expect(read.outcome).toBe('unreadable')
+    expect(read.key).toBeNull()
+  })
+
+  it('accepts a stored row stamped with either identifier', async () => {
+    // Which key SELECTS and which identifier the platform STAMPS in the jobName
+    // column are two separate unknowns. Refusing a row because they disagree
+    // would send a perfectly good stored result to the live query.
+    stub({ vtRows: [NAMED], liveRows: [LIVE], jobs: { 'src-run-1': srcRun() } })
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(read.source).toBe('schedule')
+    expect(read.key).toBe('id')
+  })
+
+  it('refuses to build a name query for anything but the manifest’s own title', async () => {
+    // A title is interpolated into query TEXT and has no shape to validate
+    // against, so the only check worth making is that it IS the shipped string.
+    const entry = accelEntry(LAKE)
+    expect(accelReadQueryOn(entry, 'name')).toBe(`dataset="$vt_results" jobName="${LAKE_NAME}"`)
+    expect(accelReadQueryOn(entry, 'id')).toBe(`dataset="$vt_results" jobName="${LAKE}"`)
+    expect(() => accelReadQueryOn({ ...entry, name: 'GNO" or 1==1 //' }, 'name')).toThrow()
+    expect(() => accelReadQueryOn({ ...entry, name: '' }, 'name')).toThrow()
+    expect(SAMPLE_NAME).not.toBe(SAMPLE)
   })
 })
 
