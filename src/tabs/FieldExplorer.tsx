@@ -1,10 +1,38 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE TAB, TWO WINDOWS — the behaviour change Phase 2 made here, stated where
+// anybody editing this file will read it.
+//
+// The "In feed" field list used to be a 5,000-row sample of whatever the global
+// range picker was set to: 754.9 billable CPU-s every time somebody opened the
+// tab. It now reads the result of an hourly scheduled run over a settled
+// two-minute window, so THE FIELD LIST NO LONGER FOLLOWS THE PICKER while the
+// AMI coverage counts on the other two views still do.
+//
+// That is a real behaviour change and the tab is required to say so out loud, in
+// three places, because a reader who changes the range and sees nothing move
+// will reasonably conclude the app is broken:
+//
+//   * the panel's note carries the time the sample was taken;
+//   * the panel's ⓘ (block 4) says it is hourly, says over what window, and says
+//     how to get a live one;
+//   * the controls carry "Run live", which puts the list back on the picker's
+//     window for this visit, and a line saying which control the range applies to.
+//
+// The picker is deliberately NOT disabled: it still governs the coverage counts,
+// which are the other two views of this same tab.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { runFieldSummaries, runSearch, SearchTimeLimitError, type FieldSummary } from '../cribl/search'
+import { capSecondsFor, runFieldSummaries, runSearch, SearchTimeLimitError, type FieldSummary } from '../cribl/search'
 import { useCostSlot } from '../cribl/jobCost'
+import { accelEntry, type AccelId } from '../cribl/accel/manifest'
+import { readAccelFieldSummaries, type AccelSource } from '../cribl/accel/read'
+import { useAccelEnabled } from '../cribl/useSearch'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
+import { asOf, type ComputedFrom } from '../components/PanelInfo'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { StatusPill } from '../components/StatusPill'
 import { fmtCount } from '../lib/format'
@@ -15,8 +43,88 @@ const CATALOG_BY_NAME = new Map(AMI_CATALOG.map((f) => [f.name, f]))
 
 const FAMILY_ORDER = ['Core / 5-tuple', 'DNS', 'SNMP', 'SSL / TLS', 'HTTP', 'TCP / UDP', 'AWS enrichment', 'Other protocols']
 
+/** The scheduled search that serves the "In feed" list. */
+const SAMPLE_ACCEL: AccelId = 'gno_sample_2m_c1h'
+/** Its window and cadence, read from the manifest rather than restated: the live
+ *  fallback has to sample the same two minutes the schedule does, or the panel
+ *  means one thing on a workspace that has applied acceleration and another on
+ *  one that has not. */
+const SAMPLE_ENTRY = accelEntry(SAMPLE_ACCEL)
+/** The schedule in words, for the panel's ⓘ. FieldExplorer.test.tsx holds this
+ *  against the manifest's own cron, so changing one forces the other. */
+export const SAMPLE_CADENCE = 'once an hour, at 7 minutes past, in UTC'
+/** …and its window in words. Two minutes that have finished landing: the current
+ *  minute is still arriving, and sampling it under-reports which fields exist. */
+export const SAMPLE_WINDOW = 'a settled two-minute window'
+
 /** The error heading for a search stopped by its time limit; null for any other failure. */
 const stoppedTitle = (e: unknown) => (e instanceof SearchTimeLimitError ? 'Search stopped' : null)
+
+/** The "In feed" panel's own state: the summaries, plus where they came from. */
+interface FeedState {
+  loading: boolean
+  error: string | null
+  errorTitle: string | null
+  fields: FieldSummary[]
+  sampled: number
+  /** Which read answered — a stored scheduled run, or a live one. */
+  source: AccelSource
+  /** Epoch ms the sample was taken. Never null once a read has finished: a
+   *  stored run carries its own time, and a live run was taken just now. */
+  at: number | null
+  /** The stored run is older than its schedule promises. */
+  stale: boolean
+  /** accel/read.ts's sentence about why a live query ran. Never Cribl's words. */
+  note: string | null
+}
+
+/**
+ * The caption above the field list: when this sample was taken, and how many
+ * rows it holds.
+ *
+ * A LIST WITHOUT A TIME ON IT IS THE FAILURE MODE. Every other panel in this app
+ * answers for the window in the picker, so a reader has no reason to suspect
+ * this one does not — and a schedule that silently stopped firing leaves a
+ * perfectly plausible field list on screen indefinitely. The time is what makes
+ * that visible without anybody having to know the feature exists.
+ */
+export function sampleNote(
+  s: { source: AccelSource; at: number | null; stale: boolean; sampled: number },
+  picker: { following: boolean; label: string },
+  now?: number,
+): string {
+  const rows = s.sampled > 0 ? ` (${s.sampled.toLocaleString()} rows)` : ''
+  // Nothing has answered yet. Not "taken just now": on first paint that would be
+  // a claim about a sample that does not exist.
+  if (s.at === null) return 'sampling…'
+  if (s.source === 'schedule') {
+    const when = asOf(s.at, now) ?? 'an unknown time'
+    return `sample taken ${when}${rows}${s.stale ? ' · schedule overdue' : ''}`
+  }
+  if (picker.following) return `live sample · ${picker.label.toLowerCase()}${rows}`
+  return `sample taken just now${rows}`
+}
+
+/**
+ * Block 4 of the panel's ⓘ. `fallback` is only passed when a live run happened
+ * INSTEAD of the stored one — when the reader asked for live, the reason is that
+ * they asked.
+ */
+export function feedComputed(
+  s: Pick<FeedState, 'source' | 'at' | 'stale' | 'note'>,
+  picker: { following: boolean; earliest: string; label: string },
+): ComputedFrom {
+  return {
+    source: s.source,
+    at: s.at,
+    stale: s.stale,
+    cadence: SAMPLE_CADENCE,
+    window: picker.following ? picker.label.toLowerCase() : SAMPLE_WINDOW,
+    fallback: s.source === 'live' && !picker.following ? s.note : null,
+    live: 'press “Run live” above — it re-runs the sample over the time range on screen',
+    capSeconds: capSecondsFor(picker.following ? picker.earliest : SAMPLE_ENTRY.earliest),
+  }
+}
 
 type Status = 'present' | 'derived' | 'missing'
 function statusOf(f: AmiField, count: Record<string, number>): Status {
@@ -26,9 +134,10 @@ function statusOf(f: AmiField, count: Record<string, number>): Status {
 }
 
 export function FieldExplorer() {
-  const { range, refreshNonce } = useDashboard()
-  const [state, setState] = useState<{ loading: boolean; error: string | null; errorTitle: string | null; fields: FieldSummary[]; sampled: number }>({
+  const { range, refreshNonce, manualRefreshNonce } = useDashboard()
+  const [state, setState] = useState<FeedState>({
     loading: true, error: null, errorTitle: null, fields: [], sampled: 0,
+    source: 'live', at: null, stale: false, note: null,
   })
   const [presence, setPresence] = useState<{ loading: boolean; error: string | null; errorTitle: string | null; count: Record<string, number> }>({
     loading: true, error: null, errorTitle: null, count: {},
@@ -51,23 +160,62 @@ export function FieldExplorer() {
   // Local nonce for per-panel refresh (this tab uses runSearch directly, not useSearch).
   const [nonce, setNonce] = useState(0)
   const refresh = () => setNonce((n) => n + 1)
-  // Both searches follow the global range and refresh, so both count toward
-  // what an auto-refresh tick costs on this tab.
-  const summariesCost = useCostSlot(true)
+  // "Run live" for this visit: the field list goes back to the picker's window
+  // and costs a full scan of it again. Session-only on purpose — this is a thing
+  // to check a number with, not a setting to leave on. The install-wide switch
+  // is the schedule itself, in Guided Setup.
+  const [liveOnly, setLiveOnly] = useState(false)
+  const accelOn = useAccelEnabled() && !liveOnly
+  // Only the presence counts follow the global range and the auto-refresh tick
+  // now, so only they are part of what a tick costs. An accelerated sample
+  // re-reads its stored result on an explicit refresh and on nothing else.
+  const summariesCost = useCostSlot(!accelOn)
   const presenceCost = useCostSlot(true)
+  // What re-runs the sample, as two named values rather than expressions in the
+  // dependency array — a `$vt_results` read ignores the picker, so an
+  // accelerated sample carries no window in its key and re-runs on an explicit
+  // refresh only. Both go back to following the page the moment it runs live.
+  const sampleWindowKey = accelOn ? '' : range.earliest
+  const sampleRefreshKey = accelOn ? manualRefreshNonce : refreshNonce
 
   // Field-summaries (fill / cardinality / top values) for the "In feed" browser.
+  // Served by the hourly scheduled run where there is one; the live fallback
+  // reads the SAME two settled minutes the schedule does, so acceleration
+  // changes when the sample was taken and never what it means. The one exception
+  // is "Run live", which is the reader asking for the picker's window back.
   useEffect(() => {
     const ctrl = new AbortController()
     setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
-    runFieldSummaries(FEED_SAMPLE_QUERY, { earliest: range.earliest, signal: ctrl.signal, costSlot: summariesCost })
-      .then((res) => setState({ loading: false, error: null, errorTitle: null, fields: res.fields, sampled: res.sampled }))
+    readAccelFieldSummaries(SAMPLE_ACCEL, {
+      enabled: accelOn,
+      signal: ctrl.signal,
+      live: () => runFieldSummaries(FEED_SAMPLE_QUERY, {
+        earliest: accelOn ? SAMPLE_ENTRY.earliest : range.earliest,
+        latest: accelOn ? SAMPLE_ENTRY.latest : 'now',
+        signal: ctrl.signal,
+        costSlot: summariesCost
+      }),
+    })
+      .then((r) => setState({
+        loading: false, error: null, errorTitle: null,
+        fields: r.data.fields, sampled: r.data.sampled,
+        // A live run was sampled now; a stored one carries the time its run
+        // finished. Either way the panel has a time to show, which is the
+        // condition for showing the number at all.
+        source: r.source, at: r.at ?? Date.now(), stale: r.stale, note: r.note,
+      }))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
         setState((s) => ({ ...s, loading: false, error: (e as Error).message, errorTitle: stoppedTitle(e) }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce, summariesCost])
+    // `range.earliest` is read inside the effect and deliberately absent from
+    // the key: while the sample is accelerated the picker cannot change what
+    // comes back, so re-running on a range change would submit a job to receive
+    // the identical stored rows. `sampleWindowKey` is what puts it back in the
+    // key the moment the reader asks for live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accelOn, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
 
   // Whole-window presence counts for the AMI coverage view (accurate for rare fields).
   useEffect(() => {
@@ -119,7 +267,8 @@ export function FieldExplorer() {
           <strong> By use case</strong> shows which analytics use cases the feed can support.{' '}
           <strong>In feed</strong> browses the top fields with fill rate, cardinality, and top values (Cribl's
           field-summaries API caps at 200; the feed carries ~310 distinct fields — the coverage checks above use
-          uncapped counts).
+          uncapped counts). The time range applies to the coverage counts; <strong>In feed</strong> reads a sample
+          taken on a schedule, and says when it was taken.
         </p>
         <div className="pivot-toggle">
           <button type="button" className={`seg ${view === 'coverage' ? 'seg-active' : ''}`} onClick={() => setView('coverage')}>AMI coverage</button>
@@ -220,8 +369,42 @@ export function FieldExplorer() {
                 <button key={f} type="button" className={`chip ${family === f ? 'chip-active' : ''}`} onClick={() => setFamily(f)}>{f}</button>
               ))}
             </div>
+            {/* Not a <GatedControl>: this reads, it does not write, and nothing
+                about it can be refused — it just costs a scan. */}
+            <button
+              type="button"
+              className={`chip ${liveOnly ? 'chip-active' : ''}`}
+              aria-pressed={liveOnly}
+              onClick={() => setLiveOnly((v) => !v)}
+              title={liveOnly ? 'Go back to the hourly sample' : 'Sample the time range on screen instead'}
+            >
+              {liveOnly ? 'Live · back to hourly sample' : 'Run live'}
+            </button>
           </div>
-          <Panel onRefresh={refresh} refreshing={state.loading} title="Fields" info="The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values." query={FEED_SAMPLE_QUERY} note={`${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`}>
+          <p className="cov-src">
+            {liveOnly ? (
+              <>
+                <strong>Running live.</strong> The field list is sampling {range.label.toLowerCase()} and follows the time
+                range above; each run is a full scan of that window. Press <em>Live</em> again to go back to the hourly sample.
+              </>
+            ) : (
+              <>
+                The field list is {state.source === 'schedule' ? 'read from an hourly scheduled sample' : 'sampled'} of
+                {' '}{SAMPLE_WINDOW}, so <strong>the time range above does not change it</strong> — up there, the range
+                applies to the AMI coverage counts. <em>Run live</em> samples the selected range instead.
+              </>
+            )}
+          </p>
+          <Panel
+            title="Fields"
+            onRefresh={refresh}
+            refreshing={state.loading}
+            query={FEED_SAMPLE_QUERY}
+            info="The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values."
+            infoLabel="What the field list shows, the query behind it, and when it was sampled"
+            infoDialogLabel="How the In feed field list was computed"
+            computed={feedComputed(state, { following: liveOnly, earliest: range.earliest, label: range.label })}
+            note={`${sampleNote(state, { following: liveOnly, label: range.label })} · ${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`}>
             <QueryBoundary state={{ loading: state.loading, error: state.error, errorTitle: state.errorTitle, rows: state.fields }} emptyLabel="No fields in this window">
               <ul className="fe-list">
                 {visible.map((f) => {

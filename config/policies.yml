@@ -94,6 +94,52 @@ policies:
   - object: '/m/default_search/search/jobs/:jobId/cancel'
     actions: ['POST']
 
+  # --- The two scheduled saved searches (Phase 2, acceleration) ---------------
+  # src/cribl/accel/provision.ts, reached only from the Acceleration panel's
+  # confirmed Apply / Pause / Resume / Remove controls. The app writes exactly
+  # two objects here, with fixed ids — `gno_lake_30d_c1d` and
+  # `gno_sample_2m_c1h` — defined in src/cribl/accel/manifest.ts. Each runs the
+  # same query a panel already runs live, on a cron, so the panel can read the
+  # stored result instead: 9,297.7 billable CPU-s a run becomes about 0.2.
+  #
+  # READ THIS ONE HARDEST, because it is the only grant in the file that lets
+  # the app start something that keeps costing money after the click.
+  #
+  # Declaring POST, PATCH and DELETE here grants them to EVERY user this app is
+  # shared with, for the duration of a request made through the app. So a Member
+  # who cannot otherwise create a scheduled search can create one through this
+  # app's Apply button, and a scheduled search spends credits on a cron until
+  # somebody stops it. That was accepted deliberately (decision I-D4): an
+  # acceleration feature only an admin can switch on is one most installs never
+  # switch on, in an app whose purpose is lowering the bill.
+  #
+  # What narrows it is the app rather than the grant, and it is worth knowing
+  # exactly how far that goes:
+  #   * it POSTs only those two ids, on the crons and windows in the manifest;
+  #   * every write is behind a confirmation naming the searches;
+  #   * it DELETEs only an id matching `gno_` that is in the manifest AND
+  #     carries this app's own `GNO …` stamp in its description — a saved search
+  #     with the same name that this app did not create is reported and left;
+  #   * nothing here runs on load, on render or on a timer.
+  #
+  # DELETE is not optional. Removing the app does not remove these searches —
+  # the platform gives an app no uninstall hook (I-D28) — so the Remove button
+  # is the only way a customer stops the spend, and this is the grant it needs.
+  #
+  # GET on the collection lists the whole workspace's saved searches, not just
+  # ours: their names, queries and schedules, wherever the caller's own role
+  # already allows that. The app shows none of them. It picks out its own two
+  # ids, notices a `gno_` search an older release left behind, and counts the
+  # rest only as "there may be more than one page". GET on the child path reads
+  # one object whole, and is part of every write rather than a separate
+  # convenience: a PATCH deletes every field it omits (measured, A-SP23), so the
+  # only safe way to change one setting is to read the whole object and send it
+  # all back.
+  - object: '/m/default_search/search/saved'
+    actions: ['GET', 'POST']
+  - object: '/m/default_search/search/saved/:id'
+    actions: ['GET', 'PATCH', 'DELETE']
+
   # --- Cribl Search AI: dataset intelligence ----------------------------------
   # Whether the tenant has AI features switched on at all, so the app offers them
   # only where they exist.

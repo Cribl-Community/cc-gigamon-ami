@@ -1,0 +1,365 @@
+// One tab, two windows — and whether the tab says so.
+//
+// Phase 2 decoupled the "In feed" field list from the global range picker: it
+// reads an hourly scheduled sample of a settled two minutes, while the AMI
+// coverage counts on the other two views still answer for whatever the picker
+// says. That is the kind of change a user discovers by changing the range,
+// seeing nothing move, and concluding the app is broken — so these tests are
+// mostly about what the tab TELLS them, not about the numbers.
+//
+// The four claims:
+//
+//   1. A LIST FROM A STORED RUN CARRIES THE TIME IT WAS SAMPLED. Every other
+//      panel answers for the picker's window; this one does not, and a schedule
+//      that stopped firing leaves a plausible field list on screen forever.
+//   2. THE PICKER DOES NOT RE-RUN THE SAMPLE — and still re-runs the coverage
+//      counts, which is the half that would be a regression if it broke.
+//   3. "Run live" PUTS THE LIST BACK ON THE PICKER'S WINDOW, at the price of a
+//      full scan, and says which window it is now sampling.
+//   4. A FAILED FAST READ PUTS NONE OF CRIBL'S WORDS ON SCREEN. accel/read.ts
+//      refuses to forward them; this is the assertion that the tab does not
+//      reintroduce them.
+//
+// The network is stubbed at `fetch` and everything else is real — the hook, the
+// read path, search.ts — because "which job did this tab submit, and over which
+// window" is the whole question.
+
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DashboardProvider, TIME_RANGES, useDashboard, type TimeRange } from '../app/DashboardContext'
+import { accelEntry } from '../cribl/accel/manifest'
+import type { FieldSummary } from '../cribl/search'
+import { FieldExplorer, SAMPLE_CADENCE, feedComputed, sampleNote } from './FieldExplorer'
+
+const SAMPLE = 'gno_sample_2m_c1h'
+const HOUR = 3_600_000
+const NOW = Date.now()
+
+const field = (name: string, over: Partial<FieldSummary> = {}): FieldSummary => ({
+  name,
+  type: 'string',
+  count: 5000,
+  countDistinct: 42,
+  countNull: 0,
+  topValues: [{ value: 'x', count: 5000 }],
+  ...over,
+})
+
+/** What the stored run's summaries look like: the feed's own fields, plus the
+ *  virtual column that names the run they came from. */
+const STORED_FIELDS: FieldSummary[] = [
+  field('src_ip'),
+  field('dns_host'),
+  field('jobId', { countDistinct: 1, topValues: [{ value: 'run-1', count: 5000 }] }),
+]
+/** A live run has no virtual columns and — deliberately — a different field, so
+ *  which path answered is visible in the list itself. */
+const LIVE_FIELDS: FieldSummary[] = [field('src_ip'), field('http_host')]
+
+const run = (over: Record<string, unknown> = {}) => ({
+  id: 'run-1',
+  status: 'completed',
+  timeCreated: NOW - HOUR,
+  timeStarted: NOW - HOUR,
+  timeCompleted: NOW - HOUR,
+  ...over,
+})
+
+interface Submitted {
+  query: string
+  earliest: string
+  latest: string
+}
+
+function res(status: number, body: unknown, asText?: string) {
+  return {
+    ok: status < 400,
+    status,
+    statusText: status === 200 ? 'OK' : 'Bad Request',
+    json: async () => body,
+    text: async () => asText ?? JSON.stringify(body),
+  }
+}
+
+let submits: Submitted[] = []
+
+function stub(cfg: { storedFail?: { status: number; body: unknown }; history?: unknown[]; stored?: FieldSummary[] } = {}): void {
+  submits = []
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const u = String(url)
+    if ((init.method ?? 'GET') === 'POST' && u.endsWith('/search/jobs')) {
+      const body = JSON.parse(String(init.body)) as Submitted
+      submits.push(body)
+      if (body.query.includes('$vt_results')) {
+        return cfg.storedFail ? res(cfg.storedFail.status, cfg.storedFail.body) : res(200, { items: [{ id: 'job-stored' }] })
+      }
+      return res(200, { items: [{ id: body.query.includes('summarize c0=') ? 'job-presence' : 'job-live' }] })
+    }
+    if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
+    if (u.includes('/field-summaries')) {
+      return res(200, { fields: u.includes('job-stored') ? (cfg.stored ?? STORED_FIELDS) : LIVE_FIELDS })
+    }
+    if (u.includes('/results')) {
+      // The presence query: one row of per-field counts, all present.
+      const row: Record<string, number> = {}
+      for (let i = 0; i < 96; i++) row[`c${i}`] = 10
+      return res(200, {}, [JSON.stringify({ totalEventCount: 1, job: 'j' }), JSON.stringify(row)].join('\n'))
+    }
+    if (u.includes('/search/jobs?')) return res(200, { items: cfg.history ?? [run()] })
+    const byId = /\/search\/jobs\/([^/?]+)$/.exec(u)
+    if (byId) return byId[1] === 'run-1' ? res(200, { items: [run()] }) : res(404, { message: 'gone' })
+    return res(404, { message: 'unrouted' })
+  })
+}
+
+const sampleSubmits = () => submits.filter((s) => s.query.includes('$vt_results'))
+const liveSampleSubmits = () => submits.filter((s) => s.query.includes('| limit 5000') && !s.query.includes('$vt_results'))
+const presenceSubmits = () => submits.filter((s) => s.query.includes('summarize c0='))
+
+let container: HTMLDivElement
+let root: Root
+let setRange: ((r: TimeRange) => void) | null = null
+
+/** Reaches the page's range picker without rendering the app header. */
+function Picker() {
+  setRange = useDashboard().setRange
+  return null
+}
+
+beforeEach(() => {
+  ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
+  setRange = null
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+})
+
+afterEach(() => {
+  act(() => root.unmount())
+  container.remove()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+async function render(): Promise<void> {
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={['/field-explorer?view=feed']}>
+        <DashboardProvider>
+          <Picker />
+          <FieldExplorer />
+        </DashboardProvider>
+      </MemoryRouter>,
+    )
+  })
+  await settle()
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 14; i++) await act(async () => { await Promise.resolve() })
+}
+
+const note = () => container.querySelector('.panel-note')?.textContent ?? ''
+const fieldNames = () => [...container.querySelectorAll('.fe-name')].map((n) => n.textContent)
+const runLive = () => [...container.querySelectorAll<HTMLButtonElement>('.chip')].find((b) => b.textContent?.includes('Run live') || b.textContent?.includes('back to hourly'))!
+
+describe('the “In feed” list, served by the schedule', () => {
+  it('says when the sample was taken, and how many rows it holds', async () => {
+    stub()
+    await render()
+
+    expect(note(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/sample taken \d{2}:\d{2}/)
+    expect(note()).toContain('(5,000 rows)')
+  })
+
+  it('shows the stored run’s fields and never lists a virtual column as one of them', async () => {
+    // `jobId` is not a field arriving in the customer's network telemetry.
+    stub()
+    await render()
+    expect(fieldNames()).toContain('dns_host')
+    expect(fieldNames()).not.toContain('jobId')
+  })
+
+  it('does not re-run when the range picker moves — and the coverage counts still do', async () => {
+    stub()
+    await render()
+    expect(sampleSubmits()).toHaveLength(1)
+    expect(presenceSubmits()).toHaveLength(1)
+
+    await act(async () => { setRange!(TIME_RANGES[5]) })
+    await settle()
+
+    expect(sampleSubmits(), 'a range change re-read a sample the picker cannot affect').toHaveLength(1)
+    expect(liveSampleSubmits(), 'a range change spent a live 754.9 CPU-s sample').toEqual([])
+    expect(presenceSubmits(), 'the coverage counts stopped following the picker').toHaveLength(2)
+  })
+
+  it('tells the reader which control the range applies to', async () => {
+    stub()
+    await render()
+    const text = container.textContent ?? ''
+    expect(text).toContain('the time range above does not change it')
+    expect(text).toContain('AMI coverage counts')
+  })
+})
+
+describe('Run live', () => {
+  it('re-runs the sample over the picker’s window and says so', async () => {
+    stub()
+    await render()
+    expect(liveSampleSubmits()).toEqual([])
+
+    await act(async () => { runLive().click() })
+    await settle()
+
+    const live = liveSampleSubmits()
+    expect(live, 'pressing Run live ran nothing').toHaveLength(1)
+    expect(live[0].earliest, 'Run live sampled something other than the window on screen').toBe(TIME_RANGES[1].earliest)
+    expect(note()).toContain('live sample · last 15 minutes')
+    expect(fieldNames()).toContain('http_host')
+  })
+
+  it('goes back to the stored sample when pressed again', async () => {
+    stub()
+    await render()
+    await act(async () => { runLive().click() })
+    await settle()
+    await act(async () => { runLive().click() })
+    await settle()
+
+    expect(note()).toMatch(/sample taken \d{2}:\d{2}/)
+    expect(sampleSubmits()).toHaveLength(2)
+  })
+})
+
+describe('when the schedule cannot answer', () => {
+  it('samples the same settled two minutes live, rather than the picker’s window', async () => {
+    // The panel means one thing: an hourly sample of two settled minutes. A
+    // fallback over the picker's window would make it mean something else on a
+    // workspace that has not applied acceleration yet — and would leave the list
+    // frozen at whatever range happened to be set when the tab opened.
+    stub({ stored: [], history: [] })
+    await render()
+
+    const live = liveSampleSubmits()
+    expect(live).toHaveLength(1)
+    expect([live[0].earliest, live[0].latest]).toEqual([accelEntry(SAMPLE).earliest, accelEntry(SAMPLE).latest])
+    expect(note()).toContain('sample taken just now')
+  })
+
+  it('puts none of Cribl’s words on screen when the fast read fails', async () => {
+    stub({ storedFail: { status: 400, body: { message: 'Error in query: dataset="$vt_results" jobName="gno_sample_2m_c1h"' } } })
+    await render()
+
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('$vt_results')
+    expect(text).not.toContain('Cribl API')
+    expect(text).not.toContain('jobName')
+    expect(fieldNames(), 'the panel showed nothing after falling back').toContain('http_host')
+  })
+})
+
+describe('the ⓘ beside the list', () => {
+  it('still shows the query, and adds how it was computed', async () => {
+    stub()
+    await render()
+    act(() => container.querySelector<HTMLButtonElement>('.panel-title .pinfo-btn')!.click())
+
+    const pop = document.querySelector('.pinfo-pop')!
+    expect(pop.querySelector('.pinfo-code')?.textContent, 'the ⓘ stopped showing the query behind the number').toContain('dataset="gigamon_ami"')
+    const text = pop.textContent ?? ''
+    expect(text).toContain('How this was computed')
+    expect(text, 'the ⓘ does not say the sample is hourly').toContain(SAMPLE_CADENCE)
+    expect(text, 'the ⓘ does not say what window the sample covers').toContain('settled two-minute window')
+    expect(text, 'the ⓘ does not say how to get a live one').toContain('Run live')
+  })
+
+  it('keeps the accessible names that say this ⓘ also dates the sample', async () => {
+    // These two names reach the screen only because <Panel> forwards them to
+    // <PanelInfo>. They were lost once already: this ⓘ carries block 4 — WHEN
+    // the list was sampled — so it was built as a bare <PanelInfo> inside the
+    // title, which moved `query=` off the <Panel> element and silently dropped
+    // the panel's `info` prose and `note` caption out of the display freeze.
+    // Forwarding is what let it go back through <Panel>; nothing but this
+    // notices if the forwarding is removed, because the popover still renders.
+    stub()
+    await render()
+    const btn = container.querySelector<HTMLButtonElement>('.panel-title .pinfo-btn')!
+    expect(btn.getAttribute('aria-label')).toBe(
+      'What the field list shows, the query behind it, and when it was sampled',
+    )
+    act(() => btn.click())
+    expect(document.querySelector('.pinfo-pop')?.textContent).toContain(
+      'How the In feed field list was computed',
+    )
+  })
+})
+
+describe('the words about the schedule agree with the manifest', () => {
+  it('quotes the cron this app actually writes', () => {
+    // The cadence is prose and the cron is data; nothing but this holds them
+    // together. `7 * * * *` in UTC is "once an hour, at 7 minutes past".
+    const entry = accelEntry(SAMPLE)
+    expect(entry.cron).toBe('7 * * * *')
+    expect(entry.tz).toBe('UTC')
+    expect(SAMPLE_CADENCE).toContain('once an hour')
+    expect(SAMPLE_CADENCE).toContain('7 minutes past')
+    expect(SAMPLE_CADENCE).toContain('UTC')
+  })
+})
+
+describe('sampleNote', () => {
+  const base = { source: 'schedule' as const, at: NOW - HOUR, stale: false, sampled: 5000 }
+  const picker = { following: false, label: 'Last 15 minutes' }
+
+  it('flags a stale run beside the time it was taken', () => {
+    expect(sampleNote({ ...base, stale: true }, picker, NOW)).toContain('schedule overdue')
+  })
+
+  it('says nothing about rows before the first read has finished', () => {
+    expect(sampleNote({ ...base, sampled: 0 }, picker, NOW)).not.toContain('rows')
+  })
+
+  it('claims no sample at all until one has come back', () => {
+    // On first paint there is no sample; "taken just now" would be a statement
+    // about something that does not exist yet.
+    expect(sampleNote({ source: 'live', at: null, stale: false, sampled: 0 }, picker, NOW)).toBe('sampling…')
+  })
+
+  it('names the picker’s window when the reader asked for live', () => {
+    expect(sampleNote({ ...base, source: 'live', at: NOW }, { following: true, label: 'Last 4 hours' }, NOW))
+      .toBe('live sample · last 4 hours (5,000 rows)')
+  })
+})
+
+describe('feedComputed', () => {
+  it('explains a fallback, but never explains away a choice the reader made', () => {
+    const fell = feedComputed(
+      { source: 'live', at: NOW, stale: false, note: 'The schedule has not produced a result yet, so the live query ran.' },
+      { following: false, earliest: '-15m', label: 'Last 15 minutes' },
+    )
+    expect(fell.fallback).toContain('has not produced a result yet')
+
+    const asked = feedComputed(
+      { source: 'live', at: NOW, stale: false, note: 'Acceleration is off for this panel, so the live query ran.' },
+      { following: true, earliest: '-15m', label: 'Last 15 minutes' },
+    )
+    expect(asked.fallback, 'the ⓘ explained the reader’s own click back to them').toBeNull()
+    expect(asked.window).toBe('last 15 minutes')
+  })
+})
+
+// ── What this file does NOT establish ───────────────────────────────────────
+//
+//   * That any of it is VISIBLE. happy-dom has no layout: these read text
+//     content, so a note rendered white-on-white or clipped out of the header
+//     would pass. The classes used are the ones already in App.css.
+//   * That the range picker itself is labelled. It lives in the app header,
+//     which this tab does not own; the labelling asserted here is the tab's own
+//     sentence about which control the range applies to.
+//   * That Cribl returns the newest run for a `jobName=` selector, or that a
+//     scheduled run's correlationId is the saved search's id. Both are stubbed,
+//     and both are unverifiable until the first real Apply (constraint 8).

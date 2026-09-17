@@ -20,6 +20,7 @@ import { StatusPill, type StatusState } from './StatusPill'
  *  without deciding what it looks like fails the type-check here. */
 const ALL: StatusState[] = [
   'present', 'absent', 'failed', 'skipped', 'unreadable', 'checking',
+  'enabled', 'paused', 'differs', 'foreign',
   'derived', 'missing',
   'critical', 'high', 'medium', 'low',
 ]

@@ -96,6 +96,9 @@ export type WriteId =
   | 'search_caps.save'
   | 'dataset_intel.generate'
   | 'hung_job.cancel'
+  | 'accel.apply'
+  | 'accel.pause'
+  | 'accel.remove'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -134,6 +137,27 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   'hung_job.cancel': {
     surface: 'search',
     does: 'cancelling one of your own long-running searches',
+  },
+  // Phase 2's three. They are `config` and not `search`, and the distinction is
+  // not a formality: a saved search is an object in the workspace that outlives
+  // the page, fires on a cron whether or not anybody is looking, and bills for
+  // it. Every other `search` write in this table ends a job or starts one that
+  // dies with the query. These create, edit and delete configuration, so they
+  // are governed by config/policies.yml and can be refused for a non-admin.
+  'accel.apply': {
+    surface: 'config',
+    does: 'creating the scheduled searches that precompute the slow panels',
+  },
+  // Pause and resume are one control and therefore one id: both are the same
+  // PATCH of the same object, differing only in one boolean, and splitting them
+  // would mean a refusal latched on Pause left Resume looking available.
+  'accel.pause': {
+    surface: 'config',
+    does: 'pausing or resuming a scheduled search',
+  },
+  'accel.remove': {
+    surface: 'config',
+    does: 'removing the scheduled searches this app created',
   },
 }
 
@@ -213,6 +237,26 @@ export const WRITE_SITES: readonly WriteSite[] = [
     gates: ['syslog_stack.remove'],
     surface: 'config',
     why: 'PATCH drops our route from the table; DELETE removes the source and the pipeline.',
+  },
+
+  // --- Phase 2 acceleration: the scheduled searches this app owns ----------
+  {
+    at: 'cribl/accel/provision.ts#createSaved',
+    gates: ['accel.apply'],
+    surface: 'config',
+    why: 'POST creates a scheduled saved search in the shared /search/saved namespace. It runs on a cron and bills whether or not anybody opens the panel it feeds, so the confirmation in components/AccelPanel.tsx states the recurring cost before the click.',
+  },
+  {
+    at: 'cribl/accel/provision.ts#patchSaved',
+    gates: ['accel.apply', 'accel.pause'],
+    surface: 'config',
+    why: 'PATCH replaces a saved search WHOLESALE — A-SP23 measured that an omitted field is a deleted field on this endpoint, which is how a search silently loses its schedule. Two controls end here: Apply, correcting one that has drifted, and Pause/Resume, flipping schedule.enabled.',
+  },
+  {
+    at: 'cribl/accel/provision.ts#deleteSaved',
+    gates: ['accel.remove'],
+    surface: 'config',
+    why: 'DELETE removes a saved search. The namespace is flat and shared, so the call is guarded by the gno_ prefix, membership in the manifest and an ownership stamp before it is sent; the confirmation names both ids and warns that uninstalling the app does not remove them.',
   },
 
   // --- Cribl Search AI -----------------------------------------------------

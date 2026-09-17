@@ -75,10 +75,22 @@ export type Scope =
    */
   | 'app'
 
-/** A resource this app can bring into existence in a customer's Cribl. The five
- *  provisioned objects share provision.ts's own vocabulary so the two cannot
- *  drift apart; `commit` is the sixth thing a deploy leaves behind. */
-export type Provisioned = ResourceKey | 'commit'
+/**
+ * A resource this app can bring into existence in a customer's Cribl. The five
+ * provisioned objects share provision.ts's own vocabulary so the two cannot
+ * drift apart; `commit` is the sixth thing a deploy leaves behind, and
+ * `accel_saved_search` the seventh.
+ *
+ * WIDENED HERE RATHER THAN IN `ResourceKey`, deliberately. `ResourceKey` is the
+ * five Stream objects Guided Setup provisions, and several surfaces render a
+ * `Record<ResourceKey, …>` — a status pill per row, a commit-memory entry per
+ * row, a label per row. Adding a sixth member there would push a phantom row
+ * into every one of them, for an object Guided Setup does not create and cannot
+ * deploy. Phase 2's scheduled saved searches are a different lifecycle in a
+ * different group with a different teardown; what they share with the five is
+ * only this: the app creates them, so it has to be able to remove them.
+ */
+export type Provisioned = ResourceKey | 'commit' | 'accel_saved_search'
 
 export interface ApiCall {
   method: Method
@@ -167,6 +179,60 @@ export const API_CALLS: readonly ApiCall[] = [
     scope: 'product',
     site: 'search.ts cancelJob (also jobWatchdog.ts cancelHungJob)',
     why: 'Stop a job this session started when the search is abandoned (range change, tab switch, unmount) or outlives its client timeout, so it stops billing instead of running to its cap. It is the user’s own job, seconds old, and no configuration — which is why that POST needs no confirmation dialog. The watchdog reuses the same grant for a job this session did not start but the SAME USER owns; it never cancels anybody else’s, and that one is confirmed because of its age: see cribl/jobWatchdog.ts cancelHungJob.',
+  },
+
+  // ── Phase 2: the two scheduled saved searches ─────────────────────────────
+  // Same `default_search` literal as the job paths above, for the same reason:
+  // these searches run where search runs, and the declaration grants nothing in
+  // any other group.
+  //
+  // WHAT AN ADMIN IS REALLY APPROVING HERE, said plainly rather than left to be
+  // discovered: POST, PATCH and DELETE on `/search/saved` are granted to EVERY
+  // user this app is shared with, for the duration of a request made through the
+  // app. A Member who could not otherwise create a scheduled search can create
+  // one through this app's Apply button — and a scheduled search spends credits,
+  // on a cron, until somebody stops it. Decision I-D4: the owner accepted that
+  // deliberately, because the alternative is an acceleration feature only an
+  // admin can switch on, in an app whose whole point is lowering the bill. What
+  // narrows it is the app rather than the grant: it writes only the two ids in
+  // src/cribl/accel/manifest.ts, both behind a confirmation that names them, and
+  // it deletes only an object carrying its own `GNO …` stamp.
+  {
+    method: 'GET',
+    path: `/m/${SEARCH_GROUP}/search/saved`,
+    scope: 'product',
+    site: 'accel/provision.ts readAccelState',
+    why: 'List the workspace’s saved searches, to tell whether this app’s two scheduled searches exist, are running or are paused — and to spot one an older release left behind that is still firing on a cron. It reads other people’s saved searches too, wherever the caller’s own role already allows that: their names, queries and schedules. The app shows none of them; it picks out its own ids and counts the rest as "there may be more than one page".',
+  },
+  {
+    method: 'POST',
+    path: `/m/${SEARCH_GROUP}/search/saved`,
+    scope: 'product',
+    site: 'accel/provision.ts createSaved',
+    why: 'Create one of this app’s two scheduled searches, from the confirmed Apply button. This is the grant that lets the app put a recurring, credit-spending job into the workspace, so it is the one to read hardest: it creates only the fixed ids `gno_lake_30d_c1d` and `gno_sample_2m_c1h`, on the crons and windows in src/cribl/accel/manifest.ts, and the confirmation names both before anything is sent.',
+    creates: 'accel_saved_search',
+  },
+  {
+    method: 'GET',
+    path: `/m/${SEARCH_GROUP}/search/saved/:id`,
+    scope: 'product',
+    site: 'accel/provision.ts readSaved',
+    why: 'Read one saved search whole, immediately before rewriting it. Measured (A-SP23): a PATCH deletes every field it omits, so the only safe way to change one setting is to read the entire object and send it all back — which makes this GET part of every write below, not a separate convenience.',
+  },
+  {
+    method: 'PATCH',
+    path: `/m/${SEARCH_GROUP}/search/saved/:id`,
+    scope: 'product',
+    site: 'accel/provision.ts patchSaved',
+    why: 'Pause or resume one of this app’s scheduled searches, or bring one that has been edited back into line with what this release runs. It overwrites that object wholesale — there is no partial write on this endpoint — so it is behind a confirmation that names the search, and it only ever addresses an id this app owns.',
+  },
+  {
+    method: 'DELETE',
+    path: `/m/${SEARCH_GROUP}/search/saved/:id`,
+    scope: 'product',
+    site: 'accel/provision.ts deleteSaved',
+    why: 'Remove one of this app’s scheduled searches again, from the confirmed Remove button — the only way a customer can stop the recurring spend this app started, since uninstalling the app leaves the schedules running. It deletes only an id matching `gno_` that is in this release’s manifest AND carries this app’s own stamp; a saved search with the same name that this app did not create is reported and left alone.',
+    removes: 'accel_saved_search',
   },
 
   // ── Cribl Search AI: dataset intelligence ─────────────────────────────────

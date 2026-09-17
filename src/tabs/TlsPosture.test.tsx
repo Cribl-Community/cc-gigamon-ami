@@ -42,6 +42,14 @@ function result(over: Partial<UseSearchState> = {}): UseSearchState {
     errorTitle: null,
     elapsedMs: null,
     refetch: () => {},
+    // Phase 2 added the provenance half of a search result: where the rows came
+    // from, and when. Neither of this tab's searches is accelerated, so these
+    // are the values the hook returns for an ordinary live query.
+    source: 'live',
+    outcome: null,
+    at: null,
+    stale: false,
+    note: null,
     ...over,
   }
 }

@@ -1,0 +1,372 @@
+// What the status table is allowed to say about a schedule.
+//
+// Three of these assertions exist because the thing they catch is silent:
+//
+//   * ZERO RUNS IS NOT GOOD NEWS. A refusal, a correlationId that matched
+//     nothing and a schedule that has genuinely never fired all return an empty
+//     list. `error` is the only thing that separates them, and everything
+//     downstream — including accel/read.ts deciding whether to spend a live
+//     query — reads it first.
+//   * `billableCPUSeconds` READS 0 ON A RUNNING JOB. A table that prints that
+//     tells an admin their most expensive schedule is free. The cost is not read
+//     at all until the run is terminal, and a 0 from a terminal run is reported
+//     as "not yet", never as a cost.
+//   * THE NEWEST RUN IS WHAT EVERYTHING KEYS ON. `sortDir=desc` is a query
+//     parameter that has to survive a proxy this app has only exercised through
+//     the dev server; if it were ever dropped, a panel would be dated by the
+//     OLDEST run in the page. The rows are re-sorted here, and this proves it.
+//
+// The fixtures are the `output=short` shape cribl/jobWatchdog.ts already parses
+// against this workspace, trimmed to the fields this module reads.
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { denialMark, denialSince, resetDenials } from '../authz'
+import { SEARCH_GROUP } from '../config'
+import { JOBS_PATH as WATCHDOG_JOBS_PATH } from '../jobWatchdog'
+import { accelEntry } from './manifest'
+import {
+  HISTORY_LIMIT,
+  JOBS_PATH,
+  accelStatus,
+  allAccelStatus,
+  cadenceLooksRight,
+  cronIntervalMs,
+  listRuns,
+  runMeta,
+} from './status'
+
+const LAKE = 'gno_lake_30d_c1d'
+const SAMPLE = 'gno_sample_2m_c1h'
+
+const MIN = 60_000
+const HOUR = 60 * MIN
+const DAY = 24 * HOUR
+const T0 = 1_789_600_000_000
+
+interface Sent {
+  url: string
+  init: RequestInit
+}
+
+/** Stub `fetch` for capi: a handler per URL substring, first match wins. */
+function stub(routes: Array<{ match: string; status?: number; body?: unknown }>): Sent[] {
+  const sent: Sent[] = []
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const u = String(url)
+    sent.push({ url: u, init })
+    const route = routes.find((r) => u.includes(r.match))
+    if (!route) return { status: 404, text: async () => '{"message":"no stub"}' }
+    return { status: route.status ?? 200, text: async () => JSON.stringify(route.body ?? {}) }
+  })
+  return sent
+}
+
+/** A run row, in the shape `GET /search/jobs?output=short` returns. */
+function run(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: '1789395843210.fxAzHG',
+    status: 'completed',
+    timeCreated: T0 - HOUR,
+    timeStarted: T0 - HOUR + 200,
+    timeCompleted: T0 - HOUR + 9_000,
+    ...over,
+  }
+}
+
+const history = (items: unknown[]) => ({ match: '/search/jobs?', body: { items, totalCount: items.length } })
+const metrics = (billableCPUSeconds: unknown) => ({
+  match: '/metrics',
+  body: { items: [{ metrics: { cpuMetrics: { billableCPUSeconds } } }] },
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  resetDenials()
+})
+
+describe('the path it calls', () => {
+  it('names the one search group Cribl Search runs in, as a literal', () => {
+    // A literal because policyCoverage.test.ts resolves call-site paths from the
+    // source text: an interpolated group resolves to a placeholder, which would
+    // declare a grant in EVERY worker group. Nothing but this test keeps the
+    // literal in step.
+    expect(JOBS_PATH).toBe(`/m/${SEARCH_GROUP}/search/jobs`)
+    expect(JOBS_PATH, 'two copies of the same grant must not drift').toBe(WATCHDOG_JOBS_PATH)
+  })
+
+  it('asks for one schedule’s runs, newest first, with the offset the API insists on', async () => {
+    const sent = stub([history([run()]), metrics(12.5)])
+    await accelStatus(LAKE)
+    const url = sent[0].url
+    expect(url.startsWith(`/capi${JOBS_PATH}?`)).toBe(true)
+    const qs = new URLSearchParams(url.split('?')[1])
+    expect(qs.get('correlationId')).toBe(LAKE)
+    expect(qs.get('output')).toBe('short')
+    expect(qs.get('sortExp')).toBe('timeCreated')
+    expect(qs.get('sortDir')).toBe('desc')
+    expect(qs.get('limit')).toBe(String(HISTORY_LIMIT))
+    // `limit` without `offset` is a live 400, "missing 'offset' parameter",
+    // although the spec marks it optional.
+    expect(qs.get('offset')).toBe('0')
+  })
+
+  it('reads the cost of the newest run by its own job id', async () => {
+    const sent = stub([history([run({ id: 'run-7' })]), metrics(9297.7)])
+    const s = await accelStatus(LAKE)
+    expect(sent.some((c) => c.url === `/capi${JOBS_PATH}/run-7/metrics`)).toBe(true)
+    expect(s.lastCpuSeconds).toBe(9297.7)
+    expect(s.lastCpuUnavailable).toBeNull()
+  })
+})
+
+describe('reading the runs', () => {
+  it('puts the newest run first even if the list arrives the other way up', async () => {
+    stub([
+      history([run({ id: 'old', timeCompleted: T0 - 3 * DAY }), run({ id: 'new', timeCompleted: T0 - HOUR })]),
+      metrics(5),
+    ])
+    const s = await accelStatus(LAKE)
+    expect(s.runs.map((r) => r.id)).toEqual(['new', 'old'])
+    expect(s.last?.id).toBe('new')
+  })
+
+  it('dates a run by when its result came into existence, not when it fired', async () => {
+    // They differ by however long the run took — minutes on the 30-day entry,
+    // which is more than a rounding error on a panel that says "as of HH:MM".
+    stub([history([run({ timeCreated: 1000, timeStarted: 2000, timeCompleted: 3000 })]), metrics(5)])
+    expect((await accelStatus(LAKE)).last?.at).toBe(3000)
+  })
+
+  it('falls back through started and created when a run has not finished', async () => {
+    stub([history([run({ status: 'running', timeCreated: 1000, timeStarted: 2000, timeCompleted: null })])])
+    const s = await accelStatus(LAKE)
+    expect(s.last?.at).toBe(2000)
+    expect(s.last?.running).toBe(true)
+  })
+
+  it('does not call a status it has never seen a failure', async () => {
+    // 'unknown' rather than 'failed': a run in a state this release does not
+    // recognise has not been shown to have failed, and accel/read.ts branches on
+    // the difference.
+    stub([history([run({ status: 'sleeping' })]), metrics(1)])
+    const s = await accelStatus(LAKE)
+    expect(s.last?.outcome).toBe('unknown')
+    expect(s.last?.running, 'an unrecognised status is not terminal').toBe(true)
+  })
+
+  it('treats queued and new as running, because neither has a result or a cost', async () => {
+    for (const status of ['queued', 'new', 'running']) {
+      stub([history([run({ status })])])
+      const s = await accelStatus(LAKE)
+      expect(s.last?.outcome, status).toBe('running')
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('drops a row with no id rather than losing the whole read', async () => {
+    stub([history([{ status: 'completed' }, run({ id: 'good' })]), metrics(3)])
+    expect((await accelStatus(LAKE)).runs.map((r) => r.id)).toEqual(['good'])
+  })
+})
+
+describe('what the last run cost', () => {
+  it('does not ask while the job is still running, and never reports 0 as free', async () => {
+    const sent = stub([history([run({ status: 'running', timeCompleted: null })]), metrics(0)])
+    const s = await accelStatus(LAKE)
+    expect(sent.some((c) => c.url.includes('/metrics')), 'asked the meter about a running job').toBe(false)
+    expect(s.lastCpuSeconds).toBeNull()
+    expect(s.lastCpuUnavailable).toBe('running')
+  })
+
+  it('reads a 0 from a finished run as "not reported yet", not as a cost', async () => {
+    // A finished search of this dataset has a measured floor near five CPU-s, so
+    // an exact zero is the meter lagging — the same lag jobCost.ts retries past.
+    stub([history([run()]), metrics(0)])
+    const s = await accelStatus(LAKE)
+    expect(s.lastCpuSeconds).toBeNull()
+    expect(s.lastCpuUnavailable).toBe('not-reported')
+  })
+
+  it('says so when the meter cannot be read at all', async () => {
+    stub([history([run()]), { match: '/metrics', status: 403, body: { message: 'nope' } }])
+    const s = await accelStatus(LAKE)
+    expect(s.lastCpuSeconds).toBeNull()
+    expect(s.lastCpuUnavailable).toBe('unreadable')
+    // The runs still came back: a refused meter is not a refused history.
+    expect(s.runs).toHaveLength(1)
+    expect(s.error).toBeNull()
+  })
+
+  it('does not invent a number from a body it cannot read', async () => {
+    stub([history([run()]), { match: '/metrics', body: { items: [{}] } }])
+    expect((await accelStatus(LAKE)).lastCpuUnavailable).toBe('unreadable')
+  })
+})
+
+describe('when it cannot see', () => {
+  it('separates a refusal from a quiet schedule', async () => {
+    stub([{ match: '/search/jobs?', status: 403, body: { message: 'forbidden' } }])
+    const s = await accelStatus(LAKE)
+    expect(s.denied).toBe(true)
+    expect(s.error).toBeTruthy()
+    expect(s.runs, 'empty because we cannot see, which is why error exists').toHaveLength(0)
+    expect(s.last).toBeNull()
+  })
+
+  it('does not blame somebody’s click for a status read nobody clicked', async () => {
+    // capi attributes a refusal that lands inside a <GatedControl>'s window to
+    // that control. These reads happen on a render; `background: true` keeps a
+    // provisioning POST that succeeded from being reported as denied.
+    stub([{ match: '/search/jobs?', status: 403, body: { message: 'forbidden' } }])
+    const mark = denialMark()
+    await accelStatus(LAKE)
+    expect(denialSince(mark), 'a background status read was attributed to a click').toBeNull()
+  })
+
+  it('quotes Cribl on any other failure, because this table is read by an admin', async () => {
+    stub([{ match: '/search/jobs?', status: 500, body: { message: "Unexpected identifier 'is'" } }])
+    const s = await accelStatus(LAKE)
+    expect(s.error).toContain('Unexpected identifier')
+    expect(s.denied).toBe(false)
+  })
+
+  it('says so when the body is not a list at all', async () => {
+    stub([{ match: '/search/jobs?', body: { totalCount: 0 } }])
+    expect((await accelStatus(LAKE)).error).toContain('could not read')
+  })
+
+  it('survives the request throwing', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('network down')
+    })
+    const s = await accelStatus(LAKE)
+    expect(s.error).toBeTruthy()
+    expect(s.runs).toHaveLength(0)
+  })
+
+  it('reports a schedule that has never fired as empty and NOT as an error', async () => {
+    stub([history([])])
+    const s = await accelStatus(LAKE)
+    expect(s.error).toBeNull()
+    expect(s.runs).toHaveLength(0)
+    expect(s.last).toBeNull()
+    expect(s.lastCpuUnavailable).toBeNull()
+  })
+})
+
+describe('cadence', () => {
+  it('reads the shapes the manifest uses', () => {
+    expect(cronIntervalMs(accelEntry(LAKE).cron)).toBe(DAY)
+    expect(cronIntervalMs(accelEntry(SAMPLE).cron)).toBe(HOUR)
+    expect(cronIntervalMs('* * * * *')).toBe(MIN)
+    expect(cronIntervalMs('*/5 * * * *')).toBe(5 * MIN)
+    expect(cronIntervalMs('0 */6 * * *')).toBe(6 * HOUR)
+  })
+
+  it('answers "cannot say" rather than guessing, and that is the safe answer', () => {
+    // A wrong cadence is worse than none: staleness would flag a healthy run and
+    // the estimate would multiply a per-run cost by a runs-per-day nobody
+    // measured. Both callers already handle null.
+    for (const cron of ['10 0 * * 1', '0 0 1 * *', '0,30 * * * *', '0 0 * JAN *', '10 0 * *', '', 'hourly']) {
+      expect(cronIntervalMs(cron), cron).toBeNull()
+    }
+  })
+
+  it('measures the median gap, so one missed firing does not rewrite the cadence', async () => {
+    // Hourly, with the 09:00 run missed. The mean would say 72 minutes; the
+    // median says 60, which is what the schedule is actually doing.
+    const at = (h: number) => run({ id: `r${h}`, timeCompleted: T0 - h * HOUR })
+    stub([history([at(0), at(1), at(2), at(4), at(5)]), metrics(4)])
+    const s = await accelStatus(SAMPLE)
+    expect(s.observedIntervalMs).toBe(HOUR)
+    expect(s.expectedIntervalMs).toBe(HOUR)
+    expect(cadenceLooksRight(s)).toBe(true)
+  })
+
+  it('cannot judge a cadence from one run', async () => {
+    stub([history([run()]), metrics(4)])
+    const s = await accelStatus(SAMPLE)
+    expect(s.observedIntervalMs).toBeNull()
+    expect(cadenceLooksRight(s), 'unknown must not render as healthy').toBeNull()
+  })
+
+  it('calls a schedule that has fallen behind what it is', async () => {
+    const at = (h: number) => run({ id: `r${h}`, timeCompleted: T0 - h * HOUR })
+    stub([history([at(0), at(6), at(12)]), metrics(4)])
+    expect(cadenceLooksRight(await accelStatus(SAMPLE))).toBe(false)
+  })
+
+  it('tolerates a firing that is merely late', async () => {
+    // A jittered or briefly delayed Leader is not a broken schedule, and a table
+    // that cries drift at a two-minute slip is a table nobody reads.
+    const at = (m: number) => run({ id: `r${m}`, timeCompleted: T0 - m * MIN })
+    stub([history([at(0), at(70), at(140)]), metrics(4)])
+    expect(cadenceLooksRight(await accelStatus(SAMPLE))).toBe(true)
+  })
+})
+
+describe('one run by id', () => {
+  it('reads the run the stored rows named', async () => {
+    const sent = stub([{ match: '/search/jobs/run-7', body: { items: [run({ id: 'run-7' })] } }])
+    const r = await runMeta('run-7')
+    expect(sent[0].url).toBe(`/capi${JOBS_PATH}/run-7`)
+    expect(r.run?.id).toBe('run-7')
+    expect(r.error).toBeNull()
+  })
+
+  it('encodes an id it did not choose', async () => {
+    const sent = stub([{ match: '/search/jobs/', body: { items: [] } }])
+    await runMeta('a b/c')
+    expect(sent[0].url).toBe(`/capi${JOBS_PATH}/a%20b%2Fc`)
+  })
+
+  it('answers with an error rather than a null run nobody checks', async () => {
+    stub([{ match: '/search/jobs/', status: 404, body: { message: 'gone' } }])
+    expect((await runMeta('missing')).error).toBeTruthy()
+    vi.unstubAllGlobals()
+    stub([{ match: '/search/jobs/', body: { items: [] } }])
+    const r = await runMeta('missing')
+    expect(r.run).toBeNull()
+    expect(r.error).toBeTruthy()
+  })
+})
+
+describe('the whole manifest', () => {
+  it('reports every entry by default, so a third one appears the day it is added', async () => {
+    stub([history([run()]), metrics(2)])
+    const all = await allAccelStatus()
+    expect(all.map((s) => s.id)).toEqual([LAKE, SAMPLE])
+    expect(all.every((s) => s.error === null)).toBe(true)
+  })
+
+  it('carries the manifest’s own cron into every status', async () => {
+    stub([history([])])
+    const [lake, sample] = await allAccelStatus()
+    expect(lake.expectedIntervalMs).toBe(DAY)
+    expect(sample.expectedIntervalMs).toBe(HOUR)
+  })
+})
+
+describe('listRuns, which the read path uses on its own', () => {
+  it('lists without touching the meter, because the panel never shows that number', async () => {
+    const sent = stub([history([run()]), metrics(1)])
+    const listed = await listRuns(LAKE)
+    expect(listed.runs).toHaveLength(1)
+    expect(sent.some((c) => c.url.includes('/metrics')), 'a metrics read per panel paint').toBe(false)
+  })
+})
+
+// ── WHAT THIS FILE DOES NOT ASSERT ──────────────────────────────────────────
+//
+//   * That a scheduled run's `correlationId` IS the saved search's id. No run of
+//     ours has ever existed — constraint 8 forbids creating one — so the query
+//     shape is checked and its effect is not. The failure direction is safe: a
+//     correlationId that matches nothing reports "never run", which makes
+//     accel/read.ts spend a live query. It can never date a stale number.
+//   * That `output=short` includes `timeCompleted`. The parse falls back through
+//     started and created when it does not, and both paths are tested — but
+//     which one the live API takes is unknown until Preview.
+//   * That `sortDir=desc` survives the platform's fetch proxy. The re-sort above
+//     is there precisely because that cannot be asserted from here.
+//   * Anything about whether Cribl accepts the metrics path for a scheduled job
+//     rather than an interactive one.

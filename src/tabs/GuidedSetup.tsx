@@ -13,6 +13,7 @@
 // install-wide search setting that shares this page because an installer is
 // already standing on it — not because it has anything to do with setup.
 
+import { AccelPanel } from '../components/AccelPanel'
 import { Panel } from '../components/Panel'
 import { ProvisionPanel } from '../components/ProvisionPanel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
@@ -61,6 +62,17 @@ export function GuidedSetup() {
           because raising a cap is the same kind of act as provisioning: it
           changes what every viewer of this install gets, not just this one. */}
       <SearchLimitsPanel />
+
+      {/* Section 3. The second place this app writes Cribl configuration, and
+          it is on this tab for the reason above and one more: the two objects
+          it creates run on a cron and bill whether or not anybody opens the app,
+          so the person who has to be told they exist is the installer, not a
+          viewer of Data Flow. It is BELOW <SearchLimitsPanel> deliberately —
+          the running-time caps decide what a live query is allowed to cost, and
+          the argument for scheduling one is easier to read after that number
+          than before it. Everything it holds is its own; it takes no props, and
+          nothing above reads anything it knows. */}
+      <AccelPanel />
 
       {/* The toast stack that used to be rendered here now lives at the app root
           and is Capra's — an `aria-live` container that appeared together with

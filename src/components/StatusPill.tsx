@@ -100,6 +100,17 @@ export type StatusState =
   // other half in both screens: still finding out, nothing has gone wrong.
   | 'unreadable'
   | 'checking'
+  // Guided Setup section 3, one per scheduled search this app owns. These are
+  // four of the six words the UX spec's section 0 map reserved for "screens that
+  // do not exist yet" — the screen landed, so they are here rather than being
+  // approximated by the provisioning words. The distinction they carry is the
+  // whole point of that table: `absent` and `foreign` look identical to a
+  // two-state pill, and "this app never created it" and "somebody else already
+  // owns this id" have opposite right answers.
+  | 'enabled'
+  | 'paused'
+  | 'differs'
+  | 'foreign'
   // Field Explorer, AMI field coverage.
   | 'derived'
   | 'missing'
@@ -129,6 +140,20 @@ const STATES: Record<StatusState, Appearance> = {
   // says so in words underneath.
   unreadable: 'warning',
   checking: 'default',
+  // A schedule that is firing. Success, alongside `present`, because the object
+  // exists AND is doing its job — which for a saved search are two claims.
+  enabled: 'success',
+  // Default, not warning: somebody paused it on purpose and the app is not
+  // entitled to call that a problem. What it costs is said in words in the row.
+  paused: 'default',
+  // The stored object is not what this release would write. Nothing is broken
+  // and nothing was refused — it needs a decision, which is what warning means
+  // everywhere else in this map.
+  differs: 'warning',
+  // An object with one of this app's ids that this app did not create. Warning
+  // rather than danger for the same reason `absent` is not danger: nothing has
+  // failed. It is a name collision, and the app will not touch it.
+  foreign: 'warning',
   derived: 'warning',
   missing: 'danger',
   critical: 'danger',
