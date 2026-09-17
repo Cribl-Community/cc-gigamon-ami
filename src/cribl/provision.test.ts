@@ -78,13 +78,27 @@ interface LeaderOpts {
   head?: string
   /** Files `/version/files` reports as changed since `configVersion`. */
   changedSince?: string[]
-  /** The live pipeline object, as `GET /m/<g>/pipelines/<id>` returns it. `null`
-   *  keeps the old default: a 200 whose `items` this file cannot read, which is
-   *  deliberately still treated as "needs writing". */
+  /** The live pipeline object, as `GET /m/<g>/pipelines/<id>` returns it.
+   *  Defaults to `STALE_PIPELINE` — present, and one spec field out of date, so a
+   *  re-apply writes. `null` means a 200 whose `items` this file cannot read,
+   *  which since the full-replacement fix must NOT write. */
   pipeline?: Record<string, unknown> | null
   /** The live syslog source, likewise. */
   source?: Record<string, unknown> | null
 }
+
+/**
+ * A live pipeline and source that EXIST and are stale in exactly one spec field.
+ *
+ * This is the stub default, and it used to be `null` — a 200 whose `items` this
+ * app could not read, which the old code treated as "needs writing" and patched
+ * with the bare spec. That is the maximal form of the full-replacement defect,
+ * so an unreadable body is now an error and writes nothing; every test that only
+ * wants the run to REACH the commit and the deploy needs a readable body that
+ * drifted instead. These are it.
+ */
+const STALE_PIPELINE = { ...PIPELINE_SPEC, conf: { ...PIPELINE_SPEC.conf, functions: [] } }
+const STALE_SOURCE = { ...SOURCE_SPEC, tcpPort: 1514 }
 
 const catchAll = { id: 'default', name: 'default', filter: 'true', final: false, pipeline: 'main' }
 
@@ -105,7 +119,7 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
   const {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
     configVersion = HEAD, head = HEAD, changedSince = [],
-    pipeline = null, source = null,
+    pipeline = STALE_PIPELINE, source = STALE_SOURCE,
   } = opts
   const calls: Call[] = []
 
@@ -146,9 +160,10 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     if (at('PATCH', ROUTES_PATCH)) return reply(200, { items: [] })
     if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
 
-    // The two objects whose no-op check Phase 3 added. Answering with a real
-    // body is what lets a test say "already correct" at all — the catch-all
-    // below answers `{ items: [] }`, which reads as unreadable and still writes.
+    // The two objects whose no-op check Phase 3 added, and whose PATCH is now a
+    // merge onto this body. Answering with a real body is what lets a test say
+    // "already correct" at all — and, since the merge, what lets it say anything
+    // about the request body, which is composed from exactly this.
     if (at('GET', `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)) return reply(200, { items: pipeline ? [pipeline] : [] })
     if (at('GET', `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)) return reply(200, { items: source ? [source] : [] })
     // Everything else in the group already exists and takes whatever is sent.
@@ -309,13 +324,133 @@ describe('a re-apply that has nothing to apply', () => {
     expect(step(steps, 'pipeline')?.detail).toContain('conf')
   })
 
-  it('writes when the live object cannot be read, because "I could not see it" is not "it is right"', async () => {
-    // A 200 whose body this file does not understand. The old behaviour — PATCH
-    // regardless — is the correct one here and is deliberately kept.
-    const calls = stubLeader({ ...settled, pipeline: null, source: null })
+  it('sends no PATCH when the live object cannot be read, because the body is composed from it', async () => {
+    // THIS TEST USED TO ASSERT THE OPPOSITE, and the assertion it made was the
+    // defect at its worst. A 200 whose `items` this file cannot read used to
+    // mean "every spec key is missing, so write" — and the write was the bare
+    // spec against an endpoint that removes every omitted field, i.e. a live
+    // source reduced to eight keys and a live pipeline to two. "I could not see
+    // it" is still not "it is already right"; it is now "I cannot compose a
+    // complete representation", and the only safe answer to that is not to send
+    // one. It is an `error`, not `exists`, so the run stops and nothing is
+    // committed or deployed on top of it.
+    const calls = stubLeader({ ...settled, pipeline: null })
+    const steps = await run()
+    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+    expect(step(steps, 'pipeline')?.action).toBe('error')
+    expect(step(steps, 'pipeline')?.detail).toContain('could not read the live')
+    expect(steps.some((s) => s.key === 'commit'), 'committed on top of an object it could not read').toBe(false)
+  })
+
+  it('sends no PATCH for an unreadable source either', async () => {
+    const calls = stubLeader({ ...settled, source: null })
+    const steps = await run()
+    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)
+    expect(step(steps, 'source')?.action).toBe('error')
+  })
+})
+
+// ── The full-replacement defect (found 2026-09-17, shipped in 1.0.20) ────────
+//
+// `PATCH /pipelines/{id}` and `PATCH /system/inputs/{id}` are documented in
+// openapi.json as full replacements — "Cribl removes any omitted fields". Both
+// sites sent the SPEC, so a Re-apply that found one field drifted deleted every
+// field the spec does not name. `ensureRoute` never did this. These tests assert
+// on the BODY, because the path and the status say nothing about what was lost.
+describe('a PATCH is a full replacement', () => {
+  const bodySent = (calls: Call[], path: string) =>
+    calls.find((c) => c.method === 'PATCH' && c.path === path)?.body as Record<string, unknown> | undefined
+  const SOURCE_PATH = `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`
+  const PIPELINE_PATH = `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`
+
+  /** A syslog source a customer has actually configured: TLS terminated at the
+   *  Source, a persistent queue, a connection cap, a renamed description, and a
+   *  QuickConnect connection. None of it is anything this app names. */
+  const customised = {
+    ...SOURCE_SPEC,
+    tcpPort: 9999, // the one spec field that drifted, so the write happens at all
+    description: 'Gigamon AMX — DC1 collector',
+    maxActiveCxn: 200,
+    ipWhitelistRegex: '^10\\.',
+    pqEnabled: true,
+    pq: { mode: 'always', maxBufferSizeBytes: '1MB', compress: 'none', onBackpressure: 'drop' },
+    tls: { disabled: false, certificateName: 'dc1-collector', requestCert: true },
+    connections: [{ output: 'gigamon_lake', pipeline: 'gigamon_syslog' }],
+    criblSourceProvenance: { originDataSource: 'discovered' },
+  }
+
+  it('carries the fields the live source had and the spec never mentions', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], source: customised })
     await run()
-    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
-    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)
+    const body = bodySent(calls, SOURCE_PATH)
+    expect(body, 'the source should have been patched — tcpPort drifted').toBeDefined()
+    // Every one of these was deleted by the shipped version, silently.
+    expect(body!.tls).toEqual(customised.tls)
+    expect(body!.pq).toEqual(customised.pq)
+    expect(body!.pqEnabled).toBe(true)
+    expect(body!.maxActiveCxn).toBe(200)
+    expect(body!.ipWhitelistRegex).toBe('^10\\.')
+    expect(body!.description).toBe('Gigamon AMX — DC1 collector')
+    expect(body!.connections).toEqual(customised.connections)
+    // And the app still asserts what the app owns.
+    expect(body!.tcpPort).toBe(SOURCE_SPEC.tcpPort)
+    expect(body!.sendToRoutes).toBe(true)
+  })
+
+  it('omits criblSourceProvenance, which the spec says Cribl preserves and will not let us overwrite', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], source: customised })
+    await run()
+    expect(Object.hasOwn(bodySent(calls, SOURCE_PATH)!, 'criblSourceProvenance')).toBe(false)
+  })
+
+  it('keeps the conf keys outside `functions` that a one-level merge would delete', async () => {
+    // A-SP23 measured this class on a sibling endpoint: a `schedule` sub-object
+    // replaced wholesale, dropping `tz` and `keepLastN` with no error.
+    // PIPELINE_SPEC.conf is `{ functions }`; a live conf holds four more keys.
+    const live = {
+      ...PIPELINE_SPEC,
+      description: 'renamed in the Cribl UI',
+      conf: {
+        asyncFuncTimeout: 3000,
+        output: 'gigamon_lake',
+        streamtags: ['gigamon'],
+        description: 'parse Gigamon AMI JSON',
+        groups: { grp1: { name: 'Normalize' } },
+        functions: [], // drifted, so the write happens
+      },
+    }
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], pipeline: live })
+    await run()
+    const conf = bodySent(calls, PIPELINE_PATH)!.conf as Record<string, unknown>
+    expect(conf.asyncFuncTimeout).toBe(3000)
+    expect(conf.output).toBe('gigamon_lake')
+    expect(conf.streamtags).toEqual(['gigamon'])
+    expect(conf.description).toBe('parse Gigamon AMI JSON')
+    expect(conf.groups).toEqual({ grp1: { name: 'Normalize' } })
+    // The app owns `functions` and asserts them.
+    expect(conf.functions).toEqual(PIPELINE_SPEC.conf.functions)
+    // And the pipeline's own top-level `description` survives too.
+    expect(bodySent(calls, PIPELINE_PATH)!.description).toBe('renamed in the Cribl UI')
+  })
+
+  it('shows the customer the body it is about to send, not the spec', async () => {
+    // The second half of the defect. `covered` compared only the spec's own keys,
+    // so the dialog said "conf changed" while the write deleted fields nobody was
+    // shown. Every row's `after` is now literally the value in the request.
+    const asked: PendingChange[] = []
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], source: customised })
+    await runWith({ confirm: (c) => { asked.push(c); return true } })
+
+    const body = bodySent(calls, SOURCE_PATH)!
+    const shown = asked.find((c) => c.key === 'source')!
+    expect(shown.diff.map((d) => d.key)).toEqual(['tcpPort'])
+    for (const row of shown.diff) expect(row.after).toEqual(body[row.key])
+    // Nothing else in the body differs from what Cribl already held — which is
+    // what makes a one-row diff an honest description of this request.
+    const undisclosed = Object.keys(body).filter(
+      (k) => !shown.diff.some((d) => d.key === k) && JSON.stringify(body[k]) !== JSON.stringify((customised as Record<string, unknown>)[k]),
+    )
+    expect(undisclosed, 'these fields were written without appearing in the diff').toEqual([])
   })
 })
 

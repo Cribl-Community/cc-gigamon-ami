@@ -57,6 +57,17 @@
 // The corollary is the reason the no-op fix and the seam arrived together: a
 // confirmation that fires for a change that is not happening teaches people to
 // click through confirmations.
+//
+// ── AND A THIRD CHANGE (2026-09-17): THE PATCHES WERE NOT MERGES ────────────
+//
+// The pipeline and source PATCHes sent the SPEC, and both endpoints are full
+// replacements — "Cribl removes any omitted fields", in openapi.json's own
+// words. A Re-apply that found one spec field drifted therefore deleted every
+// field the spec does not name, and `covered` guaranteed the confirmation could
+// not mention them. That is a SHIPPED defect: Phase 1 wrote it, 1.0.20 has it,
+// Phase 3 only narrowed the window. Both now merge onto the object they just
+// read, the way `ensureRoute` always did — see the long comment above
+// `mergeSpec`.
 
 import { isDenial } from './authz'
 import { capi, errText, groupPath, type ApiResp } from './capi'
@@ -531,70 +542,194 @@ async function filesToCommit(group: string, keys: ResourceKey[]): Promise<string
   return selected
 }
 
-// --- Does the live object already say what the spec says? -----------------
+// --- What the write actually sends, and what it changes -------------------
 //
-// One comparison for all four objects, so "already correct" means the same thing
-// for a route as for a pipeline. It was only ever written for the route.
+// ── A SHIPPED DEFECT, FOUND 2026-09-17 ─────────────────────────────────────
+//
+// `PATCH /m/<group>/pipelines/<id>` and `PATCH /m/<group>/system/inputs/<id>`
+// are FULL REPLACEMENTS. The 4.19.0 spec vendored in this repo (openapi.json)
+// says so in as many words:
+//
+//   /pipelines/{id}       "Provide a complete representation of the Pipeline
+//                          that you want to update in the request body. This
+//                          endpoint does not support partial updates. Cribl
+//                          removes any omitted fields when updating the
+//                          Pipeline."
+//
+//   /system/inputs/{id}   "Provide a complete representation of the Source that
+//                          you want to update in the request body. This endpoint
+//                          does not support partial updates. Cribl removes any
+//                          omitted fields when updating the Source."
+//
+// Until now both sites sent THE SPEC — two keys for the pipeline, eight for the
+// source — so a Re-apply that found anything at all to change deleted every
+// field nobody here had named: a customer's `tls` block, their `pq` /
+// `pqEnabled` persistent queue, `maxActiveCxn`, `ipWhitelistRegex`, their
+// QuickConnect `connections`, the source's and the pipeline's `description`, the
+// pipeline's UI function `groups`. `ensureRoute` had this right from its first
+// line — it PATCHes `{ ...obj, routes }`, an edit of the table it has just
+// read, with a comment saying why — and these two did not. It shipped in
+// Phase 1, it is in the installed app at 1.0.20, and Phase 3's no-op check only
+// narrowed the window: the loss needs one spec field to differ AND the customer
+// to have customised the object.
+//
+// So the write is now the live object with the spec asserted onto it, and the
+// diff a confirmation shows is computed FROM THE BODY THAT WILL BE SENT rather
+// than from the spec — because a dialog that names the spec's keys is describing
+// a different request from the one that goes out.
 
-/**
- * Is `want` already true of `live`?
- *
- * A SUBSET TEST, NOT AN EQUALITY TEST, and that is the whole design. These specs
- * are assertions about an object, never the object itself: a live syslog source
- * carries thirty fields this app has never named, a live pipeline carries the
- * `description` and `groups` somebody set in the UI, and a live route carries the
- * `groupId` that files it into a Route Group. Equality would report every one of
- * those as a difference and PATCH forever, which is the bug being fixed; treating
- * the spec as a set of claims asks the question that actually matters — is there
- * anything left for this app to apply?
- *
- * Arrays compare by LENGTH AND POSITION, elements subset-tested. A pipeline whose
- * function list has our four functions plus a fifth somebody added is NOT
- * covered, because sending our four would delete theirs — that is a real change
- * and it belongs in the diff.
- *
- * Every uncertainty resolves to "not covered", so the worst this can do is issue
- * the PATCH that used to be issued unconditionally.
- */
-function covered(live: unknown, want: unknown): boolean {
-  if (Array.isArray(want)) {
-    if (!Array.isArray(live) || live.length !== want.length) return false
-    return want.every((v, i) => covered(live[i], v))
+/** A JSON object as opposed to an array or `null` — the only shape worth merging
+ *  INTO rather than replacing. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** Deep equality over the JSON these bodies are made of. Key order is not a
+ *  difference; array order is. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((v, i) => sameValue(v, b[i]))
   }
-  if (want !== null && typeof want === 'object') {
-    if (live === null || typeof live !== 'object' || Array.isArray(live)) return false
-    return Object.entries(want as Record<string, unknown>).every(
-      ([k, v]) => Object.hasOwn(live as object, k) && covered((live as Record<string, unknown>)[k], v),
-    )
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ka = Object.keys(a)
+    if (ka.length !== Object.keys(b).length) return false
+    return ka.every((k) => Object.hasOwn(b, k) && sameValue(a[k], b[k]))
   }
-  return live === want
+  return false
 }
 
 /**
- * The spec's top-level keys the live object does not already satisfy — the diff a
+ * `live` with `want` asserted onto it — the app's claims applied, everything
+ * else carried forward.
+ *
+ * WHY IT RECURSES, i.e. why one level is not enough. `PIPELINE_SPEC.conf` is
+ * `{ functions: [...] }`, but a live pipeline's `conf` also holds
+ * `asyncFuncTimeout`, `output`, `streamtags`, `description` and the UI's
+ * function `groups` (openapi.json, `Pipeline.conf`). A shallow `{ ...live,
+ * ...spec }` replaces `conf` wholesale and deletes all five — the same shape
+ * A-SP23 measured on a sibling endpoint, where a `schedule` sub-object was
+ * replaced rather than merged and `tz` and `keepLastN` disappeared with no
+ * error. The nesting is not special-cased to `conf`, because the next spec to
+ * grow a sub-object would need the same treatment and would not get it.
+ *
+ * WHY EQUAL-LENGTH ARRAYS MERGE ELEMENT-WISE instead of being replaced. It keeps
+ * this function exactly as strict as the subset test it replaces (`covered`,
+ * Phase 3): `sameValue(live, mergeSpec(live, spec))` is true precisely when that
+ * test said the spec was already satisfied, so the no-op Re-apply Phase 3 bought
+ * is preserved to the letter. Replacing the array instead would count a key
+ * Cribl normalised onto one of our functions as a difference and PATCH on every
+ * Re-apply again. A LENGTH CHANGE still replaces: a function list with a fifth
+ * function somebody added is a real change, and one this app is asserting away.
+ *
+ * KNOWN LIMIT, stated because nothing here can detect it: if somebody REORDERS
+ * our functions, the positional merge overlays each spec function onto whichever
+ * live function now sits at its index. Our four functions carry the same key
+ * set, so the result is our function plus whatever extra keys the live entry at
+ * that index had (`groupId`, say) — cosmetically wrong, not destructive, and it
+ * shows up as a `conf` row in the diff the user approves.
+ */
+function mergeSpec(live: unknown, want: unknown): unknown {
+  if (Array.isArray(want)) {
+    if (!Array.isArray(live) || live.length !== want.length) return want
+    return want.map((v, i) => mergeSpec(live[i], v))
+  }
+  if (isPlainObject(want)) {
+    if (!isPlainObject(live)) return want
+    const out: Record<string, unknown> = { ...live }
+    for (const [k, v] of Object.entries(want)) out[k] = mergeSpec(live[k], v)
+    return out
+  }
+  return want
+}
+
+/**
+ * Keys read off a live object that must not be sent back.
+ *
+ * Reasoned the way cribl/landing.ts's `DATASET_READONLY_KEYS` comment reasons,
+ * and the reasoning is the whole reason the list is this short: UNDER
+ * FULL-REPLACEMENT SEMANTICS A STRIPPED KEY IS A DELETED KEY. So the only thing
+ * that may go on this list is a key the spec states the server owns — never
+ * "anything we don't recognise", which is how the defect above was written in
+ * the first place.
+ *
+ * `criblSourceProvenance` is the single key openapi.json names outright, on
+ * PATCH /system/inputs/{id}: "Cribl preserves `criblSourceProvenance` when you
+ * omit it from the request body, and you cannot overwrite it through this
+ * endpoint." Omitting it is therefore the only correct handling — it survives,
+ * and sending it back is at best ignored.
+ *
+ * NOT ON THE LIST, and each is a judgement somebody may want to revisit:
+ *   * `status` / `metrics`-shaped runtime fields. The `Input` schema declares
+ *     none, and this repo has never seen one come back from this GET. If a
+ *     leader does attach one, it will ride back out — noisy, and harmless,
+ *     because a field the server computes it also recomputes.
+ *   * `pq`, `connections`, `metadata`, `tls`. Customer configuration every one
+ *     of them, and exactly what this change exists to carry forward.
+ *   * The `__template_*` keys. They bind a field to a variable, so they are
+ *     configuration, not derived state, and dropping one would unbind it.
+ * The pipeline list is empty: `Pipeline` declares `id` and `conf` and nothing
+ * the server owns.
+ */
+const SOURCE_SERVER_OWNED: readonly string[] = ['criblSourceProvenance']
+const PIPELINE_SERVER_OWNED: readonly string[] = []
+
+/** The complete representation a full-replacement PATCH has to carry: what Cribl
+ *  just returned, minus the keys the server owns, with the spec asserted on. */
+function patchBody(
+  live: Record<string, unknown>,
+  spec: Record<string, unknown>,
+  serverOwned: readonly string[],
+): Record<string, unknown> {
+  const base: Record<string, unknown> = { ...live }
+  for (const k of serverOwned) delete base[k]
+  return mergeSpec(base, spec) as Record<string, unknown>
+}
+
+/**
+ * What the body about to be sent changes about the live object — the diff a
  * confirmation shows, and, when it is empty, the evidence that there is nothing
  * to write.
  *
- * Top-level keys only: `conf` reads as one row rather than as a walk of every
- * function's every field. A reader deciding whether to approve a pipeline
- * overwrite is deciding about the function list as a whole, and the object either
- * side of the arrow is what says which one.
+ * COMPUTED FROM THE BODY, NOT FROM THE SPEC, which is the fix to the second half
+ * of the defect above. The old version walked the spec's own keys and said so in
+ * its doc comment, which meant the dialog was structurally incapable of
+ * mentioning a customer's TLS block while the write deleted it. Now the two
+ * cannot disagree: every key the request carries is compared against what Cribl
+ * holds, so a row here is a change the request makes and a change the request
+ * makes is a row here.
  *
- * A live object of `null` — the GET answered 200 with a body this file cannot
- * read — makes every key `added`, so the write still happens. "I could not read
- * it" is not "it is already right".
+ * Top-level keys only, still: `conf` reads as one row rather than as a walk of
+ * every function's every field, and the object either side of the arrow is what
+ * says which one. That is a presentation choice, not an omission — the `after`
+ * side IS the sub-object being sent.
+ *
+ * THE ONE THING WRITTEN THAT DOES NOT APPEAR HERE: a key in `serverOwned` leaves
+ * the body, and this walks the body, so it produces no row. That is deliberate
+ * and it is honest — the spec says Cribl preserves `criblSourceProvenance` when
+ * it is omitted, so nothing about the object changes and there is nothing to
+ * show. If a key is ever added to those lists whose omission DOES change the
+ * object, it belongs in the diff as a `removed` row and this function needs the
+ * other half of the walk.
  */
-function specDiff(live: Record<string, unknown> | null, spec: Record<string, unknown>): DiffRow[] {
+function bodyDiff(live: Record<string, unknown>, body: Record<string, unknown>): DiffRow[] {
   const rows: DiffRow[] = []
-  for (const [key, want] of Object.entries(spec)) {
-    if (live === null || !Object.hasOwn(live, key)) {
-      rows.push({ key, kind: 'added', before: undefined, after: want })
-    } else if (!covered(live[key], want)) {
-      rows.push({ key, kind: 'changed', before: live[key], after: want })
-    }
+  for (const [key, after] of Object.entries(body)) {
+    if (!Object.hasOwn(live, key)) rows.push({ key, kind: 'added', before: undefined, after })
+    else if (!sameValue(live[key], after)) rows.push({ key, kind: 'changed', before: live[key], after })
   }
   return rows
 }
+
+/** Why an update did not happen: Cribl answered 200 and this app could not find
+ *  the object in the body. Under full-replacement semantics that is the one
+ *  state in which writing is worse than not writing — a PATCH composed without
+ *  the live object deletes everything it does not mention. Before Phase 3 this
+ *  case sent the bare spec, which is the maximal version of the defect. */
+const unreadable = (what: string) =>
+  `not applied — Cribl answered 200 but this app could not read the live ${what}, ` +
+  'and this endpoint replaces the whole object'
 
 /** The one object a Cribl GET of a named resource answers with, or null when the
  *  body is not the `{ items: [ … ] }` this app knows how to read. */
@@ -667,15 +802,27 @@ async function ensureDestination(ctx: EnsureCtx): Promise<StepResult> {
 async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
   const cur = await capi('GET', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`))
   if (cur.status === 200) {
+    // openapi.json, PATCH /pipelines/{id} (Cribl 4.19.0, read 2026-09-17):
+    // "Provide a complete representation of the Pipeline that you want to update
+    //  in the request body. This endpoint does not support partial updates.
+    //  Cribl removes any omitted fields when updating the Pipeline."
+    // So this PATCHes the object it just read with PIPELINE_SPEC asserted onto
+    // it, the way ensureRoute has always edited the table it just read. Sending
+    // PIPELINE_SPEC itself — `{ id, conf }` — deleted the pipeline's
+    // `description` and its UI function `groups`, and replaced the whole `conf`.
+    const live = firstItem(cur)
+    // No live body, no merge, no write. See `unreadable`.
+    if (!live) return { key: 'pipeline', action: 'error', detail: unreadable('pipeline') }
+    const body = patchBody(live, PIPELINE_SPEC, PIPELINE_SERVER_OWNED)
     // Present and already correct is a no-op — not even a PATCH, so the group's
     // Git status stays clean and a re-apply of a settled stack cannot reach the
     // deploy that restarts its Worker Processes.
-    const diff = specDiff(firstItem(cur), PIPELINE_SPEC)
+    const diff = bodyDiff(live, body)
     if (diff.length === 0) return { key: 'pipeline', action: 'exists' }
     if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'overwrite', object: RESOURCE_PHRASE.pipeline, diff }))) {
       return refused('pipeline')
     }
-    const r = await capi('PATCH', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`), PIPELINE_SPEC)
+    const r = await capi('PATCH', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`), body)
     return r.status === 200
       ? { key: 'pipeline', action: 'updated', detail: diff.map((d) => d.key).join(', ') }
       : { key: 'pipeline', action: 'error', detail: errText(r) }
@@ -692,12 +839,24 @@ async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
 async function ensureSource(ctx: EnsureCtx): Promise<StepResult> {
   const cur = await capi('GET', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`))
   if (cur.status === 200) {
-    const diff = specDiff(firstItem(cur), SOURCE_SPEC)
+    // openapi.json, PATCH /system/inputs/{id} (Cribl 4.19.0, read 2026-09-17):
+    // "Provide a complete representation of the Source that you want to update
+    //  in the request body. This endpoint does not support partial updates.
+    //  Cribl removes any omitted fields when updating the Source."
+    // SOURCE_SPEC is eight keys and a live syslog source has forty (openapi.json
+    // `InputSyslog`), so sending the spec deleted the customer's `tls`, their
+    // persistent queue, `maxActiveCxn`, `connections` and `description` — and
+    // `covered` guaranteed the confirmation could not name any of them. Merge
+    // onto what we just read, exactly as ensureRoute does.
+    const live = firstItem(cur)
+    if (!live) return { key: 'source', action: 'error', detail: unreadable('Syslog source') }
+    const body = patchBody(live, SOURCE_SPEC, SOURCE_SERVER_OWNED)
+    const diff = bodyDiff(live, body)
     if (diff.length === 0) return { key: 'source', action: 'exists' }
     if (!(await agreed(ctx.confirm, { key: 'source', action: 'overwrite', object: RESOURCE_PHRASE.source, diff }))) {
       return refused('source')
     }
-    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`), SOURCE_SPEC)
+    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`), body)
     return r.status === 200
       ? { key: 'source', action: 'updated', detail: diff.map((d) => d.key).join(', ') }
       : { key: 'source', action: 'error', detail: errText(r) }
@@ -752,14 +911,6 @@ function insertionIndex(routes: Array<Record<string, unknown>>): number {
   return unconditional === -1 ? routes.length : unconditional
 }
 
-/** What ROUTE_SPEC still has to say to this live entry — empty when it already
- *  says all of it. Compared field by field rather than wholesale, because a live
- *  route carries fields we never set — `groupId` when somebody filed it into a
- *  Route Group, say — and those are not ours to notice or to remove. This is the
- *  comparison the pipeline and the source did not have until Phase 3; it is now
- *  the same `specDiff` for all four. */
-const routeDiff = (live: Record<string, unknown>): DiffRow[] => specDiff(live, ROUTE_SPEC)
-
 /**
  * Add our route when it is missing; leave it exactly where it is when it is not.
  *
@@ -774,7 +925,13 @@ async function ensureRoute(ctx: EnsureCtx): Promise<StepResult> {
   const obj = await readRoutes(ctx.group)
   if (!obj) return { key: 'route', action: 'error', detail: 'routing table not found' }
   const at = obj.routes.findIndex(isOurRoute)
-  const diff = at !== -1 ? routeDiff(obj.routes[at]) : []
+  // The entry this run would send: the live one with ROUTE_SPEC asserted onto
+  // it, so fields we never set — `groupId`, when somebody filed the route into a
+  // Route Group — carry forward. This is the merge the pipeline and the source
+  // did not have until now; it is the same `mergeSpec` for all three, and the
+  // diff below is read off it rather than off the spec.
+  const merged = at !== -1 ? (mergeSpec(obj.routes[at], ROUTE_SPEC) as Record<string, unknown>) : null
+  const diff = merged ? bodyDiff(obj.routes[at], merged) : []
   if (at !== -1 && diff.length === 0) return { key: 'route', action: 'exists' }
 
   if (!(await agreed(ctx.confirm, {
@@ -787,9 +944,8 @@ async function ensureRoute(ctx: EnsureCtx): Promise<StepResult> {
   }
 
   const routes = obj.routes.slice()
-  // Merge onto the live entry rather than replacing it, for the same reason
-  // routeDiff compares field by field.
-  if (at !== -1) routes[at] = { ...routes[at], ...ROUTE_SPEC }
+  // The merged entry, which is what the diff above described.
+  if (merged) routes[at] = merged
   else routes.splice(insertionIndex(routes), 0, ROUTE_SPEC)
 
   const r = await capi('PATCH', g(ctx.group, `/routes/${obj.id}`), { ...obj, routes })
