@@ -913,8 +913,12 @@ export interface DestinationConfirmContext {
    *
    * As old as the dialog has been open, and it is only ever used to say what
    * is NOT being committed, so staleness here cannot mislead about the write.
+   *
+   * `null` is THE READ FAILED — a third state, not an empty list. The copy owes
+   * it its own sentence: an empty list is a checked claim, and a failed read
+   * printed as one is the defect this type used to make possible.
    */
-  otherPending: string[]
+  otherPending: string[] | null
 }
 
 /**
@@ -1053,7 +1057,9 @@ export async function updateDestination(
   // This read is still worth making: what it can honestly answer is what is
   // pending ELSEWHERE, which the commit leaves alone. That is `otherPending`.
   const commitFiles = [destinationConfigFile(group)]
-  const otherPending = pending.filter((p) => !isDestinationConfigFile(p, group))
+  // Null stays null all the way to the sentence: "the read failed" must not
+  // arrive at the reader dressed as "nothing else is pending".
+  const otherPending = pending === null ? null : pending.filter((p) => !isDestinationConfigFile(p, group))
 
   const proceed = await confirmed(opts.confirm, {
     group,
@@ -1091,7 +1097,12 @@ export async function updateDestination(
     //
     // `afterWrite` tells the commit that an empty list is now a CONTRADICTION
     // rather than a quiet "nothing to do": see commitAndDeployDestination.
-    const after = await pendingConfigFiles(init)
+    // A failed read is treated as "Git reported nothing", which is what it has
+    // always been here: this decides what to SEND, and `destinationCommitFiles`
+    // then falls back to the constructed path — which is the right guess, since
+    // the 200 above proves `outputs.yml` is dirty. Only the sentences a person
+    // reads need the two kept apart.
+    const after = (await pendingConfigFiles(init)) ?? []
     const files = destinationCommitFiles(group, after)
     steps.push(...(await commitAndDeployDestination(group, files, opts.message ?? destinationCommitMessage(group, diff), init, false, true)))
   }
@@ -1196,10 +1207,21 @@ async function deployGroupConfig(group: string, hash: string, init: CapiInit) {
   return capi('PATCH', `/master/groups/${group}/deploy`, body, init)
 }
 
-/** Everything Cribl currently sees as uncommitted, anywhere in the repo. Read
- *  before the confirmation so the dialog can say how much rides along. */
-export async function pendingConfigFiles(init: CapiInit = {}): Promise<string[]> {
+/**
+ * Everything Cribl currently sees as uncommitted, anywhere in the repo, or
+ * `null` when the read itself failed. Read before the confirmation so the
+ * dialog can say how much rides along.
+ *
+ * THE STATUS IS THE ANSWER'S FIRST FIELD. `capi` does not throw on a non-2xx —
+ * it answers `{status, body}` deliberately, because its callers read the status
+ * as data — and this function used never to look at it. A 403 or a 500 arrived
+ * with no `items`, fell out as `[]`, and `lakeLandingCopy` printed "Cribl
+ * reports nothing else uncommitted on this Leader right now, so nothing else
+ * rides along": a factual claim resting on a read that did not happen.
+ */
+export async function pendingConfigFiles(init: CapiInit = {}): Promise<string[] | null> {
   const r = await capi('GET', '/version/status', undefined, init)
+  if (!isOk(r.status)) return null
   const entries = (r.body as { items?: Array<{ files?: Array<{ path?: string }>; created?: string[]; deleted?: string[]; modified?: string[]; not_added?: string[]; staged?: string[] }> })?.items ?? []
   const out = new Set<string>()
   for (const it of entries) {
@@ -1274,7 +1296,10 @@ export async function commitScopeAfterConfirm(
   approved: readonly string[],
   init: CapiInit = {},
 ): Promise<{ files: string[] } | { stop: WriteStep }> {
-  const now = destinationCommitFiles(group, await pendingConfigFiles(init))
+  // A failed read falls back to the constructed path, unchanged: this compares
+  // what would be sent against what was approved, and `approved` was built the
+  // same way. Nothing here is claimed to the reader.
+  const now = destinationCommitFiles(group, (await pendingConfigFiles(init)) ?? [])
   const same = now.length === approved.length && now.every((p) => approved.includes(p))
   if (same) return { files: now }
   return {

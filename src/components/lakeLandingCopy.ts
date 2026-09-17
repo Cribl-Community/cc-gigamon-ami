@@ -242,9 +242,16 @@ export function destinationConsequences(ctx: DestinationConfirmContext): string[
       : `Everything that writes through it moves with it: ${ctx.feeds.map((f) => f.label).join(', ')}.`
   const complete = ctx.feedsComplete ? '' : ' One of the two reads behind that list was refused, so the list may be short.'
   const carries = `The commit carries ${ctx.commitFiles.join(', ')} — that one file holds every destination in ${ctx.group}.`
+  // THREE STATES, THREE SENTENCES. `null` is the read that failed, and it is
+  // the state this used to render as the first one: `pendingConfigFiles` never
+  // looked at its own response status, so a 403 or a 500 came back as an empty
+  // list and the dialog told an admin that Cribl reports nothing else
+  // uncommitted — on the strength of a read Cribl refused.
   const elsewhere =
-    ctx.otherPending.length === 0
-      ? `Cribl reports nothing else uncommitted on this Leader right now, so nothing else rides along. That was read when this dialog opened.`
-      : `Cribl reports ${ctx.otherPending.length} other uncommitted file${ctx.otherPending.length === 1 ? '' : 's'} on this Leader; the commit names its own path and leaves ${ctx.otherPending.length === 1 ? 'it' : 'them'} alone: ${ctx.otherPending.join(', ')}.`
+    ctx.otherPending === null
+      ? `Cribl did not answer what else is uncommitted on this Leader, so this app cannot tell you what else is sitting in the group. The commit still names only its own path.`
+      : ctx.otherPending.length === 0
+        ? `Cribl reports nothing else uncommitted on this Leader right now, so nothing else rides along. That was read when this dialog opened.`
+        : `Cribl reports ${ctx.otherPending.length} other uncommitted file${ctx.otherPending.length === 1 ? '' : 's'} on this Leader; the commit names its own path and leaves ${ctx.otherPending.length === 1 ? 'it' : 'them'} alone: ${ctx.otherPending.join(', ')}.`
   return [feeds + complete, carries, elsewhere, ...DEPLOY_CONSEQUENCES]
 }

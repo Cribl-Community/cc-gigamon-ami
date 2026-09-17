@@ -90,6 +90,38 @@ describe('what the deploy confirmation claims about reach', () => {
     expect(unknown).not.toContain('nothing already uncommitted')
   })
 
+  it('gives the three states three different sentences, and warns in only one', () => {
+    // THE WARNING THAT ALWAYS FIRED. `pendingConfigPaths` used to answer `null`
+    // for a clean tree as well as for a failed read, so on a healthy workspace
+    // — the common case — every reader of both dialogs got the "could not tell…
+    // Assume it may be" branch, unconditionally. That is the warning people
+    // learn to click past, and it took the two informative states with it.
+    // `[]` is now an answer (cribl/provision.ts), and these are the three
+    // sentences it can produce.
+    const clean = pendingSentence(ctx([]))
+    const dirty = pendingSentence(ctx([INPUTS]))
+    const failed = pendingSentence(ctx(null))
+
+    expect(new Set([clean, dirty, failed]).size, 'two of the three states read the same').toBe(3)
+    expect(clean).not.toContain('Assume it may be')
+    expect(dirty).not.toContain('Assume it may be')
+    expect(failed).toContain('Assume it may be')
+  })
+
+  it('says the files are what the commit is DRAWN FROM, because the run picks the subset', () => {
+    // `scope.carries` is every file the dialog was given a key for; `deployAll`
+    // commits `touchedKeys` — only what came back created or updated. On a
+    // settled stack that is one file where this named four. The true set is not
+    // knowable before the run, so the sentence stops claiming it — and still
+    // names the files, because "some configuration files" would cost the reader
+    // the one fact they need. The wording is asserted because the claim IS the
+    // wording: there is no other observable.
+    const line = deployConsequences(ctx([]))[1]
+    for (const f of [INPUTS, ROUTES, OUTPUTS]) expect(line).toContain(f)
+    expect(line).toContain('only the files this run actually changes')
+    expect(line).toContain('drawn from')
+  })
+
   it('carries every deploy consequence the rest of the app carries, verbatim', () => {
     // One constant, every deploy site — including the Worker Process restart and
     // the fact that a deploy moves the group to a COMMIT rather than applying

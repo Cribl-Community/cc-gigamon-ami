@@ -516,7 +516,10 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
   const retryCommit = async () => {
     setRunning('destination')
     try {
-      const pending = await pendingConfigFiles()
+      // A failed read falls back to the constructed path, as it always has —
+      // `commitScopeAfterConfirm` re-reads and refuses if the set moved, and
+      // this list is a file list to send rather than a claim to a reader.
+      const pending = (await pendingConfigFiles()) ?? []
       const files = destinationCommitFiles(group, pending)
       const proceed = await askFor<{ group: string; files: string[] }>((c) => ({
         kind: 'redeploy',

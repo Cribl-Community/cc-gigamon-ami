@@ -33,6 +33,7 @@ import {
   LANDING_PROFILE_KEY,
   loadingLanding,
   partitionLimitsFrom,
+  pendingConfigFiles,
   readLanding,
   resolveFeeds,
   setDescription,
@@ -928,7 +929,7 @@ describe('updateDestination', () => {
 
   it('hands the confirmation the diff, both feeds, and the two file lists apart', async () => {
     stubWorld({ pending: [`groups/${GROUP}/local/cribl/inputs.yml`] })
-    let ctx: { keys: string[]; feeds: string[]; complete: boolean; carries: string[]; other: string[] } | null = null
+    let ctx: { keys: string[]; feeds: string[]; complete: boolean; carries: string[]; other: string[] | null } | null = null
     await updateDestination(GROUP, destinationSpec(balanced), {
       confirm: (c) => {
         ctx = {
@@ -947,6 +948,30 @@ describe('updateDestination', () => {
     // so it named `inputs.yml`, which the commit never touches.
     expect(ctx!.carries).toEqual([OUTPUTS_YML])
     expect(ctx!.other).toEqual([`groups/${GROUP}/local/cribl/inputs.yml`])
+  })
+
+  // ── A READ THAT FAILED IS NOT A CLEAN TREE ────────────────────────────────
+  //
+  // `pendingConfigFiles` called `capi('GET', '/version/status')` and never
+  // looked at `r.status`. `capi` answers {status, body} rather than throwing —
+  // deliberately, because its callers read the status as data — so a 403 or a
+  // 500 arrived with no `items`, fell out as [], and the dialog printed "Cribl
+  // reports nothing else uncommitted on this Leader right now, so nothing else
+  // rides along": a factual claim resting on a read Cribl refused.
+  it('answers null for a refused status read and an empty list for a clean tree', async () => {
+    stubWorld({ pending: [] })
+    expect(await pendingConfigFiles()).toEqual([])
+    stubWorld({ answers: { 'GET /version/status': [403, { message: 'not granted' }] } })
+    expect(await pendingConfigFiles()).toBe(null)
+  })
+
+  it('hands the confirmation null, not an empty list, when the status read was refused', async () => {
+    stubWorld({ answers: { 'GET /version/status': [500, { message: 'boom' }] } })
+    let other: string[] | null | undefined
+    await updateDestination(GROUP, destinationSpec(balanced), {
+      confirm: (c) => { other = c.otherPending; return false },
+    })
+    expect(other, 'a failed read reached the dialog as "nothing else is pending"').toBe(null)
   })
 
   it('reads the commit scope AFTER the PATCH, so it can see the file the PATCH dirtied', async () => {

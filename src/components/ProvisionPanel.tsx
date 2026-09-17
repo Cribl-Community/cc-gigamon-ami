@@ -245,6 +245,28 @@ export function ProvisionPanel() {
     }
   }, [group, setGroupErr])
 
+  /**
+   * Open one of the two confirmations, having first re-read what Git reports
+   * uncommitted.
+   *
+   * BECAUSE THE DIALOG SAYS SO. Its clean-tree sentence is "That was read when
+   * this dialog opened", and until this existed that was simply untrue:
+   * `pendingPaths` came from `refresh()`, which runs on mount, on a group
+   * change, on Re-check and after a run. A page left open ten minutes showed a
+   * ten-minute-old list under a sentence claiming otherwise — and it is the one
+   * sentence on the screen somebody uses to decide whether to press a button
+   * that commits somebody else's unfinished work and restarts Worker Processes.
+   *
+   * The read finishes BEFORE the dialog opens, rather than beside it: a dialog
+   * that opens on the old list and swaps it underneath the reader is the same
+   * untruth with a shorter window. It is one GET, and the button it came from
+   * stays focusable throughout.
+   */
+  const openConfirm = useCallback(async (which: 'deploy' | 'remove') => {
+    setPendingPaths(await pendingConfigPaths().catch(() => null))
+    setConfirming(which)
+  }, [])
+
   // Populate the screen: ALWAYS read the persisted per-group / per-resource
   // commit status from the KV store first, then check the live status. Runs on
   // mount, on every worker-group change, and on the manual "Re-check" — so the
@@ -551,7 +573,7 @@ export function ProvisionPanel() {
                  restored focus correctly; only the path that actually writes did
                  not. Staying focusable also lets someone who is refused by the
                  permission gate reach the button and read why. */
-              onClick={() => { if (deployBlocked) return; setConfirming('deploy') }}
+              onClick={() => { if (deployBlocked) return; void openConfirm('deploy') }}
               aria-disabled={deployBlocked || undefined}
               title={applyGate.reason ?? undefined}
             >
@@ -587,7 +609,7 @@ export function ProvisionPanel() {
                 <button
                   type="button"
                   className="btn btn-ghost btn-danger-text"
-                  onClick={() => { if (removeBlocked) return; setConfirming('remove') }}
+                  onClick={() => { if (removeBlocked) return; void openConfirm('remove') }}
                   aria-disabled={removeBlocked || undefined}
                   title={removeGate.reason ?? undefined}
                 >

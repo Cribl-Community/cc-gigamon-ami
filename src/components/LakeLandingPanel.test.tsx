@@ -536,6 +536,19 @@ describe('what a destination confirmation owes the reader', () => {
     expect(line).toMatch(/leaves it alone/)
   })
 
+  it('renders a refused status read differently from a clean one', () => {
+    // The third state. `pendingConfigFiles` never checked its own response
+    // status, so a 403 came back as [] and this line told the admin Cribl
+    // reports nothing else uncommitted — on the strength of a read Cribl
+    // refused. An empty list is a checked claim; a failed read is not, and the
+    // two must not print the same.
+    const failed = destinationConsequences({ ...ctx, otherPending: null })[2]
+    const clean = destinationConsequences({ ...ctx, otherPending: [] })[2]
+    expect(failed).not.toEqual(clean)
+    expect(failed).not.toContain('nothing else uncommitted')
+    expect(failed).toContain('did not answer')
+  })
+
   it('says nothing else is pending only when the read said so', () => {
     // A claim the code can check is checked. A warning that fires when nothing
     // is pending is the one people learn to click past.

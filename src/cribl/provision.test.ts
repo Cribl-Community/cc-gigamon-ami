@@ -44,7 +44,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
-  commitScope, deployAll, pendingDeploy, removeSyslogStack,
+  commitScope, deployAll, pendingConfigPaths, pendingDeploy, removeSyslogStack, undeployedHead,
   ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
   SYSLOG_ROUTE_ID, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, DEFAULT_STREAM_GROUP,
   type PendingChange, type ResourceKey, type StepResult,
@@ -78,6 +78,12 @@ interface LeaderOpts {
   head?: string
   /** Files `/version/files` reports as changed since `configVersion`. */
   changedSince?: string[]
+  /** The status `/version/files` answers with. 403 is the half-working Leader a
+   *  run gets interrupted on, which is where a commit gets stranded. */
+  filesStatus?: number
+  /** The status `/version/status` answers with. `capi` does not throw on a
+   *  non-2xx, so this is the only thing that tells a caller the read failed. */
+  pendingStatus?: number
   /** The live pipeline object, as `GET /m/<g>/pipelines/<id>` returns it.
    *  Defaults to `STALE_PIPELINE` — present, and one spec field out of date, so a
    *  re-apply writes. `null` means a 200 whose `items` this file cannot read,
@@ -133,7 +139,7 @@ beforeEach(() => { ourCommits = {} })
 function stubLeader(opts: LeaderOpts = {}): Call[] {
   const {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
-    configVersion = HEAD, head = HEAD, changedSince = [],
+    configVersion = HEAD, head = HEAD, changedSince = [], filesStatus = 200, pendingStatus = 200,
     pipeline = STALE_PIPELINE, source = STALE_SOURCE,
     pipelineBetweenReads, sourceBetweenReads, routesBetweenReads,
   } = opts
@@ -169,9 +175,17 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     if (at('GET', `/products/stream/groups/${GROUP}`)) return reply(200, { items: [{ id: GROUP, configVersion }] })
 
     // Git.
-    if (under('GET', '/version/files')) return reply(200, { items: [{ count: changedSince.length, items: changedSince.map((name) => ({ name, state: 'M' })) }] })
+    if (under('GET', '/version/files')) {
+      return filesStatus === 200
+        ? reply(200, { items: [{ count: changedSince.length, items: changedSince.map((name) => ({ name, state: 'M' })) }] })
+        : reply(filesStatus, { message: 'not granted' })
+    }
     if (under('GET', '/version?')) return reply(200, { items: [{ hash: head, refs: 'HEAD -> main' }] })
-    if (at('GET', '/version/status')) return reply(200, { items: [{ files: pending.map((p) => ({ path: p })) }] })
+    if (at('GET', '/version/status')) {
+      return pendingStatus === 200
+        ? reply(200, { items: [{ files: pending.map((p) => ({ path: p })) }] })
+        : reply(pendingStatus, { message: 'not granted' })
+    }
     if (at('POST', '/version/commit')) return reply(200, commit === null ? { items: [{}] } : { items: [{ commit }] })
 
     // The routing table, and everything else already provisioned.
@@ -848,6 +862,44 @@ describe('an undeployed commit', () => {
     expect(await pendingDeploy(GROUP)).toBe(null)
   })
 
+  // ── THE TWO CONSUMERS, WHICH ARE NOT ASKING THE SAME QUESTION ─────────────
+  //
+  // One structural change served one of them and broke the other, in both
+  // directions, so both are asserted here against the SAME Leader.
+  //
+  //   THE SCREEN (`pendingDeploy`) claims "commit #X touches <group> and has not
+  //   been deployed to it" and offers a deploy that restarts that group's Worker
+  //   Processes. Without group evidence there is no claim.
+  //   THE REPAIR (`undeployedHead`, via deployStrandedCommit) recovers a run
+  //   interrupted between commit and deploy. Its safety is the commit memory,
+  //   not the file list — and a Leader that will not answer `/version/files` is
+  //   exactly the kind that strands a commit in the first place.
+  it('asks two different questions of the same Leader when /version/files is unavailable', async () => {
+    stubLeader({ ...settled, ...stranded, filesStatus: 403 })
+    expect(await pendingDeploy(GROUP), 'the screen claimed a group commit on no group evidence').toBe(null)
+    expect(await undeployedHead(GROUP), 'the repair went blind in the failure mode it exists for').toBe(HEAD)
+  })
+
+  it('is still deployed when /version/files is unavailable, because that is the interrupted run', async () => {
+    weCommitted(HEAD)
+    const calls = stubLeader({ ...noNetChange, ...stranded, filesStatus: 403 })
+    const steps = await run()
+
+    expect(calls.find((c) => c.path === PRODUCTS_DEPLOY)?.body).toEqual({ version: HEAD })
+    expect(step(steps, 'deploy')?.action).toBe('created')
+  })
+
+  it('still refuses a hash the commit memory cannot vouch for, with /version/files unavailable', async () => {
+    // The repair asking a weaker question does not make it a weaker gate: the
+    // ownership check is the gate, and it is on the hash.
+    weCommitted('dddd000011112222dddd000011112222dddd0000')
+    const calls = stubLeader({ ...noNetChange, ...stranded, filesStatus: 403 })
+    const steps = await run()
+
+    expect(calls.some((c) => c.path === PRODUCTS_DEPLOY), 'deployed a commit this app never made').toBe(false)
+    expect(step(steps, 'deploy')?.detail).toContain('this app did not make')
+  })
+
   it('takes the commit that carries the HEAD ref, not whichever the history listed first', async () => {
     // Getting this backwards deploys an old commit to a live group, which is a
     // rollback nobody asked for.
@@ -867,6 +919,36 @@ describe('an undeployed commit', () => {
     })
     expect(await pendingDeploy(GROUP)).toBe(HEAD)
   })
+})
+
+describe('pendingConfigPaths', () => {
+  // THE WARNING THAT ALWAYS FIRES. This answered `null` for an empty list as
+  // well as for a failed read, and `null` is what the Guided Setup dialogs
+  // render as "Cribl did not report what is already uncommitted in <group>…
+  // Assume it may be." So on a healthy workspace — the common case, and the one
+  // every reader sees most — both confirmations carried a standing warning, and
+  // the two states that mean something went down with it.
+  const OURS = `groups/${GROUP}/local/cribl/routes.yml`
+
+  it('answers an empty list for a clean tree, which is an answer and not a shrug', async () => {
+    stubLeader({ pending: [] })
+    expect(await pendingConfigPaths()).toEqual([])
+  })
+
+  it('answers what Git reported when there is something', async () => {
+    stubLeader({ pending: [OURS] })
+    expect(await pendingConfigPaths()).toEqual([OURS])
+  })
+
+  it('answers null ONLY when the read itself failed', async () => {
+    // `capi` does not throw on a non-2xx — it answers {status, body} — so
+    // nothing but the status can tell these apart.
+    stubLeader({ pending: [], pendingStatus: 403 })
+    expect(await pendingConfigPaths()).toBe(null)
+  })
+
+  // What each of the three becomes on screen is provisionPanelCopy.test.ts's —
+  // the three sentences are asserted there, against the same three values.
 })
 
 describe('commitScope', () => {

@@ -67,6 +67,13 @@ export interface ProvisionConfirmContext {
  * read on every status check. The three answers are genuinely different and get
  * genuinely different sentences — and "could not tell" is never rendered as
  * "nothing is pending", which is the failure mode of a single boolean.
+ *
+ * THE OPPOSITE FAILURE ALSO SHIPPED, and it was worse. `pendingConfigPaths`
+ * answered `null` for an EMPTY list as well as for a failed read, so on a
+ * healthy workspace — the common case — every one of these dialogs rendered the
+ * "could not tell… Assume it may be" branch. A warning that always fires is the
+ * one people learn to click past, and it carried the two that mean something
+ * with it. The fix is in cribl/provision.ts: `[]` is now an answer.
  */
 export function pendingSentence(ctx: ProvisionConfirmContext): string {
   const { scope, group } = ctx
@@ -88,12 +95,27 @@ export function pendingSentence(ctx: ProvisionConfirmContext): string {
   )
 }
 
-/** The files the commit names, said as whole files. `scope` is null only before
- *  the first status check lands, and the dialog cannot open before then. */
+/**
+ * The files the commit CAN name, said as whole files. `scope` is null only
+ * before the first status check lands, and the dialog cannot open before then.
+ *
+ * "CAN", NOT "WILL", AND THE FILES ARE STILL NAMED. `scope.carries` is built
+ * from every resource key the dialog was given, but `deployAll` commits
+ * `touchedKeys` — only the resources that actually came back `created` or
+ * `updated`. On a settled stack that is one file, or none, where this sentence
+ * named four. The true set is not knowable here: the dialog is shown BEFORE the
+ * run, and which objects drift is decided by the reads inside it. So the
+ * sentence says the knowable thing — the set the commit is drawn from — rather
+ * than retreating to "some configuration files", which would cost the reader
+ * the one fact they need: that `inputs.yml` is in the set at all.
+ */
 function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
   const files = ctx.scope?.carries ?? []
   if (files.length === 0) return `The change is committed and deployed to ${ctx.group}.`
-  return `The ${verb} is committed and deployed to ${ctx.group}. The commit names whole files, not single objects: ${files.join(', ')}.`
+  return (
+    `The ${verb} is committed and deployed to ${ctx.group}. The commit names whole files, not single objects, and it names only the ` +
+    `files this run actually changes — drawn from these: ${files.join(', ')}.`
+  )
 }
 
 /**

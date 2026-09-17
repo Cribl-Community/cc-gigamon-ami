@@ -478,10 +478,17 @@ function groupFile(group: string, key: ResourceKey): string | null {
  * relative to the versioning repo's config root. This is authoritative: paths
  * are reported exactly as `git` has them, so committing a subset of these can
  * never hit a "pathspec did not match any files" error, and we never touch
- * another group's pending changes. Returns [] if the status call is unavailable.
+ * another group's pending changes.
+ *
+ * `null` means THE READ FAILED — `capi` answers `{status, body}` rather than
+ * throwing, so a 403 or a 500 arrives here with an empty body and used to be
+ * indistinguishable from a clean tree. An empty ARRAY is a clean tree. Every
+ * caller decides which it wants, and one of them puts the answer in front of a
+ * person.
  */
-async function pendingFiles(): Promise<string[]> {
+async function pendingFiles(): Promise<string[] | null> {
   const r = await capi('GET', '/version/status')
+  if (r.status < 200 || r.status >= 300) return null
   const items = (r.body as {
     items?: Array<{
       files?: Array<{ path?: string }>
@@ -531,7 +538,11 @@ async function filesToCommit(group: string, keys: ResourceKey[]): Promise<string
   if (keys.length === 0) return []
   const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
   let pending: string[] = []
-  try { pending = await pendingFiles() } catch { pending = [] }
+  // A failed read and a clean tree both fall back to constructed paths here, as
+  // they always have: this decides what to SEND, and the commit itself answers
+  // "nothing to commit" when the guess was wrong. The caller that has to tell a
+  // person keeps the two apart — see `pendingConfigPaths`.
+  try { pending = (await pendingFiles()) ?? [] } catch { pending = [] }
   const selected = pending.filter((p) => pathInGroup(p, group) && markers.some((m) => p.includes(m)))
   if (selected.length) return selected
   // Status unavailable/empty: best-effort constructed paths (matches the
@@ -595,10 +606,13 @@ export interface CommitScope {
  *  status check and split per dialog by `commitScope`, which is pure. */
 export async function pendingConfigPaths(): Promise<string[] | null> {
   try {
-    const p = await pendingFiles()
-    // An empty list and an unavailable endpoint look identical here — the same
-    // ambiguity `filesToCommit` resolves by falling back to constructed paths.
-    return p.length === 0 ? null : p
+    // An EMPTY LIST IS AN ANSWER: the read succeeded and the tree is clean.
+    // This used to collapse `[]` into `null`, so on a healthy workspace — the
+    // common case — both Guided Setup confirmations said "Cribl did not report
+    // what is already uncommitted… Assume it may be", unconditionally. That is
+    // the warning that always fires, which is the one people learn to click
+    // past, and it made the dialog's one checkable claim uncheckable.
+    return await pendingFiles()
   } catch {
     return null
   }
@@ -1229,39 +1243,70 @@ async function filesChangedSince(commit: string): Promise<string[] | null> {
 }
 
 /**
- * The hash of a commit this group has NOT deployed, or null when there is none.
+ * ── TWO QUESTIONS, NOT ONE ─────────────────────────────────────────────────
  *
- * This exists because of a hole that used to be unrecoverable: a run whose
- * commit succeeded and whose deploy failed left config committed and never
- * running. The next run found no pending files, reported "already up to date"
- * and returned — so the app could never deploy that commit again, and the only
- * way out was the Cribl UI.
+ * "Is there a commit this group has not deployed at all?" and "can we prove it
+ * touches this group?" are different questions, and the two callers below need
+ * different ones. Collapsing them broke one of the two, in both directions:
+ * answering the first for both put a repo-wide HEAD in front of a user as a
+ * commit "committed to ${group}"; answering the second for both left the
+ * stranded-commit repair dead in exactly the failure mode it exists for.
  *
- * Read-only: three GETs and no writes, so it is safe to ask on a status check.
- *
- * "Could not tell" answers null, exactly like "nothing pending". Offering to
- * deploy something that might not exist is worse than not offering, and the
- * whole point of the offer is that the user can trust it.
+ * `undeployedRange` is the shared read — the group's running commit and the
+ * Leader's HEAD, or null when they match or either is unreadable.
  */
-export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+async function undeployedRange(group: string): Promise<{ deployed: string; head: string } | null> {
   const [deployed, head] = await Promise.all([deployedVersion(group), headCommit()])
   if (!deployed || !head || deployed === head) return null
+  return { deployed, head }
+}
+
+/**
+ * IS THERE A COMMIT AT ALL that this group is not running — the Leader's HEAD,
+ * or null.
+ *
+ * This is what `deployStrandedCommit` needs, and it deliberately asks for NO
+ * group evidence. It exists because of a hole that used to be unrecoverable: a
+ * run whose commit succeeded and whose deploy failed left config committed and
+ * never running. The next run found no pending files, reported "already up to
+ * date" and returned — so the app could never deploy that commit again, and the
+ * only way out was the Cribl UI.
+ *
+ * The safety here is NOT the file list. It is the commit memory: the repair
+ * deploys only a hash this app recorded making, and refuses everything else. A
+ * `/version/files` read that answers 403 is exactly the kind of half-working
+ * Leader a run gets interrupted on, so requiring it before repairing would turn
+ * the recovery off in the case it was built for.
+ */
+export async function undeployedHead(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+  return (await undeployedRange(group))?.head ?? null
+}
+
+/**
+ * CAN WE PROVE IT TOUCHES THIS GROUP — the hash of a commit this group has not
+ * deployed AND that moved a file belonging to it, or null.
+ *
+ * This is what the screen needs. `ProvisionPanel` renders it as "commit #X
+ * touches ${group} and has not been deployed to it" and offers a deploy that
+ * restarts that group's Worker Processes, so a claim derived from a signal that
+ * cannot distinguish this group from any other is not good enough. "Could not
+ * tell" answers null, exactly like "nothing pending".
+ *
+ * Read-only: three GETs and no writes, so it is safe to ask on a status check.
+ */
+export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+  const range = await undeployedRange(group)
+  if (!range) return null
   // The config repo is shared by every group, so a newer HEAD on its own only
   // says that SOMEBODY committed something. Ask which files moved since the
   // commit this group is running, and claim a pending deploy only when one of
   // them belongs to this group — otherwise every commit anywhere on the leader
   // would light this up.
-  const changed = await filesChangedSince(deployed)
-  // Endpoint unavailable: answer null, like every other "could not tell" above.
-  // This used to return `head` — a repo-wide HEAD presented to the user as a
-  // commit "committed to ${group} but never deployed", on the strength of no
-  // group evidence at all. The offer it feeds is a deploy that restarts that
-  // group's Worker Processes, and the whole point of the offer is that the user
-  // can trust it; a claim derived from a signal that cannot distinguish this
-  // group from any other is not one.
+  const changed = await filesChangedSince(range.deployed)
+  // Endpoint unavailable: no group evidence, so no claim.
   if (changed === null) return null
   if (!changed.some((p) => pathInGroup(p, group))) return null
-  return head
+  return range.head
 }
 
 /** Deploy one commit and report it as a step. Shared by the normal path and by
@@ -1298,7 +1343,12 @@ async function deployStrandedCommit(
   onPhase: OnPhase,
   upToDate: string,
 ): Promise<StepResult[]> {
-  const stranded = await pendingDeploy(group)
+  // `undeployedHead`, not `pendingDeploy`: this asks "is there a commit at all",
+  // because the ownership check below is the safety, not the file list. Asking
+  // for group evidence here made the repair fail whenever `/version/files` was
+  // unavailable — a half-working Leader being the very thing that strands a
+  // commit in the first place.
+  const stranded = await undeployedHead(group)
   if (!stranded) {
     onPhase({ kind: 'done', text: upToDate })
     return out
