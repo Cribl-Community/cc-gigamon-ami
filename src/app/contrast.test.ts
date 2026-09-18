@@ -612,12 +612,12 @@ const PAIRS: Pair[] = [
       '.mode-unsaved (11px) — the line the Snapshot/Live control shows when the KV store refused to remember the choice. The header sets no background of its own, so this is the only pairing in the file drawn straight onto the page.',
   },
   {
-    what: 'the pressed segment of the Snapshot / Live control',
+    what: 'the pressed segment of every segmented control',
     fg: '#fff',
     bg: ['var(--gm-btn-primary)', PAGE],
     threshold: 4.5,
     where:
-      '.mode-toggle .seg-active (13px medium). It is the one segmented control in the app that does NOT use .seg-active’s own fill, because its pressed text carries a price — and .seg-active’s foreground.info.contrast on background.info.solid.default measures 3.26:1. The App.css rule says the rest of the argument.',
+      '.seg-active — EVERY pressed segment: the Snapshot / Live control, .pivot-toggle (Capacity ×3, TCP Health ×2) and .seg-sm (Field Explorer). Until 2026-09-18 only the Snapshot / Live one drew this fill; the other five painted foreground.info.contrast on background.info.solid.default = 3.26:1 — the pairing this file’s own REJECTED table asserts as a failure. It passed anyway because no row named that pairing at THIS call site, which is the gap this row closes. A pressed segment is how a reader knows which view they are looking at, so it is load-bearing text, not decoration.',
   },
   {
     what: 'the unpressed segment of the Snapshot / Live control',
