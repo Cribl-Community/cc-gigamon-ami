@@ -75,7 +75,7 @@ export const JOBS_PATH = '/m/default_search/search/jobs'
  * that has been re-applied and has runs under an older retention still listed.
  * It is one request either way — this endpoint bills nothing.
  */
-export const HISTORY_LIMIT = 32
+export const HISTORY_LIMIT = 200
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
@@ -276,15 +276,42 @@ export interface AccelStatus {
  * `offset` is not optional, whatever the spec says: `limit` without it is a live
  * 400, "missing 'offset' parameter" (measured for the watchdog).
  */
-function historyQuery(id: AccelId): string {
+function historyQuery(): string {
   return new URLSearchParams({
     output: 'short',
-    correlationId: id,
     limit: String(HISTORY_LIMIT),
     offset: '0',
     sortExp: 'timeCreated',
     sortDir: 'desc',
   }).toString()
+}
+
+/**
+ * Does this job row belong to that saved search?
+ *
+ * MEASURED 2026-09-18, live: a scheduled run's job id is
+ * `<savedSearchId>.<epochMs>.<rand>` — `gno_sample_2m_c1h.1789758420524.nqMyit`.
+ * The saved search's id is a PREFIX of its runs' job ids, and there is no
+ * `correlationId` anywhere on the row carrying it. A short-form job row has
+ * exactly these fields: id, type, query, earliest, latest, timeCreated,
+ * timeStarted, timeCompleted, status, user, displayUsername, isPrivate,
+ * useFormattedVisualization, datasetIds, userDetails.
+ *
+ * This replaces `correlationId=<id>` on the request, which the module's own
+ * header carried as an ASSUMPTION and which is now measured false: it matched
+ * nothing, so `listRuns` returned zero runs for a schedule that had run three
+ * times, every panel read "the schedule has not produced a result yet", and the
+ * fallback took the live query. The failure was in the safe direction — a slow
+ * correct number rather than a fast wrong one — which is exactly why it survived
+ * to be found by a human noticing the app was no lighter.
+ *
+ * The dot is required, not cosmetic: without it `gno_lake_30d` would claim
+ * `gno_lake_30d_c1d`'s runs. Ids are constrained to `/^gno_[a-z0-9_]+$/`
+ * (manifest.ts), so no id can be a prefix of another up to a dot boundary — but
+ * the check does not lean on that.
+ */
+function isRunOf(id: AccelId, jobId: string): boolean {
+  return jobId.startsWith(`${id}.`)
 }
 
 function emptyStatus(id: AccelId, patch: Partial<AccelStatus>): AccelStatus {
@@ -354,7 +381,7 @@ interface ListedRuns {
 export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<ListedRuns> {
   let r
   try {
-    r = await capi('GET', `${JOBS_PATH}?${historyQuery(id)}`, undefined, {
+    r = await capi('GET', `${JOBS_PATH}?${historyQuery()}`, undefined, {
       signal: opts.signal,
       background: true,
     })
@@ -373,7 +400,16 @@ export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<L
   if (!Array.isArray(items)) {
     return { runs: [], denied: false, error: 'Cribl returned a run list this app could not read.' }
   }
-  const runs = items.map((raw) => toRun(raw as ShortJob)).filter((run): run is AccelRun => run !== null)
+  // Filtered HERE rather than by the request, because no server-side parameter
+  // selects a saved search's runs — see isRunOf. HISTORY_LIMIT rows of the
+  // workspace's whole job history are read and most are discarded; on a busy
+  // workspace that window may not reach back far enough to see every run a
+  // schedule's keepLastN still holds, so a timeline can be shorter than the
+  // stored results actually are. It is never WRONG, only short, and it is the
+  // honest cost of the platform having no such filter.
+  const runs = items
+    .map((raw) => toRun(raw as ShortJob))
+    .filter((run): run is AccelRun => run !== null && isRunOf(id, run.id))
   // Sorted here as well as in the query. `sortDir=desc` is a parameter that has
   // to survive a proxy this app has only exercised through the dev server, and
   // everything downstream reads `runs[0]` as "the newest": a dropped parameter

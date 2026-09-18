@@ -68,7 +68,10 @@ function stub(routes: Array<{ match: string; status?: number; body?: unknown }>)
 /** A run row, in the shape `GET /search/jobs?output=short` returns. */
 function run(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: '1789395843210.fxAzHG',
+    // `<savedSearchId>.<epochMs>.<rand>` — the shape measured live on
+    // 2026-09-18. listRuns selects a schedule's runs by this prefix, because no
+    // request parameter does it: see status.ts's isRunOf.
+    id: `${LAKE}.1789395843210.fxAzHG`,
     status: 'completed',
     timeCreated: T0 - HOUR,
     timeStarted: T0 - HOUR + 200,
@@ -104,7 +107,11 @@ describe('the path it calls', () => {
     const url = sent[0].url
     expect(url.startsWith(`/capi${JOBS_PATH}?`)).toBe(true)
     const qs = new URLSearchParams(url.split('?')[1])
-    expect(qs.get('correlationId')).toBe(LAKE)
+    // No correlationId: measured 2026-09-18, a scheduled run carries none, and
+    // asking for one matched nothing — every schedule read as "never ran" while
+    // it was running hourly. The id lives in the job id's prefix instead.
+    expect(qs.get('correlationId')).toBeNull()
+    expect(url).not.toContain(LAKE)
     expect(qs.get('output')).toBe('short')
     expect(qs.get('sortExp')).toBe('timeCreated')
     expect(qs.get('sortDir')).toBe('desc')
@@ -115,9 +122,9 @@ describe('the path it calls', () => {
   })
 
   it('reads the cost of the newest run by its own job id', async () => {
-    const sent = stub([history([run({ id: 'run-7' })]), metrics(9297.7)])
+    const sent = stub([history([run({ id: `${LAKE}.run-7` })]), metrics(9297.7)])
     const s = await accelStatus(LAKE)
-    expect(sent.some((c) => c.url === `/capi${JOBS_PATH}/run-7/metrics`)).toBe(true)
+    expect(sent.some((c) => c.url === `/capi${JOBS_PATH}/${LAKE}.run-7/metrics`)).toBe(true)
     expect(s.lastCpuSeconds).toBe(9297.7)
     expect(s.lastCpuUnavailable).toBeNull()
   })
@@ -126,12 +133,12 @@ describe('the path it calls', () => {
 describe('reading the runs', () => {
   it('puts the newest run first even if the list arrives the other way up', async () => {
     stub([
-      history([run({ id: 'old', timeCompleted: T0 - 3 * DAY }), run({ id: 'new', timeCompleted: T0 - HOUR })]),
+      history([run({ id: `${LAKE}.old`, timeCompleted: T0 - 3 * DAY }), run({ id: `${LAKE}.new`, timeCompleted: T0 - HOUR })]),
       metrics(5),
     ])
     const s = await accelStatus(LAKE)
-    expect(s.runs.map((r) => r.id)).toEqual(['new', 'old'])
-    expect(s.last?.id).toBe('new')
+    expect(s.runs.map((r) => r.id)).toEqual([`${LAKE}.new`, `${LAKE}.old`])
+    expect(s.last?.id).toBe(`${LAKE}.new`)
   })
 
   it('dates a run by when its result came into existence, not when it fired', async () => {
@@ -168,8 +175,8 @@ describe('reading the runs', () => {
   })
 
   it('drops a row with no id rather than losing the whole read', async () => {
-    stub([history([{ status: 'completed' }, run({ id: 'good' })]), metrics(3)])
-    expect((await accelStatus(LAKE)).runs.map((r) => r.id)).toEqual(['good'])
+    stub([history([{ status: 'completed' }, run({ id: `${LAKE}.good` })]), metrics(3)])
+    expect((await accelStatus(LAKE)).runs.map((r) => r.id)).toEqual([`${LAKE}.good`])
   })
 })
 
@@ -279,7 +286,7 @@ describe('cadence', () => {
   it('measures the median gap, so one missed firing does not rewrite the cadence', async () => {
     // Hourly, with the 09:00 run missed. The mean would say 72 minutes; the
     // median says 60, which is what the schedule is actually doing.
-    const at = (h: number) => run({ id: `r${h}`, timeCompleted: T0 - h * HOUR })
+    const at = (h: number) => run({ id: `${SAMPLE}.r${h}`, timeCompleted: T0 - h * HOUR })
     stub([history([at(0), at(1), at(2), at(4), at(5)]), metrics(4)])
     const s = await accelStatus(SAMPLE)
     expect(s.observedIntervalMs).toBe(HOUR)
@@ -295,7 +302,7 @@ describe('cadence', () => {
   })
 
   it('calls a schedule that has fallen behind what it is', async () => {
-    const at = (h: number) => run({ id: `r${h}`, timeCompleted: T0 - h * HOUR })
+    const at = (h: number) => run({ id: `${SAMPLE}.r${h}`, timeCompleted: T0 - h * HOUR })
     stub([history([at(0), at(6), at(12)]), metrics(4)])
     expect(cadenceLooksRight(await accelStatus(SAMPLE))).toBe(false)
   })
@@ -303,7 +310,7 @@ describe('cadence', () => {
   it('tolerates a firing that is merely late', async () => {
     // A jittered or briefly delayed Leader is not a broken schedule, and a table
     // that cries drift at a two-minute slip is a table nobody reads.
-    const at = (m: number) => run({ id: `r${m}`, timeCompleted: T0 - m * MIN })
+    const at = (m: number) => run({ id: `${SAMPLE}.r${m}`, timeCompleted: T0 - m * MIN })
     stub([history([at(0), at(70), at(140)]), metrics(4)])
     expect(cadenceLooksRight(await accelStatus(SAMPLE))).toBe(true)
   })
@@ -311,10 +318,10 @@ describe('cadence', () => {
 
 describe('one run by id', () => {
   it('reads the run the stored rows named', async () => {
-    const sent = stub([{ match: '/search/jobs/run-7', body: { items: [run({ id: 'run-7' })] } }])
-    const r = await runMeta('run-7')
-    expect(sent[0].url).toBe(`/capi${JOBS_PATH}/run-7`)
-    expect(r.run?.id).toBe('run-7')
+    const sent = stub([{ match: `/search/jobs/${LAKE}.run-7`, body: { items: [run({ id: `${LAKE}.run-7` })] } }])
+    const r = await runMeta(`${LAKE}.run-7`)
+    expect(sent[0].url).toBe(`/capi${JOBS_PATH}/${LAKE}.run-7`)
+    expect(r.run?.id).toBe(`${LAKE}.run-7`)
     expect(r.error).toBeNull()
   })
 
@@ -370,7 +377,11 @@ describe('listRuns, which the read path uses on its own', () => {
 
 describe('the readable past', () => {
   const at = (ms: number) => ({ timeCreated: ms, timeStarted: ms, timeCompleted: ms })
-  const okRun = (id: string, ms: number) => ({ id, status: 'completed', ...at(ms) })
+  const okRun = (id: string, ms: number, owner: string = LAKE) => ({
+    id: `${owner}.${id}`,
+    status: 'completed',
+    ...at(ms),
+  })
   const T = T0
 
   it('offers only runs whose results can actually be read', async () => {
@@ -379,29 +390,29 @@ describe('the readable past', () => {
     // nothing is a control that looks broken.
     stub([
       history([
-        { id: 'a', status: 'running', ...at(T) },
-        { id: 'b', status: 'failed', ...at(T - HOUR) },
-        { id: 'c', status: 'canceled', ...at(T - 2 * HOUR) },
+        { id: `${LAKE}.a`, status: 'running', ...at(T) },
+        { id: `${LAKE}.b`, status: 'failed', ...at(T - HOUR) },
+        { id: `${LAKE}.c`, status: 'canceled', ...at(T - 2 * HOUR) },
         okRun('d', T - 3 * HOUR),
       ]),
     ])
     const timeline = await snapshotTimeline([LAKE])
-    expect(timeline.entries[0].runs.map((r) => r.id)).toEqual(['d'])
+    expect(timeline.entries[0].runs.map((r) => r.id)).toEqual([`${LAKE}.d`])
     expect(timeline.times).toEqual([T - 3 * HOUR])
   })
 
   it('skips a run with no usable timestamp rather than dating it from zero', async () => {
-    stub([history([{ id: 'undated', status: 'completed' }, okRun('b', T - HOUR)])])
+    stub([history([{ id: `${LAKE}.undated`, status: 'completed' }, okRun('b', T - HOUR)])])
     const timeline = await snapshotTimeline([LAKE])
-    expect(timeline.entries[0].runs.map((r) => r.id)).toEqual(['b'])
+    expect(timeline.entries[0].runs.map((r) => r.id)).toEqual([`${LAKE}.b`])
   })
 
   it('answers a moment with the newest run that had finished by then', async () => {
     stub([history([okRun('newer', T), okRun('older', T - HOUR)])])
     const timeline = await snapshotTimeline([LAKE])
     const mine = timeline.entries[0]
-    expect(runAtOrBefore(mine, T - 1)?.id).toBe('older')
-    expect(runAtOrBefore(mine, T)?.id).toBe('newer')
+    expect(runAtOrBefore(mine, T - 1)?.id).toBe(`${LAKE}.older`)
+    expect(runAtOrBefore(mine, T)?.id).toBe(`${LAKE}.newer`)
     // The one that matters: a run that finished later did not exist then.
     expect(runAtOrBefore(mine, T - HOUR - 1)).toBe(null)
   })
@@ -412,8 +423,8 @@ describe('the readable past', () => {
     // earlier heading.
     stub([history([okRun('newer', T), okRun('older', T - 4 * HOUR)])])
     const mine = (await snapshotTimeline([LAKE])).entries[0]
-    expect(nearestRun(mine, T - HOUR)?.id).toBe('newer')
-    expect(nearestRun(mine, T - 10 * HOUR)?.id).toBe('older')
+    expect(nearestRun(mine, T - HOUR)?.id).toBe(`${LAKE}.newer`)
+    expect(nearestRun(mine, T - 10 * HOUR)?.id).toBe(`${LAKE}.older`)
   })
 
   it('merges the times of schedules that do not align, newest first', async () => {
@@ -421,9 +432,11 @@ describe('the readable past', () => {
     // One list of times drawn from schedules that do not agree is the honest
     // shape: each panel then answers from its own entry's newest run at or
     // before the moment, and the picker says how many answered.
+    // Both schedules' runs arrive in ONE unfiltered job list — that is what the
+    // platform returns now that nothing filters server-side — and the prefix is
+    // what tells them apart.
     stub([
-      { match: `correlationId=${LAKE}`, body: { items: [okRun('lake', T - 5 * HOUR)] } },
-      { match: `correlationId=${SAMPLE}`, body: { items: [okRun('sample', T - HOUR)] } },
+      history([okRun('a', T - 5 * HOUR, LAKE), okRun('b', T - HOUR, SAMPLE)]),
     ])
     const timeline = await snapshotTimeline([LAKE, SAMPLE])
     expect(timeline.times).toEqual([T - HOUR, T - 5 * HOUR])
@@ -451,16 +464,26 @@ describe('the readable past', () => {
     expect(timeline.times).toEqual([])
   })
 
-  it('does not call the whole timeline refused because one entry was', async () => {
-    // One entry the account cannot see is a gap, not a dead control: the rest of
-    // the picker still works and the panels it serves still answer.
-    stub([
-      { match: `correlationId=${LAKE}`, status: 403, body: { message: 'no' } },
-      { match: '/search/jobs?', body: { items: [okRun('sample', T)] } },
-    ])
+  it('refuses the whole timeline when the one list read behind it is refused', async () => {
+    // REWRITTEN 2026-09-18, and the old test is worth knowing about. It read
+    // "does not call the whole timeline refused because one entry was", and it
+    // was meaningful while each entry fetched its OWN filtered request
+    // (`correlationId=<id>`): one entry could be refused and the others answer.
+    //
+    // That request does not exist. `correlationId` never carried the saved
+    // search's id — measured live on 2026-09-18 — so every entry now reads the
+    // same unfiltered job list and separates its own runs by the job-id prefix.
+    // One 403 is therefore every entry's 403, and a partial denial is not a state
+    // this code can reach. Asserting the old behaviour would be asserting an
+    // architecture that is gone.
+    //
+    // What still matters, and is what the jobWatchdog lesson was about: a refusal
+    // must not launder into "no runs". It is `denied`, with an error.
+    stub([{ match: '/search/jobs?', status: 403, body: { message: 'no' } }])
     const timeline = await snapshotTimeline([LAKE, SAMPLE])
-    expect(timeline.denied).toBe(false)
-    expect(timeline.times).toEqual([T])
+    expect(timeline.denied).toBe(true)
+    expect(timeline.error).toBeTruthy()
+    expect(timeline.times).toEqual([])
   })
 
   it('asks for more runs than the largest schedule retains', async () => {

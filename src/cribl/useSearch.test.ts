@@ -56,7 +56,9 @@ const STORED: Row = {
 const LIVE: Row = { total_events: 18_301_990, total_bytes: 9_444_001_280 }
 
 const run = (over: Record<string, unknown> = {}) => ({
-  id: 'run-1',
+  // `<savedSearchId>.<suffix>` — the shape the platform emits, and what
+  // listRuns selects a schedule’s runs by. Measured live 2026-09-18.
+  id: `${LAKE}.run-1`,
   status: 'completed',
   timeCreated: NOW - HOUR,
   timeStarted: NOW - HOUR,

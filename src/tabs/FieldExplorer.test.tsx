@@ -61,7 +61,9 @@ const STORED_FIELDS: FieldSummary[] = [
 const LIVE_FIELDS: FieldSummary[] = [field('src_ip'), field('http_host')]
 
 const run = (over: Record<string, unknown> = {}) => ({
-  id: 'run-1',
+  // `<savedSearchId>.<suffix>` — the shape the platform emits, and what
+  // listRuns selects a schedule’s runs by. Measured live 2026-09-18.
+  id: `${SAMPLE}.run-1`,
   status: 'completed',
   timeCreated: NOW - HOUR,
   timeStarted: NOW - HOUR,
