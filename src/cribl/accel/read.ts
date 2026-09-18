@@ -51,7 +51,7 @@
 //   * THE `jobName=` PREDICATE IS MANDATORY. A read without a `jobName` or
 //     `jobId` predicate errors.
 //   * WHAT `jobName=` BINDS TO IS NOT KNOWN (claim V-23). A saved search has an
-//     id (`gno_lake_30d_c1d`) and a display name ('GNO · Lake total (30 days)'),
+//     id (`gno_lake_30d_c1d`) and a display name ('GNO Lake total 30 days'),
 //     and nobody has measured which of the two that predicate selects on —
 //     spike A-SP1 exists to settle it and has never been run. The plan's first
 //     answer was to make them equal; Phase 2 withdrew that, because an operator

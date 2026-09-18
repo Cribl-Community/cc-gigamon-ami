@@ -751,8 +751,8 @@ describe('what a confirmation is given to say', () => {
     stubWorkspace({ saved: { [SAMPLE]: drifted } })
     const plan = applyPlan(await readAccelState())
     expect(plan.willWrite).toEqual([
-      'GNO · Lake total (30 days) (gno_lake_30d_c1d) — create, running 10 0 * * * UTC',
-      'GNO · Feed sample (2 minutes) (gno_sample_2m_c1h) — overwrite, because the window it reads differs from what this release writes',
+      'GNO Lake total 30 days (gno_lake_30d_c1d) — create, running 10 0 * * * UTC',
+      'GNO Feed sample 2 minutes (gno_sample_2m_c1h) — overwrite, because the window it reads differs from what this release writes',
     ])
     expect(plan.willDelete).toEqual([])
   })
@@ -761,8 +761,8 @@ describe('what a confirmation is given to say', () => {
     stubWorkspace({ saved: { [LAKE]: await correct(LAKE), [SAMPLE]: await correct(SAMPLE) } })
     const plan = removalPlan(await readAccelState())
     expect(plan.willDelete).toEqual([
-      'GNO · Lake total (30 days) (gno_lake_30d_c1d)',
-      'GNO · Feed sample (2 minutes) (gno_sample_2m_c1h)',
+      'GNO Lake total 30 days (gno_lake_30d_c1d)',
+      'GNO Feed sample 2 minutes (gno_sample_2m_c1h)',
     ])
     expect(plan.willWrite).toEqual([])
   })

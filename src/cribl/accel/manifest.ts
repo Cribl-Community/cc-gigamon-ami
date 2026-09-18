@@ -141,10 +141,22 @@ export interface AccelEntry {
  * added, the bar is the same: it must replace something, and the saving must be
  * measured rather than assumed.
  */
+// NAME CHARACTER SET, measured 2026-09-18 against a live workspace, NOT documented.
+// Cribl refuses a saved search whose `name` does not match /^[a-zA-Z0-9 _-]+$/ —
+// letters, digits, space, underscore, hyphen. `openapi.json` (4.19.0) does not say
+// so: `SavedQuery.name` is a bare { type: 'string', description: 'Display name…' }
+// with no `pattern`. These two names originally carried a middle dot and
+// parentheses, both POSTs were refused with a schema error naming the pattern, and
+// nothing was created.
+//
+// So the rule the rest of this repo follows — check the spec before you send a body —
+// was followed here and was not enough. The spec is not the contract; the server is.
+// Keep the `GNO ` prefix (an operator scans the shared Saved Searches list by it, and
+// manifest.test.ts pins it) and keep every other character inside that class.
 export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   Object.freeze({
     id: 'gno_lake_30d_c1d',
-    name: 'GNO · Lake total (30 days)',
+    name: 'GNO Lake total 30 days',
     serves: 'Data Flow — Lake total (1 tile)',
     body: LAKE_TOTAL_QUERY,
     display: LAKE_TOTAL_QUERY,
@@ -163,7 +175,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   }),
   Object.freeze({
     id: 'gno_sample_2m_c1h',
-    name: 'GNO · Feed sample (2 minutes)',
+    name: 'GNO Feed sample 2 minutes',
     serves: 'Field Explorer — In feed (field summaries)',
     body: FEED_SAMPLE_QUERY,
     display: FEED_SAMPLE_QUERY,

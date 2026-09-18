@@ -147,7 +147,7 @@ describe('the POST body', () => {
     const description = await accelDescription(lake)
     expect(accelPostBody(lake, description)).toEqual({
       id: 'gno_lake_30d_c1d',
-      name: 'GNO · Lake total (30 days)',
+      name: 'GNO Lake total 30 days',
       query: LAKE_TOTAL_QUERY,
       description,
       earliest: '-30d',
@@ -170,7 +170,7 @@ describe('the POST body', () => {
     const description = await accelDescription(sample)
     expect(accelPostBody(sample, description)).toEqual({
       id: 'gno_sample_2m_c1h',
-      name: 'GNO · Feed sample (2 minutes)',
+      name: 'GNO Feed sample 2 minutes',
       query: FEED_SAMPLE_QUERY,
       description,
       earliest: '-4m',
