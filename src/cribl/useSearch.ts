@@ -31,6 +31,22 @@
 // manifest entry's window rather than the page's: whichever path answers, the
 // number has to mean the same thing.
 //
+// ── TWO THINGS THAT CHANGED FOR EVERY PANEL, ACCELERATED OR NOT ─────────────
+// WHEN A QUERY IS SUBMITTED. Concurrent jobs from one user are admitted ~1.6 s
+// apart, so a tab firing six of them on mount does not START its sixth for
+// ~8 s — a cost no per-query speed-up can touch. `deferred` lets a panel below
+// the fold wait until the reader is near it (components/nearViewport.ts), which
+// takes it out of the opening queue entirely. A deferred hook reports `loading`,
+// never an empty result: see the option's comment.
+//
+// WHETHER CRIBL MAY ANSWER FROM A RESULT IT ALREADY HAS. Every submit from this
+// hook carries `set allow_previous_results` — measured 30.92 s → 0.95 s and
+// zero billed on a repeat of the same query at the same relative range (A-SP21)
+// — EXCEPT when the viewer asked for fresh data. The two ways they ask are the
+// page's Refresh and a panel's own, and there is a third case in the effect: an
+// auto-refresh cadence faster than the reuse window, where reuse would re-serve
+// the answer the previous tick produced.
+//
 // ── WHY THE TWO CALL SITES PASS A STRING, NOT A PanelQuery ──────────────────
 // `useSearch` takes `string | PanelQuery` because the plan asked for it and
 // because an accelerated source is a property of the panel, not of its options.
@@ -43,7 +59,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { runSearch, SearchTimeLimitError, type Row } from './search'
+import { runSearch, REUSE_WINDOW_SECONDS, SearchTimeLimitError, type Row } from './search'
 import { useCostSlot } from './jobCost'
 import { useDashboard } from '../app/DashboardContext'
 import { accelEntry, type AccelId } from './accel/manifest'
@@ -90,6 +106,24 @@ export interface UseSearchState {
 export interface UseSearchOptions {
   /** Skip execution (e.g. waiting on a required parameter). */
   enabled?: boolean
+  /**
+   * Hold this query back until the panel is worth running — set by
+   * `useNearViewport()` for a panel below the fold.
+   *
+   * SEPARATE FROM `enabled`, and the difference is what the reader is told.
+   * `enabled: false` means the query cannot be asked (nothing is selected), and
+   * the panel correctly reports no rows; `deferred` means it has not been asked
+   * YET, so the hook keeps reporting `loading` and <QueryBoundary> keeps its
+   * spinner. Folding the two together would put "No results" under a panel
+   * whose query is about to run, which is a wrong answer rather than a missing
+   * one.
+   *
+   * WHY IT EXISTS AT ALL: concurrent jobs from one user are admitted ~1.6 s
+   * apart, so the sixth query a tab fires on mount does not BEGIN for ~8 s. No
+   * amount of per-query speed touches that; firing fewer at once is the only
+   * lever, and it is worth more than anything else in this file.
+   */
+  deferred?: boolean
   /** Extra dependencies that should re-trigger the query. */
   deps?: unknown[]
   limit?: number
@@ -127,11 +161,16 @@ interface PanelRead {
  * changing.
  */
 export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {}): UseSearchState {
-  const { enabled = true, deps = [], limit, earliest, accelEnabled = true } = opts
+  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true } = opts
   const text = typeof query === 'string' ? query : query.query
   const accel = (typeof query === 'string' ? undefined : query.accel) ?? opts.accel ?? null
-  const { range, refreshNonce, manualRefreshNonce } = useDashboard()
+  const { range, refreshNonce, manualRefreshNonce, autoSeconds } = useDashboard()
   const pinned = earliest !== undefined || accel !== null
+  // A panel that has not run yet still holds its cost slot: deferral is about
+  // WHEN a query is submitted, not whether. The auto-refresh cost label answers
+  // "what does a refresh of this tab cost", and every deferred panel will have
+  // run by the first tick.
+  const active = enabled && !deferred
   // An accelerated hook with no window of its own takes the scheduled run's, so
   // the live fallback reads the same window the schedule does.
   const effectiveEarliest = earliest ?? (accel !== null ? accelEntry(accel).earliest : range.earliest)
@@ -155,9 +194,39 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   })
   const reqId = useRef(0)
 
+  // Whether THIS run of the effect was asked for by a person.
+  //
+  // Refresh — the page button and a panel's own — is the one control that means
+  // "I do not want the number you already have", so it must not be answered out
+  // of Cribl's result reuse (REUSE_WINDOW below). Both nonces are summed because
+  // either one rising is the same request; the ref carries the value across
+  // effect runs, so a range change or an auto tick, which move neither nonce,
+  // stays eligible for reuse.
+  const explicitKey = manualRefreshNonce + localNonce
+  const lastExplicit = useRef(explicitKey)
+  const lastTick = useRef(refreshNonce)
+
   useEffect(() => {
-    if (!enabled) {
-      setState((s) => ({ ...s, loading: false }))
+    const explicit = explicitKey !== lastExplicit.current
+    const ticked = refreshNonce !== lastTick.current && !explicit
+    lastExplicit.current = explicitKey
+    lastTick.current = refreshNonce
+    // Whether Cribl may answer this out of a result it already has — measured
+    // 30.92 s → 0.95 s and zero billed on a repeat of the same query at the same
+    // relative range (A-SP21). Two things take it away:
+    //   * an explicit refresh, above: the one control that means "not that one".
+    //   * an auto-refresh cadence faster than the reuse window. A tick every
+    //     minute answered from a two-minute-old result is a refresh that is
+    //     GUARANTEED to show the same number, and the header would date it
+    //     "updated 0s ago" while doing it. A viewer who set a cadence has said
+    //     how old they will accept, and it is shorter than this.
+    // A range change, a remount and the first paint of a tab keep it, which is
+    // where the whole win is: opening the app, and switching away and back.
+    const reuse = !explicit && !(ticked && autoSeconds > 0 && autoSeconds < REUSE_WINDOW_SECONDS)
+    if (!active) {
+      // Deferred is not finished: keep reporting `loading` so the panel shows a
+      // spinner rather than "No results" for a query nobody has asked yet.
+      setState((s) => ({ ...s, loading: enabled && deferred }))
       return
     }
     const controller = new AbortController()
@@ -173,7 +242,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // live query is what ran.
     let liveTotal: number | null = null
     const live = async (): Promise<Row[]> => {
-      const res = await runSearch(text, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot })
+      const res = await runSearch(text, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot, reuse })
       liveTotal = res.totalEventCount
       return res.rows
     }
@@ -216,7 +285,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
       })
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, accel, accelEnabled, enabled, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
+  }, [text, accel, accelEnabled, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }

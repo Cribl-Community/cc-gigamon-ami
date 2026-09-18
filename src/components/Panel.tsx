@@ -34,6 +34,16 @@ interface PanelProps {
   className?: string
   /** Anchor id for the guided tour to scroll to and highlight. */
   tourId?: string
+  /**
+   * The panel's own element, for `useNearViewport()` to watch.
+   *
+   * It goes on the `<section>` rather than on a wrapper the call site adds,
+   * because a wrapper is either a layout change (a spare box inside `.grid-2`)
+   * or, with `display: contents` to avoid that, an element with no box at all —
+   * which an IntersectionObserver reads as permanently out of view. Either way
+   * the panel never loads. One prop is cheaper than that bug.
+   */
+  anchorRef?: (el: Element | null) => void
 }
 
 function RefreshIcon() {
@@ -48,10 +58,10 @@ function RefreshIcon() {
 /** A titled dashboard panel (card). The ⓘ next to the title opens a popover
  *  explaining the panel and revealing the exact Cribl Search query behind it.
  *  An optional refresh button re-runs only this panel's query. */
-export function Panel({ title, note, info, query, computed, infoLabel, infoDialogLabel, onRefresh, refreshing, children, className = '', tourId }: PanelProps) {
+export function Panel({ title, note, info, query, computed, infoLabel, infoDialogLabel, onRefresh, refreshing, children, className = '', tourId, anchorRef }: PanelProps) {
   const hasHeader = title || note || onRefresh
   return (
-    <section className={`panel ${className}`} data-tour={tourId}>
+    <section className={`panel ${className}`} data-tour={tourId} ref={anchorRef}>
       {hasHeader && (
         <header className="panel-head">
           {title && (

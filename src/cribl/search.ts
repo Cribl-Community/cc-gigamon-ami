@@ -20,10 +20,23 @@ export interface SearchOptions {
   latest?: string | number // e.g. 'now'
   limit?: number
   signal?: AbortSignal
+  /**
+   * Fix the gap between status checks instead of letting it ramp. Tests, and a
+   * caller that knows how long its job takes; everything else wants the ramp
+   * (POLL_RAMP_MS), which is faster for a short job and cheaper for a long one.
+   */
   pollMs?: number
   timeoutMs?: number
   /** Where to record this job's measured cost (the auto-refresh cost labels). */
   costSlot?: CostSlot
+  /**
+   * Let Cribl answer this from a result it already has, if one is recent enough
+   * — see REUSE_WINDOW. Off by default: a caller that submits a job to MEASURE
+   * something (the landing-lag probe) or to read something already stored (a
+   * `$vt_results` read) must get a real run, and defaulting this on would have
+   * changed what those calls mean without anybody editing them.
+   */
+  reuse?: boolean
 }
 
 export interface SearchResult {
@@ -257,10 +270,52 @@ async function stoppedByTimeLimit(jobId: string, signal?: AbortSignal): Promise<
   }
 }
 
-/** The query as executed. The `set` prefix goes into the job body only — a
+/**
+ * How old a result Cribl already has may be before this app stops accepting it
+ * in place of a new run.
+ *
+ * MEASURED (A-SP21): a repeat of the same query at the same relative range came
+ * back in 0.95 s against 30.92 s live, and billed nothing. The match is on the
+ * relative range SPEC — `-15m` matches `-15m`, not the resolved window — and the
+ * `set` options are normalised out of the key, so the cap prefix above does not
+ * stop a reuse and the original run needs no flag of its own.
+ *
+ * TWO MINUTES IS A CORRECTNESS DECISION, NOT A COST ONE (A-D15). The number on
+ * screen is allowed to be up to this old, so the window has to be short enough
+ * that a viewer watching a live panel cannot be misled by it and long enough to
+ * cover the thing it exists for: the first paint of a tab, and switching away
+ * and back. On a feed that lands in minutes, two minutes is inside the noise of
+ * what a `-15m` panel already averages over. Anything materially longer would
+ * be a cache with no expiry story, which is what the Snapshot mode is for —
+ * dated, labelled and chosen, rather than silent.
+ *
+ * It is quoted because Cribl's parser wants a string here; A-SP21 measured
+ * `"24h"` in exactly this shape.
+ */
+export const REUSE_WINDOW = '2min'
+/** The same window in seconds, for callers deciding whether reuse can possibly
+ *  help them — an auto-refresh faster than this would re-serve its own last
+ *  answer. Kept beside the string so the two cannot drift. */
+export const REUSE_WINDOW_SECONDS = 120
+
+/**
+ * The virtual table a stored scheduled result is read from, named here so this
+ * module can refuse to put a reuse directive on one.
+ *
+ * accel/read.ts owns this name (it exports `VT_RESULTS`) and cannot be imported
+ * from here — it imports this file. The duplication is deliberate and the reason
+ * is A-D15: a stored-result read must carry no results directive, ever, and
+ * "every call site remembers to pass `reuse: false`" is not a guarantee. This
+ * is, and read.test.ts asserts the submitted body from the other side.
+ */
+const VT_RESULTS_TABLE = '$vt_results'
+
+/** The query as executed. The `set` prefixes go into the job body only — a
  *  panel's ⓘ keeps showing the query string it was given. */
-function withExecPrefix(query: string, earliest: string | number): string {
-  return `set max_running_time_per_search=${capSecondsFor(earliest)}; ${query}`
+function withExecPrefix(query: string, earliest: string | number, reuse: boolean): string {
+  const cap = `set max_running_time_per_search=${capSecondsFor(earliest)}; `
+  if (!reuse || query.includes(VT_RESULTS_TABLE)) return `${cap}${query}`
+  return `${cap}set allow_previous_results="${REUSE_WINDOW}"; ${query}`
 }
 
 /**
@@ -289,11 +344,17 @@ export function cancelJob(jobId: string): void {
  * job still starts in Cribl. Instead the submit completes, and a job whose
  * search was abandoned meanwhile is cancelled at once.
  */
-async function submitJob(query: string, earliest: string | number, latest: string | number, signal?: AbortSignal): Promise<string> {
+async function submitJob(
+  query: string,
+  earliest: string | number,
+  latest: string | number,
+  signal?: AbortSignal,
+  reuse = false,
+): Promise<string> {
   const created = await api<{ items: Array<{ id: string }> }>(searchUrl('/search/jobs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: withExecPrefix(query, earliest), earliest, latest }),
+    body: JSON.stringify({ query: withExecPrefix(query, earliest, reuse), earliest, latest }),
   })
   const jobId = created.items?.[0]?.id
   if (!jobId) throw new Error('Cribl Search did not return a job id')
@@ -304,13 +365,51 @@ async function submitJob(query: string, earliest: string | number, latest: strin
   return jobId
 }
 
+/**
+ * How long to wait after the nth status check before asking again.
+ *
+ * WHAT THE FLAT 700 ms COST. The status GET is at the top of the loop, so a job
+ * that finishes inside one round trip pays no sleep at all — but anything that
+ * does not is rounded up to the next 700 ms, and the jobs this app now runs
+ * fastest are exactly the ones that lost the most to that: a `$vt_results`
+ * stored read returns in ~0.3 s (measured 4×) and a reused result in ~0.95 s
+ * (A-SP21), both of them waiting out most of a poll interval they never needed.
+ * At the other end a 30-second scan was polled 43 times, every one of them a
+ * round trip billed to nobody but spent by everybody.
+ *
+ * So it ramps: quick while the fast answers are plausible, backing off once the
+ * job has proved it is not one of them. 100 ms is the floor because the check
+ * is itself a round trip — this app's own status GETs have measured in that
+ * region against Cribl.Cloud, so polling faster mostly overlaps requests.
+ * 1.5 s is the ceiling because past a few seconds the wait is dominated by the
+ * job, and a second and a half of extra latency on a half-minute scan is not
+ * something a viewer can perceive.
+ *
+ * Cumulative wait: 0.1 · 0.25 · 0.5 · 0.9 · 1.5 · 2.4 s, then 1.5 s a step —
+ * 25 checks to reach 30 s where the flat interval took 43, and the first answer
+ * available seven times sooner.
+ */
+export const POLL_RAMP_MS: readonly number[] = [100, 150, 250, 400, 600, 900]
+export const POLL_MAX_MS = 1500
+
+/** The gap before the (check+1)th status check, 0-based. */
+export function pollDelayMs(check: number): number {
+  return POLL_RAMP_MS[check] ?? POLL_MAX_MS
+}
+
 /** Poll job status until it completes. On abort or the client timeout the job
  *  is cancelled on the server too. A job the server cap stopped throws
  *  SearchTimeLimitError, so the panel can say so instead of "failed". */
-async function waitForJob(jobId: string, signal: AbortSignal | undefined, pollMs: number, timeoutMs: number, capSeconds: number): Promise<void> {
+async function waitForJob(
+  jobId: string,
+  signal: AbortSignal | undefined,
+  pollMs: number | undefined,
+  timeoutMs: number,
+  capSeconds: number,
+): Promise<void> {
   const started = Date.now()
   try {
-    for (;;) {
+    for (let check = 0; ; check++) {
       if (Date.now() - started > timeoutMs) {
         cancelJob(jobId)
         throw new Error('Cribl Search timed out')
@@ -324,7 +423,7 @@ async function waitForJob(jobId: string, signal: AbortSignal | undefined, pollMs
       if (status === 'failed' && (await stoppedByTimeLimit(jobId, signal))) throw new SearchTimeLimitError(capSeconds)
       if (status === 'failed' || status === 'canceled') throw new Error(`Cribl Search ${status}`)
       if (status === 'completed') return
-      await sleep(pollMs, signal)
+      await sleep(pollMs ?? pollDelayMs(check), signal)
     }
   } catch (err) {
     if (signal?.aborted) cancelJob(jobId)
@@ -343,10 +442,10 @@ export async function runSearch(query: string, opts: SearchOptions = {}): Promis
 }
 
 async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<SearchResult> {
-  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs = 700, timeoutMs, costSlot } = opts
+  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs, timeoutMs, costSlot, reuse = false } = opts
   const cap = capSecondsFor(earliest)
 
-  const jobId = await submitJob(query, earliest, latest, signal)
+  const jobId = await submitJob(query, earliest, latest, signal, reuse)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
 
@@ -404,9 +503,9 @@ export async function runFieldSummaries(query: string, opts: SearchOptions = {})
 }
 
 async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): Promise<FieldSummariesResult> {
-  const { earliest = '-15m', latest = 'now', signal, pollMs = 700, timeoutMs, costSlot } = opts
+  const { earliest = '-15m', latest = 'now', signal, pollMs, timeoutMs, costSlot, reuse = false } = opts
   const cap = capSecondsFor(earliest)
-  const jobId = await submitJob(query, earliest, latest, signal)
+  const jobId = await submitJob(query, earliest, latest, signal, reuse)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)

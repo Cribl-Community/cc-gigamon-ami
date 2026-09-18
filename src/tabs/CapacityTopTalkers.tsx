@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { PIVOTS, pivotFor, buildKpiQuery, buildTalkersQuery, buildAppmixQuery, buildL4Query, type Pivot } from '../queries/capacityTopTalkers'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -30,10 +31,14 @@ export function CapacityTopTalkers() {
   const kpis = useSearch(kpiQuery, { deps: [applied, pivot] })
   const talkersQuery = buildTalkersQuery(pivot, applied)
   const talkers = useSearch(talkersQuery, { deps: [pivot, applied] })
+  // The KPI row and the talkers table are what this tab is opened for; the two
+  // mix charts sit under them and can wait for the scroll.
+  const appmixNear = useNearViewport()
+  const l4Near = useNearViewport()
   const appmixQuery = buildAppmixQuery(pivot, applied)
-  const appmix = useSearch(appmixQuery, { deps: [applied] })
+  const appmix = useSearch(appmixQuery, { deps: [applied], deferred: !appmixNear.near })
   const l4Query = buildL4Query(pivot, applied)
-  const l4 = useSearch(l4Query, { deps: [applied] })
+  const l4 = useSearch(l4Query, { deps: [applied], deferred: !l4Near.near })
 
   const k = kpis.rows[0] ?? {}
   const appTotal = appmix.rows.reduce((s, r) => s + toNum(r.bytes), 0) || 1
@@ -105,7 +110,7 @@ export function CapacityTopTalkers() {
       </Panel>
 
       <div className="grid-2">
-        <Panel title="App protocol mix" info="Share of bytes by application (app_name). Donut + ranked list." query={appmixQuery} onRefresh={appmix.refetch} refreshing={appmix.loading} note="app_name · by bytes">
+        <Panel anchorRef={appmixNear.ref} title="App protocol mix" info="Share of bytes by application (app_name). Donut + ranked list." query={appmixQuery} onRefresh={appmix.refetch} refreshing={appmix.loading} note="app_name · by bytes">
           <QueryBoundary state={appmix} emptyLabel="No data">
             <div className="mix-wrap">
               <Donut slices={donutSlices} />
@@ -126,7 +131,7 @@ export function CapacityTopTalkers() {
           </QueryBoundary>
         </Panel>
 
-        <Panel title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
+        <Panel anchorRef={l4Near.ref} title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
           <QueryBoundary state={l4} emptyLabel="No data">
             <BarList items={l4Items} accent="info" />
           </QueryBoundary>

@@ -505,13 +505,13 @@
           "ref": "appmixQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
-          "options": "{ deps: [applied] }"
+          "options": "{ deps: [applied], deferred: !appmixNear.near }"
         },
         "l4": {
           "ref": "l4Query",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize bytes=sum(total_bytes) by l4_proto | sort by bytes desc",
-          "options": "{ deps: [applied] }"
+          "options": "{ deps: [applied], deferred: !l4Near.near }"
         }
       },
       "links": {},
@@ -1542,7 +1542,7 @@
           "ref": "trendQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
-          "options": "{ deps: [service] }"
+          "options": "{ deps: [service], deferred: !trendNear.near }"
         }
       },
       "links": {},
@@ -1710,12 +1710,13 @@
           "ref": "trendQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" protocol=6 | summarize v=sum(tcp_reset), flows=count() by bin(_time, 1m) | sort by _time asc",
-          "options": "{ deps: [metric] }"
+          "options": "{ deps: [metric], deferred: !trendNear.near }"
         },
         "latency": {
           "ref": "latencyQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize net=percentile(tcp_rtt,95), net_lo=min(tcp_rtt), net_hi=max(tcp_rtt), app=percentile(tcp_rtt_app,95), app_lo=min(tcp_rtt_app), app_hi=max(tcp_rtt_app) by bin(_time, 1m) | sort by _time asc"
+          "query": "dataset=\"gigamon_ami\" | summarize net=percentile(tcp_rtt,95), net_lo=min(tcp_rtt), net_hi=max(tcp_rtt), app=percentile(tcp_rtt_app,95), app_lo=min(tcp_rtt_app), app_hi=max(tcp_rtt_app) by bin(_time, 1m) | sort by _time asc",
+          "options": "{ deferred: !latencyNear.near }"
         }
       },
       "links": {
@@ -1925,7 +1926,8 @@
         "hosts": {
           "ref": "HOSTS",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12"
+          "query": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12",
+          "options": "{ deferred: !hostsNear.near }"
         },
         "slow": {
           "ref": "SLOW",
@@ -1935,12 +1937,14 @@
         "trend": {
           "ref": "TREND",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc"
+          "query": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc",
+          "options": "{ deferred: !trendNear.near }"
         },
         "h2": {
           "ref": "H2",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10"
+          "query": "dataset=\"gigamon_ami\" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10",
+          "options": "{ deferred: !h2Near.near }"
         }
       },
       "links": {

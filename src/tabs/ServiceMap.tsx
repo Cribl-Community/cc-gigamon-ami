@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { nodesQuery, edgesQuery, srcQuery, buildDomainsQuery, buildTrendQuery } from '../queries/serviceMap'
 import { Panel } from '../components/Panel'
 import { QueryBoundary } from '../components/QueryBoundary'
@@ -188,8 +189,12 @@ export function ServiceMap() {
 function LatencyDomains({ service, onIncident, onBack }: { service: string; onIncident: () => void; onBack: () => void }) {
   const domainsQuery = buildDomainsQuery(service)
   const domains = useSearch(domainsQuery, { deps: [service] })
+  // The four domain cards answer the question this view was opened to ask; the
+  // decomposition chart under them is the follow-up, so it waits its turn
+  // rather than sharing the admission queue with them.
+  const trendNear = useNearViewport()
   const trendQuery = buildTrendQuery(service)
-  const trend = useSearch(trendQuery, { deps: [service] })
+  const trend = useSearch(trendQuery, { deps: [service], deferred: !trendNear.near })
 
   const d = domains.rows[0] ?? {}
   const netMs = toNum(d.net) * 1000
@@ -282,7 +287,7 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
         </div>
 
         <div className="grid-2">
-          <Panel onRefresh={trend.refetch} refreshing={trend.loading} title="Latency decomposition over time" info="p95 of all four domains per minute on a log axis, so a 0.1ms and a 600ms domain are both visible." query={trendQuery} note="all four domains · p95 · per 1m · log ms">
+          <Panel anchorRef={trendNear.ref} onRefresh={trend.refetch} refreshing={trend.loading} title="Latency decomposition over time" info="p95 of all four domains per minute on a log axis, so a 0.1ms and a 600ms domain are both visible." query={trendQuery} note="all four domains · p95 · per 1m · log ms">
             <QueryBoundary state={trend} emptyLabel="No data" compact>
               <TimeChart series={latSeries} fmt={fmtMs} log />
             </QueryBoundary>

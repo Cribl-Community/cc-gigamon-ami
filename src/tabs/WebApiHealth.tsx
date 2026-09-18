@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -12,12 +13,19 @@ import { KPI, CODES, HOSTS, SLOW, TREND, H2, ERRORS_DRILL } from '../queries/web
 
 export function WebApiHealth() {
   const { range } = useDashboard()
+  // Six queries on one mount, admitted ~1.6 s apart, means the last one does not
+  // begin for ~8 s. The three panels below the fold wait for the reader instead
+  // of queueing behind each other; the KPI row and the first pair do not.
+  const hostsNear = useNearViewport()
+  const trendNear = useNearViewport()
+  const h2Near = useNearViewport()
+
   const kpi = useSearch(KPI)
   const codes = useSearch(CODES)
-  const hosts = useSearch(HOSTS)
+  const hosts = useSearch(HOSTS, { deferred: !hostsNear.near })
   const slow = useSearch(SLOW)
-  const trend = useSearch(TREND)
-  const h2 = useSearch(H2)
+  const trend = useSearch(TREND, { deferred: !trendNear.near })
+  const h2 = useSearch(H2, { deferred: !h2Near.near })
 
   const k = kpi.rows[0] ?? {}
   const txns = toNum(k.txns)
@@ -99,7 +107,7 @@ export function WebApiHealth() {
         </Panel>
       </div>
 
-      <Panel tourId="web-hosts" title="Top endpoints by requests" query={HOSTS} onRefresh={hosts.refetch} refreshing={hosts.loading} note="http_host · error rate per host"
+      <Panel anchorRef={hostsNear.ref} tourId="web-hosts" title="Top endpoints by requests" query={HOSTS} onRefresh={hosts.refetch} refreshing={hosts.loading} note="http_host · error rate per host"
         info="Busiest HTTP hosts with the share of their responses that were 4xx/5xx. A high-volume host with a high error rate is the first thing to chase.">
         <QueryBoundary state={hosts} emptyLabel="No HTTP hosts in this window">
           <BarList items={hostItems} accent="info" />
@@ -107,14 +115,14 @@ export function WebApiHealth() {
       </Panel>
 
       <div className="grid-2">
-        <Panel tourId="web-trend" title="Requests and errors over time" query={TREND} onRefresh={trend.refetch} refreshing={trend.loading} note="per 1m"
+        <Panel anchorRef={trendNear.ref} tourId="web-trend" title="Requests and errors over time" query={TREND} onRefresh={trend.refetch} refreshing={trend.loading} note="per 1m"
           info="Request volume against 4xx/5xx count per minute. A spike in errors that does not track request volume is a server-side event, not load.">
           <QueryBoundary state={trend} emptyLabel="No data" compact>
             <TimeChart series={series} height={170} />
           </QueryBoundary>
         </Panel>
 
-        <Panel tourId="web-h2" title="HTTP/2 hosts" query={H2} onRefresh={h2.refetch} refreshing={h2.loading} note="http2_host · by volume"
+        <Panel anchorRef={h2Near.ref} tourId="web-h2" title="HTTP/2 hosts" query={H2} onRefresh={h2.refetch} refreshing={h2.loading} note="http2_host · by volume"
           info="HTTP/2 traffic, reported by Gigamon under a separate field set (http2_host / http2_code / http2_method). Shown here so modern traffic is not silently missing from the page.">
           <QueryBoundary state={h2} emptyLabel="No HTTP/2 traffic in this window">
             <BarList items={h2Items} accent="info" />
