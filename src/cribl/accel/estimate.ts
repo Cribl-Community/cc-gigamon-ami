@@ -240,6 +240,34 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
     what: 'Field Explorer — In feed (field summaries)',
   },
+
+  gno_presence_c1h: {
+    // MEASURED on the live workspace, 2026-09-18, two runs over -15m read from
+    // /jobs/:id/metrics: 187.6 CPU-s in 4.6 s and 354.8 CPU-s in 5.5 s. The mean
+    // is what ships; the spread is 1.9x on identical query text over the same
+    // window length, which is the run-to-run variance this workspace shows
+    // everywhere (A-SP0 saw 4-17 CPU-s between back-to-back identical jobs, and
+    // a trivial count() measured 102.4 one day and 73.6 the next). Do not quote
+    // this to three figures.
+    //
+    // This is the scan that kept Field Explorer at eight seconds after its
+    // sample was already being served from a snapshot: the tab fires TWO jobs on
+    // mount and only one of them was accelerated.
+    liveRunCpuSeconds: 271.2,
+    // NOT MEASURED, and per-viewer rather than a property of the workspace:
+    // nobody counted how often Field Explorer is opened. Same assumption as the
+    // sample entry beside it, and it must move if either ever is counted.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain (5–50),
+    // which the 30-day entry's window is not.
+    scheduledRunCpuSeconds: null,
+    // ~96 count() aggregates in one pass. Wider than a sum-or-count body by some
+    // margin, and the measured 1.43x is the widest this plan has evidence for —
+    // so this is the right multiplier and probably still an under-estimate.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Field Explorer — AMI field coverage (which fields are arriving)',
+  },
   // ── The three hourly snapshots ────────────────────────────────────────────
   // These are not here to save money and the numbers below should not be read as
   // if they were. They exist so a viewer can ask what the tiles said at 04:20,

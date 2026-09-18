@@ -36,6 +36,7 @@ import type { FieldSummary } from '../cribl/search'
 import { FieldExplorer, SAMPLE_CADENCE, feedComputed, sampleNote } from './FieldExplorer'
 
 const SAMPLE = 'gno_sample_2m_c1h'
+const PRESENCE = 'gno_presence_c1h'
 const HOUR = 3_600_000
 const NOW = Date.now()
 
@@ -118,7 +119,12 @@ function stub(cfg: { storedFail?: { status: number; body: unknown }; history?: u
   })
 }
 
-const sampleSubmits = () => submits.filter((s) => s.query.includes('$vt_results'))
+// Scoped to the SAMPLE's own entry. This used to be every `$vt_results` read on
+// the tab, which was the same set while the sample was the only served view —
+// the coverage counts are served by gno_presence_c1h now, so an unscoped filter
+// counts both and reports the sample as re-read when it was not.
+const sampleSubmits = () => submits.filter((s) => s.query.includes('$vt_results') && s.query.includes(SAMPLE))
+const storedPresenceSubmits = () => submits.filter((s) => s.query.includes('$vt_results') && s.query.includes(PRESENCE))
 const liveSampleSubmits = () => submits.filter((s) => s.query.includes('| limit 5000') && !s.query.includes('$vt_results'))
 const presenceSubmits = () => submits.filter((s) => s.query.includes('summarize c0='))
 
@@ -201,25 +207,42 @@ describe('the “In feed” list, served by the schedule', () => {
     expect(fieldNames()).not.toContain('jobId')
   })
 
-  it('does not re-run when the range picker moves — and the coverage counts still do', async () => {
+  it('re-runs neither view when the range picker moves', async () => {
+    // CHANGED 2026-09-18, and this used to assert the opposite for the coverage
+    // counts: "does not re-run when the range picker moves — and the coverage
+    // counts still do". That was correct while the sample was served and the
+    // counts were not — Phase 2's "one tab, two windows" state, which the tab's
+    // own copy explained to the reader.
+    //
+    // The counts are served now too (gno_presence_c1h), so while acceleration is
+    // on a range change cannot affect EITHER, and re-running would submit jobs
+    // to receive identical stored rows. The live 187.6–354.8 CPU-s presence scan
+    // per range change is the thing this now saves.
     stub()
     await render()
     expect(sampleSubmits()).toHaveLength(1)
     expect(presenceSubmits()).toHaveLength(1)
+    // The coverage counts ask the schedule FIRST now, which is the whole point.
+    // This stub holds no run for that entry, so the read falls through to the
+    // live scan counted above; with a run stored, that live scan never happens.
+    expect(
+      storedPresenceSubmits().length,
+      'the coverage counts never asked the schedule',
+    ).toBeGreaterThan(0)
 
     await act(async () => { setRange!(TIME_RANGES[5]) })
     await settle()
 
     expect(sampleSubmits(), 'a range change re-read a sample the picker cannot affect').toHaveLength(1)
     expect(liveSampleSubmits(), 'a range change spent a live 754.9 CPU-s sample').toEqual([])
-    expect(presenceSubmits(), 'the coverage counts stopped following the picker').toHaveLength(2)
+    expect(presenceSubmits(), 'a range change re-read counts the picker cannot affect').toHaveLength(1)
   })
 
   it('tells the reader which control the range applies to', async () => {
     stub()
     await render()
     const text = container.textContent ?? ''
-    expect(text).toContain('the time range above does not change it')
+    expect(text).toContain('the time range above changes neither of them')
     expect(text).toContain('AMI coverage counts')
   })
 })

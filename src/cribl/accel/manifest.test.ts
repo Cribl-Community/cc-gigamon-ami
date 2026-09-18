@@ -45,7 +45,7 @@ const nodes = accelEntry('gno_svc_nodes_c1h')
 const edges = accelEntry('gno_svc_edges_c1h')
 
 describe('the manifest', () => {
-  it('holds exactly these five', () => {
+  it('holds exactly these six', () => {
     // Literal, not a count. An entry is a decision about a customer's bill and
     // about what the teardown will delete, so adding one changes this line too.
     expect(MANIFEST.map((e) => e.id)).toEqual([
@@ -54,6 +54,7 @@ describe('the manifest', () => {
       'gno_overview_c1h',
       'gno_svc_nodes_c1h',
       'gno_svc_edges_c1h',
+      'gno_presence_c1h',
     ])
   })
 

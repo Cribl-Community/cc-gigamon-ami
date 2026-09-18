@@ -79,7 +79,7 @@
 
 import { APP_VERSION } from '../config'
 import { LAKE_TOTAL_QUERY, VOLUME_AGGS, VOLUME_QUERY } from '../../queries/dataFlow'
-import { FEED_SAMPLE_QUERY } from '../../queries/fieldExplorer'
+import { FEED_SAMPLE_QUERY, PRESENCE_QUERY } from '../../queries/fieldExplorer'
 import { KPI_AGGS as CAPACITY_KPI_AGGS, buildKpiQuery } from '../../queries/capacityTopTalkers'
 import { KPI_AGGS as WEB_KPI_AGGS, KPI as WEB_KPI_QUERY } from '../../queries/webApiHealth'
 import { COUNT_AGGS as SECURITY_COUNT_AGGS, COUNTS as SECURITY_COUNTS_QUERY } from '../../queries/security'
@@ -111,6 +111,7 @@ export type AccelId =
   | 'gno_overview_c1h'
   | 'gno_svc_nodes_c1h'
   | 'gno_svc_edges_c1h'
+  | 'gno_presence_c1h'
 
 /**
  * The shape ids take, and the ONLY thing that tells this app's scheduled
@@ -577,6 +578,43 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     keepLastN: 24,
     why:
       "The other two scans behind Service map's graph — the edges and the per-source outbound totals — out of one grouping. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
+  }),
+
+  entry({
+    id: 'gno_presence_c1h',
+    name: 'GNO Field presence 15 minutes',
+    panels: [
+      {
+        queryId: 'field-explorer-presence',
+        what: 'Field Explorer — AMI field coverage (which fields are arriving)',
+        display: PRESENCE_QUERY,
+        // No tail. The body IS the answer: one row of `c0…cN` counts, read
+        // positionally against CHECK_FIELDS. See the alias note below.
+        reads: [],
+      },
+    ],
+    body: PRESENCE_QUERY,
+    // Fifteen minutes of data ending three minutes back — the same shape the
+    // other hourly entries use, and for the same two reasons. Three minutes
+    // clears the 120 s flush this app's Lake landing profile sets, and fifteen
+    // is what the app's default range shows, so the snapshot answers the same
+    // question the default live view asks rather than a wider or narrower one.
+    //
+    // A LONGER window would find more of the rare fields this panel exists to
+    // notice — the query counts over the whole window precisely so that
+    // something like ssl_issuer is not missed the way a sample would miss it —
+    // and it costs linearly: ~39 CPU-s at fifteen minutes against ~156 at an
+    // hour, on A-SP0's measured 2.6 CPU-s per data-minute. Fifteen is chosen so
+    // the stored answer and the live answer mean the same thing. If a field is
+    // genuinely rare enough to miss in fifteen minutes, it is missing from the
+    // live view too, and the panel should not quietly disagree with itself.
+    earliest: '-18m',
+    latest: '-3m',
+    cron: '23 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "Field Explorer's coverage view answers which of the ~319 AMI fields are actually arriving, with one count() per field over the whole window — measured at 4.6 s on the live workspace, and the reason the tab still took eight seconds after its sample was accelerated. It is the second of that tab's two mount queries and the one a census of hooks never saw, because it calls runSearch directly.",
   }),
 ])
 

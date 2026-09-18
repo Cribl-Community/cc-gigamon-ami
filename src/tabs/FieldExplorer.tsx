@@ -6,7 +6,11 @@
 // range picker was set to: 754.9 billable CPU-s every time somebody opened the
 // tab. It now reads the result of an hourly scheduled run over a settled
 // two-minute window, so THE FIELD LIST NO LONGER FOLLOWS THE PICKER while the
-// AMI coverage counts on the other two views still do.
+// AMI coverage counts on the other two views still do. — NO LONGER TRUE as of
+// 2026-09-18: the coverage scan is served by gno_presence_c1h, so while
+// acceleration is on neither view follows the picker and the tab has one window
+// again rather than two. It was the second of this tab’s two mount queries and
+// the one a hook census could not see, because it calls runSearch directly.
 //
 // That is a real behaviour change and the tab is required to say so out loud, in
 // three places, because a reader who changes the range and sees nothing move
@@ -27,7 +31,7 @@ import { useSearchParams } from 'react-router-dom'
 import { capSecondsFor, runFieldSummaries, runSearch, SearchTimeLimitError, type FieldSummary } from '../cribl/search'
 import { useCostSlot } from '../cribl/jobCost'
 import { accelEntry, type AccelId } from '../cribl/accel/manifest'
-import { readAccelFieldSummaries, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
+import { readAccelFieldSummaries, readAccelRows, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
 import { useSelectedSnapshot } from '../cribl/accel/selection'
 import { useAccelEnabled } from '../cribl/useSearch'
 import { useDashboard } from '../app/DashboardContext'
@@ -51,6 +55,18 @@ const SAMPLE_ACCEL: AccelId = 'gno_sample_2m_c1h'
  *  means one thing on a workspace that has applied acceleration and another on
  *  one that has not. */
 const SAMPLE_ENTRY = accelEntry(SAMPLE_ACCEL)
+
+/**
+ * The OTHER query this tab runs on mount, and the one a census of hooks cannot
+ * see: it calls runSearch directly rather than useSearch, so nothing that counts
+ * `accel` options ever counted it.
+ *
+ * Measured on the live workspace 2026-09-18: 187.6 and 354.8 billable CPU-s over
+ * -15m, 4.6 s and 5.5 s wall. That is what kept this tab at eight seconds after
+ * the sample beside it was already answering from a snapshot in 1.4 s.
+ */
+const PRESENCE_ACCEL: AccelId = 'gno_presence_c1h'
+const PRESENCE_ENTRY = accelEntry(PRESENCE_ACCEL)
 /** The schedule in words, for the panel's ⓘ. FieldExplorer.test.tsx holds this
  *  against the manifest's own cron, so changing one forces the other. */
 export const SAMPLE_CADENCE = 'once an hour, at 7 minutes past, in UTC'
@@ -212,6 +228,8 @@ export function FieldExplorer() {
   // dependency array — a `$vt_results` read ignores the picker, so an
   // accelerated sample carries no window in its key and re-runs on an explicit
   // refresh only. Both go back to following the page the moment it runs live.
+  const presenceWindowKey = accelOn ? '' : range.earliest
+  const presenceRefreshKey = accelOn ? manualRefreshNonce : refreshNonce
   const sampleWindowKey = accelOn ? '' : range.earliest
   const sampleRefreshKey = accelOn ? manualRefreshNonce : refreshNonce
 
@@ -257,13 +275,53 @@ export function FieldExplorer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accelOn, moment, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
 
-  // Whole-window presence counts for the AMI coverage view (accurate for rare fields).
+  // Whole-window presence counts for the AMI coverage view (accurate for rare
+  // fields — one count() per field rather than a sample, which is why it is
+  // expensive and why it catches something like ssl_issuer that a sample misses).
+  //
+  // Served by the hourly schedule where there is one. The live fallback reads
+  // the SAME fifteen settled minutes the schedule does while acceleration is on,
+  // so turning it on changes when the answer was computed and never what it
+  // means; with acceleration off it follows the picker, as it always did.
   useEffect(() => {
     const ctrl = new AbortController()
     setPresence((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
-    runSearch(PRESENCE_QUERY, { earliest: range.earliest, signal: ctrl.signal, costSlot: presenceCost })
-      .then((res) => {
-        const row = (res.rows[0] ?? {}) as Record<string, unknown>
+    readAccelRows(PRESENCE_ACCEL, {
+      enabled: accelOn,
+      asOf: moment ?? undefined,
+      signal: ctrl.signal,
+      live: () => runSearch(PRESENCE_QUERY, {
+        earliest: accelOn ? PRESENCE_ENTRY.earliest : range.earliest,
+        latest: accelOn ? PRESENCE_ENTRY.latest : 'now',
+        signal: ctrl.signal,
+        costSlot: presenceCost,
+      }).then((res) => res.rows),
+    })
+      .then((r) => {
+        const row = (r.data[0] ?? {}) as Record<string, unknown>
+        // POSITIONAL ALIASES, AND THE HAZARD THEY CARRY. The body names its
+        // counts `c0…cN` in CHECK_FIELDS order, so a stored run from before a
+        // change to AMI_CATALOG has every alias after the insertion pointing at
+        // the wrong field — and a wrong count here reads as "this field is not
+        // arriving", which is the one answer this panel exists to give.
+        //
+        // The body is generated FROM CHECK_FIELDS, so a catalogue change changes
+        // the body, changes `body-sha256`, and provisioning reports the search as
+        // drifted and rewrites it. That fixes the schedule but not the runs
+        // already stored under the old shape, which stay readable until
+        // keepLastN cycles them out. So the width is checked here: a row whose
+        // `c` count does not match the catalogue is from a different catalogue
+        // and is discarded rather than read against the wrong names.
+        const width = Object.keys(row).filter((k) => /^c\d+$/.test(k)).length
+        if (r.source === 'schedule' && width !== CHECK_FIELDS.length) {
+          setPresence((s) => ({
+            ...s,
+            loading: false,
+            error: 'This stored run counted a different set of fields than this release knows about, so it was not read. The next scheduled run will match.',
+            errorTitle: 'Stored run is from an older field catalogue',
+          }))
+          return
+        }
         const count: Record<string, number> = {}
         CHECK_FIELDS.forEach((n, i) => { count[n] = Number(row[`c${i}`]) || 0 })
         setPresence({ loading: false, error: null, errorTitle: null, count })
@@ -273,7 +331,12 @@ export function FieldExplorer() {
         setPresence((s) => ({ ...s, loading: false, error: (e as Error).message, errorTitle: stoppedTitle(e) }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce, presenceCost])
+    // `range.earliest` is read inside the effect and deliberately out of the
+    // key while accelerated, for the same reason the sample's effect above does
+    // it: the picker cannot change what comes back from a stored run, so
+    // re-running on a range change would submit a job to receive identical rows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accelOn, moment, presenceWindowKey, presenceRefreshKey, nonce, presenceCost])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {
@@ -444,8 +507,9 @@ export function FieldExplorer() {
             ) : (
               <>
                 The field list is {state.source === 'schedule' ? 'read from an hourly scheduled sample' : 'sampled'} of
-                {' '}{SAMPLE_WINDOW}, so <strong>the time range above does not change it</strong> — up there, the range
-                applies to the AMI coverage counts. <em>Run live</em> samples the selected range instead.
+                {' '}{SAMPLE_WINDOW}, and the AMI coverage counts are read from an hourly scheduled scan of a settled
+                fifteen minutes — so <strong>the time range above changes neither of them</strong>. <em>Run live</em>
+                puts both back on the selected range.
               </>
             )}
           </p>

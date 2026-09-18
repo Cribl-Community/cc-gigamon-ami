@@ -779,6 +779,7 @@ describe('what a confirmation is given to say', () => {
       'GNO Overview hourly (gno_overview_c1h) — create, running 20 * * * * UTC',
       'GNO Service map nodes (gno_svc_nodes_c1h) — create, running 21 * * * * UTC',
       'GNO Service map edges (gno_svc_edges_c1h) — create, running 22 * * * * UTC',
+      'GNO Field presence 15 minutes (gno_presence_c1h) — create, running 23 * * * * UTC',
     ])
     expect(plan.willDelete).toEqual([])
   })
