@@ -85,6 +85,13 @@ const RETIRED: Array<{ name: string; slice: string; wentTo: string }> = [
   { name: 'modal-done', slice: '1.9', wentTo: '.sn-done' },
   { name: 'modal-note', slice: '1.9', wentTo: '.sn-note' },
   { name: 'tour-modal', slice: '1.9', wentTo: 'Capra Modal size="md"' },
+  // Phase 3 — two table utilities renamed off the panel that happened to be
+  // first. <LakeLandingPanel> adopted both verbatim from <AccelPanel>, and a
+  // second caller under a prefix that names the first is how a reader learns
+  // the prefixes mean nothing. Renames, not retirements: the rules still exist,
+  // under `.gs-`, and both call sites moved in the same commit.
+  { name: 'ac-tablewrap', slice: '3', wentTo: '.gs-tablewrap' },
+  { name: 'ac-noterow', slice: '3', wentTo: '.gs-noterow' },
 ]
 
 /**
@@ -231,6 +238,40 @@ describe('the classes Phase 1 retired', () => {
           'nothing, and the whole declaration is dropped — silently, which is how this app once ' +
           `shipped with no borders at all.\n  ${offenders.join('\n  ')}`,
       ).toEqual([])
+    })
+  }
+
+  /**
+   * The other direction, for the classes this phase brought in.
+   *
+   * Everything above proves a name is GONE from both sides. This proves three
+   * names are PRESENT on both — a rule in App.css and a `className` that reaches
+   * it. It is the same defect from the other end: a rule nobody uses is dead
+   * weight, and a class nobody styles is markup rendering with nothing to say so,
+   * which is neither a CSS error, a type error nor a build error.
+   *
+   * WHY ONLY THREE, RATHER THAN EVERY CLASS IN THE APP. A sweep over every
+   * `className` in src/ would have to know about Capra's own classes, about names
+   * composed at runtime, and about utility names that legitimately appear in one
+   * file and one rule — and a check that needs a growing exception list stops
+   * being read. These three are the ones Phase 3 renamed or invented, which is
+   * exactly when the mistake happens: `.ll-stale` was `.ac-health-unknown` and
+   * the other two were `.ac-`, so every call site was edited by hand.
+   */
+  const PHASE_3_CLASSES: Array<{ name: string; why: string }> = [
+    { name: 'gs-tablewrap', why: 'the overflow-x box both Guided Setup tables scroll inside (Preview 7.7)' },
+    { name: 'gs-noterow', why: 'the per-row sentence, which puts back the wrapping .dtable takes away' },
+    { name: 'll-stale', why: 'the ink a measurement takes once it stops being a claim about now' },
+  ]
+
+  for (const { name, why } of PHASE_3_CLASSES) {
+    it(`.${name} has both a rule and a caller — ${why}`, () => {
+      const css = SCANNED.find((f) => f.path === 'App.css')!.code
+      expect(declaresSelector(css, name), `App.css declares no rule selecting .${name}`).toBe(true)
+      const users = SCANNED.filter((f) =>
+        classNameValues(f.code).some((v) => new RegExp(`(?<![\\w-])${name}(?![\\w-])`).test(v)),
+      )
+      expect(users.length, `.${name} has a rule in App.css and no className anywhere names it`).toBeGreaterThan(0)
     })
   }
 })

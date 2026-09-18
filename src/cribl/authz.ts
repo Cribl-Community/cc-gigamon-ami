@@ -99,6 +99,9 @@ export type WriteId =
   | 'accel.apply'
   | 'accel.pause'
   | 'accel.remove'
+  | 'lake_landing.retention'
+  | 'lake_landing.description'
+  | 'lake_landing.destination'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -159,6 +162,32 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
     surface: 'config',
     does: 'removing the scheduled searches this app created',
   },
+  // Phase 3's three. All `config`: they edit objects in the customer's Cribl
+  // that outlive the page, and every one of them can be refused for a non-admin.
+  //
+  // THREE AND NOT FIVE. The reader toggle and the partitions editor were
+  // specified and are not built — they are gated on spikes that have not run
+  // (P-S5, P-S7, P-S9; see SPIKE_GATED in cribl/landing.ts) — so there is no id
+  // for either. An id with no writer behind it would be a control this table
+  // promises and nothing performs, and gatedWrites.test.ts would be waiting for
+  // a button that is deliberately absent.
+  'lake_landing.retention': {
+    surface: 'config',
+    does: 'changing how long Cribl Lake keeps this dataset',
+  },
+  'lake_landing.description': {
+    surface: 'config',
+    does: 'changing the dataset description',
+  },
+  // ONE ID FOR THREE CALLS, and that is the honest shape rather than a shortcut:
+  // the PATCH, the commit and the deploy are one user intent — a flush change
+  // that is not committed and deployed has not happened — so splitting them
+  // would leave a refusal latched on one control while the other two still
+  // looked available for a change that can no longer complete.
+  'lake_landing.destination': {
+    surface: 'config',
+    does: 'changing how objects are written to Cribl Lake, and deploying it',
+  },
 }
 
 // --- Where the writes actually are ----------------------------------------
@@ -206,13 +235,13 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/provision.ts#ensurePipeline',
     gates: ['syslog_stack.apply'],
     surface: 'config',
-    why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply.',
+    why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply — but only when the live list does not already say what the spec says. Until Phase 3 it PATCHed whenever the object existed, so a re-apply of a settled stack wrote twice, dirtied the group\'s Git status and carried the run on into a deploy that restarts Worker Processes.',
   },
   {
     at: 'cribl/provision.ts#ensureSource',
     gates: ['syslog_stack.apply'],
     surface: 'config',
-    why: 'POST creates the Syslog source; PATCH overwrites its settings on a re-apply — the call slice 1.3 shipped undeclared.',
+    why: 'POST creates the Syslog source; PATCH overwrites its settings on a re-apply — the call slice 1.3 shipped undeclared, and since Phase 3 one that is sent only when the live source differs. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function now takes, which is where a caller can be shown what is about to change rather than only which object.',
   },
   {
     at: 'cribl/provision.ts#ensureRoute',
@@ -257,6 +286,38 @@ export const WRITE_SITES: readonly WriteSite[] = [
     gates: ['accel.remove'],
     surface: 'config',
     why: 'DELETE removes a saved search. The namespace is flat and shared, so the call is guarded by the gno_ prefix, membership in the manifest and an ownership stamp before it is sent; the confirmation names both ids and warns that uninstalling the app does not remove them.',
+  },
+
+  // --- Phase 3: the Lake landing panel ------------------------------------
+  {
+    at: 'cribl/lakeLanding.ts#setRetention',
+    gates: ['lake_landing.retention'],
+    surface: 'config',
+    why: 'PATCH changes retentionPeriodInDays on the live Cribl Lake dataset. A DECREASE deletes everything older than the new window immediately, and unlike every other write in this app there is nothing to revert — Lake datasets are under no version control, so there is no commit and no snapshot. The confirmation for a decrease states that, names the current size and the day it was measured, and requires the dataset id to be typed.',
+  },
+  {
+    at: 'cribl/lakeLanding.ts#setDescription',
+    gates: ['lake_landing.description'],
+    surface: 'config',
+    why: 'PATCH changes the dataset description. The smallest write in the phase and the only Lake field whose worst outcome is cosmetic, which is what makes it the one an admin can use to find out whether they may write to Lake at all before they try it on retention. Still confirmed: it still overwrites a field on an object everybody reads.',
+  },
+  {
+    at: 'cribl/lakeLanding.ts#updateDestination',
+    gates: ['lake_landing.destination'],
+    surface: 'config',
+    why: 'PATCH replaces the gigamon_lake destination WHOLESALE, so the body sent is the live object re-read inside this function with only the edited keys changed. One confirmation covers the whole intent: it shows the exact before→after, names every feed writing through the destination (resolved from the sources and the routing table, because a QuickConnect binding appears in neither the routes nor any hard-coded list), and states the pending-file count the commit will carry.',
+  },
+  {
+    at: 'cribl/lakeLanding.ts#commitAndDeployDestination',
+    gates: ['lake_landing.destination'],
+    surface: 'config',
+    why: 'POST /version/commit writes a Git commit on the Leader for exactly this group\'s outputs.yml — never an empty file list, which would sweep up every pending change anywhere in the repository. Declared separately from the PATCH because the gate is retrospective: a Member can be refused here having succeeded there, leaving a destination changed and not deployed, and the step list this returns is the only thing that says so.',
+  },
+  {
+    at: 'cribl/lakeLanding.ts#deployGroupConfig',
+    gates: ['lake_landing.destination'],
+    surface: 'config',
+    why: 'PATCH .../deploy pushes the commit to the group\'s running Workers, WHICH RESTARTS ITS WORKER PROCESSES — the dialog says so before the press, not in a toast afterwards. The 404 fallback to the deprecated /master path is only on 404: a 403 cannot be granted by a second path, and a 5xx deploy may already have started server-side, so a blind retry would be a second deploy.',
   },
 
   // --- Cribl Search AI -----------------------------------------------------

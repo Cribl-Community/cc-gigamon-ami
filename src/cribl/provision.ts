@@ -27,11 +27,56 @@
 // Calls go through cribl/capi.ts, which is where the auth story lives: the
 // platform proxy (installed) and the Vite `/capi` proxy (`npm run dev`) both
 // inject it, so nothing here handles a token.
+//
+// ── CHANGED IN PHASE 3 (2026-09-17), AND WHY IT IS TWO CHANGES ──────────────
+//
+// FIRST, A DEFECT. `ensurePipeline` and `ensureSource` used to PATCH
+// unconditionally whenever their GET answered 200 — so pressing Re-apply on a
+// stack that was already exactly right issued two writes, reported both as
+// `updated`, put both into `touchedKeys`, and carried the run on into
+// `commitAndDeploy`. `ensureRoute` never did that: it compares field by field
+// and returns `exists` with no PATCH at all, "so the group's Git status stays
+// clean". Whether the zero-change re-apply actually reached the deploy depends
+// on whether Cribl dirties a config file for an identical-body PATCH, which this
+// repo cannot settle and a live Leader can (see filesToCommit's fallback at
+// `/version/status`) — but a deploy restarts that group's Worker Processes, so
+// the answer only decides how bad it was. Both functions now get the
+// `ensureRoute` treatment, through one shared comparison (`covered`) used by all
+// four objects.
+//
+// SECOND, A SEAM. Every ensure* takes a `confirm` and writes nothing before it
+// answers true. That is NOT because nothing confirmed before — components/
+// ProvisionPanel.tsx has opened a <ConfirmDialog> in front of `deployAll` since
+// slice 1.7. It is because that dialog can only name the objects; it cannot say
+// what is about to change about them, since the only code holding both the live
+// object and the spec is down here. `confirm` is where a caller can be handed
+// that diff at the moment it is known. It is optional, and the default is named
+// `preConfirmed` rather than left implicit, so "no confirm was passed" is a claim
+// somebody wrote down instead of an absence — see that constant.
+//
+// The corollary is the reason the no-op fix and the seam arrived together: a
+// confirmation that fires for a change that is not happening teaches people to
+// click through confirmations.
+//
+// ── AND A THIRD CHANGE (2026-09-17): THE PATCHES WERE NOT MERGES ────────────
+//
+// The pipeline and source PATCHes sent the SPEC, and both endpoints are full
+// replacements — "Cribl removes any omitted fields", in openapi.json's own
+// words. A Re-apply that found one spec field drifted therefore deleted every
+// field the spec does not name, and `covered` guaranteed the confirmation could
+// not mention them. That is a SHIPPED defect: Phase 1 wrote it, 1.0.20 has it,
+// Phase 3 only narrowed the window. Both now merge onto the object they just
+// read, the way `ensureRoute` always did — see the long comment above
+// `mergeSpec`.
 
 import { isDenial } from './authz'
 import { capi, errText, groupPath, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
 import { appendLog } from './kv'
+import {
+  DEFAULT_PROFILE, datasetSpec, destinationSpec, sameDiff,
+  type DiffRow, type LandingProfile,
+} from './landing'
 import { loadCommitMemory } from './setupMemory'
 
 export const SYSLOG_SOURCE_ID = 'in_gigamon_syslog'
@@ -119,27 +164,54 @@ export const ROUTE_SPEC = {
   enableOutputExpression: false,
 }
 
-export const DATASET_SPEC = {
-  id: LAKE_DATASET_ID,
-  description: 'Gigamon Application Metadata Intelligence (AMI) flow records',
-  retentionPeriodInDays: 30,
-  format: 'json',
+// --- The two Cribl Lake specs, from a profile rather than from literals ------
+//
+// §2.4 asks for `datasetSpec(profile)` and `destinationSpec(profile)`. Both are
+// in cribl/landing.ts, not here, and the direction is forced rather than chosen:
+// landing.ts is the pure module — no `capi`, no `kv`, testable under plain Node —
+// so it cannot import this file, and this file can import it. What that buys is
+// ONE copy of the numbers. Before it, the flush settings existed twice: once
+// below and once in landing.ts's `nearLive` preset, and landing.test.ts could
+// only assert them by naming this file's line number in a comment, because there
+// was nothing exported to compare against. Two copies of a number with a comment
+// between them is the shape of a drift that has already happened elsewhere.
+//
+// The cost, stated because it is real: this module now reaches the query layer
+// transitively (landing.ts → queries/lakeLanding.ts → cribl/search.ts) for three
+// values. That is weight on a provisioning client, and it was accepted over a
+// second hand-written copy of the same two bodies.
+
+/**
+ * The Cribl Lake dataset Guided Setup creates. `datasetSpec` already carries
+ * `id`, so for this object the spec IS the create body.
+ */
+export const DATASET_SPEC = datasetSpec(DEFAULT_PROFILE)
+
+/**
+ * The Cribl Lake destination body for a profile.
+ *
+ * `destinationSpec` answers an EDIT — `{ set, remove }` — because its other
+ * caller is patching an object that already exists and needs to say which keys
+ * to take away. A create has nothing to take away and needs two keys the edit
+ * has no business carrying: `id`, which is the object's name, and `type`, which
+ * is what kind of destination to make. Neither is a setting, which is why they
+ * are added here rather than pushed into the shared spec.
+ */
+export function destinationSpecFor(profile: LandingProfile): Record<string, unknown> {
+  return { id: LAKE_DESTINATION_ID, type: 'cribl_lake', ...destinationSpec(profile).set }
 }
 
-// The Cribl Lake destination that writes into the `gigamon_ami` dataset. Only
-// created if missing (it already exists in the demo tenant).
-const DESTINATION_SPEC = {
-  id: LAKE_DESTINATION_ID,
-  type: 'cribl_lake',
-  destPath: LAKE_DATASET_ID,
-  format: 'json',
-  storageLocationId: 'cribl_lake',
-  maxFileSizeMB: 5,
-  maxFileOpenTimeSec: 60,
-  maxFileIdleTimeSec: 15,
-  compress: 'gzip',
-  onBackpressure: 'block',
-}
+/**
+ * The destination this release provisions. EXPORTED IN PHASE 3, where
+ * `DATASET_SPEC` always was: an unexported spec is one nothing outside this file
+ * can check, and the Lake landing panel's whole job is to report what a live
+ * destination says against what this app would have written.
+ *
+ * `DEFAULT_PROFILE` is JSON / 30 days / 5 MB · 60 s · 15 s — byte for byte what
+ * this file held as a literal before Phase 3. Phase 3 changes no landing; it
+ * makes the landing nameable.
+ */
+export const DESTINATION_SPEC = destinationSpecFor(DEFAULT_PROFILE)
 
 // --- Addressing -----------------------------------------------------------
 
@@ -274,6 +346,66 @@ export type Phase =
 export type OnPhase = (p: Phase) => void
 const noopPhase: OnPhase = () => {}
 
+// --- What a caller is asked before anything is written --------------------
+
+/** One object about to be written, described in the terms a confirmation needs. */
+export interface PendingChange {
+  key: ResourceKey
+  /** `create` when Cribl does not have this object; `overwrite` when it does and
+   *  it does not already say what the spec says. There is no third case — an
+   *  object that already matches is never offered, because a confirmation for a
+   *  change that is not happening is how people learn to click through them. */
+  action: 'create' | 'overwrite'
+  /** The Cribl object, phrased the way the commit message and the dialog phrase
+   *  it, so one sentence describes it everywhere. */
+  object: string
+  /**
+   * On an `overwrite`, the spec keys the live object does not already satisfy —
+   * `before` is what Cribl holds, `after` is what this app will send. Empty on a
+   * `create`, where there is no before.
+   *
+   * This is the thing the existing confirmation could not say. It is `DiffRow`,
+   * the same shape components/DiffTable.tsx renders for the Lake landing panel,
+   * so a caller that wants to show it does not need a second renderer.
+   */
+  diff: readonly DiffRow[]
+}
+
+/** Ask before writing. Anything but `true` — `false`, a rejection, a dialog that
+ *  unmounted — is a no. */
+export type ConfirmChange = (change: PendingChange) => boolean | Promise<boolean>
+
+/**
+ * The answer when a caller passes no `confirm`, named rather than inlined so
+ * that what it stands for is written down.
+ *
+ * It stands for the <ConfirmDialog> in components/ProvisionPanel.tsx, which is in
+ * front of every path that reaches `deployAll` and names all five objects with
+ * `action: 'replace'`. That dialog is coarser than this seam — it cannot show a
+ * diff, because at the moment it opens nothing has read the live objects — but it
+ * is a real confirmation, and §1.5 rule 7 is explicit that one intent gets one
+ * confirmation. Threading five dialogs through a single Deploy press would make
+ * the fifth one furniture.
+ *
+ * So the default is "already asked", not "do not ask". If `deployAll` ever
+ * acquires a caller that has NOT asked, this is the line that is wrong, and it
+ * says so here rather than in a review comment.
+ */
+const preConfirmed: ConfirmChange = () => true
+
+/** What an ensure* answers when the confirmation said no. The only way any of
+ *  them returns `skipped`, which is what lets `deployAll` tell a refusal from a
+ *  failure without a sixth `StepAction`. */
+const NOT_CONFIRMED = 'not applied — this change was not confirmed'
+
+async function agreed(confirm: ConfirmChange, change: PendingChange): Promise<boolean> {
+  try {
+    return (await confirm(change)) === true
+  } catch {
+    return false
+  }
+}
+
 /** Human labels for each resource, used in step logs and phase pop-ups. */
 export const STEP_LABELS: Record<ResourceKey | 'commit' | 'deploy', string> = {
   dataset: 'Lake dataset',
@@ -346,10 +478,17 @@ function groupFile(group: string, key: ResourceKey): string | null {
  * relative to the versioning repo's config root. This is authoritative: paths
  * are reported exactly as `git` has them, so committing a subset of these can
  * never hit a "pathspec did not match any files" error, and we never touch
- * another group's pending changes. Returns [] if the status call is unavailable.
+ * another group's pending changes.
+ *
+ * `null` means THE READ FAILED — `capi` answers `{status, body}` rather than
+ * throwing, so a 403 or a 500 arrives here with an empty body and used to be
+ * indistinguishable from a clean tree. An empty ARRAY is a clean tree. Every
+ * caller decides which it wants, and one of them puts the answer in front of a
+ * person.
  */
-async function pendingFiles(): Promise<string[]> {
+async function pendingFiles(): Promise<string[] | null> {
   const r = await capi('GET', '/version/status')
+  if (r.status < 200 || r.status >= 300) return null
   const items = (r.body as {
     items?: Array<{
       files?: Array<{ path?: string }>
@@ -399,7 +538,11 @@ async function filesToCommit(group: string, keys: ResourceKey[]): Promise<string
   if (keys.length === 0) return []
   const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
   let pending: string[] = []
-  try { pending = await pendingFiles() } catch { pending = [] }
+  // A failed read and a clean tree both fall back to constructed paths here, as
+  // they always have: this decides what to SEND, and the commit itself answers
+  // "nothing to commit" when the guess was wrong. The caller that has to tell a
+  // person keeps the two apart — see `pendingConfigPaths`.
+  try { pending = (await pendingFiles()) ?? [] } catch { pending = [] }
   const selected = pending.filter((p) => pathInGroup(p, group) && markers.some((m) => p.includes(m)))
   if (selected.length) return selected
   // Status unavailable/empty: best-effort constructed paths (matches the
@@ -410,44 +553,498 @@ async function filesToCommit(group: string, keys: ResourceKey[]): Promise<string
   return selected
 }
 
-async function ensureDataset(): Promise<StepResult> {
+/**
+ * The Git paths a Guided Setup commit in this group can carry, and what else is
+ * uncommitted beside them — the two things its confirmation has to say.
+ *
+ * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+ * `pendingFiles()` has been in this module since Phase 1 and the Guided Setup
+ * dialog never surfaced it. So that dialog said "Nothing else in ${group} is
+ * touched, including the demo DataGen source" — true of what this app WRITES
+ * (`ensureSource` PATCHes one object, `ensureRoute` splices one entry) and
+ * false of what the commit CARRIES. `POST /version/commit` takes FILE PATHS
+ * (openapi.json, GitCommitBody.files: "Array of file paths to include in the
+ * commit"), and `inputs.yml` holds every source in the group INCLUDING the demo
+ * DataGen one. Those are different sentences and the copy collapsed them into
+ * one. This returns what the honest version needs.
+ *
+ * `carries` IS CONSTRUCTED, NOT READ, and deliberately: at the moment the
+ * dialog opens nothing has been written, so no Git status can report the files
+ * this run is about to dirty. It is the full set the run MAY commit — which
+ * files it actually names is decided by `filesToCommit` afterwards, from the
+ * status read taken after the writes.
+ *
+ * `alsoPending` IS READ, because it is the half the code can actually check,
+ * and a warning that fires when nothing is pending is the one people learn to
+ * click past. It is repo-wide minus `carries`, so it says what the commit
+ * leaves alone. `null` means the status read gave nothing back — not "nothing
+ * is pending" — and the copy has to say which.
+ */
+export interface CommitScope {
+  /** Every file in this group a Guided Setup run can commit, whole. */
+  carries: string[]
+  /**
+   * The paths Git ALREADY reports uncommitted among the files this run may
+   * commit — somebody else's unfinished work, which this press commits and
+   * deploys. The specific thing, checked, rather than a standing warning.
+   */
+  alreadyDirty: string[]
+  /**
+   * Uncommitted elsewhere on this Leader. The commit names its own paths, so
+   * these are left where they are; worth saying only because the deploy that
+   * follows moves the group to a commit rather than to a change.
+   */
+  elsewhere: string[]
+  /** True when the Git status read answered nothing at all — "could not tell",
+   *  not "nothing is pending", and the copy must not confuse the two. */
+  unknown: boolean
+}
+
+/** Everything Cribl currently sees as uncommitted, anywhere in the repo, or
+ *  null when the status read answered nothing — which is "could not tell", not
+ *  "nothing is pending", and `commitScope` keeps the two apart. Read once per
+ *  status check and split per dialog by `commitScope`, which is pure. */
+export async function pendingConfigPaths(): Promise<string[] | null> {
+  try {
+    // An EMPTY LIST IS AN ANSWER: the read succeeded and the tree is clean.
+    // This used to collapse `[]` into `null`, so on a healthy workspace — the
+    // common case — both Guided Setup confirmations said "Cribl did not report
+    // what is already uncommitted… Assume it may be", unconditionally. That is
+    // the warning that always fires, which is the one people learn to click
+    // past, and it made the dialog's one checkable claim uncheckable.
+    return await pendingFiles()
+  } catch {
+    return null
+  }
+}
+
+export function commitScope(group: string, keys: readonly ResourceKey[], pending: readonly string[] | null): CommitScope {
+  const carries = keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null)
+  if (pending === null) return { carries, alreadyDirty: [], elsewhere: [], unknown: true }
+  const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
+  const mine = (p: string) => pathInGroup(p, group) && markers.some((m) => p.includes(m))
+  return { carries, alreadyDirty: pending.filter(mine), elsewhere: pending.filter((p) => !mine(p)), unknown: false }
+}
+
+// --- What the write actually sends, and what it changes -------------------
+//
+// ── A SHIPPED DEFECT, FOUND 2026-09-17 ─────────────────────────────────────
+//
+// `PATCH /m/<group>/pipelines/<id>` and `PATCH /m/<group>/system/inputs/<id>`
+// are FULL REPLACEMENTS. The 4.19.0 spec vendored in this repo (openapi.json)
+// says so in as many words:
+//
+//   /pipelines/{id}       "Provide a complete representation of the Pipeline
+//                          that you want to update in the request body. This
+//                          endpoint does not support partial updates. Cribl
+//                          removes any omitted fields when updating the
+//                          Pipeline."
+//
+//   /system/inputs/{id}   "Provide a complete representation of the Source that
+//                          you want to update in the request body. This endpoint
+//                          does not support partial updates. Cribl removes any
+//                          omitted fields when updating the Source."
+//
+// Until now both sites sent THE SPEC — two keys for the pipeline, eight for the
+// source — so a Re-apply that found anything at all to change deleted every
+// field nobody here had named: a customer's `tls` block, their `pq` /
+// `pqEnabled` persistent queue, `maxActiveCxn`, `ipWhitelistRegex`, their
+// QuickConnect `connections`, the source's and the pipeline's `description`, the
+// pipeline's UI function `groups`. `ensureRoute` had this right from its first
+// line — it PATCHes `{ ...obj, routes }`, an edit of the table it has just
+// read, with a comment saying why — and these two did not. It shipped in
+// Phase 1, it is in the installed app at 1.0.20, and Phase 3's no-op check only
+// narrowed the window: the loss needs one spec field to differ AND the customer
+// to have customised the object.
+//
+// So the write is now the live object with the spec asserted onto it, and the
+// diff a confirmation shows is computed FROM THE BODY THAT WILL BE SENT rather
+// than from the spec — because a dialog that names the spec's keys is describing
+// a different request from the one that goes out.
+
+/** A JSON object as opposed to an array or `null` — the only shape worth merging
+ *  INTO rather than replacing. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** Deep equality over the JSON these bodies are made of. Key order is not a
+ *  difference; array order is. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((v, i) => sameValue(v, b[i]))
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ka = Object.keys(a)
+    if (ka.length !== Object.keys(b).length) return false
+    return ka.every((k) => Object.hasOwn(b, k) && sameValue(a[k], b[k]))
+  }
+  return false
+}
+
+/**
+ * `live` with `want` asserted onto it — the app's claims applied, everything
+ * else carried forward.
+ *
+ * WHY IT RECURSES, i.e. why one level is not enough. `PIPELINE_SPEC.conf` is
+ * `{ functions: [...] }`, but a live pipeline's `conf` also holds
+ * `asyncFuncTimeout`, `output`, `streamtags`, `description` and the UI's
+ * function `groups` (openapi.json, `Pipeline.conf`). A shallow `{ ...live,
+ * ...spec }` replaces `conf` wholesale and deletes all five — the same shape
+ * A-SP23 measured on a sibling endpoint, where a `schedule` sub-object was
+ * replaced rather than merged and `tz` and `keepLastN` disappeared with no
+ * error. The nesting is not special-cased to `conf`, because the next spec to
+ * grow a sub-object would need the same treatment and would not get it.
+ *
+ * WHY EQUAL-LENGTH ARRAYS MERGE ELEMENT-WISE instead of being replaced. It keeps
+ * this function exactly as strict as the subset test it replaces (`covered`,
+ * Phase 3): `sameValue(live, mergeSpec(live, spec))` is true precisely when that
+ * test said the spec was already satisfied, so the no-op Re-apply Phase 3 bought
+ * is preserved to the letter. Replacing the array instead would count a key
+ * Cribl normalised onto one of our functions as a difference and PATCH on every
+ * Re-apply again. A LENGTH CHANGE still replaces: a function list with a fifth
+ * function somebody added is a real change, and one this app is asserting away.
+ *
+ * KNOWN LIMIT, stated because nothing here can detect it: if somebody REORDERS
+ * our functions, the positional merge overlays each spec function onto whichever
+ * live function now sits at its index. Our four functions carry the same key
+ * set, so the result is our function plus whatever extra keys the live entry at
+ * that index had (`groupId`, say) — cosmetically wrong, not destructive, and it
+ * shows up as a `conf` row in the diff the user approves.
+ */
+function mergeSpec(live: unknown, want: unknown): unknown {
+  if (Array.isArray(want)) {
+    if (!Array.isArray(live) || live.length !== want.length) return want
+    return want.map((v, i) => mergeSpec(live[i], v))
+  }
+  if (isPlainObject(want)) {
+    if (!isPlainObject(live)) return want
+    const out: Record<string, unknown> = { ...live }
+    for (const [k, v] of Object.entries(want)) out[k] = mergeSpec(live[k], v)
+    return out
+  }
+  return want
+}
+
+/**
+ * Keys read off a live object that must not be sent back.
+ *
+ * Reasoned the way cribl/landing.ts's `DATASET_READONLY_KEYS` comment reasons,
+ * and the reasoning is the whole reason the list is this short: UNDER
+ * FULL-REPLACEMENT SEMANTICS A STRIPPED KEY IS A DELETED KEY. So the only thing
+ * that may go on this list is a key the spec states the server owns — never
+ * "anything we don't recognise", which is how the defect above was written in
+ * the first place.
+ *
+ * `criblSourceProvenance` is the single key openapi.json names outright, on
+ * PATCH /system/inputs/{id}: "Cribl preserves `criblSourceProvenance` when you
+ * omit it from the request body, and you cannot overwrite it through this
+ * endpoint." Omitting it is therefore the only correct handling — it survives,
+ * and sending it back is at best ignored.
+ *
+ * NOT ON THE LIST, and each is a judgement somebody may want to revisit:
+ *   * `status` / `metrics`-shaped runtime fields. The `Input` schema declares
+ *     none, and this repo has never seen one come back from this GET. If a
+ *     leader does attach one, it will ride back out — noisy, and harmless,
+ *     because a field the server computes it also recomputes.
+ *   * `pq`, `connections`, `metadata`, `tls`. Customer configuration every one
+ *     of them, and exactly what this change exists to carry forward.
+ *   * The `__template_*` keys. They bind a field to a variable, so they are
+ *     configuration, not derived state, and dropping one would unbind it.
+ * The pipeline list is empty: `Pipeline` declares `id` and `conf` and nothing
+ * the server owns.
+ */
+const SOURCE_SERVER_OWNED: readonly string[] = ['criblSourceProvenance']
+const PIPELINE_SERVER_OWNED: readonly string[] = []
+
+/** The complete representation a full-replacement PATCH has to carry: what Cribl
+ *  just returned, minus the keys the server owns, with the spec asserted on. */
+function patchBody(
+  live: Record<string, unknown>,
+  spec: Record<string, unknown>,
+  serverOwned: readonly string[],
+): Record<string, unknown> {
+  const base: Record<string, unknown> = { ...live }
+  for (const k of serverOwned) delete base[k]
+  return mergeSpec(base, spec) as Record<string, unknown>
+}
+
+/**
+ * What the body about to be sent changes about the live object — the diff a
+ * confirmation shows, and, when it is empty, the evidence that there is nothing
+ * to write.
+ *
+ * COMPUTED FROM THE BODY, NOT FROM THE SPEC, which is the fix to the second half
+ * of the defect above. The old version walked the spec's own keys and said so in
+ * its doc comment, which meant the dialog was structurally incapable of
+ * mentioning a customer's TLS block while the write deleted it. Now the two
+ * cannot disagree: every key the request carries is compared against what Cribl
+ * holds, so a row here is a change the request makes and a change the request
+ * makes is a row here.
+ *
+ * Top-level keys only, still: `conf` reads as one row rather than as a walk of
+ * every function's every field, and the object either side of the arrow is what
+ * says which one. That is a presentation choice, not an omission — the `after`
+ * side IS the sub-object being sent.
+ *
+ * THE ONE THING WRITTEN THAT DOES NOT APPEAR HERE: a key in `serverOwned` leaves
+ * the body, and this walks the body, so it produces no row. That is deliberate
+ * and it is honest — the spec says Cribl preserves `criblSourceProvenance` when
+ * it is omitted, so nothing about the object changes and there is nothing to
+ * show. If a key is ever added to those lists whose omission DOES change the
+ * object, it belongs in the diff as a `removed` row and this function needs the
+ * other half of the walk.
+ */
+function bodyDiff(live: Record<string, unknown>, body: Record<string, unknown>): DiffRow[] {
+  const rows: DiffRow[] = []
+  for (const [key, after] of Object.entries(body)) {
+    if (!Object.hasOwn(live, key)) rows.push({ key, kind: 'added', before: undefined, after })
+    else if (!sameValue(live[key], after)) rows.push({ key, kind: 'changed', before: live[key], after })
+  }
+  return rows
+}
+
+/** Why an update did not happen: Cribl answered 200 and this app could not find
+ *  the object in the body. Under full-replacement semantics that is the one
+ *  state in which writing is worse than not writing — a PATCH composed without
+ *  the live object deletes everything it does not mention. Before Phase 3 this
+ *  case sent the bare spec, which is the maximal version of the defect. */
+const unreadable = (what: string) =>
+  `not applied — Cribl answered 200 but this app could not read the live ${what}, ` +
+  'and this endpoint replaces the whole object'
+
+/** The one object a Cribl GET of a named resource answers with, or null when the
+ *  body is not the `{ items: [ … ] }` this app knows how to read. */
+function firstItem(r: ApiResp): Record<string, unknown> | null {
+  const items = (r.body as { items?: unknown[] })?.items
+  const first = Array.isArray(items) ? items[0] : undefined
+  return first !== null && typeof first === 'object' ? (first as Record<string, unknown>) : null
+}
+
+/** What every ensure* below shares: the group, the landing to apply, and the
+ *  question to ask before writing. */
+interface EnsureCtx {
+  group: string
+  profile: LandingProfile
+  confirm: ConfirmChange
+}
+
+const refused = (key: ResourceKey): StepResult => ({ key, action: 'skipped', detail: NOT_CONFIRMED })
+
+// ── THE READ THAT COMPOSES A PATCH MUST BE TAKEN AFTER THE ANSWER ───────────
+//
+// READ THIS BEFORE WIRING `confirm` TO ANYTHING. Every ensure* below reads the
+// live object, computes a body from it, asks `agreed(ctx.confirm, …)`, and then
+// PATCHes. Until 2026-09-17 the body it sent was the one composed from the FIRST
+// read — so the merge source was as old as the dialog had been on screen, and
+// these endpoints are full replacements. A stale merge does not lose the race,
+// it REVERTS whatever the other writer did; for `ensureRoute` that is the
+// group's entire routing table.
+//
+// It was not exploitable, and the reason it was not is the hazard: the only
+// caller (components/ProvisionPanel.tsx) passes no `confirm`, so `agreed` runs
+// `preConfirmed`, which returns `true` synchronously with no await boundary a
+// racer can use. The seam exists precisely so that a caller CAN pass a real
+// dialog (see the header, and `preConfirmed`), and the first one to do it would
+// have made this live — which is the stale-merge defect cribl/lakeLanding.ts
+// spent two commits closing on the Lake writers.
+//
+// So it is closed by construction here instead: each ensure* re-reads after the
+// answer and sends a body built on the SECOND read, refusing when the read fails
+// and refusing when the change has moved. `preConfirmed` costs one extra GET per
+// written object per run, which is the price of the seam being safe to wire.
+
+/** Why nothing was sent when the read after the confirmation failed. There is
+ *  NO fallback to the first read — that fallback IS the stale merge, arriving
+ *  as a convenience on the workspace least able to tolerate it (the reasoning
+ *  is written out at lakeLanding.ts's `destinationMergeSourceAfterConfirm`). */
+const reReadFailed = (what: string) =>
+  `not applied — ${what} could not be read again after that confirmation, and this endpoint replaces the whole object, ` +
+  'so a write composed from the older read would delete whatever changed in between'
+
+/** Why nothing was sent when the object moved under an open confirmation. A
+ *  confirmation describes one before → after; if that is no longer the change,
+ *  this one is void rather than stale, and nothing re-asks from a dialog the
+ *  user has already dismissed. */
+const diffMovedNote = (what: string, approved: readonly DiffRow[], now: readonly DiffRow[]) => {
+  const say = (rows: readonly DiffRow[]) =>
+    rows.length === 0 ? 'nothing' : rows.map((d) => `${d.key} (${JSON.stringify(d.before) ?? 'absent'} → ${JSON.stringify(d.after) ?? 'absent'})`).join(', ')
+  return (
+    `not applied — ${what} changed while that confirmation was open, and the change you approved is not the change that would now be ` +
+    `applied. Approved: ${say(approved)}. Would now apply: ${say(now)}. Look at the object in Cribl and re-apply.`
+  )
+}
+
+/**
+ * The body to PATCH, composed from a read taken AFTER the answer — or the
+ * reason nothing may be sent.
+ *
+ * The counterpart of lakeLanding.ts's `destinationMergeSourceAfterConfirm`, and
+ * it refuses on the same three conditions for the same reasons: an unreadable
+ * second read sends nothing, an empty second diff is a no-op rather than a
+ * conflict (somebody applied exactly this while the dialog was open), and a diff
+ * that moved voids the confirmation.
+ *
+ * ONLY THE DIFF IS COMPARED, not the body. A key this app has never heard of
+ * that moved in between is carried forward rather than reverted, because the
+ * body sent is built from the body that holds it — and nothing here has to guess
+ * a list of server-derived keys whose movement is not a conflict.
+ *
+ * IT TAKES THE RESPONSE, NOT THE PATH. The second GET stays at each call site,
+ * spelled exactly as the first one is, because cribl/policyCoverage.test.ts
+ * resolves every `capi(...)` path statically and a path threaded through a
+ * parameter is one it cannot read — an endpoint this app calls that no test can
+ * check against config/policies.yml is how a 403 reaches a non-admin.
+ */
+function mergeSourceAfterConfirm(
+  key: ResourceKey,
+  again: ApiResp,
+  what: string,
+  spec: Record<string, unknown>,
+  serverOwned: readonly string[],
+  approved: readonly DiffRow[],
+): { body: Record<string, unknown>; diff: DiffRow[] } | { stop: StepResult } {
+  const live = again.status === 200 ? firstItem(again) : null
+  if (!live) return { stop: { key, action: 'error', detail: reReadFailed(what) } }
+  const body = patchBody(live, spec, serverOwned)
+  const now = bodyDiff(live, body)
+  if (now.length === 0) return { stop: { key, action: 'exists', detail: 'nothing left to change — it was applied while that confirmation was open' } }
+  if (!sameDiff(approved, now)) return { stop: { key, action: 'error', detail: diffMovedNote(what, approved, now) } }
+  return { body, diff: now }
+}
+
+/**
+ * The Lake dataset: created when absent, and never edited from here.
+ *
+ * NOT PARAMETERISED INTO A PATCH, deliberately. Retention and description on a
+ * live dataset are the Lake landing panel's to change (cribl/lakeLanding.ts), one
+ * field at a time, each behind a confirmation that can state what a retention
+ * DECREASE deletes. A provisioning re-apply that quietly reset retention to this
+ * spec's 30 days would be that irreversible write with no dialog in front of it.
+ */
+async function ensureDataset(ctx: EnsureCtx): Promise<StepResult> {
   const list = await capi('GET', datasetsPath)
   const items = (list.body as { items?: Array<{ id?: string }> })?.items || []
   if (items.some((d) => d.id === LAKE_DATASET_ID)) return { key: 'dataset', action: 'exists' }
-  const r = await capi('POST', datasetsPath, DATASET_SPEC)
+
+  const spec = datasetSpec(ctx.profile)
+  if (!(await agreed(ctx.confirm, { key: 'dataset', action: 'create', object: RESOURCE_PHRASE.dataset, diff: [] }))) {
+    return refused('dataset')
+  }
+  const r = await capi('POST', datasetsPath, spec)
   return r.status >= 200 && r.status < 300
     ? { key: 'dataset', action: 'created' }
     : { key: 'dataset', action: 'error', detail: errText(r) }
 }
 
-async function ensureDestination(group: string): Promise<StepResult> {
-  const cur = await capi('GET', g(group, `/system/outputs/${LAKE_DESTINATION_ID}`))
+/**
+ * The Lake destination: created when absent, and never edited from here either,
+ * for a second reason on top of the dataset's.
+ *
+ * LEFT_BEHIND in cribl/paths.ts records that this app cannot prove it made this
+ * object — it is named after the dataset rather than after this app, it already
+ * exists on many tenants, and anything else in the customer's config may route
+ * through it. Phase 3 does edit it, from the Lake landing panel, as a
+ * read-modify-write behind a confirmation that shows the exact before→after,
+ * names every feed writing through it and commits the result. A provisioning
+ * re-apply cannot do any of that, so it does not write here at all.
+ */
+async function ensureDestination(ctx: EnsureCtx): Promise<StepResult> {
+  const cur = await capi('GET', g(ctx.group, `/system/outputs/${LAKE_DESTINATION_ID}`))
   if (cur.status === 200) return { key: 'destination', action: 'exists' }
-  const r = await capi('POST', g(group, '/system/outputs'), DESTINATION_SPEC)
+
+  const spec = destinationSpecFor(ctx.profile)
+  if (!(await agreed(ctx.confirm, { key: 'destination', action: 'create', object: RESOURCE_PHRASE.destination, diff: [] }))) {
+    return refused('destination')
+  }
+  const r = await capi('POST', g(ctx.group, '/system/outputs'), spec)
   return r.status >= 200 && r.status < 300
     ? { key: 'destination', action: 'created' }
     : { key: 'destination', action: 'error', detail: errText(r) }
 }
 
-async function ensurePipeline(group: string): Promise<StepResult> {
-  const cur = await capi('GET', g(group, `/pipelines/${SYSLOG_PIPELINE_ID}`))
+async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
+  const cur = await capi('GET', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`))
   if (cur.status === 200) {
-    const r = await capi('PATCH', g(group, `/pipelines/${SYSLOG_PIPELINE_ID}`), PIPELINE_SPEC)
-    return r.status === 200 ? { key: 'pipeline', action: 'updated' } : { key: 'pipeline', action: 'error', detail: errText(r) }
+    // openapi.json, PATCH /pipelines/{id} (Cribl 4.19.0, read 2026-09-17):
+    // "Provide a complete representation of the Pipeline that you want to update
+    //  in the request body. This endpoint does not support partial updates.
+    //  Cribl removes any omitted fields when updating the Pipeline."
+    // So this PATCHes the object it just read with PIPELINE_SPEC asserted onto
+    // it, the way ensureRoute has always edited the table it just read. Sending
+    // PIPELINE_SPEC itself — `{ id, conf }` — deleted the pipeline's
+    // `description` and its UI function `groups`, and replaced the whole `conf`.
+    const live = firstItem(cur)
+    // No live body, no merge, no write. See `unreadable`.
+    if (!live) return { key: 'pipeline', action: 'error', detail: unreadable('pipeline') }
+    const body = patchBody(live, PIPELINE_SPEC, PIPELINE_SERVER_OWNED)
+    // Present and already correct is a no-op — not even a PATCH, so the group's
+    // Git status stays clean and a re-apply of a settled stack cannot reach the
+    // deploy that restarts its Worker Processes.
+    const diff = bodyDiff(live, body)
+    if (diff.length === 0) return { key: 'pipeline', action: 'exists' }
+    if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'overwrite', object: RESOURCE_PHRASE.pipeline, diff }))) {
+      return refused('pipeline')
+    }
+    // `body` above filled the dialog and is NOT what is sent — see
+    // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
+    const merge = mergeSourceAfterConfirm(
+      'pipeline', await capi('GET', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`)), `pipeline ${SYSLOG_PIPELINE_ID}`,
+      PIPELINE_SPEC, PIPELINE_SERVER_OWNED, diff,
+    )
+    if ('stop' in merge) return merge.stop
+    const r = await capi('PATCH', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`), merge.body)
+    return r.status === 200
+      ? { key: 'pipeline', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
+      : { key: 'pipeline', action: 'error', detail: errText(r) }
   }
-  const r = await capi('POST', g(group, '/pipelines'), PIPELINE_SPEC)
+  if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'create', object: RESOURCE_PHRASE.pipeline, diff: [] }))) {
+    return refused('pipeline')
+  }
+  const r = await capi('POST', g(ctx.group, '/pipelines'), PIPELINE_SPEC)
   return r.status >= 200 && r.status < 300
     ? { key: 'pipeline', action: 'created' }
     : { key: 'pipeline', action: 'error', detail: errText(r) }
 }
 
-async function ensureSource(group: string): Promise<StepResult> {
-  const cur = await capi('GET', g(group, `/system/inputs/${SYSLOG_SOURCE_ID}`))
+async function ensureSource(ctx: EnsureCtx): Promise<StepResult> {
+  const cur = await capi('GET', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`))
   if (cur.status === 200) {
-    const r = await capi('PATCH', g(group, `/system/inputs/${SYSLOG_SOURCE_ID}`), SOURCE_SPEC)
-    return r.status === 200 ? { key: 'source', action: 'updated' } : { key: 'source', action: 'error', detail: errText(r) }
+    // openapi.json, PATCH /system/inputs/{id} (Cribl 4.19.0, read 2026-09-17):
+    // "Provide a complete representation of the Source that you want to update
+    //  in the request body. This endpoint does not support partial updates.
+    //  Cribl removes any omitted fields when updating the Source."
+    // SOURCE_SPEC is eight keys and a live syslog source has forty (openapi.json
+    // `InputSyslog`), so sending the spec deleted the customer's `tls`, their
+    // persistent queue, `maxActiveCxn`, `connections` and `description` — and
+    // `covered` guaranteed the confirmation could not name any of them. Merge
+    // onto what we just read, exactly as ensureRoute does.
+    const live = firstItem(cur)
+    if (!live) return { key: 'source', action: 'error', detail: unreadable('Syslog source') }
+    const body = patchBody(live, SOURCE_SPEC, SOURCE_SERVER_OWNED)
+    const diff = bodyDiff(live, body)
+    if (diff.length === 0) return { key: 'source', action: 'exists' }
+    if (!(await agreed(ctx.confirm, { key: 'source', action: 'overwrite', object: RESOURCE_PHRASE.source, diff }))) {
+      return refused('source')
+    }
+    // `body` above filled the dialog and is NOT what is sent — see
+    // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
+    const merge = mergeSourceAfterConfirm(
+      'source', await capi('GET', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`)), `Syslog source ${SYSLOG_SOURCE_ID}`,
+      SOURCE_SPEC, SOURCE_SERVER_OWNED, diff,
+    )
+    if ('stop' in merge) return merge.stop
+    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`), merge.body)
+    return r.status === 200
+      ? { key: 'source', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
+      : { key: 'source', action: 'error', detail: errText(r) }
   }
-  const r = await capi('POST', g(group, '/system/inputs'), SOURCE_SPEC)
+  if (!(await agreed(ctx.confirm, { key: 'source', action: 'create', object: RESOURCE_PHRASE.source, diff: [] }))) {
+    return refused('source')
+  }
+  const r = await capi('POST', g(ctx.group, '/system/inputs'), SOURCE_SPEC)
   return r.status >= 200 && r.status < 300
     ? { key: 'source', action: 'created' }
     : { key: 'source', action: 'error', detail: errText(r) }
@@ -494,14 +1091,6 @@ function insertionIndex(routes: Array<Record<string, unknown>>): number {
   return unconditional === -1 ? routes.length : unconditional
 }
 
-/** True when the live entry already says everything ROUTE_SPEC says. Compared
- *  field by field rather than wholesale, because a live route carries fields we
- *  never set — `groupId` when somebody filed it into a Route Group, say — and
- *  those are not ours to notice or to remove. */
-function routeMatchesSpec(live: Record<string, unknown>): boolean {
-  return Object.entries(ROUTE_SPEC).every(([k, v]) => JSON.stringify(live[k]) === JSON.stringify(v))
-}
-
 /**
  * Add our route when it is missing; leave it exactly where it is when it is not.
  *
@@ -512,21 +1101,71 @@ function routeMatchesSpec(live: Record<string, unknown>): boolean {
  * a PATCH, so the group's Git status stays clean); present and stale is patched
  * in place at its own index; absent is a single splice above the catch-all.
  */
-async function ensureRoute(group: string): Promise<StepResult> {
-  const obj = await readRoutes(group)
+async function ensureRoute(ctx: EnsureCtx): Promise<StepResult> {
+  const obj = await readRoutes(ctx.group)
   if (!obj) return { key: 'route', action: 'error', detail: 'routing table not found' }
   const at = obj.routes.findIndex(isOurRoute)
-  if (at !== -1 && routeMatchesSpec(obj.routes[at])) return { key: 'route', action: 'exists' }
+  // The entry this run would send: the live one with ROUTE_SPEC asserted onto
+  // it, so fields we never set — `groupId`, when somebody filed the route into a
+  // Route Group — carry forward. This is the merge the pipeline and the source
+  // did not have until now; it is the same `mergeSpec` for all three, and the
+  // diff below is read off it rather than off the spec.
+  const merged = at !== -1 ? (mergeSpec(obj.routes[at], ROUTE_SPEC) as Record<string, unknown>) : null
+  const diff = merged ? bodyDiff(obj.routes[at], merged) : []
+  if (at !== -1 && diff.length === 0) return { key: 'route', action: 'exists' }
 
-  const routes = obj.routes.slice()
-  // Merge onto the live entry rather than replacing it, for the same reason
-  // routeMatchesSpec compares field by field.
-  if (at !== -1) routes[at] = { ...routes[at], ...ROUTE_SPEC }
+  if (!(await agreed(ctx.confirm, {
+    key: 'route',
+    action: at !== -1 ? 'overwrite' : 'create',
+    object: RESOURCE_PHRASE.route,
+    diff,
+  }))) {
+    return refused('route')
+  }
+
+  // ── THE TABLE THAT IS SENT IS THE TABLE READ AFTER THE ANSWER ─────────────
+  //
+  // `obj` above filled the dialog and is NOT what is sent. This PATCH replaces
+  // the group's ENTIRE routing table, so a table read before a user-paced
+  // confirmation reverts every route another admin added, reordered or deleted
+  // while that dialog was open — the worst instance of the hazard written out
+  // at `mergeSourceAfterConfirm`, because one request carries every route in
+  // the group rather than one object. Read that header before wiring `confirm`.
+  const what = `route ${SYSLOG_ROUTE_ID} in ${ctx.group}`
+  const fresh = await readRoutes(ctx.group)
+  if (!fresh) return { key: 'route', action: 'error', detail: reReadFailed(`the routing table of ${ctx.group}`) }
+  const freshAt = fresh.routes.findIndex(isOurRoute)
+  if ((freshAt !== -1) !== (at !== -1)) {
+    // The approved ACTION moved, not just its diff: our route appeared or
+    // disappeared while the dialog was open, so "add it above the catch-all"
+    // and "correct it where it sits" are no longer the same press.
+    return {
+      key: 'route',
+      action: 'error',
+      detail:
+        `not applied — ${what} was ${at !== -1 ? 'removed from' : 'added to'} the routing table while that confirmation was open, so the ` +
+        'change you approved is not the change that would now be applied. Look at the routing table in Cribl and re-apply.',
+    }
+  }
+  const freshMerged = freshAt !== -1 ? (mergeSpec(fresh.routes[freshAt], ROUTE_SPEC) as Record<string, unknown>) : null
+  const freshDiff = freshMerged ? bodyDiff(fresh.routes[freshAt], freshMerged) : []
+  if (freshAt !== -1) {
+    if (freshDiff.length === 0) {
+      return { key: 'route', action: 'exists', detail: 'nothing left to change — it was applied while that confirmation was open' }
+    }
+    if (!sameDiff(diff, freshDiff)) return { key: 'route', action: 'error', detail: diffMovedNote(what, diff, freshDiff) }
+  }
+
+  const routes = fresh.routes.slice()
+  // The merged entry, which is what the diff above described — merged onto the
+  // second read, so a field somebody else set on our route in the meantime is
+  // carried forward rather than reverted.
+  if (freshMerged) routes[freshAt] = freshMerged
   else routes.splice(insertionIndex(routes), 0, ROUTE_SPEC)
 
-  const r = await capi('PATCH', g(group, `/routes/${obj.id}`), { ...obj, routes })
+  const r = await capi('PATCH', g(ctx.group, `/routes/${fresh.id}`), { ...fresh, routes })
   if (r.status !== 200) return { key: 'route', action: 'error', detail: errText(r) }
-  return { key: 'route', action: at !== -1 ? 'updated' : 'created' }
+  return { key: 'route', action: freshAt !== -1 ? 'updated' : 'created' }
 }
 
 // --- Deploy ---------------------------------------------------------------
@@ -604,32 +1243,70 @@ async function filesChangedSince(commit: string): Promise<string[] | null> {
 }
 
 /**
- * The hash of a commit this group has NOT deployed, or null when there is none.
+ * ── TWO QUESTIONS, NOT ONE ─────────────────────────────────────────────────
  *
- * This exists because of a hole that used to be unrecoverable: a run whose
- * commit succeeded and whose deploy failed left config committed and never
- * running. The next run found no pending files, reported "already up to date"
- * and returned — so the app could never deploy that commit again, and the only
- * way out was the Cribl UI.
+ * "Is there a commit this group has not deployed at all?" and "can we prove it
+ * touches this group?" are different questions, and the two callers below need
+ * different ones. Collapsing them broke one of the two, in both directions:
+ * answering the first for both put a repo-wide HEAD in front of a user as a
+ * commit "committed to ${group}"; answering the second for both left the
+ * stranded-commit repair dead in exactly the failure mode it exists for.
  *
- * Read-only: three GETs and no writes, so it is safe to ask on a status check.
- *
- * "Could not tell" answers null, exactly like "nothing pending". Offering to
- * deploy something that might not exist is worse than not offering, and the
- * whole point of the offer is that the user can trust it.
+ * `undeployedRange` is the shared read — the group's running commit and the
+ * Leader's HEAD, or null when they match or either is unreadable.
  */
-export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+async function undeployedRange(group: string): Promise<{ deployed: string; head: string } | null> {
   const [deployed, head] = await Promise.all([deployedVersion(group), headCommit()])
   if (!deployed || !head || deployed === head) return null
+  return { deployed, head }
+}
+
+/**
+ * IS THERE A COMMIT AT ALL that this group is not running — the Leader's HEAD,
+ * or null.
+ *
+ * This is what `deployStrandedCommit` needs, and it deliberately asks for NO
+ * group evidence. It exists because of a hole that used to be unrecoverable: a
+ * run whose commit succeeded and whose deploy failed left config committed and
+ * never running. The next run found no pending files, reported "already up to
+ * date" and returned — so the app could never deploy that commit again, and the
+ * only way out was the Cribl UI.
+ *
+ * The safety here is NOT the file list. It is the commit memory: the repair
+ * deploys only a hash this app recorded making, and refuses everything else. A
+ * `/version/files` read that answers 403 is exactly the kind of half-working
+ * Leader a run gets interrupted on, so requiring it before repairing would turn
+ * the recovery off in the case it was built for.
+ */
+export async function undeployedHead(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+  return (await undeployedRange(group))?.head ?? null
+}
+
+/**
+ * CAN WE PROVE IT TOUCHES THIS GROUP — the hash of a commit this group has not
+ * deployed AND that moved a file belonging to it, or null.
+ *
+ * This is what the screen needs. `ProvisionPanel` renders it as "commit #X
+ * touches ${group} and has not been deployed to it" and offers a deploy that
+ * restarts that group's Worker Processes, so a claim derived from a signal that
+ * cannot distinguish this group from any other is not good enough. "Could not
+ * tell" answers null, exactly like "nothing pending".
+ *
+ * Read-only: three GETs and no writes, so it is safe to ask on a status check.
+ */
+export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
+  const range = await undeployedRange(group)
+  if (!range) return null
   // The config repo is shared by every group, so a newer HEAD on its own only
   // says that SOMEBODY committed something. Ask which files moved since the
   // commit this group is running, and claim a pending deploy only when one of
   // them belongs to this group — otherwise every commit anywhere on the leader
   // would light this up.
-  const changed = await filesChangedSince(deployed)
-  if (changed === null) return head // endpoint unavailable: fall back to the coarse signal
+  const changed = await filesChangedSince(range.deployed)
+  // Endpoint unavailable: no group evidence, so no claim.
+  if (changed === null) return null
   if (!changed.some((p) => pathInGroup(p, group))) return null
-  return head
+  return range.head
 }
 
 /** Deploy one commit and report it as a step. Shared by the normal path and by
@@ -666,7 +1343,12 @@ async function deployStrandedCommit(
   onPhase: OnPhase,
   upToDate: string,
 ): Promise<StepResult[]> {
-  const stranded = await pendingDeploy(group)
+  // `undeployedHead`, not `pendingDeploy`: this asks "is there a commit at all",
+  // because the ownership check below is the safety, not the file list. Asking
+  // for group evidence here made the repair fail whenever `/version/files` was
+  // unavailable — a half-working Leader being the very thing that strands a
+  // commit in the first place.
+  const stranded = await undeployedHead(group)
   if (!stranded) {
     onPhase({ kind: 'done', text: upToDate })
     return out
@@ -683,6 +1365,15 @@ async function deployStrandedCommit(
   // When the commit memory is empty — a fresh install, or a store that has
   // never been written — nothing is ours, so nothing is deployed. That is the
   // right default: silence is not consent.
+  //
+  // AND THE OWNERSHIP CHECK IS ON THE HASH, NOT ON THE RANGE. `PATCH …/deploy`
+  // takes a VERSION: it moves the group to this commit, so every commit anybody
+  // made between the group's deployed `configVersion` and this hash goes live
+  // with it. Knowing we made the LAST commit is not knowing what is in the
+  // range, and no file list can narrow a deploy. There is nothing to fix in
+  // code — the app cannot un-commit somebody else's work — so the dialog says
+  // it instead: DEPLOY_CONSEQUENCES in cribl/landing.ts, third sentence, which
+  // is on every deploy confirmation in the app.
   const mem = await loadCommitMemory()
   const ours = new Set(Object.values(mem[group] ?? {}).map((c) => c.hash))
   if (!ours.has(stranded)) {
@@ -777,21 +1468,44 @@ function logRun(action: string, group: string, steps: StepResult[]): void {
   })
 }
 
+/** What a caller may say about a run. Both have defaults that reproduce exactly
+ *  what this function did before Phase 3. */
+export interface DeployOptions {
+  /** Asked once per object that is actually about to be written. See
+   *  `preConfirmed` for what passing nothing means. */
+  confirm?: ConfirmChange
+  /**
+   * The landing to provision. Nothing passes one today, and `DEFAULT_PROFILE` is
+   * byte-for-byte the stack this app has always created.
+   *
+   * It is a parameter rather than a constant because §2.4's whole point is that
+   * the landing is a choice somebody can make — but note what this release will
+   * and will not do with it: a profile only reaches Cribl through a CREATE here,
+   * so a profile naming Parquet or partitions describes a dataset this phase can
+   * bring into existence and cannot migrate an existing one to. The format
+   * migration is Phase 4's, behind P-S1 and P-S5, and the partitions editor is
+   * behind P-S9.
+   */
+  profile?: LandingProfile
+}
+
 /** Provision the whole stack in dependency order, reporting each step. */
 export async function deployAll(
   onStep: (r: StepResult) => void,
   group: string = DEFAULT_STREAM_GROUP,
   onPhase: OnPhase = noopPhase,
+  opts: DeployOptions = {},
 ): Promise<StepResult[]> {
   const out: StepResult[] = []
+  const ctx: EnsureCtx = { group, profile: opts.profile ?? DEFAULT_PROFILE, confirm: opts.confirm ?? preConfirmed }
   // Dataset lives in Cribl Lake and is group-independent; the rest target the
   // chosen Stream worker group.
   const steps: Array<[ResourceKey, () => Promise<StepResult>]> = [
-    ['dataset', ensureDataset],
-    ['destination', () => ensureDestination(group)],
-    ['pipeline', () => ensurePipeline(group)],
-    ['source', () => ensureSource(group)],
-    ['route', () => ensureRoute(group)],
+    ['dataset', () => ensureDataset(ctx)],
+    ['destination', () => ensureDestination(ctx)],
+    ['pipeline', () => ensurePipeline(ctx)],
+    ['source', () => ensureSource(ctx)],
+    ['route', () => ensureRoute(ctx)],
   ]
   for (let i = 0; i < steps.length; i++) {
     const [key, fn] = steps[i]
@@ -799,17 +1513,28 @@ export async function deployAll(
     const r = await fn()
     out.push(r)
     onStep(r)
-    if (r.action === 'error') {
-      onPhase({ kind: 'error', text: `${STEP_LABELS[key]} failed — ${r.detail ?? ''}` })
-      // The remaining steps depend on the one that just failed — mark them
+    // A refusal and a failure stop the run the same way and for the same reason —
+    // the four steps below each depend on the ones above — but they are not the
+    // same event, and reporting "failed" for an answer somebody gave on purpose
+    // is how a dialog stops being believed. `skipped` from an ensure* means the
+    // confirmation said no and nothing else does (see NOT_CONFIRMED).
+    if (r.action === 'error' || r.action === 'skipped') {
+      const stopped = r.action === 'error'
+      onPhase(
+        stopped
+          ? { kind: 'error', text: `${STEP_LABELS[key]} failed — ${r.detail ?? ''}` }
+          : { kind: 'done', text: `${STEP_LABELS[key]} was not confirmed — stopped there.` },
+      )
+      // The remaining steps depend on the one that just stopped — mark them
       // skipped (with the blocking step named) rather than leaving them a bare
       // "absent", and commit nothing.
+      const because = stopped ? `blocked by ${STEP_LABELS[key]}` : `not reached — ${STEP_LABELS[key]} was not confirmed`
       for (const [k2] of steps.slice(i + 1)) {
-        const sk: StepResult = { key: k2, action: 'skipped', detail: `blocked by ${STEP_LABELS[key]}` }
+        const sk: StepResult = { key: k2, action: 'skipped', detail: because }
         out.push(sk); onStep(sk)
       }
-      // A run that failed part-way still created whatever came before the
-      // failure, so it is exactly as worth recording as one that finished.
+      // A run that stopped part-way still created whatever came before, so it is
+      // exactly as worth recording as one that finished.
       logRun('syslog_stack.applied', group, out)
       return out
     }

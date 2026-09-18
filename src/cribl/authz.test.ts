@@ -18,9 +18,20 @@
 //   and granted with the app (AGENTS.md), so telling a customer to ask an admin
 //   for it would send them somewhere with nothing to grant.
 
+//
+//   AND THE TABLE ITSELF (added in Phase 3, which nearly doubled it). What
+//   gatedWrites.test.ts checks is the CHAIN — every write named, every config
+//   write gated, every gate rendered. What nothing checked is whether the rows
+//   say true things: that a `does` is a noun phrase the sentence can finish, that
+//   a control and the write it owns agree about which surface they are on, and
+//   that the two controls this release deliberately does NOT have are still
+//   absent. Those are the three below.
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  denialMark, denialReason, denialSince, isDenial, noteDenial, resetDenials, type Denial,
+  GATED_WRITES, WRITE_SITES,
+  denialMark, denialReason, denialSince, isDenial, noteDenial, resetDenials,
+  type Denial, type WriteId,
 } from './authz'
 import { capi } from './capi'
 
@@ -144,5 +155,66 @@ describe('the sentence', () => {
     const text = denialReason('search_caps.save', { ...denial, method: 'PUT', path: '/kvstore/app/settings/search_caps' })
     expect(text).toContain('granted with the app itself')
     expect(text, 'a refusal from the app-scoped store is not something an admin grants').not.toContain('usually a permission')
+  })
+
+  it('reads as one sentence for every control, not only for the one somebody tried', () => {
+    // `does` is a fragment: the sentence is "…so <does> did not complete". A row
+    // that wrote "Changing retention." instead of "changing how long Cribl Lake
+    // keeps this dataset" produces "…so Changing retention. did not complete",
+    // which nothing else in the suite would ever notice.
+    for (const [id, w] of Object.entries(GATED_WRITES)) {
+      expect(w.does[0], `${id}: \`does\` is mid-sentence, so it starts lower case`).toBe(w.does[0].toLowerCase())
+      expect(w.does.endsWith('.'), `${id}: \`does\` ends the sentence for you — drop the full stop`).toBe(false)
+      expect(denialReason(id as WriteId, denial)).toContain(`so ${w.does} did not complete`)
+    }
+  })
+
+  it('names the Cribl call in Phase 3’s sentences, because those are the grants an admin has to add', () => {
+    // The Lake landing panel's three are the likeliest refusals in the app: they
+    // are the newest grants and the ones a Member is most plausibly short of.
+    const lake: Denial = { ...denial, path: '/products/lake/lakes/default/datasets/gigamon_ami' }
+    for (const id of ['lake_landing.retention', 'lake_landing.description', 'lake_landing.destination'] as WriteId[]) {
+      const text = denialReason(id, lake)
+      expect(text).toContain('PATCH /products/lake/lakes/default/datasets/gigamon_ami')
+      expect(text, `${id} is a Cribl config write, so the sentence must send somebody to an admin`).toContain('usually a permission')
+    }
+  })
+})
+
+describe('the writes table', () => {
+  it('has each control on the same surface as the write it owns', () => {
+    // A `config` write gated by an `app`-surface control tells a customer that
+    // THE APP'S OWN STORE refused them, when Cribl did — so they go looking at
+    // an install nobody can change instead of at a policy an admin can grant.
+    // The chain test next door checks that a gate EXISTS; this checks it agrees.
+    const wrong = WRITE_SITES.flatMap((s) =>
+      s.gates.filter((g) => GATED_WRITES[g].surface !== s.surface).map((g) => `${s.at} (${s.surface}) → ${g} (${GATED_WRITES[g].surface})`),
+    )
+    expect(wrong).toEqual([])
+  })
+
+  it('still has no control for the two editors the spikes gate', () => {
+    // DELIBERATE ABSENCE, RECORDED AS ONE. The Search v1→v2 toggle waits on P-S5
+    // and P-S7; the partitions / acceleratedFields editor waits on P-S9. There is
+    // no writer for either, so there is no WriteId for either — an id with no
+    // writer is a control this table promises and nothing performs, and
+    // gatedWrites.test.ts would then be waiting for a button that is absent on
+    // purpose. cribl/landing.ts's SPIKE_GATED says what each one would have
+    // needed to know.
+    //
+    // WHEN A SPIKE REPORTS AND THE EDITOR IS BUILT, delete this assertion in the
+    // same commit as the new id. A stale guard against a thing that has since
+    // become correct is worse than no guard.
+    const ids = Object.keys(GATED_WRITES)
+    expect(ids.filter((id) => /search_version|partitions|accelerated/i.test(id))).toEqual([])
+  })
+
+  it('writes down why each ungated write is ungated, in more than a word', () => {
+    // gatedWrites.test.ts asserts 20 characters. The point of the exception is
+    // the reason, and every one of these is a claim somebody has to be able to
+    // check: "app-scoped store, granted with the app" is checkable; "n/a" is not.
+    for (const s of WRITE_SITES.filter((x) => x.gates.length === 0)) {
+      expect(s.why.trim().length, `${s.at}: an ungated write with a reason too short to check`).toBeGreaterThan(60)
+    }
   })
 })

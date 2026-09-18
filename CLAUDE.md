@@ -109,6 +109,7 @@ variant of it:
 | Something the reader must act on or dismiss | `<AppBanners>` (page-level, below the tab bar) or a status strip inside the section. Three treatments exist — banner, status strip, toast — and a fourth idea is a panel. |
 | "It worked" / "it failed" | `pushToast(phase)` → Capra `Toast`. Error toasts do not auto-dismiss. |
 | A confirmation before a write | `<ConfirmDialog>` on Capra `Modal` — see the conventions below. |
+| The before→after inside that confirmation | `<DiffTable>` — pass `ConfirmDialog`'s `diff` prop, which is structured (`{resourceId, key, before, after}[]`), never a node. `diff: []` is a real state and renders *"nothing changes"*; omitting `diff` is a different thing. The change word is **derived** by `diffState()`, so a caller cannot label a removal `added`. |
 | A control the user may not be allowed to use | `<GatedControl write="…">` — renders `aria-disabled` (still focusable) with the reason as visible text, never the HTML `disabled` attribute and never a bare `title=`. |
 | Provisioning chrome (rows, status, actions) | `<ProvisionPanel>` |
 | Charts and layout | `Panel`, `KpiTile`, `QueryBoundary`, `BarList`, `Donut`, `Heatmap`, `TimeChart`, `DopDiagram` |
@@ -134,19 +135,31 @@ Formatting helpers are in `src/lib/format.ts`.
 ## App-specific conventions
 
 - **The dashboards are read-only against Search data: they submit Cribl Search jobs and read the
-  results. The app does write, in five places, and each is deliberate.** (1) Guided Setup
+  results. The app does write, in six places, and each is deliberate.** (1) Guided Setup
   provisioning — Stream config, a Git commit on the Leader, and a deploy that restarts that group's
   Worker Processes. (2) **Scheduled saved searches** — `POST`/`PATCH`/`DELETE` on
   `/m/default_search/search/saved[/:id]`, from the Acceleration panel's confirmed Apply, Pause,
   Resume and Remove. Only the two fixed ids in `src/cribl/accel/manifest.ts`, and `DELETE` only where
   the id is in that manifest *and* carries this app's own stamp. This is the one write that keeps
   costing money after the click, and uninstalling the app does not stop it (I-D28) — the Remove
-  button is the only off switch. (3) The app-scoped Cribl KV store — per-viewer preferences
+  button is the only off switch. (3) **Guided Setup's "How data lands in Cribl Lake" panel** — a
+  second panel on the same page (`src/components/LakeLandingPanel.tsx`): `PATCH` on the live
+  `gigamon_ami` Lake dataset for retention and description, `PATCH` on the live `gigamon_lake`
+  destination, and the Git commit and deploy that make the second one real. It holds the app's only
+  **irreversible** write: a retention *decrease* deletes data, and a Lake dataset is in no version
+  control, so there is no commit to revert. That one dialog is deliberately harder than the others
+  (`irreversible.why`, the tenant's own size and metrics date, type-to-confirm on the dataset id);
+  an *increase* gets `undo` and no type-to-confirm, and if the two ever look the same the label has
+  become decoration. The Search-reader (v1→v2) toggle and the partitions editor are **deliberately
+  not built** — they are gated on spikes P-S5/P-S7/P-S9, and `SPIKE_GATED` in `src/cribl/landing.ts`
+  is the single source of the sentence each read-only row shows instead. (4) The app-scoped Cribl KV store — per-viewer preferences
   (`app/prefs/<userId>`, `accel/prefs/<userId>`), the install-wide search-cap table
   (`app/settings/search_caps`), Guided Setup's commit memory and per-viewer group pick, what this
   install wrote to `/search/saved` (`accel/state`), and append-only audit trails
-  (`gigamon/log/<epochMs>`, `accel/log/<epochMs>`). (4) `POST` to Cribl's dataset-intelligence
-  endpoint, from the banner's Generate button. (5) `POST …/cancel` on a search job — this session's
+  (`gigamon/log/<epochMs>`, `accel/log/<epochMs>`), and the Lake landing profile
+  (`app/settings/lake_landing`, which also holds each measurement so a reload does not re-spend the
+  credits). (5) `POST` to Cribl's dataset-intelligence
+  endpoint, from the banner's Generate button. (6) `POST …/cancel` on a search job — this session's
   own abandoned or over-running job, and, from the watchdog, a long-running job **belonging to the
   signed-in user**.
   **The rule that actually matters: nothing writes on load, on render, or on a timer.** A corrupt KV
@@ -155,8 +168,11 @@ Formatting helpers are in `src/lib/format.ts`.
   confirmation that names the affected resource — use `<ConfirmDialog>`, and register the write in
   `src/cribl/authz.ts` so `gatedWrites.test.ts` can see it.
   *Corrected in PR #5 (2026-09-16), PR #9 (2026-09-16), PR #10 (2026-09-16), slice 1.8 (branch
-  `feat/phase-1.8-hang-control`, 2026-09-17) and Phase 2 (branch `feat/phase-2-savings-schedules`,
-  2026-09-17). This bullet used to say "in **four** places" and listed no saved-search write and no
+  `feat/phase-1.8-hang-control`, 2026-09-17), Phase 2 (branch `feat/phase-2-savings-schedules`,
+  2026-09-17) and Phase 3 (branch `feat/phase-3-storage-surface`, 2026-09-17). This bullet used to
+  say "in **five** places" and mentioned no write to Cribl Lake but the dataset's creation — while
+  the app had already gained the single most consequential write in it. Before that it said "in
+  **four** places" and listed no saved-search write and no
   `accel/…` KV key; before that it said: "**This app is read-only against Search data.** The only
   writes are in Guided Setup provisioning, which are deliberate, idempotent, and user-triggered."*
 - **Persistence:** go through `src/cribl/kv.ts` — never `localStorage`/`sessionStorage`/`IndexedDB`/cookies (unreliable in the sandbox, and never shared across users, devices or sessions). Documents are PUT as **`text/plain`**: given a JSON content type the store parses the body, persists the literal `[object Object]`, and still answers 200. Key shapes: `app/settings/<name>` install-wide, `<ns>/prefs/<userId>` per user, `<ns>/log/<epochMs>` append-only. `accel/state` is install-wide but deliberately *not* under `app/settings/` — a setting is a value a human chose and may edit; that document is the app's own record of its own writes, and it sits beside `accel/prefs/…` and `accel/log/…` so one `listKeys('accel/')` enumerates everything Phase 2 stored. One writer per document — `prefs.ts` rewrites its whole document on every flag change, so a second writer's field would be dropped. Theme is the one client-side exception, a per-device display preference in `src/app/theme.ts`.

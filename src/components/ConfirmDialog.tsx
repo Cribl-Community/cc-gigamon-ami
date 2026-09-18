@@ -58,14 +58,31 @@
 // to thread the type-to-confirm block — which is the half that must not be
 // optional.
 //
-// NOT BUILT, deliberately: `<DiffTable>`. S8's contract has a `diff` field and
-// its layout draws one, and Phase 1 has no caller for it — Guided Setup's deploy
-// is additive and idempotent and its teardown is a delete list, so neither has a
-// before→after to show. Its first real caller is the Phase 3 retention change.
-// The prop is absent rather than present-and-ignored.
+// `<DiffTable>`, WHICH THIS BLOCK USED TO SAY WAS NOT BUILT. Until 2026-09-17 it
+// read: *"NOT BUILT, deliberately … Phase 1 has no caller for it — Guided
+// Setup's deploy is additive and idempotent and its teardown is a delete list,
+// so neither has a before→after to show. Its first real caller is the Phase 3
+// retention change. The prop is absent rather than present-and-ignored."* That
+// caller arrived, so the component and the `diff` prop did too. The reasoning
+// was right and is kept as the reason the prop has the shape it has: it was
+// specified for four call sites in four different ways, and it exists once.
+//
+// `diff` IS STRUCTURED DATA, NOT A ReactNode, and that is a decision rather than
+// an oversight. Every other prop here is structured — `resources`,
+// `irreversible`, `costLine`, `consequences`, `undo`, `typeToConfirm` — because
+// this dialog owes two things a caller cannot be trusted to supply: the reading
+// ORDER of the described-by region, and the region itself. A node handed in
+// could carry its own heading level, its own `<details>`, its own link — all of
+// them flattened to text by `aria-describedby` and announced as one run with no
+// way to reach them — and the dialog would have no way to know. Structured, it
+// can key each table to a resource it is already naming three lines above, and
+// it can render the EMPTY diff, which is the state every caller would otherwise
+// have to remember on its own. The shape is §1.5's own contract,
+// `{resourceId, key, before, after}[]`.
 
 import { cloneElement, useEffect, useId, useRef, useState, type ReactElement } from 'react'
 import { Button, Modal, Pill, TextField } from '@capra/core'
+import { DiffTable, type DiffRow } from './DiffTable'
 import type { GatedControlProps } from './GatedControl'
 
 /**
@@ -95,12 +112,37 @@ export interface ConfirmResource {
   detail?: string
 }
 
+/**
+ * One key of one resource's body, and what this write does to it. `resourceId`
+ * matches a `ConfirmResource.id`, so a three-object PATCH draws three small
+ * tables rather than one flat list a reader has to attribute by eye.
+ */
+export interface DiffEntry extends DiffRow {
+  /** The `id` of the `ConfirmResource` this key belongs to. */
+  resourceId: string
+}
+
 export interface ConfirmDialogProps {
   isOpen: boolean
   /** Kind, id and group in words. This becomes the `<h2>` the dialog is labelled by. */
   title: string
   /** Every object the intent touches, in dependency order. Deletes are moved last. */
   resources: ConfirmResource[]
+  /**
+   * The before→after of the bodies being overwritten, keyed to the resources
+   * above. Rendered inside the described-by region, after the object list —
+   * which names WHICH things change — and before `undo`.
+   *
+   * Three values, and all three mean something different. Absent: this intent
+   * has no before→after to show (Guided Setup's teardown is a delete list; its
+   * deploy is additive). Non-empty: these keys move. **Empty array: the caller
+   * computed a diff and it came back with nothing in it** — a 30 → 30 retention
+   * Apply — and the dialog says so in a sentence rather than drawing an empty
+   * table, because a confirmation claiming a change it is not making is the
+   * thing a confirmation is for. An empty array is not the same as no diff and
+   * is deliberately not collapsed into it.
+   */
+  diff?: DiffEntry[]
   /** Why this cannot be undone. Read first, before anything else. */
   irreversible?: { why: string }
   /** What it costs, in credits. No Guided Setup caller: nothing here runs a search. */
@@ -145,10 +187,58 @@ const ACTION_APPEARANCE: Record<ResourceAction, 'success' | 'warning' | 'danger'
  */
 const DELETES_LAST: Record<ResourceAction, number> = { create: 0, replace: 0, deploy: 0, delete: 1, stop: 1 }
 
+interface DiffGroup {
+  resourceId: string
+  caption: string
+  rows: DiffRow[]
+}
+
+/**
+ * The diff, split one table per resource, in the order the keys arrive.
+ *
+ * Two things here are deliberate and would be easy to "simplify" away:
+ *
+ *   * **An entry whose `resourceId` names no listed resource still renders**,
+ *     captioned with the bare id. Dropping it would be the dialog silently
+ *     hiding a change from somebody about to approve it, to punish the caller
+ *     for a typo — and the caller's mistake is not the customer's to pay for.
+ *     The bare id is also what makes the mistake visible in review.
+ *   * **An empty `diff` produces one group with no rows**, so `<DiffTable>`
+ *     renders its "nothing changes" sentence. Returning zero groups would make
+ *     the no-op case indistinguishable from no diff at all, which is the one
+ *     distinction this prop exists to carry.
+ */
+function groupDiff(diff: DiffEntry[], resources: ConfirmResource[]): DiffGroup[] {
+  const name = (id: string) => {
+    const r = resources.find((x) => x.id === id)
+    return r ? `${r.kind} ${r.id}` : id
+  }
+  if (diff.length === 0) {
+    return [{
+      resourceId: '',
+      // One object can be named; several cannot without repeating the list
+      // directly above, so the sentence points at it instead.
+      caption: resources.length === 1 ? name(resources[0].id) : 'Every object listed above',
+      rows: [],
+    }]
+  }
+  const groups: DiffGroup[] = []
+  for (const entry of diff) {
+    let group = groups.find((g) => g.resourceId === entry.resourceId)
+    if (!group) {
+      group = { resourceId: entry.resourceId, caption: name(entry.resourceId), rows: [] }
+      groups.push(group)
+    }
+    group.rows.push({ key: entry.key, before: entry.before, after: entry.after })
+  }
+  return groups
+}
+
 export function ConfirmDialog({
   isOpen,
   title,
   resources,
+  diff,
   irreversible,
   costLine,
   consequences,
@@ -159,6 +249,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const bodyId = useId()
   const requirementId = useId()
+  const irreversibleId = useId()
   const bodyRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [typed, setTyped] = useState('')
@@ -242,13 +333,14 @@ export function ConfirmDialog({
       <div className="cdlg" id={bodyId} ref={bodyRef}>
         {/* This whole container is what the dialog announces on open, in this
             order: what cannot be taken back, what it costs, what else happens,
-            the objects themselves, and what puts them back. The object list is
+            the objects themselves, what their values become, and what puts them
+            back. The object list is
             inside the announced region rather than after it because the list IS
             what AGENTS.md requires to be named before the call — S8's layout
             draws it below the described-by rule, and this is the one place that
             reading is widened rather than followed. */}
         {irreversible && (
-          <p className="cdlg-warn">
+          <p className="cdlg-warn" id={irreversibleId}>
             <strong>This cannot be undone.</strong> {irreversible.why}
           </p>
         )}
@@ -272,6 +364,22 @@ export function ConfirmDialog({
             </li>
           ))}
         </ul>
+
+        {/* The object list says which things change; this says what they become.
+            It is inside the described-by container on purpose — a value a
+            customer is approving is not a detail they can be expected to go
+            looking for, and the whole reason this dialog hangs
+            `aria-describedby` on by hand is that Capra reads out the title and
+            stops. `undo` stays last: it is what puts this back, and it only
+            makes sense after the reader knows what "this" is. */}
+        {diff && (
+          <>
+            <h3 className="cdlg-head">Before and after</h3>
+            {groupDiff(diff, resources).map((g) => (
+              <DiffTable key={g.resourceId} caption={g.caption} rows={g.rows} />
+            ))}
+          </>
+        )}
 
         {undo && <p className="cdlg-undo">{undo}</p>}
       </div>
@@ -298,6 +406,22 @@ export function ConfirmDialog({
             spellCheck={false}
             appearance={attempted && !matched ? 'danger' : 'default'}
             aria-invalid={attempted && !matched ? 'true' : undefined}
+            // BOTH sentences, in this order, and the irreversibility one first.
+            // `.cdlg-ttc` sits OUTSIDE `.cdlg`, so the dialog's own
+            // `aria-describedby` does not reach it — a deliberate decision
+            // argued in App.css, on the grounds that a labelled control
+            // announces itself on focus and repeating the whole body would
+            // lengthen what is read on open. The cost of that decision is that
+            // somebody who tabs straight to this field hears the requirement and
+            // not the fact that what they are about to confirm DELETES DATA,
+            // which is the one sentence this field exists to slow them down for.
+            // Wired in the Phase 3 settling pass; two handoffs in a row recorded
+            // it as not done because nobody had checked whether Capra's
+            // TextField forwards the attribute. It does — it spreads the rest of
+            // an `input`'s props — and ConfirmDialog.test.tsx now asserts the
+            // attribute is on the real <input>, so this stops being true the
+            // moment that changes rather than the next time somebody reads it.
+            aria-describedby={irreversible ? `${irreversibleId} ${requirementId}` : requirementId}
           />
         </div>
       )}

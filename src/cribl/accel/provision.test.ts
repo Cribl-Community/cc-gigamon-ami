@@ -503,6 +503,56 @@ describe('apply', () => {
   })
 })
 
+describe('the set the confirmation named', () => {
+  // `applyAcceleration` re-reads after the confirmation — correct, and always
+  // was. What was missing is the other half: nothing compared the fresh read
+  // against the set the dialog named. So a saved search that was `exists` when
+  // the dialog opened and `differs` when Apply ran was overwritten although the
+  // dialog never mentioned it — the "the dialog described a different write"
+  // failure `destinationDiffMovedNote` exists to prevent for the destination.
+
+  it('refuses a row that drifted between the dialog and the press', async () => {
+    const drifted = await correctPlusExtras(LAKE)
+    drifted.latest = '-1d'
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    // The dialog was rendered when LAKE still matched, so it named nothing.
+    const result = await applyAcceleration(() => {}, {})
+    expect(result.steps[0].action).toBe('refused')
+    expect(result.steps[0].detail).toContain('not named in that confirmation at all')
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('refuses a row the dialog named as a create when it now exists and differs', async () => {
+    const drifted = await correctPlusExtras(LAKE)
+    drifted.latest = '-1d'
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const result = await applyAcceleration(() => {}, { [LAKE]: 'absent' })
+    expect(result.steps[0].action).toBe('refused')
+    expect(result.steps[0].detail).toContain("named as 'absent'")
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('writes the row the dialog did name, in the state it named it', async () => {
+    const drifted = await correctPlusExtras(LAKE)
+    drifted.latest = '-1d'
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const result = await applyAcceleration(() => {}, { [LAKE]: 'differs' })
+    expect(result.steps[0].action).toBe('updated')
+    expect(savedCalls(calls).some((c) => c.method === 'PATCH')).toBe(true)
+  })
+
+  it('behaves exactly as before when no set is passed', async () => {
+    // Callers with no dialog to name a set — the tests above, and any future
+    // unattended path — must not change behaviour, or the guard becomes a
+    // second way for this function to mean two things.
+    const drifted = await correctPlusExtras(LAKE)
+    drifted.latest = '-1d'
+    stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const result = await applyAcceleration()
+    expect(result.steps[0].action).toBe('updated')
+  })
+})
+
 describe('pause and resume', () => {
   it('sends the WHOLE body, so tz and keepLastN survive the PATCH', async () => {
     // THE REGRESSION TEST FOR A-SP23. A PATCH carrying `{enabled, cronSchedule}`

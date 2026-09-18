@@ -288,15 +288,15 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'PATCH',
     path: '/products/stream/groups/:gid/deploy',
     scope: 'product',
-    site: 'provision.ts deployGroup',
-    why: 'Push the committed config to the group’s running Workers. This is the step that makes a deploy real, and it restarts Worker Processes — it runs only from the confirmed Deploy button.',
+    site: 'provision.ts deployGroup (also lakeLanding.ts deployGroupConfig)',
+    why: 'Push the committed config to the group’s running Workers. This is the step that makes a deploy real, and it RESTARTS THAT GROUP’S WORKER PROCESSES — a source set to block on backpressure can lose seconds of data across the restart. Two confirmed buttons reach it: Guided Setup’s Deploy and Remove, and the Lake landing panel’s destination edit, which says the restart is coming before the press rather than in a toast afterwards.',
   },
   {
     method: 'PATCH',
     path: '/master/groups/:gid/deploy',
     scope: 'product',
-    site: 'provision.ts deployGroup',
-    why: 'The same deploy on an older Leader that does not answer the /products/stream path.',
+    site: 'provision.ts deployGroup (also lakeLanding.ts deployGroupConfig)',
+    why: 'The same deploy on an older Leader that does not answer the /products/stream path. Tried ONLY on a 404, which is the single status meaning "this Leader has no such route": a 403 cannot be granted by a second path, and a 5xx deploy may already have started server-side, so a blind retry would be a second deploy.',
   },
 
   // ── Guided Setup: the Cribl Lake dataset ──────────────────────────────────
@@ -306,8 +306,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/products/lake/lakes/default/datasets',
     scope: 'product',
-    site: 'provision.ts ensureDataset',
-    why: `See whether the ${LAKE_DATASET_ID} dataset exists yet. Also the first thing the status check reads, so the tab can say what is already there.`,
+    site: 'provision.ts ensureDataset (also lake.ts listDatasets)',
+    why: `See whether the ${LAKE_DATASET_ID} dataset exists yet. Also the first thing the status check reads, so the tab can say what is already there, and what the Lake landing panel reads to tell "this tenant has no such dataset" from "this tenant has no Cribl Lake".`,
   },
   {
     method: 'POST',
@@ -316,6 +316,85 @@ export const API_CALLS: readonly ApiCall[] = [
     site: 'provision.ts ensureDataset',
     why: `Create the ${LAKE_DATASET_ID} dataset when it is absent. Additive: an existing dataset is left exactly as it is.`,
     creates: 'dataset',
+  },
+
+  // ── Phase 3: the Lake landing panel ───────────────────────────────────────
+  // Nine reads and two write surfaces, all from the one panel appended to
+  // Guided Setup's page. NOTHING HERE CREATES ANYTHING: every call either reads,
+  // or edits an object the customer already owns. So no entry below carries
+  // `creates` or `removes`, and the paired-teardown check is SILENT about this
+  // whole phase rather than passing it — what guards reversibility here is the
+  // rollback story (each edit reversible through the same editor; destination
+  // edits are Git commits that can be reverted and redeployed) and the fact that
+  // a retention DECREASE is labelled as the one thing that cannot be undone.
+  //
+  // Two paths that were specified and are deliberately NOT declared:
+  // `PATCH /m/default_search/search/datasets/gigamon_ami`, which is one of two
+  // candidate shapes for the reader toggle (P-S5 has not said which, and
+  // declaring a write before the spike says it is needed asks for trust the app
+  // cannot use), and any DELETE anywhere in Cribl Lake.
+  {
+    method: 'GET',
+    path: '/products/lake/lakes/default/config',
+    scope: 'product',
+    site: 'lake.ts getLakeConfig',
+    why: 'Read this tenant’s Cribl Lake limits — chiefly how many partition fields a dataset may have — so the panel checks a proposed setting against the tenant rather than against a number this app remembered. A 404 here is how an on-prem Leader says Cribl Lake is a Cloud-only product, which is a whole-panel state and not a failure.',
+  },
+  {
+    method: 'GET',
+    path: `/products/lake/lakes/default/datasets/${LAKE_DATASET_ID}`,
+    scope: 'product',
+    site: 'lake.ts getDataset',
+    why: `Read the ${LAKE_DATASET_ID} dataset itself with its size: retention, partitions, format, description, the search configuration, and the stored size with the DAY it was computed. This is the row the retention editor edits and the capture that makes a retention change reversible — Lake datasets are under no version control, so this read is the only record of what a value was before.`,
+  },
+  {
+    method: 'PATCH',
+    path: `/products/lake/lakes/default/datasets/${LAKE_DATASET_ID}`,
+    scope: 'product',
+    site: 'lakeLanding.ts setRetention (also setDescription)',
+    why: `Change how long Cribl Lake keeps the ${LAKE_DATASET_ID} dataset, or its description, from a confirmation naming the dataset and the change. A retention DECREASE deletes everything older than the new window immediately and cannot be undone — there is no commit to revert and no snapshot to restore — so that one is labelled irreversible, states the current size and the day it was measured, and asks for the dataset id to be typed. This grant is the sharpest edge in the file: it is granted to every user the app is shared with.`,
+  },
+  {
+    method: 'GET',
+    path: `/m/${SEARCH_GROUP}/search/datasets/${LAKE_DATASET_ID}`,
+    scope: 'product',
+    site: 'lake.ts getSearchDataset',
+    why: `Read how Cribl Search sees the ${LAKE_DATASET_ID} dataset — which reader version it uses, and what storage format it believes the objects are in. Read separately from the Lake-side object rather than derived from it, because whether the two agree is exactly what nobody has verified (P-S5), and a panel that assumed they did could not show a disagreement.`,
+  },
+  {
+    method: 'PATCH',
+    path: `/m/:gid/system/outputs/${LAKE_DESTINATION_ID}`,
+    scope: 'product',
+    site: 'lakeLanding.ts updateDestination',
+    why: `Change how the '${LAKE_DESTINATION_ID}' destination writes objects — how big they get and how long they stay open — from a confirmation that shows the exact before→after, names every feed writing through it, and says the commit carries every pending change to this group's outputs.yml. A destination PATCH replaces the object wholesale, so the app sends back the body it just read with only the edited keys changed. It edits a delivery point this app usually did not create, which is why the confirmation says so and why the only way back is this same editor or the group's Git history. Like every action here it is granted to EVERY user an admin shares this app with (I-D4), including one whose own role would refuse it — and ':gid' is a placeholder, so the grant covers every worker group on the Leader and not only the one the picker is on.`,
+  },
+  {
+    method: 'GET',
+    path: '/m/:gid/system/inputs',
+    scope: 'product',
+    site: 'lake.ts listInputs',
+    why: `List the group's sources, to work out what actually writes through the '${LAKE_DESTINATION_ID}' destination. The routing table is not the whole answer: on the workspace this was measured against, a source reaches Cribl Lake through a QuickConnect binding on the source itself and appears in no route at all — so a confirmation built on routes alone would under-report the feeds a destination change affects.`,
+  },
+  {
+    method: 'GET',
+    path: `/m/${SEARCH_GROUP}/search/local_search`,
+    scope: 'product',
+    site: 'lake.ts getLocalSearch',
+    why: 'Ask whether this workspace has Cribl Search local engines, which is the acceleration tier the panel reports. A 404 answers "local search is not enabled", which is the ordinary state of most tenants and is reported as a value, not as a fault.',
+  },
+  {
+    method: 'GET',
+    path: `/m/${SEARCH_GROUP}/search/local_search/engines`,
+    scope: 'product',
+    site: 'lake.ts listLocalEngines',
+    why: 'Count the local search engines provisioned, once local search says it exists. Zero engines with local search enabled is a real state and a different one from local search being absent, and the panel says which.',
+  },
+  {
+    method: 'GET',
+    path: '/products/stream/groups',
+    scope: 'product',
+    site: 'lake.ts listStreamGroupsCurrent',
+    why: 'List the worker groups from the current path family, for the commit each group is running. A rollback needs a target: "redeploy the previous version" is not a plan until the previous version has a name, and this is where that name comes from. Guided Setup\'s picker still reads the deprecated /master/groups; this read is what starts retiring it.',
   },
 
   // ── Guided Setup: the group-scoped config objects ─────────────────────────
@@ -347,7 +426,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/system/inputs/${SYSLOG_SOURCE_ID}`,
     scope: 'product',
     site: 'provision.ts ensureSource',
-    why: 'Re-apply the spec to a source that already exists. This is the grant slice 1.3 shipped without: deploying a fresh stack worked, and every re-apply afterwards 403ed.',
+    why: 'Re-apply the spec to a source that already exists. This is the grant slice 1.3 shipped without: deploying a fresh stack worked, and every re-apply afterwards 403ed. Sent only when the live source does NOT already say what the spec says — before Phase 3 it went out on every re-apply regardless, which committed and deployed a change that was not one.',
   },
   {
     method: 'DELETE',
@@ -392,7 +471,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/pipelines/${SYSLOG_PIPELINE_ID}`,
     scope: 'product',
     site: 'provision.ts ensurePipeline',
-    why: 'Re-apply the function list to a pipeline that already exists. Overwrites that one pipeline’s definition, which is why it is behind the confirmation.',
+    why: 'Re-apply the function list to a pipeline that already exists. Overwrites that one pipeline’s definition, which is why it is behind the confirmation — and, since Phase 3, is sent only when the live function list differs, so a re-apply of a settled stack writes nothing and cannot reach the deploy that restarts Worker Processes.',
   },
   {
     method: 'DELETE',
@@ -406,8 +485,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/m/:gid/routes',
     scope: 'product',
-    site: 'provision.ts readRoutes',
-    why: 'Read the group’s routing table. Every change to it below is an edit of the array this returns, never a table composed from scratch.',
+    site: 'provision.ts readRoutes (also lake.ts listRoutes)',
+    why: `Read the group’s routing table. Every change to it below is an edit of the array this returns, never a table composed from scratch. The Lake landing panel reads the same table for a second purpose: to name every route writing into the '${LAKE_DESTINATION_ID}' destination before a confirmation offers to change it.`,
   },
   {
     method: 'PATCH',
@@ -431,8 +510,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/version/status',
     scope: 'product',
-    site: 'provision.ts pendingFiles',
-    why: 'Read which config files are pending, so the commit can name exactly ours and leave anybody else’s uncommitted work alone.',
+    site: 'provision.ts pendingFiles (also lakeLanding.ts pendingConfigFiles)',
+    why: 'Read which config files are pending, so the commit can name exactly ours and leave anybody else’s uncommitted work alone. The Lake landing panel also shows the count in its confirmation, because a commit of this group’s outputs.yml carries whatever else is pending in that file — including somebody else’s edit — and that is worth saying before the press rather than after it.',
   },
   {
     method: 'GET',
@@ -445,8 +524,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'POST',
     path: '/version/commit',
     scope: 'product',
-    site: 'provision.ts commitAndDeploy',
-    why: 'Commit exactly the files the run touched. Always with an explicit file list: the API commits every pending change when given none.',
+    site: 'provision.ts commitAndDeploy (also lakeLanding.ts commitAndDeployDestination)',
+    why: 'Commit exactly the files the run touched — Guided Setup’s five objects, or the Lake landing panel’s one outputs.yml. Always with an explicit file list: the API commits every pending change in the repository when given none, which would sweep up whatever anybody else had left uncommitted anywhere on the Leader.',
     creates: 'commit',
   },
 
@@ -508,7 +587,9 @@ export const LEFT_BEHIND: readonly LeftBehind[] = [
   {
     resource: 'destination',
     reason:
-      `DECIDED, NOT DEFERRED. The app creates the '${LAKE_DESTINATION_ID}' destination only on a tenant that lacks one, so on those tenants an uninstall leaves one unreferenced Cribl Lake destination behind — say so rather than pretend otherwise. It stays because the app cannot prove it made it: the destination is named after the dataset, not after this app, it already exists on many tenants, and anything else in the customer's config may route to it. Teardown runs from a confirmation that names five objects; deleting a shared delivery point that predates the app, and breaking whatever else writes through it, is not one of the five. An unreferenced destination costs nothing, holds no data and breaks nothing, and the customer removes it in Stream in one click. If this ever matters, the fix is not a DELETE grant on its own — it is recording at create time that this app created it, and offering the teardown step only then.`,
+      `DECIDED, NOT DEFERRED. The app creates the '${LAKE_DESTINATION_ID}' destination only on a tenant that lacks one, so on those tenants an uninstall leaves one unreferenced Cribl Lake destination behind — say so rather than pretend otherwise. It stays because the app cannot prove it made it: the destination is named after the dataset, not after this app, it already exists on many tenants, and anything else in the customer's config may route to it. Teardown runs from a confirmation that names five objects; deleting a shared delivery point that predates the app, and breaking whatever else writes through it, is not one of the five. An unreferenced destination costs nothing, holds no data and breaks nothing, and the customer removes it in Stream in one click. If this ever matters, the fix is not a DELETE grant on its own — it is recording at create time that this app created it, and offering the teardown step only then.
+
+PHASE 3 NOW EDITS THIS OBJECT, and this entry is deliberately NOT widened by that. "The app cannot prove it made it" is a reason not to DELETE it; it is not a reason not to change a setting on it, and the two do not have the same worst case — a deleted destination stops delivery for everything wired to it, a changed one keeps delivering differently. What it does oblige is the confirmation: components/LakeLandingPanel.tsx names it as a replace on an object this app probably did not create, lists every feed writing through it, and says the only way back is that same editor or the group's Git history. It stays out of the teardown.`,
   },
   {
     resource: 'commit',

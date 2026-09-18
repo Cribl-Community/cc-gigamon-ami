@@ -580,6 +580,21 @@ export interface ApplyResult {
 }
 
 /**
+ * The writes a confirmation named, by id — the set `applyAcceleration` refuses
+ * to depart from. Built from the same rows `applyResources()` renders, so the
+ * dialog and the run cannot describe different sets.
+ */
+export type ApprovedWrites = Readonly<Record<string, 'absent' | 'differs'>>
+
+export function approvedWrites(state: AccelState): ApprovedWrites {
+  const out: Record<string, 'absent' | 'differs'> = {}
+  for (const row of state.rows) {
+    if (row.state === 'absent' || row.state === 'differs') out[row.id] = row.state
+  }
+  return out
+}
+
+/**
  * Create what is missing and bring what has drifted back into line.
  *
  * IDEMPOTENT AND ADDITIVE, the way cribl/provision.ts is: run it on a correct
@@ -598,8 +613,26 @@ export interface ApplyResult {
  *
  * Called only from a confirmed click. `applyPlan()` gives that confirmation the
  * exact list of what will be written.
+ *
+ * ── AND `approved` IS WHAT THAT CONFIRMATION NAMED ──────────────────────────
+ * The re-read below is correct and was always here: the panel's state can be
+ * minutes old, and writing from it would send a body somebody has changed
+ * since. What was missing is the other half. Nothing compared the fresh state
+ * against the set the dialog named, so a row that was `exists` when the dialog
+ * opened and `differs` when Apply ran was overwritten although the dialog never
+ * mentioned it — the "the dialog described a different write" failure that
+ * lakeLanding.ts's `destinationDiffMovedNote` exists to prevent for the
+ * destination, arriving here instead.
+ *
+ * Passing nothing keeps the old behaviour on purpose, for callers with no
+ * dialog to name a set (the tests, and any future unattended path); the panel
+ * passes `approvedWrites(state)` built from the same rows `applyResources`
+ * rendered, so the two cannot drift.
  */
-export async function applyAcceleration(onStep: (s: AccelStep) => void = () => {}): Promise<ApplyResult> {
+export async function applyAcceleration(
+  onStep: (s: AccelStep) => void = () => {},
+  approved?: ApprovedWrites,
+): Promise<ApplyResult> {
   const before = await readAccelState({ background: false })
   if (before.error !== null) {
     const steps = MANIFEST.map<AccelStep>((e) => ({ id: e.id, action: 'skipped', detail: before.error as string }))
@@ -621,6 +654,21 @@ export async function applyAcceleration(onStep: (s: AccelStep) => void = () => {
 
   for (const row of before.rows) {
     const { entry, intended } = row
+    // The approved-set check, before any of the state branches: a row that
+    // moved between the dialog and this read is a row the dialog described
+    // wrongly, whichever direction it moved in. Refused rather than re-asked —
+    // a confirmation describes one set of writes, and nothing here re-opens a
+    // dialog the user has already dismissed.
+    if (approved !== undefined && (row.state === 'absent' || row.state === 'differs') && approved[row.id] !== row.state) {
+      step({
+        id: row.id,
+        action: 'refused',
+        detail:
+          `it was ${approved[row.id] === undefined ? 'not named in that confirmation at all' : `named as '${approved[row.id]}' in that confirmation`} and reads as ` +
+          `'${row.state}' now, so it changed while the dialog was open and was left alone. Re-check and apply again.`,
+      })
+      continue
+    }
     if (row.state === 'unreadable') {
       step({ id: row.id, action: 'skipped', detail: 'this app could not read what is there, so it wrote nothing' })
       continue

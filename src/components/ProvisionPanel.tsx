@@ -61,10 +61,12 @@ import { IS_INSTALLED } from '../cribl/config'
 import {
   checkStatus, deployAll, removeSyslogStack, suggestedSyslogHost, pendingDeploy,
   listStreamGroups, DEFAULT_STREAM_GROUP, STEP_LABELS,
+  commitScope, pendingConfigPaths,
   type SetupStatus, type StepResult, type ResourceKey, type StreamGroup,
   SYSLOG_SOURCE_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID,
   LAKE_DESTINATION_ID, LAKE_DATASET_ID, SYSLOG_PORT,
 } from '../cribl/provision'
+import { deployConsequences, removeConsequences } from './provisionPanelCopy'
 import {
   loadCommitMemory, saveCommitMemory, loadSetupGroup, saveSetupGroup, type CommitMemory,
 } from '../cribl/setupMemory'
@@ -100,6 +102,11 @@ export function ProvisionPanel() {
   // left behind. Read-only, and null when there is none or when it could not be
   // determined.
   const [pending, setPending] = useState<string | null>(null)
+  // What Git already reports uncommitted anywhere on the Leader, so the two
+  // confirmations can say what rides along in the whole files this commit names
+  // instead of asserting that nothing does. Null is "could not tell" and the
+  // copy renders it as that — see provisionPanelCopy.ts.
+  const [pendingPaths, setPendingPaths] = useState<string[] | null>(null)
   const [copied, setCopied] = useState(false)
   const [group, setGroup] = useState<string>(DEFAULT_STREAM_GROUP)
   const [groups, setGroups] = useState<StreamGroup[]>([{ id: DEFAULT_STREAM_GROUP, name: DEFAULT_STREAM_GROUP }])
@@ -221,18 +228,44 @@ export function ProvisionPanel() {
       // "is there something this group committed but never ran". It rides along
       // with the status check, and its own failure must not blank the resource
       // rows, so it swallows rather than rejects.
-      const [live, undeployed] = await Promise.all([
+      const [live, undeployed, paths] = await Promise.all([
         checkStatus(group),
         pendingDeploy(group).catch(() => null),
+        // Same shape and the same reason: a read whose only job is to make a
+        // confirmation specific must not be able to blank the resource rows.
+        pendingConfigPaths().catch(() => null),
       ])
       setStatus(live)
       setPending(undeployed)
+      setPendingPaths(paths)
     } catch (e) {
       setGroupErr(group, (e as Error).message)
     } finally {
       setLoading(false)
     }
   }, [group, setGroupErr])
+
+  /**
+   * Open one of the two confirmations, having first re-read what Git reports
+   * uncommitted.
+   *
+   * BECAUSE THE DIALOG SAYS SO. Its clean-tree sentence is "That was read when
+   * this dialog opened", and until this existed that was simply untrue:
+   * `pendingPaths` came from `refresh()`, which runs on mount, on a group
+   * change, on Re-check and after a run. A page left open ten minutes showed a
+   * ten-minute-old list under a sentence claiming otherwise — and it is the one
+   * sentence on the screen somebody uses to decide whether to press a button
+   * that commits somebody else's unfinished work and restarts Worker Processes.
+   *
+   * The read finishes BEFORE the dialog opens, rather than beside it: a dialog
+   * that opens on the old list and swaps it underneath the reader is the same
+   * untruth with a shorter window. It is one GET, and the button it came from
+   * stays focusable throughout.
+   */
+  const openConfirm = useCallback(async (which: 'deploy' | 'remove') => {
+    setPendingPaths(await pendingConfigPaths().catch(() => null))
+    setConfirming(which)
+  }, [])
 
   // Populate the screen: ALWAYS read the persisted per-group / per-resource
   // commit status from the KV store first, then check the live status. Runs on
@@ -256,6 +289,7 @@ export function ProvisionPanel() {
     // dropping `isOpen`, which also hands focus back to the trigger it came from.
     setConfirming(null)
     setPending(null)
+    setPendingPaths(null)
     void populate()
   }, [groupReady, populate])
 
@@ -305,7 +339,10 @@ export function ProvisionPanel() {
     },
     {
       action: 'create', kind: 'Cribl Lake destination', id: LAKE_DESTINATION_ID, group,
-      detail: `Created only if missing, never edited. Writes to dataset ${LAKE_DATASET_ID}.`,
+      // "by this button", not "never edited", because it is not a property of
+      // the object: the Lake landing panel edits this same destination
+      // (cribl/lakeLanding.ts), behind its own confirmation.
+      detail: `Created by this button only if missing, and never edited by it. Writes to dataset ${LAKE_DATASET_ID}.`,
     },
     {
       action: 'replace', kind: 'Pipeline', id: SYSLOG_PIPELINE_ID, group,
@@ -324,13 +361,20 @@ export function ProvisionPanel() {
     },
   ]
 
-  const deployConsequences = [
-    `Nothing else in ${group} is touched, including the demo DataGen source.`,
-    `The change is committed and deployed to ${group}, which restarts that group's Workers on the new configuration.`,
-    ...(pending
-      ? [`It also deploys commit #${pending.slice(0, 10)}, which is committed to ${group} but was never deployed.`]
-      : []),
-  ]
+  // What each confirmation says about reach lives in provisionPanelCopy.ts, and
+  // its header says why: the sentence these replace — "Nothing else in ${group}
+  // is touched, including the demo DataGen source" — was true about what this
+  // app writes and false about what its commit carries, and it shipped.
+  //
+  // Deploy names all four files it may commit; the teardown names three,
+  // because removeSyslogStack never touches the destination and naming
+  // outputs.yml there would be the over-naming half of the same defect.
+  const deployScope = commitScope(group, ['source', 'pipeline', 'route', 'destination'], pendingPaths)
+  const removeScope = commitScope(group, ['source', 'pipeline', 'route'], pendingPaths)
+  const deploySentences = deployConsequences({ group, scope: deployScope, undeployed: pending })
+  const removeSentences = removeConsequences(
+    { group, scope: removeScope, undeployed: pending }, LAKE_DESTINATION_ID, LAKE_DATASET_ID,
+  )
 
   // Only what is actually there. A confirmation that offered to delete a route
   // this group does not have would be naming an object the operator cannot check.
@@ -419,9 +463,14 @@ export function ProvisionPanel() {
           <code>{group}</code> worker group: a <strong>Syslog source</strong> your Gigamon Application
           Metadata Exporter (AMX) points at, a <strong>pipeline</strong> that parses and normalizes the
           AMI records, a <strong>route</strong>, and the <strong>Cribl Lake</strong> dataset{' '}
-          <code>{LAKE_DATASET_ID}</code> these dashboards already read. Everything is{' '}
-          <strong>additive and idempotent</strong> — it does not touch the demo DataGen feed, and real
-          flows land in the same dataset, so the existing dashboards light up automatically.
+          <code>{LAKE_DATASET_ID}</code> these dashboards already read. It writes{' '}
+          <strong>only its own objects</strong> — creating what is missing, overwriting the pipeline,
+          source and route entry where they have drifted from this release, and never editing the demo
+          DataGen feed. Real flows land in the same dataset, so the existing dashboards light up
+          automatically. The <strong>commit</strong> that follows is wider than the write: Git takes
+          whole files, and <code>inputs.yml</code>, <code>routes.yml</code> and <code>outputs.yml</code>{' '}
+          each hold every object of their kind in the group. The confirmation names them and says what
+          Cribl reports already uncommitted in them.
         </p>
 
         <div className="gs-group-picker">
@@ -524,7 +573,7 @@ export function ProvisionPanel() {
                  restored focus correctly; only the path that actually writes did
                  not. Staying focusable also lets someone who is refused by the
                  permission gate reach the button and read why. */
-              onClick={() => { if (deployBlocked) return; setConfirming('deploy') }}
+              onClick={() => { if (deployBlocked) return; void openConfirm('deploy') }}
               aria-disabled={deployBlocked || undefined}
               title={applyGate.reason ?? undefined}
             >
@@ -542,15 +591,17 @@ export function ProvisionPanel() {
               <p className="gs-action-note gs-action-warn">
                 Cribl refused to let this app read part of <code>{group}</code>{' '}
                 ({unreadable.map((r) => r.label).join(', ')}), so the rows above are an incomplete
-                picture — those resources may already exist. Deploying is still safe, because every step
-                creates only what is missing, but check the group in Cribl before you rely on what this
-                screen says.
+                picture — those resources may already exist. Deploying creates what is missing{' '}
+                <em>and overwrites</em> this app's own pipeline, source and route entry where they differ
+                from this release, so check the group in Cribl before you rely on what this screen says.
               </p>
             )}
             {pending && (
               <p className="gs-action-note gs-action-warn">
-                Commit <code>#{pending.slice(0, 10)}</code> is committed to <code>{group}</code> but not
-                deployed — an earlier deploy did not finish. Deploying will push it.
+                Commit <code>#{pending.slice(0, 10)}</code> touches <code>{group}</code> and has not been
+                deployed to it — an earlier deploy did not finish. Deploying moves the group to the
+                commit this run creates, so that one goes live with it, and so does anything else
+                committed on this Leader since.
               </p>
             )}
             {(allPresent || partial) && (
@@ -558,7 +609,7 @@ export function ProvisionPanel() {
                 <button
                   type="button"
                   className="btn btn-ghost btn-danger-text"
-                  onClick={() => { if (removeBlocked) return; setConfirming('remove') }}
+                  onClick={() => { if (removeBlocked) return; void openConfirm('remove') }}
                   aria-disabled={removeBlocked || undefined}
                   title={removeGate.reason ?? undefined}
                 >
@@ -574,7 +625,7 @@ export function ProvisionPanel() {
           isOpen={confirming === 'deploy'}
           title={`${allPresent ? 'Re-apply' : 'Apply'} the Gigamon AMI onboarding stack to Cribl Stream worker group ${group}`}
           resources={deployResources}
-          consequences={deployConsequences}
+          consequences={deploySentences}
           undo={
             `Remove onboarding stack, on this tab, deletes the source, pipeline and route again. ` +
             `A setting this run overwrites is recoverable only from ${group}'s Git history.`
@@ -606,10 +657,7 @@ export function ProvisionPanel() {
               `Deleting a source and a pipeline cannot be undone from this app; the configuration is ` +
               `recoverable only from ${group}'s Git history.`,
           }}
-          consequences={[
-            `Cribl Lake destination ${LAKE_DESTINATION_ID} and dataset ${LAKE_DATASET_ID} are kept — they are shared, and the dashboards read that dataset.`,
-            `The removal is committed and deployed to ${group}, which restarts that group's Workers.`,
-          ]}
+          consequences={removeSentences}
           // The thing the old teardown text never said: the delete is
           // reversible, by the button directly above it. "not as they are now"
           // is the caveat that keeps it honest — a rebuild is this app's

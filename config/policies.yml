@@ -29,7 +29,7 @@
 #   than `/m/:gid/system/inputs/*`. The grant an admin approves is then "may
 #   delete the input this app made", not "may delete any input".
 #
-# THE DASHBOARDS READ; THE APP WRITES IN FIVE PLACES, AND FOUR OF THEM ARE IN
+# THE DASHBOARDS READ; THE APP WRITES IN SIX PLACES, AND FIVE OF THEM ARE IN
 # HERE. The panels run Cribl Search jobs against the Cribl Lake dataset
 # `gigamon_ami` and read the results — that is most of the objects below. The
 # rest are the writes CLAUDE.md lists under "App-specific conventions":
@@ -41,19 +41,32 @@
 #   2. The two scheduled saved searches (Phase 2 acceleration) — created,
 #      corrected, paused, resumed and deleted. Behind confirmations in
 #      components/AccelPanel.tsx that name the ids and state the recurring cost.
-#   3. `POST …/ai/settings/dataset-intelligence/gigamon_ami` — a plain Generate
+#   3. The Lake landing panel (Phase 3), a second panel on the Guided Setup page —
+#      PATCH on the live `gigamon_ami` Lake dataset (retention, description),
+#      PATCH on the live `gigamon_lake` destination, and the Git commit and
+#      deploy that make the second one real. Behind confirmations in
+#      components/LakeLandingPanel.tsx. It is the most write-heavy surface in the
+#      app and it holds the only IRREVERSIBLE write anywhere in it: a retention
+#      decrease deletes data and there is no commit to revert, which is why that
+#      one dialog is harder than the others.
+#   4. `POST …/ai/settings/dataset-intelligence/gigamon_ami` — a plain Generate
 #      button in components/DatasetIntelPrompt.tsx.
-#   4. `POST …/jobs/:jobId/cancel` — this session's own abandoned job, no dialog
+#   5. `POST …/jobs/:jobId/cancel` — this session's own abandoned job, no dialog
 #      (seconds old, the user's own, not configuration); and from the watchdog a
 #      long-running job the signed-in user owns, behind a confirmation in
 #      components/JobWatchdog.tsx naming the job id and its age.
 #
-# The fifth write is the app-scoped KV store, which is deliberately NOT declared
+# The sixth write is the app-scoped KV store, which is deliberately NOT declared
 # here — see the note at the foot of this file.
 #
-# Two of the four are writes to Cribl CONFIGURATION: the Guided Setup stack and
-# the scheduled searches. Nothing in this file is reached from load, from render
-# or from a timer.
+# Three of the five are writes to Cribl CONFIGURATION: the Guided Setup stack,
+# the scheduled searches, and the Lake landing panel's two objects. Nothing in
+# this file is reached from load, from render or from a timer — including the
+# landing panel's measurement queries, which are buttons.
+#
+# Corrected in Phase 3 (branch `feat/phase-3-storage-surface`, 2026-09-17). This
+# paragraph used to say FIVE places and FOUR of them here, and listed nothing
+# under Cribl Lake but the dataset's creation.
 #
 # WHAT APPROVING THE WRITE ACTIONS ACTUALLY GRANTS — decision I-D4, accepted
 # deliberately, and the paragraph to read before approving the install.
@@ -70,12 +83,17 @@
 #   * any Member who can open it can reach Guided Setup's Remove and delete the
 #     syslog source, the pipeline and this app's route in the worker group they
 #     pick — the teardown, not the customer's own objects, but a teardown all the
-#     same.
+#     same;
+#   * any Member who can open it can SHORTEN RETENTION on the `gigamon_ami` Lake
+#     dataset, which deletes everything older than the new window immediately and
+#     for everyone, with no commit to revert and no snapshot to restore. That is
+#     the one action this app can take that destroys customer data, and it is the
+#     one to weigh hardest before sharing the app widely (Phase 3, I-D4).
 #
-# Both are behind confirmations that name what they will change, and both are
-# reported afterwards. Neither is undone by the platform. An install that does
-# not want a Member holding those grants shares the app with fewer people; there
-# is no narrower grant this file can express.
+# All three are behind confirmations that name what they will change, and all
+# three are reported afterwards. None is undone by the platform. An install that
+# does not want a Member holding those grants shares the app with fewer people;
+# there is no narrower grant this file can express.
 #
 # Corrected in Phase 2 (branch `feat/phase-2-savings-schedules`, 2026-09-17).
 # This header used to say: "The dashboards are read-only: they run Cribl Search
@@ -226,7 +244,13 @@ policies:
   - object: '/master/groups/:gid'
     actions: ['GET']
   # Push the committed config to the group's running Workers. This is the step
-  # that makes a deploy real, and it restarts Worker Processes.
+  # that makes a deploy real, and it RESTARTS THAT GROUP'S WORKER PROCESSES — a
+  # source configured to block on backpressure can lose seconds of data across
+  # the restart. Two confirmed surfaces reach it: Guided Setup's Deploy and
+  # Remove, and (Phase 3) the Lake landing panel's destination edit, which is
+  # useless uncommitted and undeployed and so carries all three in one dialog.
+  # The deprecated path is tried only on a 404 — a 403 cannot be granted by a
+  # second path, and a 5xx deploy may already have started server-side.
   - object: '/products/stream/groups/:gid/deploy'
     actions: ['PATCH']
   - object: '/master/groups/:gid/deploy'
@@ -244,6 +268,71 @@ policies:
   - object: '/products/lake/lakes/default/datasets'
     actions: ['GET', 'POST']
 
+  # --- The Lake landing panel (Phase 3) ---------------------------------------
+  # src/cribl/lake.ts reads; src/cribl/lakeLanding.ts writes, and only from a
+  # confirmation in the landing panel that names the object and shows what
+  # changes. Nothing in this block creates anything: every call reads, or edits
+  # an object the customer already owns.
+
+  # This tenant's Cribl Lake limits — chiefly how many partition fields a dataset
+  # may carry — so a setting is checked against the tenant instead of against a
+  # number this app remembered. A 404 is how an on-prem Leader says Cribl Lake is
+  # Cloud-only; the panel reports that rather than an error.
+  - object: '/products/lake/lakes/default/config'
+    actions: ['GET']
+
+  # The gigamon_ami dataset itself. GET reads retention, partitions, format,
+  # description, search configuration and the stored size with the day it was
+  # computed — which is also the only record of what a value was before, because
+  # LAKE DATASETS ARE UNDER NO VERSION CONTROL.
+  #
+  # PATCH IS THE SHARPEST GRANT IN THIS FILE — READ IT BEFORE APPROVING. It
+  # changes retention or the description. A retention DECREASE deletes everything
+  # in the dataset older than the new window, immediately, for everyone who reads
+  # it, and there is no commit to revert and no snapshot to restore. Retention
+  # counts from the date data was uploaded, not from the event timestamp. The
+  # confirmation for a decrease is deliberately harder than the others: it states
+  # why it cannot be undone, names the current size and the day that size was
+  # measured, and requires the dataset id to be typed.
+  #
+  # Like every action here it is granted to EVERY user this app is shared with,
+  # for the duration of a request made through the app (I-D4) — including a user
+  # whose own role would refuse it. An install that does not want a Member able
+  # to shorten retention on this dataset shares the app with fewer people.
+  #
+  # No DELETE, for the reason the collection entry above gives.
+  - object: '/products/lake/lakes/default/datasets/gigamon_ami'
+    actions: ['GET', 'PATCH']
+
+  # How Cribl Search sees the same dataset: which reader version it uses, and
+  # what storage format it believes the objects are in. Read separately from the
+  # Lake-side object rather than derived from it, because whether the two agree
+  # is precisely what has not been verified — so the panel shows both and lets a
+  # person see a disagreement.
+  #
+  # NO PATCH, DELIBERATELY. A reader toggle has two candidate request shapes and
+  # nobody has sent either; spike P-S5 decides which endpoint changes it.
+  # Declaring the write before the spike says it is needed would ask an admin to
+  # approve a grant the app cannot use.
+  - object: '/m/default_search/search/datasets/gigamon_ami'
+    actions: ['GET']
+
+  # Whether this workspace has Cribl Search local engines — the acceleration tier
+  # the panel reports. A 404 means local search is not enabled, which is the
+  # ordinary state of most tenants and is shown as a value, not as a fault. The
+  # engines are counted only once local search says it exists.
+  - object: '/m/default_search/search/local_search'
+    actions: ['GET']
+  - object: '/m/default_search/search/local_search/engines'
+    actions: ['GET']
+
+  # The worker groups from the current path family, for the commit each group is
+  # running. A rollback needs a target, and "redeploy the previous version" is
+  # not a plan until that version has a name. Guided Setup's picker still reads
+  # the deprecated /master/groups below; this is what starts retiring it.
+  - object: '/products/stream/groups'
+    actions: ['GET']
+
   # The four group-scoped config objects, under the /m/:gid prefix every
   # non-/system/ endpoint takes. The group is the one the user picks, so :gid has
   # to stay a placeholder — which means these writes are granted in EVERY worker
@@ -256,23 +345,56 @@ policies:
   # re-applies the spec to one that is already there — that is the grant slice
   # 1.3 shipped without, where deploying a fresh stack worked and every re-apply
   # afterwards 403ed; DELETE is the teardown, and only ever of this source.
+  #
+  # Since Phase 3 the PATCH is sent only when the live source does not already
+  # say what the spec says. It used to go out on every re-apply regardless, which
+  # dirtied the group's Git status and carried the run on into a commit and a
+  # deploy for a change that was not one.
+  #
+  # GET on the COLLECTION is the landing panel's, not provisioning's: it lists
+  # the group's sources so the app can work out what actually writes through the
+  # gigamon_lake destination. The routing table is not the whole answer — on the
+  # workspace this was measured against, a source reaches Cribl Lake through a
+  # QuickConnect binding on the source itself and appears in no route at all — so
+  # a destination confirmation built on routes alone would under-report the feeds
+  # it affects. It reads every source in the group, including ones this app did
+  # not create; it shows only those wired to this destination.
   - object: '/m/:gid/system/inputs'
-    actions: ['POST']
+    actions: ['GET', 'POST']
   - object: '/m/:gid/system/inputs/in_gigamon_syslog'
     actions: ['GET', 'PATCH', 'DELETE']
 
-  # The Cribl Lake destination. Created only on a tenant that does not already
-  # have one; where it exists it is left untouched. No PATCH: the app never
-  # rewrites a destination it may not have made. No DELETE either — see
-  # LEFT_BEHIND in src/cribl/paths.ts for the decision and what it leaves behind.
+  # The Cribl Lake destination. POST creates it only on a tenant that does not
+  # already have one. No DELETE — see LEFT_BEHIND in src/cribl/paths.ts for the
+  # decision and what an uninstall leaves behind.
+  #
+  # PATCH ARRIVED IN PHASE 3 AND IS A REAL WIDENING — the header of this file
+  # used to say "the app never rewrites a destination it may not have made", and
+  # that sentence is now false. It is the Lake landing panel's flush editor:
+  # how big an object gets and how long it stays open, which changes both the
+  # storage bill and every search's cost. Three things bound it. The write is a
+  # read-modify-write, so the body sent is the live object with only the edited
+  # keys changed and nothing this app has never heard of dropped. The
+  # confirmation shows the exact before→after, names EVERY feed writing through
+  # the destination — resolved from the sources AND the routing table, never
+  # hard-coded — and states that the commit carries every pending change to this
+  # group's outputs.yml, including anybody else's. And the deploy that follows
+  # restarts this group's Worker Processes, which the same dialog says before it
+  # is pressed, not in a toast afterwards.
+  #
+  # What it does NOT become: a grant to delete or recreate the destination. The
+  # reasoning that makes deleting it wrong — the app cannot prove it made it —
+  # does not make editing it wrong, but it is why the confirmation says the only
+  # way back is this same editor or the group's Git history.
   - object: '/m/:gid/system/outputs'
     actions: ['POST']
   - object: '/m/:gid/system/outputs/gigamon_lake'
-    actions: ['GET']
+    actions: ['GET', 'PATCH']
 
   # The pipeline that parses Gigamon AMI JSON out of the syslog message and
   # normalizes its fields. POST creates, GET checks, PATCH re-applies the
-  # function list to an existing one, DELETE is the teardown.
+  # function list to an existing one — and, as with the source above, only when
+  # that list actually differs — DELETE is the teardown.
   - object: '/m/:gid/pipelines'
     actions: ['POST']
   - object: '/m/:gid/pipelines/gigamon_syslog'
@@ -294,6 +416,13 @@ policies:
   # read-only and answer one question: did an earlier run commit something this
   # group never deployed? Without them a commit whose deploy failed can never be
   # deployed by this app again.
+  #
+  # TWO SURFACES COMMIT, not one: Guided Setup's five objects, and (Phase 3) the
+  # Lake landing panel's single outputs.yml. Both always pass an explicit file
+  # list, because this API commits every pending change in the repository when
+  # given none. Neither can avoid carrying somebody else's pending edit to a file
+  # it does name — the unit of a commit is the file — which is why the landing
+  # panel's confirmation shows the pending-file list before the press.
   #
   # No revert and no undo. A commit is the customer's own history, and "undo my
   # commit" on a shared repo can just as easily undo somebody else's work.
