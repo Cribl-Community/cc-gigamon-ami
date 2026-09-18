@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { useDataMode } from '../cribl/dataMode'
+import { useSelectedSnapshot } from '../cribl/accel/selection'
 import { PanelInfo, type ComputedFrom } from './PanelInfo'
 import { snapshotServed, useSnapshotSlot, type PanelSnapshotState } from './snapshotCensus'
 import { snapshotNote } from './snapshotNote'
@@ -101,7 +102,13 @@ export function Panel({ title, note, info, query, computed, infoLabel, infoDialo
   // Hidden in global Live mode rather than disabled: there is nothing to escape
   // from, and a control offering an escape that has already been taken reads as
   // broken. Kept while `liveOnly` is on so the way back is never lost.
-  const offerLive = !!onRunLive && mode === 'snapshot' && (liveOnly || snapshotServed(snapshot))
+  // Hidden while a past moment is being shown, as well as in Live mode. "Run
+  // this panel now" has nothing to mean when the question is what the network
+  // looked like at 04:20 — the live query would answer about the present under a
+  // heading saying otherwise. accel/read.ts refuses it there anyway; hiding the
+  // control is what stops the reader pressing something that does nothing.
+  const pastMoment = useSelectedSnapshot() !== null
+  const offerLive = !!onRunLive && mode === 'snapshot' && !pastMoment && (liveOnly || snapshotServed(snapshot))
   const hasHeader = title || note || onRefresh || source || offerLive
   return (
     <section className={`panel ${className}`} data-tour={tourId} ref={anchorRef}>

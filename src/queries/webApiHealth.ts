@@ -10,10 +10,13 @@
 
 import { q } from '../cribl/search'
 
-export const KPI = q(
-  '| summarize txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), ' +
-  'server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)',
-)
+// Exported as a fragment so the hourly snapshot body (src/queries/snapshots.ts)
+// holds these characters rather than a retyped copy — see KPI_AGGS in
+// capacityTopTalkers.ts for why that matters to the ⓘ.
+export const KPI_AGGS =
+  'txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), ' +
+  'server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)'
+export const KPI = q('| summarize ' + KPI_AGGS)
 export const CODES = q('http_code=* | summarize n=count() by http_code | sort by n desc | limit 12')
 export const HOSTS = q('http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12')
 export const SLOW = q('http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10')

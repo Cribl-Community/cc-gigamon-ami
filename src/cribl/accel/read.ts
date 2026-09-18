@@ -49,7 +49,12 @@
 //     GET on it is a 404, and it needs no grant in config/policies.yml — do not
 //     declare one.
 //   * THE `jobName=` PREDICATE IS MANDATORY. A read without a `jobName` or
-//     `jobId` predicate errors.
+//     `jobId` predicate errors. `jobId` is the OTHER half of that sentence and
+//     it is what makes a timeline possible: it addresses ONE run rather than
+//     "whatever the newest run of this schedule is". Every stored row already
+//     carries its `jobId` as a virtual column, and status.ts already lists a
+//     schedule's runs, so reading a chosen past state needs no new mechanism —
+//     only the decision to ask for one. See `asOf` below.
 //   * WHAT `jobName=` BINDS TO IS NOT KNOWN (claim V-23). A saved search has an
 //     id (`gno_lake_30d_c1d`) and a display name ('GNO Lake total 30 days'),
 //     and nobody has measured which of the two that predicate selects on —
@@ -87,7 +92,7 @@
 import { runFieldSummaries, runSearch, type FieldSummariesResult, type Row } from '../search'
 import type { CostSlot } from '../jobCost'
 import { accelEntry, isAccelId, type AccelEntry, type AccelId } from './manifest'
-import { cronIntervalMs, listRuns, runMeta, type AccelRun } from './status'
+import { cronIntervalMs, listRuns, nearestRun, runAtOrBefore, runMeta, snapshotTimeline, type AccelRun } from './status'
 
 /** The virtual table a stored result is read from. Named in query text only. */
 export const VT_RESULTS = '$vt_results'
@@ -153,7 +158,18 @@ export const STALE_FACTOR = 2
 const UNKNOWN_CADENCE_MS = 24 * 60 * 60 * 1000
 
 /** Where the data being returned came from. */
-export type AccelSource = 'schedule' | 'live'
+export type AccelSource =
+  /** A stored run of the scheduled search. */
+  | 'schedule'
+  /** The panel's own query, run now. */
+  | 'live'
+  /**
+   * Nowhere. The viewer asked for a past moment this entry has no run for, and
+   * there is no honest substitute: the live query would answer about NOW under a
+   * label saying 04:20. A panel handed this renders an empty state that says
+   * which times it does have. See `asOf`.
+   */
+  | 'none'
 
 /**
  * Which of a saved search's two identifiers the `jobName=` predicate answered
@@ -242,6 +258,9 @@ export type AccelOutcome =
   | 'unreadable'
   /** Acceleration is switched off for this entry. */
   | 'off'
+  /** A past moment was asked for and this entry has no run at or before it. The
+   *  live query deliberately did NOT run — see AccelSource's `none`. */
+  | 'no-run-at'
 
 /**
  * One sentence per outcome, for a caller to render.
@@ -262,6 +281,8 @@ export const NOTES: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   'aged-out': 'No stored result is still available, so the live query ran.',
   unreadable: 'The stored result could not be read, so the live query ran.',
   off: 'Acceleration is off for this panel, so the live query ran.',
+  'no-run-at':
+    'This panel has no stored run from the time you picked. Running its query now would answer about the present under a label saying otherwise, so it did not run.',
 })
 
 export interface AccelRead<T> {
@@ -290,6 +311,15 @@ export interface AccelRead<T> {
   key: AccelReadKey | null
   /** A sentence to render. Never contains Cribl's words — see NOTES. */
   note: string
+  /**
+   * The readable run closest to the moment that was asked for, when the answer
+   * was `no-run-at`.
+   *
+   * What the panel offers instead — "nothing at 04:20; the nearest is 05:20".
+   * Null everywhere else, including on a successful `asOf` read, because there
+   * the run that answered IS the nearest and `at` already carries it.
+   */
+  nearestAt: number | null
 }
 
 export interface AccelReadOptions<T> {
@@ -315,6 +345,29 @@ export interface AccelReadOptions<T> {
   staleAfterMs?: number
   /** Epoch ms to age the run against. Tests only. */
   now?: number
+  /**
+   * Read the state as it was at this moment, rather than the newest one.
+   *
+   * THE ONE RULE THAT MAKES THIS SAFE: **a read at a past moment never falls
+   * back to the live query.** Every other failure in this module falls back,
+   * because the live query answers the same question at the old price. That
+   * stops being true the instant a moment is named. The live query answers about
+   * NOW; the panel would be labelled 04:20; and a viewer comparing two tabs
+   * would be comparing this afternoon against this morning with nothing on
+   * screen to say so. A panel with no run from that moment shows an empty state
+   * and `nearestAt`, and the reader decides.
+   *
+   * It also overrides the off switch — `enabled: false` and a chosen moment are
+   * a contradiction, and the moment wins, because "run this one live" has no
+   * meaning for a question about the past. The control that sets `enabled:
+   * false` is hidden while a past moment is selected; this is the belt to that
+   * braces, in the module that knows why.
+   *
+   * Undefined is the newest run, which is every read Phase 2 ever did and is
+   * left byte-for-byte alone below — including the id-then-name fallback that
+   * settles V-23.
+   */
+  asOf?: number
 }
 
 /**
@@ -359,9 +412,29 @@ export function accelReadQueryOn(entry: AccelEntry, key: AccelReadKey, tail?: st
 }
 
 function selectorQuery(selector: string, tail?: string): string {
-  const head = `dataset="${VT_RESULTS}" jobName="${selector}"`
+  return withTail(`dataset="${VT_RESULTS}" jobName="${selector}"`, tail)
+}
+
+function withTail(head: string, tail?: string): string {
   const t = tail?.trim()
   return t ? `${head} ${t}` : head
+}
+
+/**
+ * The query that reads ONE named run.
+ *
+ * `jobId` rather than `jobName`, which is the whole difference between "the
+ * newest state" and "the state at 04:20". It takes no part in V-23: a job id is
+ * a job id, so the id-then-name fallback above is neither needed nor used here.
+ *
+ * The id is checked against the shape Cribl's own job ids take before it is
+ * interpolated. It arrives from a list read rather than from a literal in this
+ * repo, which makes it the one identifier in this app that reaches query TEXT
+ * without a human having typed it.
+ */
+export function accelRunQuery(jobId: string, tail?: string): string {
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(jobId)) throw new Error('accel read: that is not a job id this app can address')
+  return withTail(`dataset="${VT_RESULTS}" jobId="${jobId}"`, tail)
 }
 
 /** How old a run of this entry may be before it is stale. */
@@ -386,6 +459,23 @@ export function stripVirtualColumns(rows: readonly Row[]): Row[] {
 export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> = {}): Promise<AccelRead<Row[]>> {
   const entry = accelEntry(id)
   const live = opts.live ?? (async () => (await liveSearch(entry, opts)).rows)
+  // A chosen moment is answered before anything else is considered, INCLUDING
+  // the off switch — see `asOf`. Nothing below this line can reach the live
+  // query with a moment selected.
+  if (opts.asOf !== undefined) {
+    return atMoment(entry, opts, opts.asOf, [], {
+      run: (query) =>
+        runSearch(query, {
+          earliest: FAST_EARLIEST,
+          latest: FAST_LATEST,
+          limit: opts.limit,
+          signal: opts.signal,
+          timeoutMs: FAST_TIMEOUT_MS,
+        }),
+      isEmpty: (r) => r.rows.length === 0,
+      shape: (r) => ({ data: stripVirtualColumns(r.rows), named: String(r.rows[0][COL_JOB_NAME] ?? '') }),
+    })
+  }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
 
   let answered
@@ -439,6 +529,24 @@ export async function readAccelFieldSummaries(
 ): Promise<AccelRead<FieldSummariesResult>> {
   const entry = accelEntry(id)
   const live = opts.live ?? (() => liveFieldSummaries(entry, opts))
+  if (opts.asOf !== undefined) {
+    return atMoment(entry, opts, opts.asOf, { fields: [], sampled: 0 }, {
+      run: (query) =>
+        runFieldSummaries(query, {
+          earliest: FAST_EARLIEST,
+          latest: FAST_LATEST,
+          signal: opts.signal,
+          timeoutMs: FAST_TIMEOUT_MS,
+        }),
+      isEmpty: (r) => r.fields.length === 0,
+      shape: (r) => ({
+        data: { fields: r.fields.filter((f) => !VIRTUAL_COLUMNS.includes(f.name)), sampled: r.sampled },
+        // A summarised read has no single row to name the schedule; the virtual
+        // column's own summary carries it, and its one top value is the answer.
+        named: String(r.fields.find((f) => f.name === COL_JOB_NAME)?.topValues?.[0]?.value ?? ''),
+      }),
+    })
+  }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
 
   let answered
@@ -481,6 +589,114 @@ export async function readAccelFieldSummaries(
     sampled: result.sampled,
   }
   return dated(entry, data, sourceJobId, key, live, opts)
+}
+
+// ── Reading a chosen past state ─────────────────────────────────────────────
+
+/** What the two entry points differ by, so `atMoment` can be written once. */
+interface MomentIo<T, R> {
+  run: (query: string) => Promise<R>
+  isEmpty: (result: R) => boolean
+  shape: (result: R) => { data: T; named: string }
+}
+
+/**
+ * A read of one entry at a moment the viewer chose.
+ *
+ * It is a different shape from the newest-run path and deliberately so:
+ *
+ *   * IT LISTS FIRST. The newest-run path reads and then dates, because on the
+ *     happy path the list is a cost it can avoid. Here the list IS the question
+ *     — "which run had finished by 04:20" — so there is nothing to read until it
+ *     has been answered, and the run that comes back is already dated.
+ *   * IT ADDRESSES A JOB ID. `jobName=` selects a schedule, not a run; with
+ *     `keepLastN: 24` that is twenty-four wrong answers and one right one.
+ *   * IT NEVER RUNS THE LIVE QUERY. Every branch below ends in stored rows or in
+ *     an empty panel that says why. See `asOf`.
+ *
+ * The `jobName` sanity check is kept, and it earns more here than it does on the
+ * newest-run path: there the predicate names the entry, so a mismatch would be
+ * the platform ignoring it; here the predicate is an id read out of a list, and
+ * the check is what catches this app having listed one schedule and read another.
+ */
+async function atMoment<T, R>(
+  entry: AccelEntry,
+  opts: AccelReadOptions<T>,
+  asOf: number,
+  empty: T,
+  io: MomentIo<T, R>,
+): Promise<AccelRead<T>> {
+  const timeline = await snapshotTimeline([entry.id], { signal: opts.signal })
+  const mine = timeline.entries[0]
+  if (!mine || mine.error !== null) {
+    warn(entry.id, 'the run history could not be read for the moment that was picked', mine?.error ?? null)
+    return absent(entry, 'unreadable', empty, opts, null)
+  }
+  const run = runAtOrBefore(mine, asOf)
+  if (!run) return absent(entry, 'no-run-at', empty, opts, nearestRun(mine, asOf)?.at ?? null)
+
+  let result
+  try {
+    result = await io.run(accelRunQuery(run.id, opts.tail))
+  } catch (err) {
+    if (aborted(err, opts.signal)) throw err
+    warn(entry.id, 'the stored result of the run that was picked could not be read', err)
+    return absent(entry, 'unreadable', empty, opts, run.at)
+  }
+  // Empty is `aged-out` and not `no-run-at`: the run was listed, so it existed;
+  // its rows are what has gone. Saying "no snapshot from then" about a run whose
+  // result Cribl has reaped would send a reader looking for a schedule fault
+  // that is not there.
+  if (io.isEmpty(result)) return absent(entry, 'aged-out', empty, opts, run.at)
+
+  const { data, named } = io.shape(result)
+  if (named && !namesThisEntry(entry, named)) {
+    warn(entry.id, `the run that was picked stored another schedule's rows ('${named}')`, null)
+    return absent(entry, 'unreadable', empty, opts, run.at)
+  }
+
+  const staleAfterMs = opts.staleAfterMs ?? staleAfterMsFor(entry)
+  return {
+    data,
+    source: 'schedule',
+    // Never `stale`. Staleness is "the newest run is older than the schedule
+    // promises", and a viewer who asked for 04:20 is not being shown something
+    // overdue — they are being shown what they asked for. Flagging it would put
+    // a schedule warning on every panel the moment somebody looked at yesterday.
+    outcome: 'fresh',
+    run,
+    at: run.at,
+    ageMs: (opts.now ?? Date.now()) - (run.at as number),
+    staleAfterMs,
+    stale: false,
+    // A job id answered, which is not evidence about what `jobName=` binds to.
+    key: null,
+    note: NOTES.fresh,
+    nearestAt: null,
+  }
+}
+
+/** No data, no live query, and a sentence saying which. */
+function absent<T>(
+  entry: AccelEntry,
+  outcome: AccelOutcome,
+  empty: T,
+  opts: AccelReadOptions<T>,
+  nearestAt: number | null,
+): AccelRead<T> {
+  return {
+    data: empty,
+    source: 'none',
+    outcome,
+    run: null,
+    at: null,
+    ageMs: null,
+    staleAfterMs: opts.staleAfterMs ?? staleAfterMsFor(entry),
+    stale: false,
+    key: null,
+    note: NOTES[outcome],
+    nearestAt,
+  }
 }
 
 // ── The shared half ─────────────────────────────────────────────────────────
@@ -581,6 +797,7 @@ async function dated<T>(
     stale: outcome === 'stale',
     key,
     note: NOTES[outcome],
+    nearestAt: null,
   }
 }
 
@@ -648,6 +865,7 @@ async function fallback<T>(
     // not evidence about the binding in either direction.
     key: null,
     note: NOTES[outcome],
+    nearestAt: null,
   }
 }
 

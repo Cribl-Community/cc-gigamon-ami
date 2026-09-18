@@ -23,7 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
 import { JOBS_PATH as WATCHDOG_JOBS_PATH } from '../jobWatchdog'
-import { accelEntry } from './manifest'
+import { MANIFEST, accelEntry } from './manifest'
 import {
   HISTORY_LIMIT,
   JOBS_PATH,
@@ -32,7 +32,11 @@ import {
   cadenceLooksRight,
   cronIntervalMs,
   listRuns,
+  nearestRun,
+  runAtOrBefore,
   runMeta,
+  snapshotTimeline,
+  timelineHorizon,
 } from './status'
 
 const LAKE = 'gno_lake_30d_c1d'
@@ -335,7 +339,7 @@ describe('the whole manifest', () => {
   it('reports every entry by default, so a third one appears the day it is added', async () => {
     stub([history([run()]), metrics(2)])
     const all = await allAccelStatus()
-    expect(all.map((s) => s.id)).toEqual([LAKE, SAMPLE])
+    expect(all.map((s) => s.id)).toEqual(MANIFEST.map((e) => e.id))
     expect(all.every((s) => s.error === null)).toBe(true)
   })
 
@@ -353,6 +357,121 @@ describe('listRuns, which the read path uses on its own', () => {
     const listed = await listRuns(LAKE)
     expect(listed.runs).toHaveLength(1)
     expect(sent.some((c) => c.url.includes('/metrics')), 'a metrics read per panel paint').toBe(false)
+  })
+})
+
+
+// ── The timeline ────────────────────────────────────────────────────────────
+//
+// What turns a job history into a list of past states a viewer can pick from,
+// and the three ways that list could be a lie: it could offer a run whose result
+// cannot be read, it could answer a question about the past with a later run, or
+// it could claim a reach the platform does not give it.
+
+describe('the readable past', () => {
+  const at = (ms: number) => ({ timeCreated: ms, timeStarted: ms, timeCompleted: ms })
+  const okRun = (id: string, ms: number) => ({ id, status: 'completed', ...at(ms) })
+  const T = T0
+
+  it('offers only runs whose results can actually be read', async () => {
+    // A running job's results are not readable and a failed one's are partial —
+    // read.ts refuses both, with its reasons. A time in the picker that answers
+    // nothing is a control that looks broken.
+    stub([
+      history([
+        { id: 'a', status: 'running', ...at(T) },
+        { id: 'b', status: 'failed', ...at(T - HOUR) },
+        { id: 'c', status: 'canceled', ...at(T - 2 * HOUR) },
+        okRun('d', T - 3 * HOUR),
+      ]),
+    ])
+    const timeline = await snapshotTimeline([LAKE])
+    expect(timeline.entries[0].runs.map((r) => r.id)).toEqual(['d'])
+    expect(timeline.times).toEqual([T - 3 * HOUR])
+  })
+
+  it('skips a run with no usable timestamp rather than dating it from zero', async () => {
+    stub([history([{ id: 'undated', status: 'completed' }, okRun('b', T - HOUR)])])
+    const timeline = await snapshotTimeline([LAKE])
+    expect(timeline.entries[0].runs.map((r) => r.id)).toEqual(['b'])
+  })
+
+  it('answers a moment with the newest run that had finished by then', async () => {
+    stub([history([okRun('newer', T), okRun('older', T - HOUR)])])
+    const timeline = await snapshotTimeline([LAKE])
+    const mine = timeline.entries[0]
+    expect(runAtOrBefore(mine, T - 1)?.id).toBe('older')
+    expect(runAtOrBefore(mine, T)?.id).toBe('newer')
+    // The one that matters: a run that finished later did not exist then.
+    expect(runAtOrBefore(mine, T - HOUR - 1)).toBe(null)
+  })
+
+  it('offers a nearest in either direction, which is a different question', async () => {
+    // `runAtOrBefore` is what a panel READS; `nearestRun` is what it OFFERS when
+    // it has nothing. Conflating them would put a later run on screen under an
+    // earlier heading.
+    stub([history([okRun('newer', T), okRun('older', T - 4 * HOUR)])])
+    const mine = (await snapshotTimeline([LAKE])).entries[0]
+    expect(nearestRun(mine, T - HOUR)?.id).toBe('newer')
+    expect(nearestRun(mine, T - 10 * HOUR)?.id).toBe('older')
+  })
+
+  it('merges the times of schedules that do not align, newest first', async () => {
+    // The hourly entries fire at :20, :21 and :22 and the Lake total once a day.
+    // One list of times drawn from schedules that do not agree is the honest
+    // shape: each panel then answers from its own entry's newest run at or
+    // before the moment, and the picker says how many answered.
+    stub([
+      { match: `correlationId=${LAKE}`, body: { items: [okRun('lake', T - 5 * HOUR)] } },
+      { match: `correlationId=${SAMPLE}`, body: { items: [okRun('sample', T - HOUR)] } },
+    ])
+    const timeline = await snapshotTimeline([LAKE, SAMPLE])
+    expect(timeline.times).toEqual([T - HOUR, T - 5 * HOUR])
+    expect(timeline.oldestAt).toBe(T - 5 * HOUR)
+  })
+
+  it('says which limit ends the timeline', () => {
+    // Two things bound it and they are different limits. `keepLastN × cadence`
+    // is what the app asked for; Cribl's seven-day result retention is what the
+    // platform allows. Whichever is shorter is the real horizon, and an hourly
+    // entry keeping 24 runs is well inside the platform's.
+    expect(timelineHorizon('gno_overview_c1h')).toEqual({ ms: 24 * HOUR, boundBy: 'keepLastN' })
+    expect(timelineHorizon(LAKE)).toEqual({ ms: 2 * 24 * HOUR, boundBy: 'keepLastN' })
+  })
+
+  it('reports a refusal as a refusal, never as an empty past', async () => {
+    // The jobWatchdog lesson again: a 403 and a schedule that has never fired
+    // both produce zero rows, and only `error` separates them. A picker that
+    // laundered the first into the second would tell an operator their schedules
+    // are dead.
+    stub([{ match: '/search/jobs?', status: 403, body: { message: 'no' } }])
+    const timeline = await snapshotTimeline([LAKE])
+    expect(timeline.denied).toBe(true)
+    expect(timeline.error).toBeTruthy()
+    expect(timeline.times).toEqual([])
+  })
+
+  it('does not call the whole timeline refused because one entry was', async () => {
+    // One entry the account cannot see is a gap, not a dead control: the rest of
+    // the picker still works and the panels it serves still answer.
+    stub([
+      { match: `correlationId=${LAKE}`, status: 403, body: { message: 'no' } },
+      { match: '/search/jobs?', body: { items: [okRun('sample', T)] } },
+    ])
+    const timeline = await snapshotTimeline([LAKE, SAMPLE])
+    expect(timeline.denied).toBe(false)
+    expect(timeline.times).toEqual([T])
+  })
+
+  it('asks for more runs than the largest schedule retains', async () => {
+    // The hourly entries keep 24. A 20-row page would have hidden the oldest
+    // four, leaving a timeline that claims to be a day and is not, with nothing
+    // on screen saying which end was cut.
+    const sent = stub([history([])])
+    await snapshotTimeline([LAKE])
+    const url = sent[0].url
+    expect(HISTORY_LIMIT).toBeGreaterThanOrEqual(Math.max(...MANIFEST.map((e) => e.keepLastN)))
+    expect(url).toContain(`limit=${HISTORY_LIMIT}`)
   })
 })
 

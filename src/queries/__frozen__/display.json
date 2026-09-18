@@ -16,10 +16,10 @@
     "searches": 39,
     "links": 23,
     "briefs": 17,
-    "prose": 17,
-    "modules": 138,
+    "prose": 18,
+    "modules": 145,
     "catalogs": 13,
-    "states": 34,
+    "states": 35,
     "passthrough": 3,
     "unbound": 22
   },
@@ -99,6 +99,9 @@
       "saving": "false",
       "source": "'default'"
     },
+    "src/components/SnapshotPicker.tsx": {
+      "read": "null"
+    },
     "src/tabs/CapacityTopTalkers.tsx": {
       "applied": "''",
       "customGbps": "''",
@@ -159,6 +162,7 @@
   },
   "modules": {
     "src/queries/capacityTopTalkers.ts": {
+      "KPI_AGGS": "total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
       "PIVOTS": "3 entries · sha256 391cc2ad78ec29ac",
       "buildAppmixQuery(\"app_name\", \"\")": "dataset=\"gigamon_ami\" | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
       "buildAppmixQuery(\"app_name\", \"openai\")": "dataset=\"gigamon_ami\" app_name=\"*openai*\" | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
@@ -191,6 +195,7 @@
     "src/queries/dataFlow.ts": {
       "LAKE_TOTAL_QUERY": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0))",
       "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"pipe.in_events\" and namespace==\"data_insights\" and from_input==\"datagen:in_gigamon_datagen\", value, 0)), pipe_events=sum(iif(metric==\"pipe.out_events\" and namespace==\"data_insights\" and id==\"gigamon_ami\", value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "VOLUME_AGGS": "events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "VOLUME_QUERY": "dataset=\"gigamon_ami\" | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
     },
     "src/queries/dnsHealth.ts": {
@@ -224,6 +229,7 @@
     },
     "src/queries/findings.ts": {
       "FINDINGS_QUERY": "dataset=\"gigamon_ami\" | summarize total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0))",
+      "FINDING_AGGS": "f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0))",
       "findingFlowsQuery(#cookie)": "dataset=\"gigamon_ami\" http_cookie=* | limit 200",
       "findingFlowsQuery(#dcerpc)": "dataset=\"gigamon_ami\" dcerpc_service=* | limit 200",
       "findingFlowsQuery(#ftp)": "dataset=\"gigamon_ami\" ftp_data_content=* | limit 200",
@@ -261,6 +267,7 @@
     },
     "src/queries/security.ts": {
       "COUNTS": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
+      "COUNT_AGGS": "c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
       "SOURCES": "dataset=\"gigamon_ami\" | summarize ports=dcount(dst_port), dsts=dcount(dst_ip), flows=count() by src_ip | sort by flows desc | limit 200",
       "drillQueryFor(#T1018)": "dataset=\"gigamon_ami\" dst_port in (\"389\",\"636\") or krb5_message_type=* | summarize flows=count() by src_ip, dst_ip, app_name, dst_port | sort by flows desc | limit 100",
       "drillQueryFor(#T1021)": "dataset=\"gigamon_ami\" app_name=\"ssh\" | summarize flows=count() by src_ip, dst_ip, app_name, dst_port | sort by flows desc | limit 100",
@@ -281,6 +288,10 @@
       "aiOverallQuery": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)",
       "aiUsersQuery": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15",
       "appsQuery": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90"
+    },
+    "src/queries/snapshots.ts": {
+      "OVERVIEW_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
+      "SERVICE_EDGES_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc"
     },
     "src/queries/tcpHealth.ts": {
       "METRICS": "4 entries · sha256 57dc3cc5459aec60",
@@ -319,6 +330,7 @@
       "H2": "dataset=\"gigamon_ami\" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10",
       "HOSTS": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12",
       "KPI": "dataset=\"gigamon_ami\" | summarize txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)",
+      "KPI_AGGS": "txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)",
       "SLOW": "dataset=\"gigamon_ami\" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10",
       "TREND": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc"
     }
@@ -400,6 +412,20 @@
       "prose": {
         "Panel · Search running-time limits": {
           "info": "Every query this app submits is prefixed with set max_running_time_per_search=<seconds>, chosen from this table by the time range the panel reads. Cribl stops the job when it reaches that, and the panel names the limit rather than reporting a plain failure. Nothing here changes what a query returns — only how long Cribl lets it run before stopping it."
+        }
+      }
+    },
+    "src/components/SnapshotPicker.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "PanelInfo · 'In Snapshot mode this picks which stored run every panel reads, so you can look at a past state of the network rather than only the newest one. ' + 'Each panel answers from the newest run of its own scheduled search at or before the time you pick — never a later one — and a panel with nothing from that time shows no figure and says which times it does have, because running its query now would answer about the present. ' + (timeline ? horizonLine(timeline, selected) : '')": {
+          "ref": "'In Snapshot mode this picks which stored run every panel reads, so you can look at a past state of the network rather than only the newest one. ' + 'Each panel answers from the newest run of its own scheduled search at or before the time you pick — never a later one — and a panel with nothing from that time shows no figure and says which times it does have, because running its query now would answer about the present. ' + (timeline ? horizonLine(timeline, selected) : '')",
+          "about": "(unbound)",
+          "aboutHeading": "Which snapshot you are looking at",
+          "label": "What the snapshot picker shows"
         }
       }
     },
@@ -507,7 +533,12 @@
           "ref": "kpiQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
-          "options": "{ deps: [applied, pivot] }"
+          "options": "{ deps: [applied, pivot], accel: 'gno_overview_c1h', accelPanel: 'capacity-kpi', accelEnabled: applied === '', }",
+          "optionsValue": {
+            "accel": "gno_overview_c1h",
+            "accelPanel": "capacity-kpi",
+            "accelEnabled": true
+          }
         },
         "talkers": {
           "ref": "talkersQuery",
@@ -538,7 +569,12 @@
         "agg": {
           "ref": "VOLUME_QUERY",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
+          "query": "dataset=\"gigamon_ami\" | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
+          "options": "{ accel: 'gno_overview_c1h', accelPanel: 'data-flow-volume', accelEnabled }",
+          "optionsValue": {
+            "accel": "gno_overview_c1h",
+            "accelPanel": "data-flow-volume"
+          }
         },
         "met": {
           "ref": "METRICS_QUERY",
@@ -1000,7 +1036,12 @@
         "res": {
           "ref": "FINDINGS_QUERY",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0))"
+          "query": "dataset=\"gigamon_ami\" | summarize total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0))",
+          "options": "{ accel: 'gno_overview_c1h', accelPanel: 'findings-counts' }",
+          "optionsValue": {
+            "accel": "gno_overview_c1h",
+            "accelPanel": "findings-counts"
+          }
         }
       },
       "links": {
@@ -1420,7 +1461,9 @@
           "ref": "COUNTS",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
-          "reads": "(unbound)",
+          "reads": [
+            "counts"
+          ],
           "value": "String(TECHNIQUES.length)",
           "unit": "`/ ${TECHNIQUES.length + GAPS.length}`",
           "info": "Techniques this AMI feed can detect vs the full reference set. The gap is a capture-richness question, listed honestly below.",
@@ -1462,7 +1505,12 @@
         "counts": {
           "ref": "COUNTS",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))"
+          "query": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
+          "options": "{ accel: 'gno_overview_c1h', accelPanel: 'security-technique-counts' }",
+          "optionsValue": {
+            "accel": "gno_overview_c1h",
+            "accelPanel": "security-technique-counts"
+          }
         },
         "sources": {
           "ref": "SOURCES",
@@ -1534,17 +1582,32 @@
         "nodesQ": {
           "ref": "nodesQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12"
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
+          "options": "{ accel: 'gno_svc_nodes_c1h', accelPanel: 'service-map-nodes' }",
+          "optionsValue": {
+            "accel": "gno_svc_nodes_c1h",
+            "accelPanel": "service-map-nodes"
+          }
         },
         "edgesQ": {
           "ref": "edgesQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40"
+          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40",
+          "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' }",
+          "optionsValue": {
+            "accel": "gno_svc_edges_c1h",
+            "accelPanel": "service-map-edges"
+          }
         },
         "srcQ": {
           "ref": "srcQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20"
+          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20",
+          "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-sources' }",
+          "optionsValue": {
+            "accel": "gno_svc_edges_c1h",
+            "accelPanel": "service-map-sources"
+          }
         },
         "domains": {
           "ref": "domainsQuery",
@@ -1930,7 +1993,12 @@
         "kpi": {
           "ref": "KPI",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)"
+          "query": "dataset=\"gigamon_ami\" | summarize txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)",
+          "options": "{ accel: 'gno_overview_c1h', accelPanel: 'web-kpi' }",
+          "optionsValue": {
+            "accel": "gno_overview_c1h",
+            "accelPanel": "web-kpi"
+          }
         },
         "codes": {
           "ref": "CODES",

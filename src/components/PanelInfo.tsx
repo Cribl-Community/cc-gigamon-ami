@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import type { AccelSource } from '../cribl/accel/read'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 
@@ -77,8 +78,10 @@ interface Props {
  * frozen KQL. In words it explains the stop and shows no syntax at all.
  */
 export interface ComputedFrom {
-  /** Where the figure beside this ⓘ came from on THIS page load. */
-  source: 'schedule' | 'live'
+  /** Where the figure beside this ⓘ came from on THIS page load. `'none'` is a
+   *  panel showing nothing because the past moment the viewer picked has no
+   *  stored run for it — see accel/read.ts's AccelSource. */
+  source: AccelSource
   /** Epoch ms the answering run finished. Null on a live read. */
   at?: number | null
   /** That stored run is older than its schedule promises. */
@@ -133,6 +136,11 @@ export function computedLines(c: ComputedFrom, now: number = Date.now()): string
         'That is older than this schedule promises, so the schedule may have stopped firing — check the acceleration status in Guided Setup.',
       )
     }
+  } else if (c.source === 'none') {
+    // No figure, and deliberately none. The live query would have answered about
+    // the present under a heading naming a past time, so this panel is empty on
+    // purpose and the sentence has to say that rather than apologise for a gap.
+    if (c.fallback) lines.push(c.fallback)
   } else {
     if (c.fallback) lines.push(c.fallback)
     lines.push(`The query above ran over ${c.window} when the page loaded, so this figure is as new as the page.`)

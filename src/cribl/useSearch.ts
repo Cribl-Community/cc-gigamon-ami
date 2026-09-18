@@ -71,6 +71,7 @@ import { accelEntry, type AccelId } from './accel/manifest'
 import { MEASURED } from './accel/estimate'
 import { readAccelRows, type AccelOutcome, type AccelSource } from './accel/read'
 import { useAccelModeHydrated } from './accel/mode'
+import { useSelectedSnapshot } from './accel/selection'
 import { useDataMode } from './dataMode'
 
 // `useAccelEnabled` was this module's export for the whole of Phase 2 and the
@@ -113,6 +114,13 @@ export interface UseSearchState {
   /** One sentence a panel may render about the read. Never Cribl's words:
    *  accel/read.ts writes these, an API response never reaches one. */
   note: string | null
+  /** When a past moment was picked and this panel has no run from it: the
+   *  nearest stored run it does have, for the caption to offer.
+   *
+   *  Optional so the test fixtures that build a state by hand do not each have
+   *  to carry a field about a feature they are not exercising; `useSearch`
+   *  itself always answers with it. */
+  nearestAt?: number | null
 }
 
 export interface UseSearchOptions {
@@ -151,6 +159,24 @@ export interface UseSearchOptions {
    * day, and it is why the control that flips it carries a price.
    */
   accelEnabled?: boolean
+  /**
+   * Which of that entry's served panels this hook is — the `queryId` in the
+   * manifest.
+   *
+   * An hourly entry is ONE scan answering several panels, and each panel's rows
+   * are cut out of the shared result by a `tail` the manifest holds. The tail
+   * lives there and not here on purpose: it is inside the entry's display
+   * digest, so an operator can tell whether the app is still reading the search
+   * the way it says it is. A tab naming its own tail would put that string
+   * outside everything that checks it.
+   *
+   * REQUIRED ON A MULTI-PANEL ENTRY. Left out, the hook runs LIVE rather than
+   * reading the shared row whole: the un-tailed row carries every other panel's
+   * columns too, and a panel reading a column it did not ask for is the exact
+   * shape of a plausible wrong number. Falling back costs a scan and says so in
+   * the panel's own caption; guessing costs nothing and is silent.
+   */
+  accelPanel?: string
 }
 
 /** What one read of either kind answers with, before it becomes panel state. */
@@ -161,6 +187,7 @@ interface PanelRead {
   at: number | null
   stale: boolean
   note: string | null
+  nearestAt: number | null
 }
 
 /**
@@ -174,12 +201,20 @@ interface PanelRead {
  * changing.
  */
 export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {}): UseSearchState {
-  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true } = opts
+  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel } = opts
   const text = typeof query === 'string' ? query : query.query
   const accel = (typeof query === 'string' ? undefined : query.accel) ?? opts.accel ?? null
   const { range, refreshNonce, manualRefreshNonce, autoSeconds } = useDashboard()
   const mode = useDataMode()
   const modeKnown = useAccelModeHydrated()
+  // WHICH PAST STATE THIS PANEL IS ANSWERING FOR, or null for the newest.
+  //
+  // Only in Snapshot mode, and only on a panel a schedule serves. In Live mode
+  // the header's time control IS the range picker and there is no moment to
+  // honour; on a panel with no schedule there is no stored past to read, and
+  // handing it a moment would mean running its live query and labelling the
+  // answer with a time it does not describe.
+  const moment = useSelectedSnapshot()
 
   // WHETHER THE SCHEDULE IS ACTUALLY GOING TO ANSWER THIS PANEL, which is a
   // different question from "does this panel have a schedule" — and confusing
@@ -193,12 +228,26 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   // Lake tile passes `earliest: '-30d'` because the tile MEANS thirty days, and
   // handing it the picker's `-15m` in Live mode would change the number rather
   // than its freshness.
-  const snapshotServed = accel !== null && accelEnabled && mode === 'snapshot'
-  const pinned = earliest !== undefined || snapshotServed
+  // The tail that cuts this panel's columns out of a shared body, and whether
+  // the entry can answer this hook at all. See `accelPanel`.
+  const served = accel !== null ? accelEntry(accel).panels : null
+  const servedPanel = served ? (accelPanel !== undefined ? served.find((p) => p.queryId === accelPanel) : served.length === 1 ? served[0] : undefined) : undefined
+  const addressable = accel === null || servedPanel !== undefined
+  const tail = servedPanel?.tail
+
+  const snapshotServed = accel !== null && accelEnabled && addressable && mode === 'snapshot'
+  // A MOMENT OVERRIDES THE PER-PANEL LIVE SWITCH, and read.ts says why in full:
+  // there is no live answer to a question about 04:20, so "run this one now"
+  // has nothing to mean. `snapshotServed` deliberately stays false in that case,
+  // which keeps the panel pinned and out of the auto-refresh ticks — a panel
+  // showing a past state must not re-run on a timer.
+  const asOf = accel !== null && addressable && mode === 'snapshot' && moment !== null ? moment : undefined
+  const atMoment = asOf !== undefined
+  const pinned = earliest !== undefined || snapshotServed || atMoment
   // A snapshot-served hook with no window of its own takes the scheduled run's,
   // so the live fallback reads the same window the schedule does — whichever
   // path answers, the number means the same thing.
-  const effectiveEarliest = earliest ?? (snapshotServed ? accelEntry(accel).earliest : range.earliest)
+  const effectiveEarliest = earliest ?? (snapshotServed || atMoment ? accelEntry(accel as AccelId).earliest : range.earliest)
   const refreshKey = pinned ? manualRefreshNonce : refreshNonce
 
   // THE DOUBLE SUBMIT, AND WHY IT IS CURED BY WAITING RATHER THAN BY HYDRATING
@@ -248,6 +297,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     at: null,
     stale: false,
     note: null,
+    nearestAt: null,
   })
   const reqId = useRef(0)
 
@@ -312,8 +362,8 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // states and must not be renderable as the same words.
     const read: Promise<PanelRead> =
       accel !== null
-        ? readAccelRows(accel, { live, enabled: snapshotServed, limit, signal: controller.signal, costSlot })
-        : live().then((rows) => ({ data: rows, source: 'live' as const, outcome: null, at: null, stale: false, note: null }))
+        ? readAccelRows(accel, { live, enabled: snapshotServed, asOf, tail, limit, signal: controller.signal, costSlot })
+        : live().then((rows) => ({ data: rows, source: 'live' as const, outcome: null, at: null, stale: false, note: null, nearestAt: null }))
 
     read
       .then((res) => {
@@ -330,6 +380,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
           at: res.at,
           stale: res.stale,
           note: res.note,
+          nearestAt: res.nearestAt,
         })
       })
       .catch((err: unknown) => {
@@ -346,7 +397,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // `snapshotServed` rather than `accelEnabled`: it already folds in the global
     // mode, so a press of Snapshot / Live re-runs exactly the panels whose SOURCE
     // it changed, and none of the others.
-  }, [text, accel, snapshotServed, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
+  }, [text, accel, snapshotServed, asOf, tail, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }

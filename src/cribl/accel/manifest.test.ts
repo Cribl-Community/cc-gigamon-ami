@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest'
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY } from '../../queries/fieldExplorer'
 import { APP_VERSION } from '../config'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from './words'
 import {
   MANIFEST,
   MANIFEST_VERSION,
@@ -32,18 +33,28 @@ import {
   accelPostBody,
   accelSavedSearch,
   isAccelId,
+  columnsOf,
   shortSha256,
   type AccelEntry,
 } from './manifest'
 
 const lake = accelEntry('gno_lake_30d_c1d')
 const sample = accelEntry('gno_sample_2m_c1h')
+const overview = accelEntry('gno_overview_c1h')
+const nodes = accelEntry('gno_svc_nodes_c1h')
+const edges = accelEntry('gno_svc_edges_c1h')
 
 describe('the manifest', () => {
-  it('holds exactly the two entries Phase 2 schedules', () => {
-    // Literal, not a count. A third entry is a decision about a customer's bill
-    // and about what the teardown will delete, so it changes this line too.
-    expect(MANIFEST.map((e) => e.id)).toEqual(['gno_lake_30d_c1d', 'gno_sample_2m_c1h'])
+  it('holds exactly these five', () => {
+    // Literal, not a count. An entry is a decision about a customer's bill and
+    // about what the teardown will delete, so adding one changes this line too.
+    expect(MANIFEST.map((e) => e.id)).toEqual([
+      'gno_lake_30d_c1d',
+      'gno_sample_2m_c1h',
+      'gno_overview_c1h',
+      'gno_svc_nodes_c1h',
+      'gno_svc_edges_c1h',
+    ])
   })
 
   it('gives every entry an id the teardown can recognise as ours', () => {
@@ -82,6 +93,10 @@ describe('the manifest', () => {
   it('says what each entry serves and why, in words an admin would recognise', () => {
     for (const e of MANIFEST) {
       expect(e.serves.trim().length, `${e.id} does not say which panel goes dark if it is paused`).toBeGreaterThan(10)
+      expect(e.panels.length, `${e.id} serves nothing`).toBeGreaterThan(0)
+      for (const panel of e.panels) {
+        expect(e.serves, `${e.id}: the prose an admin reads left out ${panel.queryId}`).toContain(panel.what)
+      }
       expect(e.why.trim().length, `${e.id}: a justification that is not written down is not a justification`).toBeGreaterThan(80)
       expect(e.name.startsWith('GNO'), `${e.id}: the name is what an operator scans a shared list by`).toBe(true)
     }
@@ -98,11 +113,103 @@ describe('the bodies', () => {
     expect(sample.body).toBe(FEED_SAMPLE_QUERY)
   })
 
-  it('shows what it scheduled, today', () => {
-    // Allowed to diverge one day — that is why there are two fields and two
-    // digests. It has not diverged yet, and an accidental divergence should be
-    // a failing test rather than a silent change to what an ⓘ claims.
-    for (const e of MANIFEST) expect(e.display).toBe(e.body)
+  // ── WHAT REPLACED `expect(e.display).toBe(e.body)` ──────────────────────
+  //
+  // That assertion was the only thing stopping a scheduled body drifting from
+  // the query a panel claims produced its number, and it held for both Phase 2
+  // entries. No union body can satisfy it: the hourly overview scan carries five
+  // panels' aggregates and each of those panels shows its own narrower query.
+  //
+  // It was loosened deliberately, and these cases are what it was loosened INTO.
+  // They walk the chain a shared body creates rather than one link of it —
+  // body → tail → the columns the panel reads — which is strictly more than the
+  // old line checked: it said nothing whatever about tails, and read.ts has
+  // accepted a `tail` since Phase 2 with nothing digesting it.
+  //
+  // What none of this can check is that the body's `total` MEANS what a panel's
+  // `total` means. That argument is written beside the strings it is about, in
+  // src/queries/snapshots.ts.
+
+  it('schedules the same string the ⓘ shows, wherever one search serves one panel', () => {
+    // The old assertion, kept exactly where it still applies. An entry with one
+    // panel and no tail is making the Phase 2 promise and still has to keep it.
+    for (const e of MANIFEST) {
+      if (e.panels.length === 1 && e.panels[0].tail === undefined) {
+        expect(e.panels[0].display, `${e.id} serves one panel and does not run that panel's query`).toBe(e.body)
+      }
+    }
+  })
+
+  it('cuts every served panel out of the body with a tail naming only columns the body defines', () => {
+    // The failure this catches is silent and is a WRONG NUMBER. A tail
+    // projecting an alias the body does not define renders nothing; a tail
+    // projecting a DIFFERENT alias renders another panel's figure under this
+    // panel's ⓘ. Neither raises an error, and neither falls back to live.
+    for (const e of MANIFEST) {
+      const body = columnsOf(e.body)
+      expect(body.outputs, `${e.id}: this test cannot read what its body emits`).not.toBeNull()
+      const produced = [...(body.outputs as Set<string>)]
+      for (const panel of e.panels) {
+        if (panel.tail === undefined) continue
+        const tail = columnsOf(panel.tail, body.outputs as Set<string>)
+        for (const needed of tail.inputs) {
+          expect(produced, `${e.id}/${panel.queryId}: the tail reads '${needed}', which the body does not produce`).toContain(needed)
+        }
+        expect(tail.outputs, `${e.id}/${panel.queryId}: this test cannot read what the tail emits`).not.toBeNull()
+        const emitted = [...(tail.outputs as Set<string>)]
+        for (const column of panel.reads) {
+          expect(emitted, `${e.id}/${panel.queryId}: the panel reads '${column}', which its tail does not emit`).toContain(column)
+        }
+      }
+    }
+  })
+
+  it('never hands a panel a column that means something else', () => {
+    // The Capacity tiles call sum(total_bytes) `total`; Findings calls count()
+    // `total`. They share the overview body, so one of them has to read a
+    // different name — and the tail is what makes that safe rather than merely
+    // documented, because the column it does not project is a column the panel
+    // cannot read. If `total` ever reappears in what Findings is handed, this
+    // fails.
+    const findings = overview.panels.find((p) => p.queryId === 'findings-counts')
+    const capacity = overview.panels.find((p) => p.queryId === 'capacity-kpi')
+    expect(findings?.tail).toBeDefined()
+    expect(columnsOf(findings?.tail as string, columnsOf(overview.body).outputs as Set<string>).outputs).not.toContain('total')
+    expect(columnsOf(capacity?.tail as string, columnsOf(overview.body).outputs as Set<string>).outputs).toContain('total')
+  })
+
+  it('keeps the untagged destination as a group of its own, for the panel that sums across it', () => {
+    // Service map's client-only totals are every flow OUT of a source service,
+    // including flows to peers carrying no AWS name tag. Whether a `summarize`
+    // keeps a null group key is not something this app has measured, and if it
+    // drops them that number comes back short with nothing on screen to say so.
+    // The body coalesces the null into a sentinel before grouping, so both
+    // panels are exact by construction: this pins the mechanism, because
+    // removing the `extend` would leave both tails still parsing.
+    expect(edges.body).toContain('extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name)')
+    const sources = edges.panels.find((p) => p.queryId === 'service-map-sources')
+    expect(sources?.tail, 'the client-only panel must sum across every destination group').toContain('sum(flows)')
+    expect(sources?.tail, 'summing only the tagged destinations is the bug this entry exists to avoid').not.toContain('dst_svc')
+  })
+
+  it('gives every panel of a shared body its own tail', () => {
+    // A hook naming a multi-panel entry without naming its panel reads the whole
+    // shared row, every other panel's columns included. useSearch sends that
+    // case live rather than guessing; this is the other half — an entry sharing
+    // a body has to give each panel a way to be cut out of it.
+    for (const e of MANIFEST) {
+      if (e.panels.length === 1) continue
+      for (const panel of e.panels) {
+        expect(panel.tail, `${e.id}/${panel.queryId} shares a body with others and has no tail`).toBeDefined()
+      }
+    }
+  })
+
+  it('gives every served panel a distinct id, because the digest is keyed on it', () => {
+    for (const e of MANIFEST) {
+      const ids = e.panels.map((p) => p.queryId)
+      expect(new Set(ids).size, `${e.id} uses a queryId twice`).toBe(ids.length)
+    }
   })
 
   it('names its own dataset, because a schedule has no q() around it', () => {
@@ -113,14 +220,28 @@ describe('the bodies', () => {
   })
 
   it('keeps the schedule window out of the query text', () => {
-    // The sample runs over -4m…-2m while the live panel reads the page range.
-    // That difference belongs in the job's earliest/latest, never in the string,
-    // because the string is what the ⓘ tells the customer produced the number.
+    // The sample runs over a settled window while the live panel reads the page
+    // range. That difference belongs in the job's earliest/latest, never in the
+    // string, because the string is what the ⓘ tells the customer produced the
+    // number.
     expect(sample.body).toBe(FEED_SAMPLE_QUERY)
-    expect(sample.earliest).toBe('-4m')
-    expect(sample.latest).toBe('-2m')
     expect(lake.earliest).toBe('-30d')
     expect(lake.latest).toBe('now')
+  })
+
+  it('ends every window clear of the file flush, never at now', () => {
+    // -3m, and this is a correctness fix rather than a preference. The Lake
+    // landing profile this app provisions holds a file open for up to 120
+    // seconds before it flushes, so a window running to `now` reads a
+    // part-written file as a whole one. On the sample entry that under-reported
+    // which fields are arriving — the one question that panel exists to answer,
+    // wrong in the direction nobody can see.
+    expect(sample.earliest).toBe('-5m')
+    expect(sample.latest).toBe('-3m')
+    for (const e of [overview, nodes, edges]) {
+      expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
+      expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')
+    }
   })
 })
 
@@ -131,6 +252,37 @@ describe('the schedules', () => {
     // Never a local zone: a cron read in one moves twice a year, and a 30-day
     // total that skips or repeats an hour cannot be reconciled against the Lake.
     for (const e of MANIFEST) expect(e.tz).toBe('UTC')
+  })
+
+  it('retains a day of runs on the hourly entries, because the picker reads them', () => {
+    // Phase 2's rule was that a keepLastN larger than what the code READS is a
+    // promise the code does not keep, and the code read exactly one run. The
+    // snapshot picker reads any of them, so twenty-four hourly runs are a day of
+    // past states a viewer can move between rather than a number nothing uses.
+    // It also has to stay inside Cribl's own seven-day result retention, or the
+    // picker would offer times whose results the platform had already reaped.
+    for (const e of [overview, nodes, edges]) {
+      expect(e.keepLastN, `${e.id} does not retain a day of hourly runs`).toBe(24)
+      expect(e.cron, `${e.id} is not hourly, so keepLastN: 24 is not a day`).toMatch(/^2[0-2] \* \* \* \*$/)
+    }
+  })
+
+  it('describes itself to a reader in words that match the cron it runs on', () => {
+    // Block 4 of an ⓘ is prose, not a cron expression, and five tabs quote the
+    // same sentence. Nothing derives it — turning `20 * * * *` into English is a
+    // cron formatter, which this codebase deliberately does not have — so this
+    // is the pin: move the schedule without moving the sentence and it fails.
+    expect(overview.cron).toBe('20 * * * *')
+    expect(OVERVIEW_CADENCE).toContain('20 past the hour')
+    expect(OVERVIEW_WINDOW).toContain('fifteen minutes')
+    expect(OVERVIEW_WINDOW).toContain('three minutes')
+  })
+
+  it('submits the hourly entries a minute apart', () => {
+    // Concurrent jobs from one account are admitted about 1.6 s apart, so one
+    // cron minute would start all three against each other. :20 is also the only
+    // submit minute inside the cost model's measured domain.
+    expect([overview.cron, nodes.cron, edges.cron]).toEqual(['20 * * * *', '21 * * * *', '22 * * * *'])
   })
 
   it('keeps enough past runs for the read path to have something to read', () => {
@@ -173,8 +325,8 @@ describe('the POST body', () => {
       name: 'GNO Feed sample 2 minutes',
       query: FEED_SAMPLE_QUERY,
       description,
-      earliest: '-4m',
-      latest: '-2m',
+      earliest: '-5m',
+      latest: '-3m',
       isPrivate: false,
       schedule: {
         enabled: true,
@@ -259,7 +411,7 @@ describe('the description digest', () => {
     // which app and release wrote this, which entry it is, and whether the query
     // it runs is still the one that app intends to run and to show.
     expect(await accelDescription(lake)).toMatch(
-      /^GNO \S+ · manifest v1 · serves gno_lake_30d_c1d · body-sha256:[0-9a-f]{12} · display-sha256:[0-9a-f]{12}$/,
+      /^GNO \S+ · manifest v2 · serves gno_lake_30d_c1d · body-sha256:[0-9a-f]{12} · display-sha256:[0-9a-f]{12}$/,
     )
     expect(await accelDescription(sample)).toContain('serves gno_sample_2m_c1h')
   })
@@ -278,8 +430,8 @@ describe('the description digest', () => {
     // would report every scheduled search as drifted from the app that owns it,
     // on Windows only — the exact shape of the bug that cost six CI runs in
     // Phase 1.
-    const crlf = { ...lake, body: 'a\r\nb', display: 'c\r\nd' } satisfies AccelEntry
-    const lfOnly = { ...lake, body: 'a\nb', display: 'c\nd' } satisfies AccelEntry
+    const crlf = { ...lake, body: 'a\r\nb', panels: [{ ...lake.panels[0], display: 'c\r\nd' }] } satisfies AccelEntry
+    const lfOnly = { ...lake, body: 'a\nb', panels: [{ ...lake.panels[0], display: 'c\nd' }] } satisfies AccelEntry
     expect(await accelDescription(crlf)).toBe(await accelDescription(lfOnly))
     expect(await shortSha256('a\r\nb')).toBe(await shortSha256('a\nb'))
   })
@@ -301,7 +453,11 @@ describe('the description digest', () => {
     // is the case the pair exists for: a body wider than what the ⓘ shows is
     // visible to an operator reading the description, and the two fields are
     // what make it visible.
-    const split = { ...lake, body: 'dataset="x" | limit 1', display: 'dataset="x" | limit 2' } satisfies AccelEntry
+    const split = {
+      ...lake,
+      body: 'dataset="x" | limit 1',
+      panels: [{ ...lake.panels[0], display: 'dataset="x" | limit 2' }],
+    } satisfies AccelEntry
     const [, , body, display] = /body-sha256:([0-9a-f]{12}) · display-sha256:([0-9a-f]{12})/.exec(
       `x ${await accelDescription(split)}`,
     ) as RegExpExecArray

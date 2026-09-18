@@ -12,8 +12,12 @@
 
 import { q } from '../cribl/search'
 
+// The fragment, exported so the hourly snapshot body holds the same characters
+// rather than a retyped copy of them (see snapshots.ts).
+export const VOLUME_AGGS = 'events=count(), bytes=sum(total_bytes), packets=sum(total_packets)'
+
 /** Record-derived volume (what the AMI data itself says). */
-export const VOLUME_QUERY = q('| summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)')
+export const VOLUME_QUERY = q('| summarize ' + VOLUME_AGGS)
 
 /**
  * Real Cribl component telemetry, scoped to THIS data path.

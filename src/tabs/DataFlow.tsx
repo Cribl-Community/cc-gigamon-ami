@@ -300,7 +300,9 @@ export function DataFlow() {
   // 30-day scan on every visit, which is the price stated beside that switch.
   const accelEnabled = useAccelEnabled()
   // Record-derived volume (what the AMI data itself says).
-  const agg = useSearch(VOLUME_QUERY)
+  // Served by the hourly overview scan, which carries these three aggregates
+  // alongside four other panels' — one scan instead of five.
+  const agg = useSearch(VOLUME_QUERY, { accel: 'gno_overview_c1h', accelPanel: 'data-flow-volume', accelEnabled })
   // Cribl's own component telemetry for the Cribl stages.
   const met = useSearch(METRICS_QUERY)
   // Lake total is deliberately pinned to the retention period, NOT the page

@@ -13,6 +13,7 @@ import { TourProvider } from './app/TourContext'
 import { TourLauncher, TourPicker, TourStrip } from './components/Tour'
 import { AppBanners } from './components/AppBanners'
 import { ModeToggle } from './components/ModeToggle'
+import { SnapshotPicker } from './components/SnapshotPicker'
 import { useDataMode } from './cribl/dataMode'
 import { JobWatchdogIndicator } from './components/JobWatchdog'
 import { Findings } from './tabs/Findings'
@@ -233,11 +234,23 @@ function Header({ tabName }: { tabName: string }) {
             are actually in flight this stays, in both modes, because that is a
             statement about right now rather than about the data's age. */}
         {(busy || mode === 'live') && <LastUpdated ts={lastRefresh} busy={busy} inflight={inflight} />}
-        <label className="range-label">Range</label>
-        <select className="range-select" value={range.label} aria-label="Time range"
-          onChange={(e) => { const next = TIME_RANGES.find((r) => r.label === e.target.value); if (next) setRange(next) }}>
-          {TIME_RANGES.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
-        </select>
+        {/* ONE TIME CONTROL, TWO MEANINGS BY MODE. In Live it asks how far back
+            from now; in Snapshot it asks which stored run, because a stored
+            result ignores the range picker entirely (accel/read.ts) and a
+            control that changes nothing is worse than one that is absent.
+            Rendering both would put two time controls in one header with only
+            one of them connected to anything. */}
+        {mode === 'live' ? (
+          <>
+            <label className="range-label" htmlFor="time-range">Range</label>
+            <select id="time-range" className="range-select" value={range.label} aria-label="Time range"
+              onChange={(e) => { const next = TIME_RANGES.find((r) => r.label === e.target.value); if (next) setRange(next) }}>
+              {TIME_RANGES.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
+            </select>
+          </>
+        ) : (
+          <SnapshotPicker />
+        )}
         <span className="auto-refresh">
           <select id="auto-refresh" className="range-select" value={autoSeconds} aria-label="Auto-refresh interval"
             aria-describedby="auto-refresh-note" onChange={(e) => setAutoSeconds(Number(e.target.value))}>

@@ -469,7 +469,8 @@ describe('what a confirmation names', () => {
     const state = await readAccelState()
     const plan = applyPlan(state)
     const named = applyResources(state).map((r) => r.id)
-    expect(named).toEqual([LAKE])
+    // Every entry but the one already stored correctly.
+    expect(named).toEqual(MANIFEST.map((e) => e.id).filter((id) => id !== SAMPLE))
     for (const id of named) expect(plan.willWrite.some((w) => w.includes(id))).toBe(true)
     for (const leave of plan.willLeave) expect(named.some((id) => leave.label.includes(id))).toBe(false)
   })
@@ -659,8 +660,8 @@ describe('a confirmed write', () => {
     await press(buttonNamed('Yes, create them'))
     await settle()
     const writes = savedWrites(calls)
-    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([`POST ${SAVED}`, `POST ${SAVED}`])
-    expect(writes.map((w) => w.body?.id).sort()).toEqual([LAKE, SAMPLE])
+    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual(MANIFEST.map(() => `POST ${SAVED}`))
+    expect(writes.map((w) => w.body?.id).sort()).toEqual(MANIFEST.map((e) => e.id).sort())
   })
 
   it('pauses by sending the WHOLE body back, schedule and all', async () => {

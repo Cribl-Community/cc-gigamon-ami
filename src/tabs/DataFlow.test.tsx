@@ -90,6 +90,10 @@ function stub(cfg: { stored?: Row[]; history?: unknown[] } = {}): void {
 /** The 30-day total as a live job — the query this phase exists to stop running. */
 const lakeLiveSubmits = () => submits.filter((s) => s.query.includes('total_bytes=sum(') && !s.query.includes('$vt_results'))
 const storedSubmits = () => submits.filter((s) => s.query.includes('$vt_results'))
+// The Lake tile's own stored read. This tab now has two accelerated hooks — the
+// volume figures read the hourly overview scan — so "a stored read happened" is
+// no longer the same claim as "the Lake tile read its own run".
+const lakeStoredSubmits = () => storedSubmits().filter((s) => s.query.includes('gno_lake_30d_c1d'))
 
 let container: HTMLDivElement
 let root: Root
@@ -131,7 +135,7 @@ describe('the Cribl Lake card', () => {
     expect(dated, `the card showed a stored figure with no date on it: ${cardLabels().join(' | ')}`).toBeDefined()
     expect(dated).toMatch(/events held · as of \d{2}:\d{2}/)
     expect(lakeLiveSubmits(), 'the 9,297.7 CPU-s query ran anyway').toEqual([])
-    expect(storedSubmits()).toHaveLength(1)
+    expect(lakeStoredSubmits()).toHaveLength(1)
   })
 
   it('says on the page that the card is not reading the range picker', async () => {

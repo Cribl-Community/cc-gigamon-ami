@@ -36,6 +36,7 @@ import {
   VIRTUAL_COLUMNS,
   accelReadQuery,
   accelReadQueryOn,
+  accelRunQuery,
   observedKeyBinding,
   readAccelFieldSummaries,
   readAccelRows,
@@ -135,7 +136,11 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
       // Three job ids, so /results and /field-summaries can answer each key
       // differently. None is a prefix of another: `job-vt` is, deliberately, not
       // a substring of the name-keyed one.
-      const id = !isVt ? 'job-live' : keyOf(body.query) === 'name' ? 'job-nm' : 'job-vt'
+      // A `jobId=` selector is the timeline's read of one named run. It is not
+      // keyed on either identifier, so it answers from the same rows the
+      // id-keyed read does — `vtRows`.
+      const byRun = body.query.includes('jobId=')
+      const id = !isVt ? 'job-live' : !byRun && keyOf(body.query) === 'name' ? 'job-nm' : 'job-vt'
       return res(200, { items: [{ id }] })
     }
     if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
@@ -722,6 +727,181 @@ describe('the sentences this module may say', () => {
         expect(note, `${outcome} quotes the API at a customer`).not.toContain(leak)
       }
     }
+  })
+})
+
+
+// ── Reading a chosen past state ─────────────────────────────────────────────
+//
+// THE CLAIM THIS WHOLE BLOCK EXISTS FOR: with a moment selected, **nothing here
+// may run the live query**. Everywhere else in this module a failure falls back
+// to live, because the live query answers the same question at the old price.
+// That stops being true the instant a viewer names a time: the live query
+// answers about NOW, the panel would be headed 04:20, and two tabs side by side
+// would be showing this afternoon and this morning with nothing saying so. The
+// `liveSubmit` assertion appears in every case below for that reason.
+
+describe('reading the state at a chosen moment', () => {
+  /** Three hourly runs, newest first, as the job list returns them. */
+  const hourlyRuns = [
+    { id: 'run-0920', status: 'completed', timeCreated: NOW - HOUR, timeStarted: NOW - HOUR, timeCompleted: NOW - HOUR },
+    { id: 'run-0820', status: 'completed', timeCreated: NOW - 2 * HOUR, timeStarted: NOW - 2 * HOUR, timeCompleted: NOW - 2 * HOUR },
+    { id: 'run-0720', status: 'completed', timeCreated: NOW - 3 * HOUR, timeStarted: NOW - 3 * HOUR, timeCompleted: NOW - 3 * HOUR },
+  ]
+
+  const storedFrom = (jobId: string): Row => ({ ...STORED, jobId, jobName: LAKE })
+
+  it('addresses one run by its job id, not the schedule by name', async () => {
+    // `jobName=` selects a schedule. With twenty-four retained runs that is
+    // twenty-four wrong answers and one right one, and the app cannot tell which
+    // it got — which is precisely why the timeline addresses a job id.
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom('run-0820')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
+
+    // `toContain`, because search.ts prefixes every job it submits with the
+    // running-time cap. That prefix is execution-only and never reaches an ⓘ.
+    expect(vtSubmit(submits)?.query).toContain('dataset="$vt_results" jobId="run-0820"')
+    expect(read.source).toBe('schedule')
+    expect(read.at).toBe(NOW - 2 * HOUR)
+    expect(liveSubmit(submits), 'the live query ran for a question about the past').toBeUndefined()
+  })
+
+  it('takes the newest run that had FINISHED by then, never a later one', async () => {
+    // A run that finished at 09:20 did not exist at 08:40. Handing it to someone
+    // who asked for 08:40 answers a question about the past with data from the
+    // future — the one mistake a timeline can make that a reader cannot see.
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom('run-0820')], liveRows: [LIVE] })
+    await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR + 40 * 60_000, now: NOW })
+    expect(vtSubmit(submits)?.query).toContain('jobId="run-0820"')
+  })
+
+  it('shows nothing, and offers its nearest, when the moment is before every run', async () => {
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom('run-0720')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 9 * HOUR, now: NOW })
+
+    expect(read.outcome).toBe('no-run-at')
+    expect(read.source).toBe('none')
+    expect(read.data).toEqual([])
+    expect(read.at).toBe(null)
+    // The oldest run it does have — what the panel offers instead.
+    expect(read.nearestAt).toBe(NOW - 3 * HOUR)
+    expect(liveSubmit(submits), 'a gap in the timeline was filled with the present').toBeUndefined()
+    expect(vtSubmit(submits), 'nothing should have been read at all').toBeUndefined()
+  })
+
+  it('reports an empty stored result as aged out rather than as a missing schedule', async () => {
+    // The run WAS listed, so it fired. What has gone is its result — Cribl
+    // reaped it, or keepLastN dropped it. Calling that "no snapshot from then"
+    // would send a reader looking for a schedule fault that is not there.
+    const { submits } = stub({ history: hourlyRuns, vtRows: [], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
+
+    expect(read.outcome).toBe('aged-out')
+    expect(read.source).toBe('none')
+    expect(read.nearestAt).toBe(NOW - 2 * HOUR)
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('refuses rows stamped with another schedule, and still does not run live', async () => {
+    const { submits } = stub({
+      history: hourlyRuns,
+      vtRows: [{ ...STORED, jobId: 'run-0820', jobName: 'gno_somebody_else' }],
+      liveRows: [LIVE],
+    })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
+
+    expect(read.outcome).toBe('unreadable')
+    expect(read.source).toBe('none')
+    expect(read.data).toEqual([])
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('answers the moment even when the panel asked to be live', async () => {
+    // "Run this one now" has nothing to mean for a question about 04:20, so the
+    // moment wins. The control that sets it is hidden while a moment is picked;
+    // this is the belt to that braces.
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom('run-0820')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, enabled: false, now: NOW })
+
+    expect(read.source).toBe('schedule')
+    expect(read.outcome).toBe('fresh')
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('never calls a chosen moment stale, however old it is', async () => {
+    // Staleness means "the newest run is older than the schedule promises". A
+    // viewer looking at yesterday is not being shown something overdue, and
+    // flagging it would put a schedule warning on every panel of the timeline.
+    const old = [{ id: 'run-old', status: 'completed', timeCreated: NOW - 5 * DAY, timeStarted: NOW - 5 * DAY, timeCompleted: NOW - 5 * DAY }]
+    const { submits } = stub({ history: old, vtRows: [storedFrom('run-old')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 4 * DAY, now: NOW })
+
+    expect(read.stale).toBe(false)
+    expect(read.outcome).toBe('fresh')
+    expect(read.ageMs).toBe(5 * DAY)
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('never offers a run that is still going or that failed', async () => {
+    // A running job's results are not readable, and a failed one's are partial —
+    // a partial sum is a smaller Lake and a partial sample says fields are
+    // missing that are not. Both are excluded from the timeline rather than
+    // offered and then refused.
+    const mixed = [
+      { id: 'run-now', status: 'running', timeCreated: NOW - 60_000 },
+      { id: 'run-bad', status: 'failed', timeCreated: NOW - HOUR, timeCompleted: NOW - HOUR },
+      { id: 'run-ok', status: 'completed', timeCreated: NOW - 2 * HOUR, timeCompleted: NOW - 2 * HOUR },
+    ]
+    const { submits } = stub({ history: mixed, vtRows: [storedFrom('run-ok')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW, now: NOW })
+
+    expect(vtSubmit(submits)?.query).toContain('jobId="run-ok"')
+    expect(read.at).toBe(NOW - 2 * HOUR)
+  })
+
+  it('strips the virtual columns from a chosen run exactly as it does from the newest', async () => {
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom('run-0820')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
+    for (const column of VIRTUAL_COLUMNS) expect(Object.keys(read.data[0])).not.toContain(column)
+    expect(read.data[0].total_events).toBe(STORED.total_events)
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('says nothing about which key the schedule binds to, because a job id answered', async () => {
+    // V-23 is a question about `jobName=`. A read that never used it is not
+    // evidence either way, and recording it as one would corrupt the only
+    // measurement this app makes of the platform's behaviour.
+    stub({ history: hourlyRuns, vtRows: [storedFrom('run-0820')], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
+    expect(read.key).toBe(null)
+    expect(observedKeyBinding()).toBe(null)
+  })
+
+  it('leaves the newest-run path completely alone', async () => {
+    // The id-then-name fallback is what settles V-23, and it is the thing most
+    // likely to be broken by accident while adding a second path beside it.
+    const { submits } = stub({ ...healthy, nameRows: [STORED], vtRows: [] })
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(vtKeys(submits)).toEqual(['id', 'name'])
+    expect(read.key).toBe('name')
+    expect(read.note).toBe(NOTES.fresh)
+  })
+
+  it('refuses a job id that is not one', async () => {
+    // The only identifier in this app that reaches query TEXT without a human
+    // having typed it: it arrives from a list read.
+    expect(() => accelRunQuery('abc" or jobName="x')).toThrow()
+    expect(() => accelRunQuery('')).toThrow()
+    expect(accelRunQuery('1789395843210.fxAzHG')).toBe('dataset="$vt_results" jobId="1789395843210.fxAzHG"')
+    expect(accelRunQuery('run-1', '| project a')).toBe('dataset="$vt_results" jobId="run-1" | project a')
+  })
+
+  it('reports a history it could not read without inventing a gap', async () => {
+    const { submits } = stub({ historyStatus: 403, liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - HOUR, now: NOW })
+    expect(read.outcome).toBe('unreadable')
+    expect(read.source).toBe('none')
+    expect(liveSubmit(submits)).toBeUndefined()
   })
 })
 

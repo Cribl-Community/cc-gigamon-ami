@@ -53,6 +53,9 @@ export interface PanelSnapshotState {
   stale: boolean
   /** The viewer pressed this panel's own Live control for this visit. */
   liveOnly?: boolean
+  /** When `source` is `'none'`: the nearest stored run this panel does have, so
+   *  the caption can offer it instead of only reporting a gap. */
+  nearestAt?: number | null
 }
 
 export interface SnapshotCensus {
@@ -169,4 +172,52 @@ export function resetSnapshotCensus(): void {
   slots.clear()
   snapshot = EMPTY
   for (const l of listeners) l()
+}
+
+/**
+ * One caption for a panel several hooks feed.
+ *
+ * Service map's graph is three searches in one card, and Data Flow's toolbar is
+ * three. `<Panel>` takes one state because the reader sees one card, so the
+ * three have to be reduced to one — and the reduction is not an average, it is
+ * the worst case:
+ *
+ *   * ANY hook with nothing stored from the moment that was picked makes the
+ *     whole card `none`. Half a graph drawn from 04:20 with the other half from
+ *     now is the one outcome a timeline must never produce, and it would look
+ *     completely normal.
+ *   * ANY hook that ran live makes the card live. A card labelled "snapshot
+ *     08:20" while one of its three searches ran a moment ago is a false claim
+ *     about the picture as a whole.
+ *   * Otherwise the card is a snapshot dated by its OLDEST part, because that is
+ *     the age of the least current thing on it.
+ *
+ * Undefined in, undefined out: a panel none of whose hooks has a schedule is not
+ * in the census's numerator and has no caption.
+ */
+export function mergeSnapshotStates(
+  states: ReadonlyArray<PanelSnapshotState | undefined>,
+): PanelSnapshotState | undefined {
+  const present = states.filter((s): s is PanelSnapshotState => s !== undefined)
+  if (present.length === 0) return undefined
+
+  const absent = present.filter((s) => s.source === 'none')
+  if (absent.length > 0) {
+    const nearest = absent.map((s) => s.nearestAt).filter((n): n is number => typeof n === 'number')
+    return {
+      source: 'none',
+      outcome: absent[0].outcome,
+      at: null,
+      stale: false,
+      // The nearest run any of the missing parts has — the closest whole picture
+      // is no earlier than that.
+      nearestAt: nearest.length > 0 ? Math.max(...nearest) : null,
+    }
+  }
+
+  const live = present.find((s) => s.source !== 'schedule' || s.at === null)
+  if (live) return live
+
+  const oldest = present.reduce((a, b) => ((a.at as number) <= (b.at as number) ? a : b))
+  return { ...oldest, stale: present.some((s) => s.stale) }
 }

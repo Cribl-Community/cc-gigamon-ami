@@ -734,11 +734,34 @@ body {
    ordinary state for 37 of the 39 panels and shouting it would make the app look
    broken everywhere. In every tone the WORDS say the same thing as the colour —
    StatusPill's rule, applied to a caption. */
+/* The snapshot picker takes the range picker's place in Snapshot mode, so it
+   sits on the same baseline as the selects beside it. The note under it is the
+   horizon sentence — visible, not sr-only: how far back the list goes is the
+   fact that makes the control trustworthy. */
+/* One line above a row of KPI tiles, saying where those figures came from. The
+   tiles have no header of their own and six identical captions would be the
+   same fact six times. */
+.kpi-row-head { display: flex; justify-content: flex-end; margin-bottom: var(--gm-sp-6); }
+.snap-picker { display: inline-flex; align-items: center; gap: var(--gm-sp-6); }
+.snap-picker-note {
+  color: var(--gm-fg-subtle);
+  font-size: var(--gm-fs-12);
+  /* The sentence changes length as runs land and as a moment is picked, and a
+     header that reflows on every read is worse than one that clips. */
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .snap-note { font-size: var(--gm-fs-12); font-family: var(--gm-mono); color: var(--gm-fg-subtle); }
 .snap-note-fresh { color: var(--gm-fg); }
 .snap-note-aged { color: var(--gm-fg-subtle); }
 .snap-note-overdue { color: var(--gm-st-warning); }
 .snap-note-live { color: var(--gm-fg-subtle); }
+/* Nothing stored from the moment that was picked. Warning-coloured because it is
+   a gap the reader has to act on (pick another time), and the words say the same
+   thing — colour is never the only signal. */
+.snap-note-absent { color: var(--gm-st-warning); }
 
 /* ---------- Query states ---------- */
 .qb-center {

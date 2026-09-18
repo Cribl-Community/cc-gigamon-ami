@@ -9,6 +9,8 @@ import { QueryBoundary } from '../components/QueryBoundary'
 import { BarList, type BarItem } from '../components/BarList'
 import { TimeChart, type Series } from '../components/TimeChart'
 import { toNum, str, fmtCount, fmtMs, fmtPct } from '../lib/format'
+import { SnapshotCaption } from '../components/SnapshotCaption'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from '../cribl/accel/words'
 import { KPI, CODES, HOSTS, SLOW, TREND, H2, ERRORS_DRILL } from '../queries/webApiHealth'
 
 export function WebApiHealth() {
@@ -20,7 +22,7 @@ export function WebApiHealth() {
   const trendNear = useNearViewport()
   const h2Near = useNearViewport()
 
-  const kpi = useSearch(KPI)
+  const kpi = useSearch(KPI, { accel: 'gno_overview_c1h', accelPanel: 'web-kpi' })
   const codes = useSearch(CODES)
   const hosts = useSearch(HOSTS, { deferred: !hostsNear.near })
   const slow = useSearch(SLOW)
@@ -62,6 +64,11 @@ export function WebApiHealth() {
     display: fmtCount(r.n),
   }))
 
+  // One state for the row's caption and every tile's ⓘ, so a tile can never date
+  // itself differently from the line above it.
+  const kpiSnapshot = { source: kpi.source, outcome: kpi.outcome, at: kpi.at, stale: kpi.stale, nearestAt: kpi.nearestAt }
+  const kpiComputed = { ...kpiSnapshot, cadence: OVERVIEW_CADENCE, window: OVERVIEW_WINDOW, fallback: kpi.note }
+
   const series: Series[] = useMemo(() => [
     { name: 'errors / min', color: '#f03e3e', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.errors) })) },
     { name: 'requests / min', color: '#4dabf7', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.total) })) },
@@ -79,16 +86,19 @@ export function WebApiHealth() {
         </p>
       </div>
 
+      <div className="kpi-row-head">
+        <SnapshotCaption state={kpiSnapshot} />
+      </div>
       <div className="kpi-row kpi-row-4">
         <KpiTile label="HTTP transactions" value={kpi.loading ? '…' : fmtCount(txns)} accent="info"
-          sub="http_code present" info="Flows carrying an HTTP response code in this window (HTTP/1.x only — HTTP/2 is counted separately)." query={KPI} />
+          sub="http_code present" info="Flows carrying an HTTP response code in this window (HTTP/1.x only — HTTP/2 is counted separately)." query={KPI} computed={kpiComputed} />
         <KpiTile label="Error rate" value={kpi.loading ? '…' : fmtPct(errRate, 2)}
           accent={errRate > 5 ? 'danger' : errRate > 1 ? 'warning' : 'success'}
-          sub={`${fmtCount(errors)} × 4xx/5xx`} info="Share of HTTP transactions returning 4xx or 5xx. 5xx implicates the server; 4xx is usually the caller." query={KPI} />
+          sub={`${fmtCount(errors)} × 4xx/5xx`} info="Share of HTTP transactions returning 4xx or 5xx. 5xx implicates the server; 4xx is usually the caller." query={KPI} computed={kpiComputed} />
         <KpiTile label="Server think-time p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95))} accent="warning"
-          sub="http_server_ms" info="95th-percentile server processing time — request timestamp to response timestamp, measured on the wire." query={KPI} />
+          sub="http_server_ms" info="95th-percentile server processing time — request timestamp to response timestamp, measured on the wire." query={KPI} computed={kpiComputed} />
         <KpiTile label="HTTP/2 transactions" value={kpi.loading ? '…' : fmtCount(toNum(k.h2))} accent="neutral"
-          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={KPI} />
+          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={KPI} computed={kpiComputed} />
       </div>
 
       <div className="grid-2">

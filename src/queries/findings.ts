@@ -12,9 +12,13 @@
 import { q } from '../cribl/search'
 import { FINDINGS, type Finding } from '../data/findings'
 
-export const FINDINGS_QUERY = q(
-  '| summarize total=count(), ' + FINDINGS.map((f, i) => `f${i}=${f.agg}`).join(', '),
-)
+// The per-finding aggregates, without the row total. Exported so the hourly
+// snapshot body holds these characters rather than a retyped copy — and so it
+// can give the total a different NAME, which it has to: `total` already means
+// sum(total_bytes) to the Capacity tiles sharing that body. See snapshots.ts.
+export const FINDING_AGGS = FINDINGS.map((f, i) => `f${i}=${f.agg}`).join(', ')
+
+export const FINDINGS_QUERY = q('| summarize total=count(), ' + FINDING_AGGS)
 
 /** The matching flows behind one finding — the "Flows ↗" link on its row. */
 export const findingFlowsQuery = (f: Finding): string => q(`${f.filter} | limit 200`)

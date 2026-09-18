@@ -46,6 +46,9 @@ export type SnapshotTone =
   /** This panel ran its own query — either because there was no snapshot to
    *  read, or because the viewer asked. */
   | 'live'
+  /** Nothing to show: the moment the viewer picked has no stored run for this
+   *  panel, and running the query now would answer about the present. */
+  | 'absent'
 
 export interface SnapshotNote {
   /** What goes on screen beside the panel title. */
@@ -99,6 +102,10 @@ const LIVE_WORDS: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   'aged-out': 'live · no stored result is left',
   unreadable: 'live · the stored result could not be read',
   off: 'live · you asked for this one now',
+  // Never reached through LIVE_WORDS — `no-run-at` is answered above, where the
+  // words can say which times DO exist. Present because the record is total, so
+  // a new outcome is a build error rather than a blank caption.
+  'no-run-at': 'nothing stored from that time',
 })
 
 /**
@@ -118,6 +125,17 @@ export function snapshotNote(state: PanelSnapshotState | null | undefined, now: 
   // panel's own control — which is why there is one sentence and not two.
   if (state.liveOnly) {
     return { text: 'live · you asked for this one now', tone: 'live', title: NOTES.off }
+  }
+
+  // A panel with nothing to show from the moment that was picked. It is not
+  // live, so it must not be painted or worded as live — the reader is looking at
+  // an empty card and the caption is the only thing that says why.
+  if (state.source === 'none') {
+    return {
+      text: state.nearestAt != null ? `nothing at that time · nearest ${asOf(state.nearestAt, now) ?? 'another run'}` : 'nothing stored from that time',
+      tone: 'absent',
+      title: state.outcome ? NOTES[state.outcome] : NOTES['no-run-at'],
+    }
   }
 
   if (state.source === 'schedule' && state.at !== null) {
