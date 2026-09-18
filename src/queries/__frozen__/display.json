@@ -16,12 +16,12 @@
     "searches": 39,
     "links": 23,
     "briefs": 17,
-    "prose": 16,
+    "prose": 17,
     "modules": 138,
     "catalogs": 13,
     "states": 34,
     "passthrough": 3,
-    "unbound": 21
+    "unbound": 22
   },
   "fixtures": {
     "src/tabs/DataFlow.tsx": {
@@ -375,6 +375,20 @@
       "prose": {
         "Panel · How data lands in Cribl Lake": {
           "info": "Every value on this panel and the endpoint it came from. Dataset, retention, description, object format and partitions: GET /products/lake/lakes/default/datasets/gigamon_ami?includeMetrics=true. Datasets in this lake: GET /products/lake/lakes/default/datasets?excludeDeleted=false&includeMetrics=true. Storage location and the partition-field limit: GET /products/lake/lakes/default/config. Search reader: GET /m/default_search/search/datasets/gigamon_ami. Acceleration tier: GET /m/default_search/search/local_search, with its engine count from the same path's /engines. How objects are written, and destination health: GET /m/{gid}/system/outputs/gigamon_lake. Feeds writing through it: GET /m/{gid}/system/inputs and GET /m/{gid}/routes. Worker group and the commit its Workers are running: GET /products/stream/groups. Landing lag and the partition-candidate statistics are NOT reads — each is a Cribl Search job started by its own Measure button, and what you see afterwards comes back from this app's own store, app/settings/lake_landing, with the time it was taken, so reloading the page does not spend the credits again."
+        }
+      }
+    },
+    "src/components/ModeToggle.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "PanelInfo · modeAbout(mode, census, cost, tabName)": {
+          "ref": "modeAbout(mode, census, cost, tabName)",
+          "about": "(unbound)",
+          "aboutHeading": "Where these numbers come from",
+          "label": "Where the numbers on this tab come from"
         }
       }
     },

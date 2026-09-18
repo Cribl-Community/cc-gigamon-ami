@@ -12,6 +12,8 @@ import { TopProgress } from './components/TopProgress'
 import { TourProvider } from './app/TourContext'
 import { TourLauncher, TourPicker, TourStrip } from './components/Tour'
 import { AppBanners } from './components/AppBanners'
+import { ModeToggle } from './components/ModeToggle'
+import { useDataMode } from './cribl/dataMode'
 import { JobWatchdogIndicator } from './components/JobWatchdog'
 import { Findings } from './tabs/Findings'
 import { Security } from './tabs/Security'
@@ -197,6 +199,7 @@ function useAutoRefreshCopy(tabName: string) {
 function Header({ tabName }: { tabName: string }) {
   const { range, setRange, refresh, autoSeconds, setAutoSeconds, lastRefresh } = useDashboard()
   const autoRefresh = useAutoRefreshCopy(tabName)
+  const mode = useDataMode()
   // Spin for exactly as long as work is actually happening, rather than a fixed
   // timeout that finishes while queries are still running (reads as a stall).
   const inflight = useInflight()
@@ -223,7 +226,13 @@ function Header({ tabName }: { tabName: string }) {
             tab because that is what keeps the watch running for as long as the
             app is open. */}
         <JobWatchdogIndicator />
-        <LastUpdated ts={lastRefresh} busy={busy} inflight={inflight} />
+        {/* ONE FRESHNESS STATEMENT AT A TIME. "updated 12s ago" is a claim about
+            when the queries on screen last ran, and in Snapshot mode most of
+            them did not run at all — the honest answer is the census line the
+            mode control carries ("3 of 6 panels · oldest 08:20"). While searches
+            are actually in flight this stays, in both modes, because that is a
+            statement about right now rather than about the data's age. */}
+        {(busy || mode === 'live') && <LastUpdated ts={lastRefresh} busy={busy} inflight={inflight} />}
         <label className="range-label">Range</label>
         <select className="range-select" value={range.label} aria-label="Time range"
           onChange={(e) => { const next = TIME_RANGES.find((r) => r.label === e.target.value); if (next) setRange(next) }}>
@@ -241,6 +250,10 @@ function Header({ tabName }: { tabName: string }) {
           </span>
           <PanelInfo aboutHeading="What auto-refresh costs" about={autoRefresh.about} label="What auto-refresh costs on this tab" />
         </span>
+        {/* Between auto-refresh and Refresh: the owner's "the logical place is
+            the refresh button", honoured by adjacency rather than by hiding the
+            state inside it. See components/ModeToggle.tsx. */}
+        <ModeToggle tabName={tabName} />
         <TourLauncher />
         <ThemeToggle />
         <button type="button" className="btn" onClick={doRefresh} aria-busy={busy}>

@@ -604,6 +604,30 @@ const PAIRS: Pair[] = [
     where: '.gs-checklist-head',
   },
   {
+    what: 'status: warning, in the header, on the page itself',
+    fg: 'var(--gm-st-warning)',
+    bg: [PAGE],
+    threshold: 4.5,
+    where:
+      '.mode-unsaved (11px) — the line the Snapshot/Live control shows when the KV store refused to remember the choice. The header sets no background of its own, so this is the only pairing in the file drawn straight onto the page.',
+  },
+  {
+    what: 'the pressed segment of the Snapshot / Live control',
+    fg: '#fff',
+    bg: ['var(--gm-btn-primary)', PAGE],
+    threshold: 4.5,
+    where:
+      '.mode-toggle .seg-active (13px medium). It is the one segmented control in the app that does NOT use .seg-active’s own fill, because its pressed text carries a price — and .seg-active’s foreground.info.contrast on background.info.solid.default measures 3.26:1. The App.css rule says the rest of the argument.',
+  },
+  {
+    what: 'the unpressed segment of the Snapshot / Live control',
+    fg: 'var(--gm-fg-subtle)',
+    bg: ["token('color.background.neutral.subtle')", PAGE],
+    threshold: 4.5,
+    where:
+      '.seg inside .mode-toggle (13px medium). Listed because this control quotes a price in that text; the same pairing has been drawn by .pivot-toggle since before this table existed.',
+  },
+  {
     what: 'status: danger',
     fg: 'var(--gm-st-danger)',
     bg: ['var(--gm-panel)', PAGE],
