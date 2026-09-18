@@ -28,7 +28,7 @@
 
 import { useEffect, useId, useState } from 'react'
 import { setDataMode, useDataMode, useDataModeSave, type DataMode } from '../cribl/dataMode'
-import { useMountedSearchCost } from '../cribl/jobCost'
+import { useMountedLiveCost } from '../cribl/jobCost'
 import { PanelInfo } from './PanelInfo'
 import { useSnapshotCensus } from './snapshotCensus'
 import {
@@ -54,7 +54,10 @@ export function ModeToggle({ tabName }: { tabName: string }) {
   const mode = useDataMode()
   const save = useDataModeSave()
   const census = useSnapshotCensus()
-  const cost = useMountedSearchCost()
+  // What a press of `Live` would actually cost, which is NOT what one
+  // auto-refresh tick costs — see modeToggleCopy.ts#livePrice for the eighty-
+  // times understatement the tick figure produced on Data Flow.
+  const cost = useMountedLiveCost()
   const noteId = useId()
 
   const [, setTick] = useState(0)
@@ -92,7 +95,7 @@ export function ModeToggle({ tabName }: { tabName: string }) {
           aria-label={SEGMENT_NAMES.live}
           onClick={press('live')}
         >
-          {liveSegmentLabel(cost, census)}
+          {liveSegmentLabel(cost)}
         </button>
       </span>
       <span id={noteId} className="sr-only">{MODE_SR_NOTE}</span>

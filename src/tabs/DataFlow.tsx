@@ -7,6 +7,7 @@ import type { AccelId } from '../cribl/accel/manifest'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
 import { asOf, PanelInfo, type ComputedFrom } from '../components/PanelInfo'
 import { DopDiagram, type DopNode, type HopId, type HopState, type InfoKey, type SlotId } from '../components/DopDiagram'
+import { mergeSnapshotStates, useSnapshotSlot } from '../components/snapshotCensus'
 import { toNum, fmtCount, fmtBytes, windowSeconds } from '../lib/format'
 
 /**
@@ -310,6 +311,41 @@ export function DataFlow() {
   // It is served by a daily scheduled run of this same string where there is one
   // (LAKE_ACCEL) and runs live where there is not — see the header.
   const lakeTotal = useSearch(LAKE_TOTAL_QUERY, { earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, accelEnabled })
+  // THE CENSUS, ON A TAB THAT RENDERS NO <Panel>. Registration normally happens
+  // inside <Panel>, because that is the customer's unit — one card, one title,
+  // one ⓘ. This tab draws a diagram and a stage-detail card instead, so nothing
+  // registered and the header read `Snapshot · nothing on this tab reads a
+  // query` on the tab that motivated the whole phase: three searches run here,
+  // two of them served from schedules, one of them the 9,297.7 CPU-s Lake total.
+  //
+  // Two slots, because the tab's own toolbar already tells the reader these are
+  // two provenances and not one:
+  //   * the diagram's volumes — record-derived (`agg`, hourly) mixed with Cribl's
+  //     own telemetry (`met`, never scheduled). Merged, so it reports LIVE: a
+  //     picture half of which ran a moment ago may not carry a snapshot date.
+  //     mergeSnapshotStates's rule, and the same one Security's grid follows.
+  //   * the Cribl Lake card, which has a title and an ⓘ of its own inside the
+  //     diagram and is served by its own daily run. It is the figure a reader
+  //     would be misled about, so it is counted separately rather than folded
+  //     into a merge that would always drag it to live.
+  //
+  // The stage-detail card below is deliberately NOT a third: it re-reads the
+  // same `met` figures the diagram node above it already carries, and counting
+  // one query twice would inflate the denominator the header quotes.
+  useSnapshotSlot(
+    mergeSnapshotStates([
+      { source: agg.source, outcome: agg.outcome, at: agg.at, stale: agg.stale, nearestAt: agg.nearestAt },
+      { source: met.source, outcome: met.outcome, at: met.at, stale: met.stale, nearestAt: met.nearestAt },
+    ]),
+  )
+  useSnapshotSlot({
+    source: lakeTotal.source,
+    outcome: lakeTotal.outcome,
+    at: lakeTotal.at,
+    stale: lakeTotal.stale,
+    nearestAt: lakeTotal.nearestAt,
+  })
+
   const row = agg.rows[0]
   const mrow = met.rows[0]
   const lrow = lakeTotal.rows[0]

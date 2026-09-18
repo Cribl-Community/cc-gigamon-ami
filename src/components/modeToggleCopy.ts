@@ -9,7 +9,7 @@
 // The design behind the control is in ModeToggle.tsx's header. This file is the
 // implementation of that argument, not the argument.
 
-import { CPU_SECONDS_PER_CREDIT, type MountedCost } from '../cribl/jobCost'
+import { CPU_SECONDS_PER_CREDIT, type LiveCost } from '../cribl/jobCost'
 import { formatCost } from '../lib/format'
 import type { DataMode, DataModeSave } from '../cribl/dataMode'
 import { asOf } from './PanelInfo'
@@ -50,33 +50,43 @@ export const MODE_SR_NOTE =
 /**
  * The price on the Live segment — or null, which is a decision and not a gap.
  *
- * WHY IT IS WITHHELD ON EXACTLY THE TABS WHERE IT WOULD MATTER MOST. The cost
- * registry counts a mounted search only when its slot is marked `autoRefresh`
- * (cribl/jobCost.ts), and cribl/useSearch.ts takes a slot as
- * `useCostSlot(enabled && !pinned)` with `pinned` true for every accelerated
- * hook. So a snapshot-served panel contributes NOTHING to `useMountedSearchCost`
- * in either mode. On Data Flow that omits the 8,938 billable CPU-s Lake total:
- * the segment would have read *about 0.03 credits* for a press that costs about
- * 2.5, an understatement of roughly eighty times, on the one control whose whole
- * justification is that it carries a price.
+ * WHAT IT COSTS IS `useMountedLiveCost()`, NOT `useMountedSearchCost()`, and the
+ * difference was an eighty-times understatement. The tick aggregate counts only
+ * slots marked `autoRefresh`, and cribl/useSearch.ts takes its slot as
+ * `useCostSlot({ autoRefresh: enabled && !pinned, … })` with `pinned` true for
+ * every snapshot-served and every window-pinned hook. So the figure that used to
+ * reach this function omitted the 9,297.7 CPU-s Lake total outright: the segment
+ * would have read *about 0.03 credits* for a press costing about 2.5, on the one
+ * control whose entire justification is that it carries a price. cribl/jobCost.ts
+ * answers the other question — what running every mounted panel live right now
+ * costs, tick or no tick — and that is what a press of `Live` actually does.
+ *
+ * WHY A NUMBER IS STILL WITHHELD, AND WHEN. A panel that has been served from
+ * its schedule all session has never run live here and holds no measurement of
+ * its own; `liveHint` fills that from accel/estimate.ts's measured runs, which
+ * covers every panel with a manifest entry. A panel with NEITHER — one that has
+ * not finished a run and has no entry to borrow a figure from — is reported as
+ * `unpriced`, and while there is one the sum is short by an unknown amount.
  *
  * A control that is trusted because it quotes a number may not quote a number it
- * knows is incomplete. So the price appears only when the census says nothing on
- * this tab is snapshot-served — the one condition under which the measured
- * figure provably covers every panel the press would re-run — and the ⓘ says why
- * it is missing when it is. When the registry learns to price accelerated hooks
- * mode-dependently this condition stops firing on its own; nothing here has to
- * be remembered.
+ * knows is incomplete, and "at least about 1.0 credits" hedges twice while still
+ * reading as a price. So the number appears only when `unpriced` is zero, and
+ * the ⓘ says how many panels are missing when it is not. This used to fire on
+ * every tab with any snapshot-served panel — which was all of the interesting
+ * ones; it now fires only while something is genuinely unmeasured, usually for
+ * the second before the first runs land.
  */
-export function livePrice(cost: MountedCost, census: SnapshotCensus): string | null {
+export function livePrice(cost: LiveCost): string | null {
+  // Order matters only for the reader: both are "no honest figure", but they are
+  // different states and the ⓘ branches on them separately.
+  if (cost.unpriced > 0) return null
   if (cost.panels === 0) return null
-  if (census.snapshotted > 0) return null
   return formatCost(cost.cpuSeconds / CPU_SECONDS_PER_CREDIT)
 }
 
 /** The Live segment's visible text: the word alone, or the word and its price. */
-export function liveSegmentLabel(cost: MountedCost, census: SnapshotCensus): string {
-  const price = livePrice(cost, census)
+export function liveSegmentLabel(cost: LiveCost): string {
+  const price = livePrice(cost)
   return price ? `${LIVE_LABEL} — ${price}` : LIVE_LABEL
 }
 
@@ -100,6 +110,10 @@ export function censusLine(census: SnapshotCensus, now: number = Date.now()): st
 }
 
 const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`)
+// Spelled out rather than run through `plural`, which appends an `s` and would
+// write "querys" on the one line in this file that quotes money. An irregular
+// plural is not a case to teach a helper; it is a word.
+const queries = (n: number) => (n === 1 ? 'query' : 'queries')
 
 /**
  * The line that appears when the store refused to remember the choice.
@@ -125,7 +139,7 @@ export function unsavedLine(save: DataModeSave): string | null {
 export function modeAbout(
   mode: DataMode,
   census: SnapshotCensus,
-  cost: MountedCost,
+  cost: LiveCost,
   tabName: string,
   now: number = Date.now(),
 ): string {
@@ -154,14 +168,20 @@ export function modeAbout(
           'Switch back to Snapshot to read stored runs again.',
   )
 
-  const price = livePrice(cost, census)
+  const price = livePrice(cost)
   if (price) {
-    lines.push(`Running this tab live costs ${price}, measured from the last run of the panels mounted here.`)
-  } else if (census.snapshotted > 0) {
     lines.push(
-      'What Live costs on this tab is not stated here, and that is deliberate: the app measures the cost of the ' +
-        'panels that follow the time range, and a panel served from a scheduled run is not one of them. A price that ' +
-        'left out the most expensive query on the tab would be worse than no price.',
+      `Running this tab live costs ${price}, added up over the ${cost.panels} ${queries(cost.panels)} mounted here ` +
+        'from what each one measured when it last ran — or, for one that has only ever been read from its schedule ' +
+        'today, from a measured run of the same query.',
+    )
+  } else if (cost.unpriced > 0) {
+    const all = cost.panels + cost.unpriced
+    lines.push(
+      `What Live costs on this tab is not stated here, and that is deliberate: ${cost.unpriced} of the ${all} ` +
+        `${queries(all)} here ${cost.unpriced === 1 ? 'has' : 'have'} not run yet and ` +
+        `${cost.unpriced === 1 ? 'has' : 'have'} no measured cost to borrow, so any total would be short by an ` +
+        'unknown amount. A price that left out the most expensive query on the tab would be worse than no price.',
     )
   } else {
     lines.push('The cost of running this tab live appears here once its panels have run at least once.')

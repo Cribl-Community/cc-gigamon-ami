@@ -2,12 +2,22 @@
 //
 // The control's whole justification is that it carries a price the way the
 // auto-refresh menu does. So the most important assertion in this file is a
-// NEGATIVE one: on the tabs where a snapshot is actually being served, the
-// measured cost provably omits those panels, and the segment says nothing about
-// money rather than quoting a figure that is low by about eighty times.
+// NEGATIVE one: while any mounted query has no live figure at all, the segment
+// says nothing about money rather than quoting a sum it knows is short.
+//
+// WHAT MOVED, AND WHY THE OLD ASSERTION WAS RIGHT TO GO. The withholding used
+// to trigger on `census.snapshotted > 0` — any snapshot-served panel at all —
+// because the price came from `useMountedSearchCost()`, which counts only slots
+// marked `autoRefresh` and so excluded every accelerated and window-pinned hook.
+// That was correct about the figure available to it and wrong about the world:
+// it withheld the price on every tab a reader would want it on. The price now
+// comes from `useMountedLiveCost()`, which prices those panels from
+// accel/estimate.ts's measured runs, so the only thing left to withhold for is a
+// query with NO figure from either source. The negative assertion is kept — it
+// is the one that stops an under-quote — and re-aimed at that.
 
 import { describe, expect, it } from 'vitest'
-import { CPU_SECONDS_PER_CREDIT, type MountedCost } from '../cribl/jobCost'
+import { CPU_SECONDS_PER_CREDIT, type LiveCost } from '../cribl/jobCost'
 import type { SnapshotCensus } from './snapshotCensus'
 import {
   censusLine,
@@ -28,32 +38,44 @@ const census = (over: Partial<SnapshotCensus> = {}): SnapshotCensus => ({
   oldest: AT_0820,
   ...over,
 })
-const cost = (cpuSeconds: number, panels = 4): MountedCost => ({ panels, cpuSeconds })
+const cost = (cpuSeconds: number, panels = 4, unpriced = 0): LiveCost => ({ panels, cpuSeconds, unpriced })
 
 describe('the price on the Live segment', () => {
-  it('is withheld while any mounted panel is snapshot-served', () => {
-    // THE EIGHTY-TIMES BUG, held still. cribl/useSearch.ts takes its cost slot
-    // as `useCostSlot(enabled && !pinned)`, and every accelerated hook is
-    // pinned, so a snapshot-served panel contributes nothing to the measured
-    // cost in either mode. On Data Flow that omits the 8,938 billable CPU-s
-    // Lake total: the segment would read "about 0.03 credits" for a press that
-    // costs about 2.5. A control trusted because it quotes a number may not
-    // quote one it knows is incomplete.
-    expect(livePrice(cost(100), census({ snapshotted: 3 }))).toBeNull()
-    expect(liveSegmentLabel(cost(100), census({ snapshotted: 1 }))).toBe('Live')
+  it('is withheld while any mounted query carries no live figure at all', () => {
+    // THE UNDER-QUOTE, HELD STILL. `unpriced` is cribl/jobCost.ts's count of
+    // mounted slots that would run and have neither a measurement of their own
+    // nor a `liveHint` to borrow. While there is one, the sum on screen is short
+    // by an unknown amount — and a control trusted because it quotes a number
+    // may not quote one it knows is incomplete. The census is irrelevant here on
+    // purpose: a snapshot-served panel is now PRICED, from the same measured run
+    // accel/estimate.ts keeps, so being served is no longer a reason to go quiet.
+    expect(livePrice(cost(100, 4, 1))).toBeNull()
+    expect(liveSegmentLabel(cost(100, 4, 2))).toBe('Live')
   })
 
-  it('is shown when the measured cost covers every panel on the tab', () => {
-    expect(livePrice(cost(CPU_SECONDS_PER_CREDIT), census({ snapshotted: 0 }))).toBe('about 1.0 credits')
-    expect(liveSegmentLabel(cost(CPU_SECONDS_PER_CREDIT), census({ snapshotted: 0 }))).toBe('Live — about 1.0 credits')
+  it('is shown on a tab whose panels are snapshot-served, which is the point', () => {
+    // The regression this whole change exists to end: before it, every tab with
+    // a schedule behind any panel showed the bare word `Live`. These are exactly
+    // the tabs where the press is expensive and the price matters most.
+    expect(livePrice(cost(CPU_SECONDS_PER_CREDIT))).toBe('about 1.0 credits')
+    expect(liveSegmentLabel(cost(CPU_SECONDS_PER_CREDIT))).toBe('Live — about 1.0 credits')
+  })
+
+  it('does not round an incomplete sum down into a reassuring one', () => {
+    // The specific shape of a silent under-quote: a cheap panel has measured and
+    // the 9,297.7 CPU-s Lake total has not. `formatCost` would answer "under 0.1
+    // credits" for the part it can see, which is not a hedged figure — it is a
+    // wrong one, in the direction a reader cannot detect.
+    expect(livePrice(cost(12, 1, 1))).toBeNull()
+    expect(liveSegmentLabel(cost(12, 1, 1))).toBe('Live')
   })
 
   it('says nothing before anything has been measured', () => {
     // A cost slot starts at `cpuSeconds: null` and is counted only once its
     // search has completed and the metrics endpoint has answered. Until then
     // the segment is the word alone, exactly as the auto-refresh options are.
-    expect(livePrice(cost(0, 0), census({ snapshotted: 0 }))).toBeNull()
-    expect(liveSegmentLabel(cost(0, 0), census({ snapshotted: 0 }))).toBe('Live')
+    expect(livePrice(cost(0, 0))).toBeNull()
+    expect(liveSegmentLabel(cost(0, 0))).toBe('Live')
   })
 })
 
@@ -118,10 +140,21 @@ describe('the accessible names and the note', () => {
 
 describe('the ⓘ', () => {
   it('explains the missing price instead of leaving a gap where a number should be', () => {
-    const about = modeAbout('snapshot', census(), cost(100), 'Data Flow', NOW)
+    const about = modeAbout('snapshot', census(), cost(100, 4, 2), 'Data Flow', NOW)
     expect(about).toContain('3 of the 6 panels on Data Flow')
     expect(about).toContain('08:20')
     expect(about, 'the ⓘ quoted no reason for the missing price').toContain('worse than no price')
+    expect(about, 'the ⓘ must say HOW MANY queries are unpriced, not just that some are').toContain('2 of the 6 queries')
+  })
+
+  it('quotes the price on a snapshot-served tab once every query has a figure', () => {
+    // The other half of the change: with nothing unpriced the ⓘ states the sum
+    // AND where it came from, including the panels that were never run live in
+    // this session and are priced from a measured run of the same query.
+    const about = modeAbout('snapshot', census(), cost(CPU_SECONDS_PER_CREDIT), 'Data Flow', NOW)
+    expect(about).toContain('Running this tab live costs about 1.0 credits')
+    expect(about).toContain('read from its schedule today')
+    expect(about, 'it should not also claim a price is being withheld').not.toContain('worse than no price')
   })
 
   it('says so when the tab has no scheduled run behind any panel', () => {

@@ -869,7 +869,25 @@ async function fallback<T>(
   }
 }
 
-/** The live query, as the manifest describes it: same body, same window. */
+/**
+ * The live query, as the manifest describes it: same body, same window.
+ *
+ * NO `reuse` HERE, AND IT IS A DECISION RATHER THAN AN OVERSIGHT — a handoff
+ * from the speed work left it open ("worth a follow-up when the toggle lands"),
+ * and this is the follow-up.
+ *
+ * `search.ts#REUSE_WINDOW` is opt-in for one reason: a caller that submits a job
+ * to MEASURE something must get a real run, and defaulting it on would change
+ * what such a call means without anybody editing it. This function is the
+ * DEFAULT `live` — it answers only for callers that passed none. Every caller
+ * today passes its own (`useSearch` builds a closure; FieldExplorer builds one
+ * for field summaries), so turning reuse on here would change nothing that runs
+ * and would sit waiting for the next caller, which is as likely to be a probe as
+ * a panel. The opt-in belongs at the call site that knows which it is.
+ *
+ * A-D15 is not the reason: `withExecPrefix` refuses reuse on any query naming
+ * `$vt_results` in the prefix builder itself, and `entry.body` is a real query.
+ */
 function liveSearch(entry: AccelEntry, opts: AccelReadOptions<Row[]>) {
   return runSearch(entry.body, {
     earliest: entry.earliest,

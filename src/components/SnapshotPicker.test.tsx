@@ -26,7 +26,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetSelectedSnapshot, selectedSnapshot, setSelectedSnapshot } from '../cribl/accel/selection'
 import type { AccelRun, SnapshotTimeline } from '../cribl/accel/status'
-import { NEWEST, SnapshotPicker, coverageAt, horizonLine, snapshotOptions } from './SnapshotPicker'
+import { SnapshotPicker } from './SnapshotPicker'
+import { NEWEST, coverageAt, horizonLine, snapshotOptions } from './snapshotPickerCopy'
 
 const HOUR = 3_600_000
 const T = 1_789_600_000_000

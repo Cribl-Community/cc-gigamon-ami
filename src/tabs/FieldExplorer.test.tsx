@@ -30,6 +30,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider, TIME_RANGES, useDashboard, type TimeRange } from '../app/DashboardContext'
 import { accelEntry } from '../cribl/accel/manifest'
+import { resetSelectedSnapshot, setSelectedSnapshot } from '../cribl/accel/selection'
+import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import type { FieldSummary } from '../cribl/search'
 import { FieldExplorer, SAMPLE_CADENCE, feedComputed, sampleNote } from './FieldExplorer'
 
@@ -121,10 +123,12 @@ const presenceSubmits = () => submits.filter((s) => s.query.includes('summarize 
 let container: HTMLDivElement
 let root: Root
 let setRange: ((r: TimeRange) => void) | null = null
+let census: SnapshotCensus | null = null
 
 /** Reaches the page's range picker without rendering the app header. */
 function Picker() {
   setRange = useDashboard().setRange
+  census = useSnapshotCensus()
   return null
 }
 
@@ -132,6 +136,9 @@ beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   setRange = null
+  census = null
+  resetSelectedSnapshot()
+  resetSnapshotCensus()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -139,6 +146,8 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount())
+  resetSelectedSnapshot()
+  resetSnapshotCensus()
   container.remove()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -163,6 +172,12 @@ async function settle(): Promise<void> {
 }
 
 const note = () => container.querySelector('.panel-note')?.textContent ?? ''
+// The panel header's own source caption — <Panel> renders it from the `snapshot`
+// prop, through the same `snapshotNote` every other panel in the app uses. The
+// clock that used to live in `.panel-note` is here now, which is why these two
+// are asserted separately rather than against `container.textContent`: a test
+// that could not tell them apart would pass with the caption missing entirely.
+const sourceNote = () => container.querySelector('.snap-note')?.textContent ?? ''
 const fieldNames = () => [...container.querySelectorAll('.fe-name')].map((n) => n.textContent)
 const runLive = () => [...container.querySelectorAll<HTMLButtonElement>('.chip')].find((b) => b.textContent?.includes('Run live') || b.textContent?.includes('back to hourly'))!
 
@@ -171,7 +186,8 @@ describe('the “In feed” list, served by the schedule', () => {
     stub()
     await render()
 
-    expect(note(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/sample taken \d{2}:\d{2}/)
+    expect(sourceNote(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(note(), 'the note no longer says which sample this is').toContain('hourly sample')
     expect(note()).toContain('(5,000 rows)')
   })
 
@@ -230,8 +246,77 @@ describe('Run live', () => {
     await act(async () => { runLive().click() })
     await settle()
 
-    expect(note()).toMatch(/sample taken \d{2}:\d{2}/)
+    expect(sourceNote(), 'back on the stored sample, and the header stopped dating it').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(note()).toContain('hourly sample')
     expect(sampleSubmits()).toHaveLength(2)
+  })
+})
+
+describe('the header snapshot picker, which this panel used to ignore', () => {
+  it('counts itself in the census, so the header does not under-report the tab', () => {
+    // The In-feed panel is a <Panel>, and <Panel> registers UNCONDITIONALLY — so
+    // before it was given a `snapshot` prop it sat in the denominator and never
+    // in the numerator. The header therefore read `0 of 2` on a tab where one of
+    // the two is served from an hourly schedule: not incomplete, wrong.
+    return (async () => {
+      stub()
+      await render()
+      expect(census!.snapshotted, 'the stored sample is not counted as a snapshot').toBeGreaterThan(0)
+      expect(census!.panels).toBeGreaterThanOrEqual(census!.snapshotted)
+    })()
+  })
+
+  it('re-reads for the moment the picker names, instead of showing the newest under its heading', async () => {
+    stub()
+    await render()
+    const before = sampleSubmits().length
+
+    // AT OR BEFORE, so the moment has to be at or after the run that answers it.
+    // The stub stores one run finished an hour ago; half an hour ago is a moment
+    // that run existed at.
+    await act(async () => { setSelectedSnapshot(NOW - HOUR / 2) })
+    await settle()
+
+    expect(sampleSubmits().length, 'picking a past moment did not re-read this panel').toBe(before + 1)
+    // accel/read.ts answers a moment through its own `$vt_results` path over the
+    // fixed fast window, never through the live query — there is no live answer
+    // to a question about half an hour ago.
+    expect(liveSampleSubmits(), 'a picked moment spent a live 754.9 CPU-s sample').toEqual([])
+  })
+
+  it('runs nothing at all for a moment older than every stored run, and says so', async () => {
+    // THE FAILURE PATH, AND THE ONE THAT COSTS MONEY IF IT IS WRONG. The obvious
+    // implementation falls back to the live query when the stored read comes
+    // back empty — which here would answer "what does the feed look like NOW"
+    // under a heading naming four hours ago, and bill a 754.9 CPU-s scan to do
+    // it. accel/read.ts returns `absent` instead; nothing is submitted.
+    stub()
+    await render()
+    const before = sampleSubmits().length
+
+    await act(async () => { setSelectedSnapshot(NOW - 4 * HOUR) })
+    await settle()
+
+    expect(sampleSubmits().length, 'a moment with no run behind it still submitted a read').toBe(before)
+    expect(liveSampleSubmits(), 'a moment with no run behind it fell back to a live scan').toEqual([])
+    expect(sourceNote(), 'the empty panel does not say why it is empty').toMatch(/nothing.*that time|nearest/)
+    expect(census!.snapshotted, 'a panel showing nothing was counted as a snapshot').toBe(0)
+  })
+
+  it('hides “Run live” while a past moment is being shown', async () => {
+    // The rule <Panel> applies to its own version of this control. "Sample the
+    // range on screen" has nothing to mean when the question is what the feed
+    // looked like four hours ago, and accel/read.ts refuses the live path there
+    // regardless — so the control would be present and inert, which reads as
+    // broken rather than as deliberate.
+    stub()
+    await render()
+    expect(runLive(), 'the control is missing before any moment is picked').toBeTruthy()
+
+    await act(async () => { setSelectedSnapshot(NOW - 4 * HOUR) })
+    await settle()
+
+    expect(runLive(), 'Run live is still offered while a past moment is shown').toBeUndefined()
   })
 })
 
@@ -315,22 +400,34 @@ describe('sampleNote', () => {
   const base = { source: 'schedule' as const, at: NOW - HOUR, stale: false, sampled: 5000 }
   const picker = { following: false, label: 'Last 15 minutes' }
 
-  it('flags a stale run beside the time it was taken', () => {
-    expect(sampleNote({ ...base, stale: true }, picker, NOW)).toContain('schedule overdue')
+  it('leaves the clock to the panel’s own source caption, and says which sample it is', () => {
+    // THE DUPLICATION THIS REPLACED. The In-feed panel now passes `snapshot` to
+    // <Panel>, so its header renders a `snapshotNote` caption — `snapshot 08:20
+    // · 42m ago`, with `· schedule overdue` when it is late. This note sits six
+    // words away from it. Printing the same clock and the same staleness twice
+    // is one fact told twice in the smallest type on the screen, and the copy
+    // that was edited second would be the one nobody noticed had drifted.
+    //
+    // What it must still do is say WHICH sample, because "which" is the thing
+    // snapshotNote does not know: the hourly scheduled one, not the range above.
+    const note = sampleNote({ ...base, stale: true }, picker)
+    expect(note).toBe('hourly sample (5,000 rows)')
+    expect(note, 'the panel header already says this').not.toContain('schedule overdue')
+    expect(note, 'the panel header already says this').not.toMatch(/\d\d:\d\d/)
   })
 
   it('says nothing about rows before the first read has finished', () => {
-    expect(sampleNote({ ...base, sampled: 0 }, picker, NOW)).not.toContain('rows')
+    expect(sampleNote({ ...base, sampled: 0 }, picker)).not.toContain('rows')
   })
 
   it('claims no sample at all until one has come back', () => {
     // On first paint there is no sample; "taken just now" would be a statement
     // about something that does not exist yet.
-    expect(sampleNote({ source: 'live', at: null, stale: false, sampled: 0 }, picker, NOW)).toBe('sampling…')
+    expect(sampleNote({ source: 'live', at: null, stale: false, sampled: 0 }, picker)).toBe('sampling…')
   })
 
   it('names the picker’s window when the reader asked for live', () => {
-    expect(sampleNote({ ...base, source: 'live', at: NOW }, { following: true, label: 'Last 4 hours' }, NOW))
+    expect(sampleNote({ ...base, source: 'live', at: NOW }, { following: true, label: 'Last 4 hours' }))
       .toBe('live sample · last 4 hours (5,000 rows)')
   })
 })

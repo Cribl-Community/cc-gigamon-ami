@@ -393,10 +393,16 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
         }))
       })
     return () => controller.abort()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     // `snapshotServed` rather than `accelEnabled`: it already folds in the global
     // mode, so a press of Snapshot / Live re-runs exactly the panels whose SOURCE
     // it changed, and none of the others.
+    //
+    // THE SUPPRESSION BELOW HAS TO BE THE LINE IMMEDIATELY ABOVE THE ARRAY.
+    // `eslint-disable-next-line` covers exactly one line, and prose written
+    // between it and the `}, [...]` silently moves the array out from under it —
+    // which is how this effect started reporting two warnings again after the
+    // snapshot work added the explanation above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, accel, snapshotServed, asOf, tail, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
