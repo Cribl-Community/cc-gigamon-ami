@@ -597,7 +597,12 @@ describe('the controls this phase refused to build', () => {
     expect(READER_GATE).toBeDefined()
     expect(PARTITION_GATE).toBeDefined()
     expect(READER_GATE?.spikes).toEqual(['P-S7'])
-    expect(PARTITION_GATE?.spikes).toEqual(['P-S9'])
+    // P-S9 REPORTED (2026-09-21), so the partitions gate owes no spike. It is
+    // still a gate — the answer was that the editor cannot exist, not that it
+    // can now be built — which is why the lookup is keyed on the control and
+    // not on a spike id. Keyed on the spike, this would be `undefined` here.
+    expect(PARTITION_GATE?.spikes).toEqual([])
+    expect(PARTITION_GATE?.settled).toContain('fixed when a Lake dataset is created')
   })
 })
 
@@ -713,7 +718,10 @@ describe('the spike-gated rows', () => {
     stubWorkspace()
     await mount()
     expect(rowLabels()).toContain('Partitions')
-    expect(bodyText()).toContain('P-S9')
+    // The row no longer names a spike, because none is owed. It says the thing
+    // that is actually true and permanent, and it does NOT say "yet".
+    expect(bodyText()).toContain('partitions are fixed when a Lake dataset is created')
+    expect(bodyText()).not.toContain('P-S9 has to report first')
     expect(controlIn('Partitions', `Measure the partition candidates for gigamon_ami — ${costLabel(PARTITION_CPU_SECONDS)}`)).toBeTruthy()
   })
 })

@@ -74,8 +74,17 @@ export const costLabel = (cpuSeconds: number): string => formatCost(cpuSeconds /
  * render a spike-gated row with no explanation, which is the one thing worse
  * than not building the control.
  */
-export const READER_GATE = SPIKE_GATED.find((g) => g.spikes.includes('P-S7'))
-export const PARTITION_GATE = SPIKE_GATED.find((g) => g.spikes.includes('P-S9'))
+// KEYED ON THE CONTROL, NOT ON A SPIKE ID, and that is not a style choice.
+// These used to be `SPIKE_GATED.find((g) => g.spikes.includes('P-S9'))`. A
+// spike list is exactly the thing that changes when a spike reports: P-S9
+// reported on 2026-09-21, its list went empty, and the lookup silently returned
+// `undefined` — which renders the row with no explanation beside a value nobody
+// can edit. The control a gate describes is what identifies it for the life of
+// the gate; which spikes are outstanding is the part that moves.
+const gateFor = (control: string) => SPIKE_GATED.find((g) => g.control.includes(control))
+
+export const READER_GATE = gateFor('Federated Search')
+export const PARTITION_GATE = gateFor('Partition')
 
 // ── Small formatters, exported so a test can read them without a DOM ────────
 

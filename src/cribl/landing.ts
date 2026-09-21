@@ -1125,9 +1125,20 @@ export type SpikeId = 'P-S5' | 'P-S7' | 'P-S9'
 export interface SpikeGate {
   /** The control that is not here. */
   control: string
+  /**
+   * The spikes still owed. **Empty means the question is settled** — and a
+   * settled gate is not a gate that opened. See `settled`.
+   */
   spikes: readonly SpikeId[]
   /** What nobody knows yet, in the terms the control would have needed. */
   unknown: string
+  /**
+   * Present only when the spikes reported and the answer was that the control
+   * **cannot exist**, rather than that it is now buildable. This is a different
+   * sentence from "not yet" and the panel must not render them alike — "not yet"
+   * invites someone to wait, and waiting will never help.
+   */
+  settled?: string
   /** What the panel shows instead. */
   instead: string
 }
@@ -1159,9 +1170,13 @@ export const SPIKE_GATED: readonly SpikeGate[] = Object.freeze([
   },
   {
     control: 'Partition (acceleratedFields) editor',
-    spikes: ['P-S9'],
+    // P-S9 reported on 2026-09-21 and the answer is not "now you can build it".
+    // The answer is that an editor is impossible on this build.
+    spikes: [],
     unknown:
       'Whether Cribl Lake prunes usefully by a partition at this scale, how far a partition multiplies the object count, and whether objects already written are re-partitioned or only new ones are. A partition change on a 30-day dataset becomes visible over weeks, so it cannot be tried and undone.',
+    settled:
+      'partitions are fixed when a Lake dataset is created. P-S9 measured this on 2026-09-21: a PATCH adding acceleratedFields to an existing dataset answers 200 and stores the value, and then changes nothing — every object written afterwards, before and after a Worker restart, landed on the same unpartitioned path. A dataset CREATED with the field does partition, Hive-style (…/protocol=6/…), and does prune — a filter on it skipped 49 of 85 objects where the unpartitioned control skipped none. So this dataset’s partitions were decided when it was created and no editor here can change them; the choice exists only for a dataset this app creates.',
     instead: 'The live acceleratedFields, shown as a value, with the candidate measurement available as a button.',
   },
 ])
@@ -1169,5 +1184,9 @@ export const SPIKE_GATED: readonly SpikeGate[] = Object.freeze([
 /** One sentence naming why a control is absent, for the row that would have held
  *  it. Built from the table so the two cannot drift. */
 export function spikeGateNote(gate: SpikeGate): string {
+  // "yet" is load-bearing. A control waiting on a spike may arrive; a control
+  // the product cannot support will not, and telling someone to wait for it is
+  // worse than telling them nothing.
+  if (gate.settled) return `Not editable here: ${gate.settled}`
   return `Not editable here yet: ${gate.spikes.join(' and ')} ${gate.spikes.length > 1 ? 'have' : 'has'} to report first. ${gate.unknown}`
 }

@@ -711,14 +711,28 @@ describe('the refusals', () => {
     // whether v2 returns the same rows from THIS dataset, and only a spike on
     // the live dataset can answer it.
     expect(SPIKE_GATED[0].spikes).toEqual(['P-S7'])
-    expect(SPIKE_GATED[1].spikes).toEqual(['P-S9'])
+    // P-S9 reported on 2026-09-21 and closed its gate WITHOUT opening the
+    // control: partitions are fixed at dataset creation, so an editor on an
+    // existing dataset is impossible rather than pending.
+    expect(SPIKE_GATED[1].spikes).toEqual([])
+    expect(SPIKE_GATED[1].settled).toBeTruthy()
   })
 
   it('says what would have to be measured, not "later"', () => {
     for (const gate of SPIKE_GATED) {
       expect(gate.unknown.length).toBeGreaterThan(80)
       expect(gate.instead.length).toBeGreaterThan(20)
-      expect(spikeGateNote(gate)).toContain(gate.spikes[0])
+      const note = spikeGateNote(gate)
+      if (gate.settled) {
+        // A settled gate names the reason and must NOT say "yet" — "not yet"
+        // invites someone to wait for something that will never arrive.
+        expect(note).toContain(gate.settled)
+        expect(note).not.toContain('yet')
+        expect(gate.spikes).toEqual([])
+      } else {
+        expect(note).toContain(gate.spikes[0])
+        expect(gate.spikes.length).toBeGreaterThan(0)
+      }
     }
   })
 })
