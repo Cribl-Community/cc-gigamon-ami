@@ -194,9 +194,11 @@ export const API_CALLS: readonly ApiCall[] = [
   // on a cron, until somebody stops it. Decision I-D4: the owner accepted that
   // deliberately, because the alternative is an acceleration feature only an
   // admin can switch on, in an app whose whole point is lowering the bill. What
-  // narrows it is the app rather than the grant: it writes only the two ids in
-  // src/cribl/accel/manifest.ts, both behind a confirmation that names them, and
-  // it deletes only an object carrying its own `GNO …` stamp.
+  // narrows it is the app rather than the grant: it writes only the ids in
+  // src/cribl/accel/manifest.ts — that list is the authority and the count is
+  // not restated here, because "the two ids" was true of Phase 2 and quietly
+  // stopped being true as the manifest grew — each behind a confirmation that
+  // names them, and it deletes only an object carrying its own `GNO …` stamp.
   {
     method: 'GET',
     path: `/m/${SEARCH_GROUP}/search/saved`,

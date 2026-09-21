@@ -24,7 +24,8 @@ import { describe, expect, it } from 'vitest'
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY } from '../../queries/fieldExplorer'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
-import { APP_SRC_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
+import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
 import { APP_VERSION } from '../config'
 import { APP_SRC_CADENCE, APP_SRC_WINDOW, OVERVIEW_CADENCE, OVERVIEW_WINDOW } from './words'
 import {
@@ -46,6 +47,23 @@ const overview = accelEntry('gno_overview_c1h')
 const nodes = accelEntry('gno_svc_nodes_c1h')
 const edges = accelEntry('gno_svc_edges_c1h')
 const appSrc = accelEntry('gno_app_src_c1h')
+const dns = accelEntry('gno_dns_resolver_c1h')
+
+/**
+ * Every hourly SNAPSHOT entry — derived, not listed, and that is the point.
+ *
+ * The window and retention loops below used to run over a literal
+ * `[overview, nodes, edges]`, written when those were the only hourly entries.
+ * Four more arrived and the loops kept passing over the original three while
+ * saying nothing at all about the new ones: a test that silently narrows its own
+ * domain as the code grows, which is the failure this file exists to avoid.
+ *
+ * The sample is hourly too and is excluded by id rather than by cron, because
+ * its two-minute window is a deliberate exception pinned directly above. Naming
+ * it here is what stops "hourly" quietly meaning "whatever the loop happens to
+ * cover".
+ */
+const HOURLY_SNAPSHOTS = MANIFEST.filter((e) => /^\d+ \* \* \* \*$/.test(e.cron) && e.id !== 'gno_sample_2m_c1h')
 
 describe('the manifest', () => {
   it('holds exactly these nine', () => {
@@ -231,6 +249,23 @@ describe('the bodies', () => {
     expect(appSrc.panels.find((p) => p.queryId === 'shadow-ai-users')?.display).toBe(aiUsersQuery)
   })
 
+  it('serves both of DNS health from one grouping, each ⓘ still its own query', () => {
+    // THE GAP THIS CLOSES. DnsHealth.test.tsx pins this entry thoroughly — the
+    // sentinel guard, the tails, the cron, the words — but every one of those
+    // is about what RUNS. Nothing anywhere asserted that the two `display`
+    // strings are the modules the panels' ⓘ actually renders from, and the
+    // generic rule above cannot reach them: it covers only single-panel,
+    // tail-less entries, and this one is two panels with a tail each.
+    //
+    // By identity, not by text. A retyped copy agrees on the day it is written
+    // and drifts the first time somebody edits one of them — silently, because
+    // both still render a number.
+    expect(dns.panels.map((p) => p.queryId)).toEqual(['dns-resolver-table', 'dns-overall'])
+    expect(dns.panels.find((p) => p.queryId === 'dns-resolver-table')?.display).toBe(DNS_PER_RESOLVER_QUERY)
+    expect(dns.panels.find((p) => p.queryId === 'dns-overall')?.display).toBe(DNS_OVERALL_QUERY)
+    expect(dns.body).toBe(DNS_RESOLVER_SNAPSHOT_QUERY)
+  })
+
   it('groups Shadow AI by application AND source, because summing per-app dcounts double-counts', () => {
     // THE CORRECTNESS OF THE ENTRY IN ONE TEST. A body grouped by app_name alone
     // stores a distinct-user count per app; the "AI users" tile would then add
@@ -307,7 +342,9 @@ describe('the bodies', () => {
     // wrong in the direction nobody can see.
     expect(sample.earliest).toBe('-5m')
     expect(sample.latest).toBe('-3m')
-    for (const e of [overview, nodes, edges]) {
+    // Every hourly snapshot, not the three that existed when this was written.
+    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(7)
+    for (const e of HOURLY_SNAPSHOTS) {
       expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
       expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')
     }
@@ -330,9 +367,16 @@ describe('the schedules', () => {
     // past states a viewer can move between rather than a number nothing uses.
     // It also has to stay inside Cribl's own seven-day result retention, or the
     // picker would offer times whose results the platform had already reaped.
-    for (const e of [overview, nodes, edges]) {
+    //
+    // Selected by cron shape, so the "hourly" in the sentence is the same
+    // hourly the assertion tests — the old literal list asserted this of three
+    // entries while four more carried the same claim unchecked.
+    for (const e of HOURLY_SNAPSHOTS) {
       expect(e.keepLastN, `${e.id} does not retain a day of hourly runs`).toBe(24)
-      expect(e.cron, `${e.id} is not hourly, so keepLastN: 24 is not a day`).toMatch(/^2[0-2] \* \* \* \*$/)
+      // 24 hourly runs is 24 hours, and the platform reaps results at 7 days —
+      // the margin that makes the picker's oldest offer readable rather than a
+      // time whose result Cribl already deleted.
+      expect(e.keepLastN, `${e.id} retains past Cribl's 7-day result retention`).toBeLessThanOrEqual(24 * 7)
     }
   })
 

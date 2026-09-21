@@ -367,16 +367,33 @@ const FINDING_COLUMNS = aliasesOf(FINDING_AGGS)
 const VOLUME_COLUMNS = aliasesOf(VOLUME_AGGS)
 
 /**
- * THE FIVE ENTRIES.
+ * THE NINE ENTRIES.
  *
- * The first two replace a live query this workspace measured as expensive. The
- * three hourly ones do something the first two do not, and it changes the bar
- * they have to clear: they make a question ANSWERABLE. "What did the network
- * look like at 04:00?" has no price today — a live query only ever reads now,
- * and the range picker only widens a window that still ends now. Twenty-four
- * retained runs of an hourly scan are a day of past states a viewer can move
- * between. So these are not judged by a saving: each one costs about 40 CPU-s an
- * hour whether or not anybody opens the tab, and `why` says what it buys.
+ * Five when this comment was written, and the count is deliberately not the
+ * heading's point — it went five → six → nine in two days and a number in prose
+ * is the first thing to rot. What holds is the division below, which is the only
+ * thing a reader needs before adding a tenth.
+ *
+ * `gno_lake_30d_c1d` and `gno_sample_2m_c1h` replace a live query this workspace
+ * measured as expensive, and are judged by that saving.
+ *
+ * Every hourly snapshot after them does something those two do not, and it
+ * changes the bar they have to clear: they make a question ANSWERABLE. "What did
+ * the network look like at 04:00?" has no price today — a live query only ever
+ * reads now, and the range picker only widens a window that still ends now.
+ * Twenty-four retained runs of an hourly scan are a day of past states a viewer
+ * can move between. So these are not judged by a saving: each one costs roughly
+ * 40 CPU-s an hour whether or not anybody opens the tab, and `why` says what it
+ * buys.
+ *
+ * The later ones add a third argument the first hourly three did not make. One
+ * scan can serve several panels — the overview carries five across five tabs,
+ * Shadow AI's grouping carries that whole tab, the DNS grouping carries both of
+ * that tab's mount queries — and where it does, the saving is not one query
+ * replaced by a cheaper one but N replaced by one. That is why the grouping of a
+ * shared body is load-bearing in a way a single-panel body's never is: it has to
+ * be fine enough that every panel can recompute its own figure from the stored
+ * rows. src/queries/snapshots.ts carries that argument beside the strings.
  */
 // NAME CHARACTER SET, measured 2026-09-18 against a live workspace, NOT documented.
 // Cribl refuses a saved search whose `name` does not match /^[a-zA-Z0-9 _-]+$/ —
