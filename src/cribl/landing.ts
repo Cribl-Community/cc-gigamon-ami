@@ -351,9 +351,26 @@ export interface PartitionLimits {
   maxAcceleratedFieldsCount: number
 }
 
-/** Used when the Lake config read is refused or absent. Three is what the
- *  measured workspace answered; it is a fallback, and `validatePartitions`
- *  says which limit it applied so a refusal is never silently permissive. */
+/**
+ * Used when the Lake config read is refused or absent, and on this build it is
+ * ALWAYS the operative value — which makes it load-bearing rather than a
+ * fallback.
+ *
+ * `GET /products/lake/lakes/default/config` carried no `maxAcceleratedFieldsCount`
+ * at all when P-S5 read it on 2026-09-21 (precondition PRE-3). The cap is real
+ * regardless: P-S9 probed it the same day by setting 1, 2, 3 and 4 fields on a
+ * throwaway dataset, and the fourth answered
+ *
+ *     400 — "Dataset 'zz_t1_p9a' cannot have more than 3 accelerated fields"
+ *
+ * so **3 is measured by enforcement, not read from config**, and the refusal was
+ * atomic — the stored value stayed at the previous three. Do not read the config
+ * field's absence as "no cap"; the server has one and will say so at the worst
+ * possible moment otherwise.
+ *
+ * `validatePartitions` says which limit it applied, so a refusal is never
+ * silently permissive.
+ */
 export const DEFAULT_PARTITION_LIMITS: PartitionLimits = Object.freeze({ maxAcceleratedFieldsCount: 3 })
 
 /**
