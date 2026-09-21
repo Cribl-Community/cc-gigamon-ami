@@ -411,11 +411,12 @@ describe('setRetention', () => {
   })
 
   it('sends the whole live dataset back with only retention changed', async () => {
-    // THE TEST THIS CHANGE EXISTS FOR. Nobody has measured whether a Lake PATCH
-    // merges or replaces (CAPABILITIES.datasetPatchIsPartial is null), so a body
-    // carrying one field is a body that deletes everything else on the dataset
-    // under one of the two readings — and A-SP23 measured exactly that on
-    // `PATCH /search/saved/{id}` in this same product.
+    // THE TEST THIS CHANGE EXISTS FOR, and it is no longer hypothetical. A Lake
+    // PATCH was measured on 2026-09-21 (CAPABILITIES.datasetPatchIsPartial is
+    // now false): a body carrying one field reset `retentionPeriodInDays` to 365
+    // and dropped `format` outright, answering 200 both times. So sending the
+    // whole live body back is what keeps the customer's settings — exactly as
+    // A-SP23 found on `PATCH /search/saved/{id}` in this same product.
     const calls = stubWorld()
     await setRetention(90, { current: 30, confirm: yes })
     const patch = writes(calls).find((c) => c.path === DATASET_PATH)
@@ -1287,19 +1288,48 @@ describe('the profile document', () => {
 })
 
 describe('the capability flags', () => {
-  it('claims to know nothing, because nobody has measured any of it', () => {
+  it('carries an answer only where something was actually measured', () => {
     // Setting one of these true because the spec implies it is how an inference
     // becomes a fact nothing can dislodge — and two of them, if wrong, cost a
-    // customer data.
+    // customer data. So an answer is allowed ONLY with its provenance beside it.
     for (const [id, capability] of Object.entries(CAPABILITIES)) {
-      expect(capability.answer, id).toBeNull()
       expect(capability.question.length, id).toBeGreaterThan(60)
       expect(capability.meanwhile.length, id).toBeGreaterThan(60)
+      if (capability.answer === null) {
+        expect(capability.measured, `${id} is unmeasured and must not claim provenance`).toBeUndefined()
+      } else {
+        // The date is what makes it checkable later; the rest is the evidence.
+        expect(capability.measured, `${id} answers ${capability.answer} with no provenance`).toMatch(
+          /20\d\d-\d\d-\d\d/,
+        )
+        expect(capability.measured!.length, id).toBeGreaterThan(60)
+      }
     }
   })
 
+  it('has measured exactly one of them, and C6 came back false', () => {
+    // 2026-09-21, on a throwaway dataset holding no data: a PATCH naming only
+    // {description} reset retention to 365 and dropped `format`. This is the pin
+    // that stops the value drifting back to null, or to true, without somebody
+    // re-running the probe.
+    expect(CAPABILITIES.datasetPatchIsPartial.answer).toBe(false)
+    expect(CAPABILITIES.datasetPatchIsPartial.measured).toContain('365')
+
+    const unmeasured = Object.entries(CAPABILITIES)
+      .filter(([, c]) => c.answer === null)
+      .map(([id]) => id)
+      .sort()
+    expect(unmeasured).toEqual([
+      'datasetFormatPatchable',
+      'destinationWritesParquetIntoJsonDataset',
+      'gidPlaceholderHonoured',
+      'lakeSearchConfigPropagates',
+      'mixedReadWorks',
+    ])
+  })
+
   it('names who would have to measure each one', () => {
-    expect(CAPABILITIES.datasetPatchIsPartial.spike).toBe('Preview 3.1')
+    expect(CAPABILITIES.datasetPatchIsPartial.spike).toBe('P-S5')
     expect(CAPABILITIES.lakeSearchConfigPropagates.spike).toBe('P-S5')
     expect(CAPABILITIES.gidPlaceholderHonoured.spike).toBe('V-S11')
   })

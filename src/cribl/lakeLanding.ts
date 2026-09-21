@@ -38,29 +38,37 @@
 // `{description}` — on claim C6: that this endpoint updates only the fields it
 // is given. C6 was inferred from the spec's example bodies and nothing else.
 //
-// A 2026-09-21 read of the spec bundle makes that basis WEAKER than the
-// sentence above suggests, so do not let the wording reassure anyone:
+// ON 2026-09-21 C6 WAS MEASURED, AND IT IS FALSE. It was measured on a
+// throwaway Lake dataset holding no data (`zz_t1_json`, P-S5 step S5-1), twice,
+// from a known state. A `PATCH` naming ONLY `{description}` answered 200 and:
 //
-//   * The operation is in the SILENT set. Of 152 PATCH/PUT operations, 85 carry
-//     "Cribl removes any omitted fields", 4 affirm partial updates, and 63 say
-//     nothing. `PATCH /products/lake/lakes/{lakeId}/datasets/{id}` is one of
-//     the 63. Silence is not an affirmation.
-//   * Its sibling on the SAME object is explicitly destructive.
-//     `PATCH /search/datasets/{id}` reads "This endpoint does not support
-//     partial updates. Cribl removes any omitted fields when updating the
-//     Dataset." Two endpoints, one dataset, opposite assumed semantics.
-//   * THE SEPARATE `…Update` SCHEMA IS NOT EVIDENCE. The tempting read is that
-//     a distinct `CriblLakeDatasetUpdate` body implies partial semantics. It is
-//     field-for-field IDENTICAL to the full `CriblLakeDataset`; the only
-//     difference is that `id` is `required` in one and optional in the other,
-//     annotated "the path parameter `id` is authoritative". That is a
-//     required-ness difference and says nothing about merge versus replace.
+//     format: "json"            ->  GONE from the object entirely
+//     retentionPeriodInDays: 1  ->  365
+//     id / providerPath / storageLocationId / viewName  ->  unchanged
 //
-// Which is to say: the read-modify-write below is not belt-and-braces over a
-// probably-fine endpoint. It is the only thing standing between this app and
-// stripping `retentionPeriodInDays`, `acceleratedFields`, `storageLocationId`
-// and `format` off a live dataset. Do not "simplify" it back to one field.
-// P-S5 step S5-9 and P-S9 step S9-4 are what would actually settle C6.
+// So the endpoint neither merges nor replaces. It SUBSTITUTES DEFAULTS for what
+// you omit, keeping only the server-managed fields. That is worse than a plain
+// replacement in the one way that matters here: a replacement missing a required
+// field might 4xx, whereas this answers 200 and hands back an object that still
+// looks entirely well-formed. Nothing on screen would say anything happened.
+//
+// What the one-field version would have cost on the live dataset: `gigamon_ami`
+// retention silently reset to the 365-day default — a billing change on a
+// dataset measured in the hundreds of GB — and `format` unset, which is the
+// field that tells Search whether to read the objects as json or as parquet.
+//
+// The spec gives no warning of this. The operation is in the SILENT set: of 152
+// PATCH/PUT operations 85 carry "Cribl removes any omitted fields", 4 affirm
+// partial updates, and 63 say nothing — this is one of the 63. Nor is the
+// separate `CriblLakeDatasetUpdate` schema a clue: it is field-for-field
+// identical to the full `CriblLakeDataset`, differing only in whether `id` is
+// required. The one honest signal was its sibling on the same object,
+// `PATCH /search/datasets/{id}`, which says outright that it removes omitted
+// fields.
+//
+// So the read-modify-write below is not belt-and-braces over a probably-fine
+// endpoint. It is the only reason this app has not already done the above to the
+// customer's live dataset. DO NOT "simplify" it back to one field.
 //
 // The optimistic reading of a Cribl PATCH has already been disproved once in
 // this workspace. A-SP23 measured `PATCH /search/saved/{id}` in this same
@@ -75,9 +83,10 @@
 // So both writers now GET the dataset, overlay the one edited field onto what
 // came back, and PATCH the whole body. That is correct under EITHER semantics:
 // a partial endpoint sees the values it already holds, a replacing one gets
-// everything back. It does not need C6 answered, which is the point —
-// `CAPABILITIES.datasetPatchIsPartial` stays `null` because it is still
-// unmeasured, and nothing here depends on it any more.
+// everything back. It did not need C6 answered, which was the point at the
+// time. C6 has since been answered — `CAPABILITIES.datasetPatchIsPartial` is
+// now `false` — and the answer turned this from a precaution into the thing
+// that keeps the customer's retention setting alive.
 //
 // ── AND WHY THEY GET IT TWICE: THE DIALOG IS THE WINDOW ─────────────────────
 // The first version of that read-modify-write had a defect worse than the one
@@ -1403,6 +1412,11 @@ export type CapabilityId =
 export interface Capability {
   /** `null` means nobody has measured it. It is never inferred from a document. */
   answer: boolean | null
+  /** How and when the answer was taken. Present only on a measured flag, and
+   *  required by the tests for one — an answer with no provenance beside it is
+   *  an inference wearing a boolean's clothes, which is the exact failure this
+   *  whole block exists to prevent. */
+  measured?: string
   /** Who would have to measure it. */
   spike: SpikeId | 'V-S0' | 'V-S11' | 'Preview 3.1'
   /** The question, in the terms the measurement would answer. */
@@ -1414,12 +1428,18 @@ export interface Capability {
 /**
  * Everything this phase is built on that nobody has checked.
  *
- * THE VALUES ARE ALL `null` AND THAT IS THE DELIVERABLE. The design specified
- * these as "constants set from the spike results"; the spikes have not run, so
- * the honest constant is "unknown" and the code above is written to hold without
+ * THEY WERE ALL `null`, AND THAT WAS THE DELIVERABLE. The design specified these
+ * as "constants set from the spike results"; the spikes had not run, so the
+ * honest constant was "unknown" and the code above is written to hold without
  * any of them. Setting one to `true` because the spec implies it is how an
  * inference becomes a fact that nothing can dislodge — and two of these
  * inferences, if wrong, cost a customer data.
+ *
+ * ONE HAS NOW BEEN MEASURED, AND IT CAME BACK THE OPPOSITE OF WHAT THE SPEC
+ * IMPLIED — see `datasetPatchIsPartial`. That is the whole argument for this
+ * block existing: the inference was reasonable, it was written down as an
+ * inference rather than as a constant, and when somebody finally checked, it was
+ * wrong. A flag carrying an answer must also carry `measured`.
  *
  * Whoever runs a spike changes ONE value here and reads the `meanwhile` line to
  * find what it unlocks. Nothing branches on these today; they are the written
@@ -1428,12 +1448,14 @@ export interface Capability {
  */
 export const CAPABILITIES: Readonly<Record<CapabilityId, Capability>> = Object.freeze({
   datasetPatchIsPartial: {
-    answer: null,
-    spike: 'Preview 3.1',
+    answer: false,
+    spike: 'P-S5',
+    measured:
+      '2026-09-21, P-S5 step S5-1, on the throwaway dataset zz_t1_json holding no data. Run twice from a known state. A PATCH naming only {description} answered 200, dropped format:"json" outright, and reset retentionPeriodInDays from 1 to 365; id, providerPath, storageLocationId and viewName survived.',
     question:
-      'Does PATCH on a Lake dataset update only the fields it is given, or does it replace the object and drop everything omitted? Claim C6 says partial, inferred from the spec’s example bodies and nothing else.',
+      'Does PATCH on a Lake dataset update only the fields it is given, or does it replace the object and drop everything omitted? Claim C6 said partial, inferred from the spec’s example bodies and nothing else.',
     meanwhile:
-      'NOTHING DEPENDS ON THE ANSWER ANY MORE, which is why this one is worth reading twice. setRetention and setDescription GET the dataset, overlay the one edited field and PATCH the whole body back, so they are correct under either semantics — a partial endpoint is handed values it already holds, a replacing one is handed everything. This flag is now evidence about the API, not a load-bearing assumption. It stays null because nobody has measured it, and Preview 3.1 (a 30 → 30 no-op, then a full re-read and diff) still has to run: it no longer decides whether the phase is safe, it confirms this app kept the dataset whole.',
+      'ANSWERED, AND C6 WAS WRONG — but the answer is neither of the two the question offered. The endpoint substitutes DEFAULTS for omitted fields and keeps only the server-managed ones, so it neither merges nor cleanly replaces, and it returns 200 with a well-formed-looking object either way. setRetention and setDescription were already written to GET the dataset, overlay the one edited field and PATCH the whole body back; that is what makes them safe, and it is now load-bearing rather than precautionary. Any future Lake writer does the same or it silently resets the customer’s retention to 365 days. Preview 3.1 is no longer needed to settle this.',
   },
   lakeSearchConfigPropagates: {
     answer: null,

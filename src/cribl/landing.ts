@@ -510,10 +510,19 @@ export function pathFilterRows(kinds: readonly LakeObjectKind[]): PathFilterRow[
  * fields a PATCH would set.
  *
  * `acceleratedFields` is OMITTED when empty rather than sent as `[]`, and
- * `searchConfig` is omitted on v1. Both for the same reason: `PATCH` on this
- * endpoint is only *likely* partial (claim C6, inferred from the spec's example
- * bodies and nothing else), so every key this app sends is a key it is betting
- * it understands. Sending nothing is the version of that bet with no downside.
+ * `searchConfig` is omitted on v1. That is safe HERE and nowhere else, and the
+ * reason it is safe has changed since it was written.
+ *
+ * It used to read: `PATCH` on this endpoint is only *likely* partial (claim C6),
+ * so every key sent is a key this app is betting it understands, and sending
+ * nothing is the version of that bet with no downside. **That last clause is
+ * now false.** C6 was measured on 2026-09-21 and came back `false`: an omitted
+ * field is not left alone, it is RESET TO ITS DEFAULT — a one-field PATCH
+ * observed dropping `format` and resetting `retentionPeriodInDays` to 365.
+ *
+ * Omission is therefore safe here only because this body is used on the CREATE
+ * path alone, where a default is exactly what an omitted field should get. See
+ * the paragraph below, which is now load-bearing rather than advisory.
  *
  * NOT THE BODY ANY LAKE PATCH SENDS. The two writers in cribl/lakeLanding.ts
  * build theirs with `applyDatasetEdit` from a live read, precisely so that the
@@ -727,13 +736,24 @@ export function applyDestinationEdit(current: Record<string, unknown>, edit: Des
  * Keys the live Lake dataset GET carries that must NOT be PATCHed back.
  *
  * READ THE ASYMMETRY BEFORE ADDING TO THIS LIST, because it runs the opposite
- * way from every other "strip it to be safe" list. Nobody has measured whether
- * PATCH on this endpoint is partial or a full replacement — that is
- * `CAPABILITIES.datasetPatchIsPartial` in cribl/lakeLanding.ts, and it is still
- * `null` — and the two readings make a strip mean opposite things:
+ * way from every other "strip it to be safe" list. A strip means opposite
+ * things depending on how the endpoint treats an omitted key:
  *
  *   * partial     — a stripped key is simply not mentioned, and survives;
  *   * replacement — a stripped key is DELETED from the customer's dataset.
+ *
+ * WE NOW KNOW WHICH, AND IT IS NEITHER. C6 was measured on 2026-09-21
+ * (`CAPABILITIES.datasetPatchIsPartial`, now `false`): an omitted key is RESET
+ * TO ITS DEFAULT. So a strip is a write, not an abstention, and this list must
+ * stay as short as it is.
+ *
+ * The two keys on it survive that rule for a reason the measurement also
+ * showed: everything the server manages itself — `id`, `providerPath`,
+ * `storageLocationId`, `viewName` — came back untouched by a PATCH that named
+ * none of them, while every user-settable field did not. `metrics` and
+ * `deletionStartedAt` are server-computed in exactly that sense. **A key that
+ * a person can set does not belong on this list**, and the probe that measured
+ * C6 carried only seven fields, so a third category may yet exist.
  *
  * So stripping is not the cautious option here; sending back what Cribl returned
  * is. This list holds only keys that are provably not stored configuration, and

@@ -98,9 +98,10 @@ describe('datasetSpec', () => {
   })
 
   it('omits acceleratedFields when there are none rather than sending an empty array', () => {
-    // PATCH on this endpoint is only LIKELY partial (claim C6, inferred from the
-    // spec's examples). Every key sent is a key this app is betting it
-    // understands, and an empty array is the version of that bet with no upside.
+    // This body is the CREATE path's, which is the only reason omitting is safe:
+    // C6 was measured false on 2026-09-21, so on a PATCH an omitted key is reset
+    // to its default rather than left alone. On a create, a default is what an
+    // omitted key should get.
     expect(datasetSpec(DEFAULT_PROFILE)).not.toHaveProperty('acceleratedFields')
     expect(datasetSpec(profile({ partitions: ['protocol'] })).acceleratedFields).toEqual(['protocol'])
   })
@@ -706,12 +707,12 @@ describe('the refusals', () => {
 
 // ── What these tests could not assert, and why ──────────────────────────────
 //
-//   * THAT THE PATCH IS PARTIAL. Every Lake writer in this phase assumes
-//     `PATCH /products/lake/lakes/default/datasets/{id}` updates only the fields
-//     it is given (claim C6), and that assumption is inferred from the spec's
-//     example bodies and nothing else. No test here can probe it; the cheapest
-//     probe is a live 30 → 30 no-op followed by a full re-read, which is Preview
-//     check 3.1 and belongs to the owner.
+//   * THAT THE PATCH IS PARTIAL — no longer open, and it was not. Claim C6 was
+//     measured on 2026-09-21 against a throwaway dataset (P-S5 step S5-1) and
+//     came back FALSE: a PATCH naming only `{description}` answered 200, dropped
+//     `format` and reset `retentionPeriodInDays` to 365. No test here can probe
+//     a live endpoint, which is why this sat in this list; what a test CAN do is
+//     pin the recorded answer, and `lakeLanding.test.ts` now does.
 //   * THAT `notifications` SURVIVES A DESTINATION PATCH. `DESTINATION_READONLY_KEYS`
 //     strips only `status`, against a design that also stripped `notifications`,
 //     because the Preview check treats a re-read that lost `notifications` as a
