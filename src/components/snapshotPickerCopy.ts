@@ -31,10 +31,24 @@ export interface SnapshotOption {
  * who picked 09:20 an hour ago should still be looking at 09:20, and a reader on
  * Newest should have moved on.
  */
+/** The start of the hour a moment falls in. */
+function hourOf(t: number): number {
+  return Math.floor(t / 3_600_000) * 3_600_000
+}
+
 export function snapshotOptions(times: readonly number[], now: number = Date.now()): SnapshotOption[] {
   return [
     { value: NEWEST, label: 'Newest snapshot' },
-    ...times.map((t) => ({ value: String(t), label: asOf(t, now) ?? 'an unknown time' })),
+    // LABELLED BY THE HOUR IT COVERS, not by the instant queried.
+    //
+    // `snapshotTimeline` offers one moment per hour, and the value it offers is
+    // the LATEST run inside that hour so every entry resolves to its own run
+    // from it. Those instants are the staggered cron minutes — 22:36, 21:54,
+    // 20:36 — and a list of them reads as arbitrary even once there are only
+    // twenty-five of it. The hour is what the reader is actually choosing, so
+    // the hour is what the option says. The value is unchanged: it is still the
+    // real run instant, because that is what `runAtOrBefore` needs.
+    ...times.map((t) => ({ value: String(t), label: asOf(hourOf(t), now) ?? 'an unknown time' })),
   ]
 }
 
