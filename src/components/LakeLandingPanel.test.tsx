@@ -596,7 +596,8 @@ describe('the controls this phase refused to build', () => {
     // which is worse than not building the control at all.
     expect(READER_GATE).toBeDefined()
     expect(PARTITION_GATE).toBeDefined()
-    expect(READER_GATE?.spikes).toEqual(['P-S7'])
+    expect(READER_GATE?.spikes).toEqual([])
+    expect(READER_GATE?.settled).toContain('already on Federated Search v2')
     // P-S9 REPORTED (2026-09-21), so the partitions gate owes no spike. It is
     // still a gate — the answer was that the editor cannot exist, not that it
     // can now be built — which is why the lookup is keyed on the control and
@@ -702,13 +703,13 @@ describe('the spike-gated rows', () => {
     stubWorkspace()
     await mount()
     expect(rowLabels()).toContain('Search reader')
-    expect(bodyText()).toContain('P-S7 has to report first')
-    expect(bodyText()).toContain('Not editable here yet')
-    // What P-S5 measured on 2026-09-21 is ON SCREEN, not just absent from the
-    // spike list. The row used to say nobody had sent either candidate request;
-    // one has now been sent, and the answer carries a warning an admin needs
-    // before anyone builds the control: the flip is free, the UNDO is not.
-    expect(bodyText()).toContain('searchConfig IS the endpoint')
+    // P-S7 reported on 2026-09-21 and the dataset is already on v2, so the row
+    // must not say "yet" any more than the partitions row may.
+    expect(bodyText()).toContain('already on Federated Search v2')
+    expect(bodyText()).not.toContain('P-S7 has to report first')
+    // The two traps an admin needs before anyone builds a control here: the
+    // cold-start cost, and that the undo is not free.
+    expect(bodyText()).toContain('105 seconds')
     expect(bodyText()).toContain('breakerRulesets')
     // Nothing on screen offers to change it.
     expect(buttonNamed('Switch to v2')).toBeUndefined()

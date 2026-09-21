@@ -716,7 +716,12 @@ describe('the refusals', () => {
     // wrong about rows because there are no rows. P-S7 is the one that asks
     // whether v2 returns the same rows from THIS dataset, and only a spike on
     // the live dataset can answer it.
-    expect(SPIKE_GATED[0].spikes).toEqual(['P-S7'])
+    // BOTH gates are now settled, by opposite answers: the reader because the
+    // change was made (this dataset runs v2 since 2026-09-21), partitions
+    // because the control is impossible. Neither owes a spike, and neither may
+    // say "yet".
+    expect(SPIKE_GATED[0].spikes).toEqual([])
+    expect(SPIKE_GATED[0].settled).toContain('already on Federated Search v2')
     // P-S9 reported on 2026-09-21 and closed its gate WITHOUT opening the
     // control: partitions are fixed at dataset creation, so an editor on an
     // existing dataset is impossible rather than pending.

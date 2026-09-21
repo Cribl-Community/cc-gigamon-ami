@@ -1147,10 +1147,12 @@ export interface SpikeGate {
   /** What nobody knows yet, in the terms the control would have needed. */
   unknown: string
   /**
-   * Present only when the spikes reported and the answer was that the control
-   * **cannot exist**, rather than that it is now buildable. This is a different
-   * sentence from "not yet" and the panel must not render them alike — "not yet"
-   * invites someone to wait, and waiting will never help.
+   * Present when the spikes have reported and the question is CLOSED — whether
+   * the answer was "this control cannot exist" (partitions) or "the change it
+   * would make has already been made another way" (the reader). Either way it is
+   * a different sentence from "not yet", and the panel must not render them
+   * alike: "not yet" invites someone to wait, and in neither case will waiting
+   * help.
    */
   settled?: string
   /** What the panel shows instead. */
@@ -1173,13 +1175,13 @@ export interface SpikeGate {
 export const SPIKE_GATED: readonly SpikeGate[] = Object.freeze([
   {
     control: 'Federated Search v1 → v2 toggle',
-    // P-S5 has now reported (2026-09-21) and answered the endpoint question.
-    // P-S7 has not, and it is the one that matters for THIS dataset: everything
-    // below was measured on empty throwaway datasets, where a reader change
-    // cannot be wrong about rows because there are no rows.
-    spikes: ['P-S7'],
+    // Both spikes have now reported (2026-09-21), and this dataset is ALREADY
+    // on v2 — so there is nothing left for a toggle here to decide.
+    spikes: [],
     unknown:
-      'Whether v2 on today’s JSON dataset returns identical rows without being slower — P-S7, and still unmeasured. What P-S5 settled on 2026-09-21: the Lake dataset’s searchConfig IS the endpoint (a PATCH there moved the Search side v1 → v2), so the flip needs no new grant. But the round trip is NOT clean: going to v2 and back to v1 permanently drops breakerRulesets ("Cribl Search") from the Search-side dataset, which is the event breaker applied when reading it. Restoring it needs a full-body PATCH on the Search-side dataset — the Lake side answers 400 for that field — so an undo costs a grant the flip itself does not.',
+      'Whether v2 on today’s JSON dataset returns identical rows without being slower. P-S7 answered it on 2026-09-21 and P-S5 answered the endpoint question the same day.',
+    settled:
+      'this dataset is already on Federated Search v2. P-S7 flipped it on 2026-09-21 and measured the result over one frozen 15-minute window: every value identical — additive columns, group keys, and all 52 percentile values — and between 3.7x and 12.7x faster, the largest gain on the TCP latency chart (11.3 s to 0.9 s). Two things worth knowing before anyone builds a control here. The first v2 query after a flip cost 105 seconds and the twelve after it averaged under a second, so a single measurement on a freshly flipped dataset reports a regression that is not there. And the flip drops breakerRulesets from the Search-side dataset: going back to v1 needs a full-body PATCH there to restore it, because the Lake side answers 400 for that field, so an undo costs a grant the flip does not.',
     instead: 'The live searchVersion, read from the Search-side dataset, shown as a value.',
   },
   {
