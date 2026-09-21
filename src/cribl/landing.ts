@@ -575,12 +575,29 @@ export interface DestinationEdit {
  * not configuration. Everything else the GET returns is sent back untouched.
  *
  * DELIBERATELY SHORTER THAN THE DESIGN'S LIST, which also stripped
- * `notifications`. Nothing in this repo knows whether this endpoint rejects
- * `notifications` on the way in, and the Preview check that closes this phase
- * (3.2.3) treats a re-read that lost `notifications` as a FAILURE — so stripping
- * it to be safe is the failure, performed on purpose. If a live PATCH turns out
- * to refuse it, this constant is the one line to change, and the Preview capture
- * P1 is what proves which way it went.
+ * `notifications` — and a 2026-09-21 measurement says the shorter list is the
+ * right one, so this is no longer a bet.
+ *
+ * A one-field PATCH against a throwaway `cribl_lake` destination was measured
+ * that day: of 42 keys on the live object, **14 were deleted** (`format`, every
+ * `parquet*` key, `automaticSchema`, `systemFields`, `streamtags`) and **4 were
+ * reset to product defaults** — `maxFileOpenTimeSec` 120 → 300,
+ * `maxFileIdleTimeSec` 30 → 300, and a hand-written `fileNameSuffix` reverted to
+ * the default expression. One rule covers both halves: **the object is rebuilt
+ * from the submitted body plus schema defaults.**
+ *
+ * So a stripped key is not "not mentioned". It is deleted, or silently assigned
+ * a default. Stripping `notifications` would therefore wipe a customer's
+ * configured notifications the first time anyone edited a flush setting — which
+ * is exactly what Preview check 3.2.3 calls a failure. The design's longer list
+ * was the dangerous one.
+ *
+ * `status` stays, and only `status`: it is server-computed live health, it is
+ * not configuration, and the same measurement showed the server re-derives it
+ * regardless of what is sent.
+ *
+ * ADDING A KEY HERE IS A DESTRUCTIVE CHANGE. The bar is proof that the endpoint
+ * refuses the key on the way in — not a hunch that it looks read-only.
  */
 export const DESTINATION_READONLY_KEYS: readonly string[] = Object.freeze(['status'])
 

@@ -713,10 +713,14 @@ describe('the refusals', () => {
 //     `format` and reset `retentionPeriodInDays` to 365. No test here can probe
 //     a live endpoint, which is why this sat in this list; what a test CAN do is
 //     pin the recorded answer, and `lakeLanding.test.ts` now does.
-//   * THAT `notifications` SURVIVES A DESTINATION PATCH. `DESTINATION_READONLY_KEYS`
-//     strips only `status`, against a design that also stripped `notifications`,
-//     because the Preview check treats a re-read that lost `notifications` as a
-//     failure. Which of the two is right is a question about the live endpoint.
+//   * THAT `notifications` SURVIVES A DESTINATION PATCH — answered on 2026-09-21,
+//     and `DESTINATION_READONLY_KEYS` stripping only `status` is the correct
+//     half. A measured one-field PATCH rebuilt the object from the body plus
+//     schema defaults: 14 of 42 keys deleted, 4 silently reset. A stripped key
+//     is therefore deleted or defaulted, never merely unmentioned, so the
+//     design's longer list would have wiped a customer's notifications on the
+//     first flush edit. What a test here still cannot assert is the live
+//     endpoint's behaviour itself; see the note on the constant.
 //   * THE FLUSH PRESET VALUES AGAINST provision.ts. `DESTINATION_SPEC` is not
 //     exported, so the pin above is against transcribed numbers with the source
 //     named. Exporting it would make this a real comparison, and is a change to
