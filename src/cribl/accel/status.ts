@@ -276,9 +276,58 @@ export interface AccelStatus {
  * `offset` is not optional, whatever the spec says: `limit` without it is a live
  * 400, "missing 'offset' parameter" (measured for the watchdog).
  */
+/**
+ * `type=scheduled` IS THE WHOLE POINT OF THIS FUNCTION, and leaving it out cost
+ * this app every credit Phase 2 was built to save.
+ *
+ * MEASURED 2026-09-21, live. `GET /m/default_search/search/jobs` defaults to
+ * returning **only `type: "standard"` jobs** — ad-hoc searches. A scheduled
+ * run is `type: "scheduled"` and does not appear at all unless it is asked for.
+ * A thousand-row read of the default list spanning a full week contained
+ * **zero** scheduled runs while sixteen saved searches were firing hourly.
+ *
+ * With `type=scheduled` the same endpoint returns them, and their ids are
+ * exactly the shape `isRunOf` expects — `gno_app_src_c1h.1790026560373.a7ICjD`.
+ *
+ * AND `output=short` HAD TO GO, which is the part that nearly shipped wrong.
+ * `output=short` **silently overrides the type filter**. Measured the same day,
+ * same endpoint, same 200-row limit:
+ *
+ *     type=scheduled&limit=200&offset=0                 -> 106 rows, 106 scheduled
+ *     output=short&type=scheduled&limit=200&offset=0    -> 200 rows,   9 scheduled
+ *
+ * The short form answers 200 rows of mostly ad-hoc searches and a handful of
+ * scheduled ones that happen to fall in the window — which looks like a working
+ * filter until you count. A first version of this fix added `type` and kept
+ * `output=short`; it resolved 9 of 16 entries with one run each and read as a
+ * pass. Without the short form all 16 resolve, with the full histories
+ * `keepLastN` implies (24 runs for the hourly entries).
+ *
+ * The cost is payload: full job rows rather than the short projection. This is
+ * still a config-plane read that submits no search and bills nothing, and
+ * correctness on which panel pays for a live query is worth more than the bytes.
+ *
+ * THIS IS THE SECOND TIME THIS BUG HAS BEEN FIXED, which is why it is written
+ * out at length. The first version filtered on `correlationId`, matched nothing,
+ * and every panel read "the schedule has not produced a result yet" while the
+ * schedules ran fine (see `isRunOf`). That was fixed and the symptom did not
+ * change, because the list being filtered still never contained a scheduled run.
+ *
+ * What the symptom looks like, so the third occurrence is recognised faster: the
+ * schedules run, `$vt_results` holds their results and answers a `jobName` read
+ * in under a second — and the app is no faster, because `read.ts` cannot DATE a
+ * result without a run record, and will not return one it cannot date. Every
+ * accelerated panel silently falls back to the live query it was built to avoid.
+ * The failure is in the safe direction every time, which is exactly why it
+ * survives: nothing is wrong on screen except the bill.
+ */
 function historyQuery(): string {
   return new URLSearchParams({
-    output: 'short',
+    // NO `output=short` — it overrides the type filter. See above; this is not
+    // a payload-size choice that can be reinstated.
+    // Without `type` the list is ad-hoc searches only, and a schedule's runs are
+    // invisible however correctly they are filtered afterwards.
+    type: 'scheduled',
     limit: String(HISTORY_LIMIT),
     offset: '0',
     sortExp: 'timeCreated',
@@ -292,10 +341,11 @@ function historyQuery(): string {
  * MEASURED 2026-09-18, live: a scheduled run's job id is
  * `<savedSearchId>.<epochMs>.<rand>` — `gno_sample_2m_c1h.1789758420524.nqMyit`.
  * The saved search's id is a PREFIX of its runs' job ids, and there is no
- * `correlationId` anywhere on the row carrying it. A short-form job row has
- * exactly these fields: id, type, query, earliest, latest, timeCreated,
- * timeStarted, timeCompleted, status, user, displayUsername, isPrivate,
- * useFormattedVisualization, datasetIds, userDetails.
+ * `correlationId` anywhere on the row carrying it.
+ *
+ * (This used to record the field list of a SHORT-form job row. `output=short`
+ * is no longer sent — it overrides `type=scheduled`, see `historyQuery` — so
+ * the rows are full job objects and carry more than that list, not less.)
  *
  * This replaces `correlationId=<id>` on the request, which the module's own
  * header carried as an ASSUMPTION and which is now measured false: it matched

@@ -112,7 +112,19 @@ describe('the path it calls', () => {
     // it was running hourly. The id lives in the job id's prefix instead.
     expect(qs.get('correlationId')).toBeNull()
     expect(url).not.toContain(LAKE)
-    expect(qs.get('output')).toBe('short')
+    // MEASURED 2026-09-21: the jobs endpoint returns only `type: "standard"`
+    // unless asked otherwise, so without this a schedule's runs are invisible
+    // however correctly they are filtered afterwards — a 1,000-row read of the
+    // default list spanning a week held zero scheduled runs while sixteen
+    // saved searches fired hourly. This is the parameter, not the filter, and
+    // it is the second time this class of bug has been fixed here.
+    expect(qs.get('type')).toBe('scheduled')
+    // AND NO `output=short`: it overrides the type filter. Measured 2026-09-21
+    // on the same endpoint and limit — with the short form, 200 rows of which 9
+    // were scheduled; without it, 106 rows all scheduled. A version of this fix
+    // that kept `output=short` resolved 9 of 16 entries with one run each and
+    // read as a pass. This is not a payload-size choice to reinstate.
+    expect(qs.get('output')).toBeNull()
     expect(qs.get('sortExp')).toBe('timeCreated')
     expect(qs.get('sortDir')).toBe('desc')
     expect(qs.get('limit')).toBe(String(HISTORY_LIMIT))
