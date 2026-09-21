@@ -89,11 +89,13 @@ function res(status: number, body: unknown, asText?: string) {
 }
 
 let submits: Submitted[] = []
+let urls: string[] = []
 
 function stub(cfg: { storedFail?: { status: number; body: unknown }; history?: unknown[]; stored?: FieldSummary[] } = {}): void {
   submits = []
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const u = String(url)
+    urls.push(u)
     if ((init.method ?? 'GET') === 'POST' && u.endsWith('/search/jobs')) {
       const body = JSON.parse(String(init.body)) as Submitted
       submits.push(body)
@@ -107,6 +109,18 @@ function stub(cfg: { storedFail?: { status: number; body: unknown }; history?: u
       return res(200, { fields: u.includes('job-stored') ? (cfg.stored ?? STORED_FIELDS) : LIVE_FIELDS })
     }
     if (u.includes('/results')) {
+      // A CHOSEN MOMENT READS THE ARTIFACT, NOT `$vt_results`. That virtual
+      // table returns only the NEWEST run (measured 2026-09-21), so
+      // accel/read.ts GETs `/search/jobs/<runId>/results` for a past one.
+      // The SAMPLE's artifact is raw event ROWS, which the app summarises
+      // itself — serving the presence row here would have summarised into
+      // c0…c95 and the panel would have rendered the wrong field list
+      // without anything failing.
+      if (u.includes(SAMPLE + '.')) {
+        const names = (cfg.stored ?? STORED_FIELDS).map((f) => f.name)
+        const one = Object.fromEntries(names.map((n) => [n, n === 'jobId' ? 'run-1' : 'v-' + n]))
+        return res(200, {}, [JSON.stringify({ totalEventCount: 1, job: 'j' }), JSON.stringify(one)].join(String.fromCharCode(10)))
+      }
       // The presence query: one row of per-field counts, all present.
       const row: Record<string, number> = {}
       for (let i = 0; i < 96; i++) row[`c${i}`] = 10
@@ -294,7 +308,12 @@ describe('the header snapshot picker, which this panel used to ignore', () => {
   it('re-reads for the moment the picker names, instead of showing the newest under its heading', async () => {
     stub()
     await render()
-    const before = sampleSubmits().length
+    // A CHOSEN MOMENT SUBMITS NO SEARCH ANY MORE, so counting submits cannot
+    // show the panel re-read. `$vt_results` returns only the NEWEST run, so a
+    // past moment is read straight off the stored artifact. The artifact fetch
+    // IS the re-read, and it costs nothing, which is the better outcome.
+    const artifacts = () => urls.filter((u) => u.includes(SAMPLE + '.') && u.includes('/results'))
+    const before = artifacts().length
 
     // AT OR BEFORE, so the moment has to be at or after the run that answers it.
     // The stub stores one run finished an hour ago; half an hour ago is a moment
@@ -302,7 +321,7 @@ describe('the header snapshot picker, which this panel used to ignore', () => {
     await act(async () => { setSelectedSnapshot(NOW - HOUR / 2) })
     await settle()
 
-    expect(sampleSubmits().length, 'picking a past moment did not re-read this panel').toBe(before + 1)
+    expect(artifacts().length, 'picking a past moment did not re-read this panel').toBeGreaterThan(before)
     // accel/read.ts answers a moment through its own `$vt_results` path over the
     // fixed fast window, never through the live query — there is no live answer
     // to a question about half an hour ago.

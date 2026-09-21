@@ -166,7 +166,15 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
     }
     if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
     if (u.includes('/results')) {
-      const rows = u.includes('job-nm') ? (cfg.nameRows ?? []) : u.includes('job-vt') ? (cfg.vtRows ?? []) : (cfg.liveRows ?? [])
+      // A STORED RUN IS READ BY ITS OWN JOB ID NOW. `$vt_results` cannot address
+      // one (measured 2026-09-21), so `atMoment` GETs
+      // `/search/jobs/<runId>/results` directly. Those urls carry neither
+      // synthetic id, so without this they fell through to `liveRows` and every
+      // chosen-moment case quietly read the present.
+      const storedRun = !u.includes('job-nm') && !u.includes('job-vt') && !u.includes('job-live')
+      const rows = storedRun
+        ? (cfg.vtRows ?? [])
+        : u.includes('job-nm') ? (cfg.nameRows ?? []) : u.includes('job-vt') ? (cfg.vtRows ?? []) : (cfg.liveRows ?? [])
       const ndjson = [JSON.stringify({ totalEventCount: rows.length, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n')
       return res(200, {}, ndjson)
     }
@@ -775,16 +783,24 @@ describe('reading the state at a chosen moment', () => {
 
   const storedFrom = (jobId: string): Row => ({ ...STORED, jobId, jobName: LAKE })
 
+  /** Did this run's stored artifact get read? Replaces the old assertion on a
+   *  `$vt_results jobId=` query, which no longer exists — the run is addressed
+   *  by URL now, so the URL is what carries the claim. */
+  const fetchedRun = (urls: readonly string[], jobId: string): boolean =>
+    urls.some((u) => u.includes(`/search/jobs/${encodeURIComponent(jobId)}/results`))
+
   it('addresses one run by its job id, not the schedule by name', async () => {
     // `jobName=` selects a schedule. With twenty-four retained runs that is
     // twenty-four wrong answers and one right one, and the app cannot tell which
     // it got — which is precisely why the timeline addresses a job id.
-    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const { submits, urls } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
     const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
 
-    // `toContain`, because search.ts prefixes every job it submits with the
-    // running-time cap. That prefix is execution-only and never reaches an ⓘ.
-    expect(vtSubmit(submits)?.query).toContain(`dataset="$vt_results" jobId="${R0820}"`)
+    // The run is addressed by URL, and NO search is submitted for it at all:
+    // reading an artifact that already exists bills nothing, where the
+    // `$vt_results` read it replaced submitted a job every time.
+    expect(fetchedRun(urls, R0820)).toBe(true)
+    expect(vtSubmit(submits), 'a chosen moment should submit no search at all').toBeUndefined()
     expect(read.source).toBe('schedule')
     expect(read.at).toBe(NOW - 2 * HOUR)
     expect(liveSubmit(submits), 'the live query ran for a question about the past').toBeUndefined()
@@ -794,9 +810,9 @@ describe('reading the state at a chosen moment', () => {
     // A run that finished at 09:20 did not exist at 08:40. Handing it to someone
     // who asked for 08:40 answers a question about the past with data from the
     // future — the one mistake a timeline can make that a reader cannot see.
-    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const { urls } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
     await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR + 40 * 60_000, now: NOW })
-    expect(vtSubmit(submits)?.query).toContain(`jobId="${R0820}"`)
+    expect(fetchedRun(urls, R0820)).toBe(true)
   })
 
   it('shows nothing, and offers its nearest, when the moment is before every run', async () => {
@@ -876,10 +892,10 @@ describe('reading the state at a chosen moment', () => {
       { id: RBAD, status: 'failed', timeCreated: NOW - HOUR, timeCompleted: NOW - HOUR },
       { id: ROK, status: 'completed', timeCreated: NOW - 2 * HOUR, timeCompleted: NOW - 2 * HOUR },
     ]
-    const { submits } = stub({ history: mixed, vtRows: [storedFrom(ROK)], liveRows: [LIVE] })
+    const { urls } = stub({ history: mixed, vtRows: [storedFrom(ROK)], liveRows: [LIVE] })
     const read = await readAccelRows(LAKE, { asOf: NOW, now: NOW })
 
-    expect(vtSubmit(submits)?.query).toContain(`jobId="${ROK}"`)
+    expect(fetchedRun(urls, ROK)).toBe(true)
     expect(read.at).toBe(NOW - 2 * HOUR)
   })
 

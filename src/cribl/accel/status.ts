@@ -658,6 +658,47 @@ function readable(runs: readonly AccelRun[]): AccelRun[] {
  * still there — `keepLastN` is what was ASKED for, not what survived a Leader
  * restart or a re-apply.
  */
+/**
+ * The moments the picker offers — ONE PER HOUR, not one per run.
+ *
+ * This used to be the union of every entry's run times, and that is a worse
+ * list than it sounds. The fifteen `gigamon_ami` schedules are deliberately
+ * staggered across the hour (:07, :20, :21, :22, :23, :24, :33, :36, :40, :41,
+ * :45, :47, :48, :51, :54) so they do not collide, so the union offered a
+ * moment every three or four minutes — around 360 a day.
+ *
+ * Worse than the count was what each one MEANT. An option was one entry's run
+ * time, not a state of the dashboard: picking 16:54 asked for the world as it
+ * looked then, and for fourteen of the fifteen entries the newest run at or
+ * before that was from a different minute. The census line under the picker
+ * spent most of its life saying how few panels could answer, which is a
+ * symptom of the list, not a fact about the data.
+ *
+ * Bucketing by the hour matches what is actually there. Every hourly entry runs
+ * once an hour, so an hour is the finest window in which the set is complete,
+ * and `keepLastN: 24` means twenty-four hours is exactly how far back the
+ * history goes — the bucket and the retention agree.
+ *
+ * The value offered for a bucket is the LATEST run inside it, so
+ * `runAtOrBefore` gives every entry its own run from that hour rather than the
+ * previous hour's. That is why this returns run instants and not round hours:
+ * the number offered is a moment that really exists, and the picker labels it
+ * with the time it really is.
+ */
+function momentsFrom(entries: readonly EntryTimeline[]): number[] {
+  const latestInHour = new Map<number, number>()
+  for (const e of entries) {
+    for (const r of e.runs) {
+      const at = r.at as number
+      if (typeof at !== 'number') continue
+      const hour = Math.floor(at / HOUR_MS)
+      const best = latestInHour.get(hour)
+      if (best === undefined || at > best) latestInHour.set(hour, at)
+    }
+  }
+  return [...latestInHour.values()].sort((a, b) => b - a)
+}
+
 export async function snapshotTimeline(
   ids: readonly AccelId[] = MANIFEST.map((e) => e.id),
   opts: StatusOptions = {},
@@ -670,7 +711,7 @@ export async function snapshotTimeline(
     denied: l.denied,
     error: l.error,
   }))
-  const times = [...new Set(entries.flatMap((e) => e.runs.map((r) => r.at as number)))].sort((a, b) => b - a)
+  const times = momentsFrom(entries)
   return {
     entries,
     times,

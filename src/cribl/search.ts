@@ -449,8 +449,29 @@ async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
 
+  const { rows, totalEventCount } = await readJobResults(jobId, { limit, signal })
+  return { jobId, rows, totalEventCount }
+}
+
+/**
+ * Read the results a job ALREADY produced, by its id. No job is submitted and
+ * nothing is billed — this reads an artifact that exists.
+ *
+ * Extracted from `runSearchInner` so that a SCHEDULED run can be read the same
+ * way its live counterpart is, which is the only way to address one. Measured
+ * 2026-09-21: `$vt_results` answers on `jobName="<savedSearchId>"` and returns
+ * the NEWEST run only; every way of naming a specific run — `jobName` or
+ * `jobId`, the `<id>.<epoch>.<rand>` form or the `…scheduled.scheduledSearch_…`
+ * form — returns zero rows. `keepLastN: 24` retains twenty-four artifacts and
+ * `$vt_results` exposes exactly one of them. This endpoint reaches the rest.
+ */
+export async function readJobResults(
+  jobId: string,
+  opts: { limit?: number; signal?: AbortSignal } = {},
+): Promise<{ rows: Row[]; totalEventCount: number }> {
+  const { limit = 5000, signal } = opts
   // Results are NDJSON: header line then row lines.
-  const res = await fetchRetry(searchUrl(`/search/jobs/${jobId}/results?limit=${limit}`), {}, signal)
+  const res = await fetchRetry(searchUrl(`/search/jobs/${encodeURIComponent(jobId)}/results?limit=${limit}`), {}, signal)
   if (!res.ok) throw new Error(`Cribl Search results ${res.status}`)
   const text = await res.text()
   let totalEventCount = 0
@@ -470,7 +491,45 @@ async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<
       rows.push(obj)
     }
   }
-  return { jobId, rows, totalEventCount }
+  return { rows, totalEventCount }
+}
+
+/**
+ * Field summaries computed from rows this app already has, rather than by
+ * asking Cribl to compute them over a query.
+ *
+ * The stored-run path needs this: a scheduled run's artifact is ROWS, and there
+ * is no query that names it (see `readJobResults`), so `/field-summaries`
+ * cannot be pointed at one. The same shape is produced either way, so a panel
+ * cannot tell which path served it — which is the point.
+ */
+export function summariseRows(rows: Row[]): FieldSummariesResult {
+  const acc = new Map<string, { count: number; nulls: number; types: Set<string>; vals: Map<string, { value: unknown; count: number }> }>()
+  for (const row of rows) {
+    for (const [name, value] of Object.entries(row)) {
+      let f = acc.get(name)
+      if (!f) { f = { count: 0, nulls: 0, types: new Set(), vals: new Map() }; acc.set(name, f) }
+      if (value === null || value === undefined || value === '') { f.nulls++; continue }
+      f.count++
+      f.types.add(typeof value)
+      const key = String(value)
+      const seen = f.vals.get(key)
+      if (seen) seen.count++
+      else if (f.vals.size < 5000) f.vals.set(key, { value, count: 1 })
+    }
+  }
+  const fields = [...acc.entries()].map(([name, f]) => ({
+    name,
+    // One type when the column is consistent, `mixed` when it is not — the same
+    // two answers the server gives, and honest about the third case.
+    type: f.types.size === 1 ? [...f.types][0] : f.types.size === 0 ? 'null' : 'mixed',
+    count: f.count,
+    countDistinct: f.vals.size,
+    countNull: f.nulls,
+    topValues: [...f.vals.values()].sort((a, b) => b.count - a.count).slice(0, 10),
+  }))
+  fields.sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : 1))
+  return { fields, sampled: rows.length }
 }
 
 /** Convenience: prefix a filter/pipeline onto the gigamon_ami dataset. */

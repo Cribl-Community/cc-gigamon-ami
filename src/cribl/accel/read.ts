@@ -89,13 +89,18 @@
 //     instead of being read. The reasoning is on the branch in `diagnose`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { runFieldSummaries, runSearch, type FieldSummariesResult, type Row } from '../search'
+import { readJobResults, runFieldSummaries, runSearch, summariseRows, type FieldSummariesResult, type Row } from '../search'
 import type { CostSlot } from '../jobCost'
 import { accelEntry, isAccelId, type AccelEntry, type AccelId } from './manifest'
 import { cronIntervalMs, listRuns, nearestRun, runAtOrBefore, runMeta, snapshotTimeline, type AccelRun } from './status'
 
 /** The virtual table a stored result is read from. Named in query text only. */
 export const VT_RESULTS = '$vt_results'
+
+/** How many rows of a stored artifact to read. The sample entry persists 5,000
+ *  (`| limit 5000`), and reading fewer would silently narrow the field census
+ *  a chosen moment reports against the one "newest" reports. */
+export const ARTIFACT_LIMIT = 5000
 
 /**
  * The three columns `$vt_results` adds to every row, which the scheduled body
@@ -433,8 +438,32 @@ function withTail(head: string, tail?: string): string {
  * without a human having typed it.
  */
 export function accelRunQuery(jobId: string, tail?: string): string {
-  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(jobId)) throw new Error('accel read: that is not a job id this app can address')
+  assertAddressableJobId(jobId)
   return withTail(`dataset="${VT_RESULTS}" jobId="${jobId}"`, tail)
+}
+
+/**
+ * NOT A QUERY ANY MORE, and `accelRunQuery` above is kept only for its shape.
+ *
+ * MEASURED 2026-09-21 against the live workspace: `$vt_results` answers on
+ * `jobName="<savedSearchId>"` and returns the NEWEST run only. Every way of
+ * naming a SPECIFIC run returns zero rows — `jobId=` or `jobName=`, the
+ * `<id>.<epoch>.<rand>` form or the `…scheduled.scheduledSearch_…` form. That
+ * settles claim V-23 ("what `jobName=` binds to is not known"): it binds to the
+ * saved search, not to a run.
+ *
+ * So the snapshot picker could never work through `$vt_results`. `keepLastN: 24`
+ * retains twenty-four artifacts and that virtual table exposes one of them;
+ * choosing any earlier moment asked for a run by id and got nothing back, which
+ * is why every panel went blank on a chosen snapshot while "newest" was fine.
+ *
+ * A stored run is read by its id through `readJobResults` instead, which reads
+ * an artifact that already exists and therefore submits no job and bills
+ * nothing — cheaper than the `$vt_results` read it replaces, not just able to
+ * reach further back.
+ */
+function assertAddressableJobId(jobId: string): void {
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(jobId)) throw new Error('accel read: that is not a job id this app can address')
 }
 
 /** How old a run of this entry may be before it is stale. */
@@ -464,16 +493,11 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   // query with a moment selected.
   if (opts.asOf !== undefined) {
     return atMoment(entry, opts, opts.asOf, [], {
-      run: (query) =>
-        runSearch(query, {
-          earliest: FAST_EARLIEST,
-          latest: FAST_LATEST,
-          limit: opts.limit,
-          signal: opts.signal,
-          timeoutMs: FAST_TIMEOUT_MS,
-        }),
+      fromRun: (jobId) => readJobResults(jobId, { limit: opts.limit, signal: opts.signal }),
       isEmpty: (r) => r.rows.length === 0,
-      shape: (r) => ({ data: stripVirtualColumns(r.rows), named: String(r.rows[0][COL_JOB_NAME] ?? '') }),
+      // `stripVirtualColumns` is a no-op on an artifact, which carries none of
+      // them. It stays so that both paths hand a panel the same shape.
+      shape: (r) => ({ data: stripVirtualColumns(r.rows), named: String(r.rows[0]?.[COL_JOB_NAME] ?? '') }),
     })
   }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
@@ -531,13 +555,11 @@ export async function readAccelFieldSummaries(
   const live = opts.live ?? (() => liveFieldSummaries(entry, opts))
   if (opts.asOf !== undefined) {
     return atMoment(entry, opts, opts.asOf, { fields: [], sampled: 0 }, {
-      run: (query) =>
-        runFieldSummaries(query, {
-          earliest: FAST_EARLIEST,
-          latest: FAST_LATEST,
-          signal: opts.signal,
-          timeoutMs: FAST_TIMEOUT_MS,
-        }),
+      // A scheduled run's artifact is ROWS, and no query names it, so
+      // `/field-summaries` cannot be pointed at one. The summaries are computed
+      // from the artifact instead, to the same shape the endpoint returns.
+      fromRun: async (jobId) =>
+        summariseRows((await readJobResults(jobId, { limit: ARTIFACT_LIMIT, signal: opts.signal })).rows),
       isEmpty: (r) => r.fields.length === 0,
       shape: (r) => ({
         data: { fields: r.fields.filter((f) => !VIRTUAL_COLUMNS.includes(f.name)), sampled: r.sampled },
@@ -595,7 +617,8 @@ export async function readAccelFieldSummaries(
 
 /** What the two entry points differ by, so `atMoment` can be written once. */
 interface MomentIo<T, R> {
-  run: (query: string) => Promise<R>
+  /** Read one stored run BY ID. Not by query — see `assertAddressableJobId`. */
+  fromRun: (jobId: string) => Promise<R>
   isEmpty: (result: R) => boolean
   shape: (result: R) => { data: T; named: string }
 }
@@ -635,9 +658,18 @@ async function atMoment<T, R>(
   const run = runAtOrBefore(mine, asOf)
   if (!run) return absent(entry, 'no-run-at', empty, opts, nearestRun(mine, asOf)?.at ?? null)
 
+  // The id is the address now, so it is checked before it is used rather than
+  // after. `listRuns` filters by this entry already; this is the second signal,
+  // and it is stronger than the one it replaces (see the `named` check below).
+  assertAddressableJobId(run.id)
+  if (!run.id.startsWith(`${entry.id}.`)) {
+    warn(entry.id, `the run history offered a run belonging to another schedule ('${run.id}')`, null)
+    return absent(entry, 'unreadable', empty, opts, run.at)
+  }
+
   let result
   try {
-    result = await io.run(accelRunQuery(run.id, opts.tail))
+    result = await io.fromRun(run.id)
   } catch (err) {
     if (aborted(err, opts.signal)) throw err
     warn(entry.id, 'the stored result of the run that was picked could not be read', err)
@@ -649,6 +681,11 @@ async function atMoment<T, R>(
   // that is not there.
   if (io.isEmpty(result)) return absent(entry, 'aged-out', empty, opts, run.at)
 
+  // `named` comes from the virtual column `$vt_results` adds, and a raw
+  // artifact does not carry it — so on this path it is empty and this check no
+  // longer fires. It is KEPT rather than deleted because it costs nothing and
+  // would catch a future reader that goes back through the virtual table; the
+  // id guard above is what actually protects this path now.
   const { data, named } = io.shape(result)
   if (named && !namesThisEntry(entry, named)) {
     warn(entry.id, `the run that was picked stored another schedule's rows ('${named}')`, null)
