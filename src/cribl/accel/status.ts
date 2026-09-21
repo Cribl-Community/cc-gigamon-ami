@@ -289,23 +289,24 @@ export interface AccelStatus {
  * With `type=scheduled` the same endpoint returns them, and their ids are
  * exactly the shape `isRunOf` expects — `gno_app_src_c1h.1790026560373.a7ICjD`.
  *
- * AND `output=short` HAD TO GO, which is the part that nearly shipped wrong.
- * `output=short` **silently overrides the type filter**. Measured the same day,
- * same endpoint, same 200-row limit:
+ * `output=short` SILENTLY OVERRIDES `type`, SO THE FILTER IS `filterExp`.
+ * Measured, same endpoint and limit:
  *
- *     type=scheduled&limit=200&offset=0                 -> 106 rows, 106 scheduled
- *     output=short&type=scheduled&limit=200&offset=0    -> 200 rows,   9 scheduled
+ *     type=scheduled&limit=200                          -> 106 rows, 106 scheduled, 2.64 MB
+ *     output=short&type=scheduled&limit=200             -> 200 rows,   9 scheduled,  115 KB
+ *     output=short&filterExp=type=='scheduled'&limit=200 -> 109 rows, 109 scheduled, 113 KB
  *
- * The short form answers 200 rows of mostly ad-hoc searches and a handful of
- * scheduled ones that happen to fall in the window — which looks like a working
- * filter until you count. A first version of this fix added `type` and kept
- * `output=short`; it resolved 9 of 16 entries with one run each and read as a
- * pass. Without the short form all 16 resolve, with the full histories
- * `keepLastN` implies (24 runs for the hourly entries).
+ * The middle row is the trap: the short form answers mostly ad-hoc searches
+ * plus whatever scheduled runs fall in the window, which looks like a working
+ * filter until you count.
  *
- * The cost is payload: full job rows rather than the short projection. This is
- * still a config-plane read that submits no search and bills nothing, and
- * correctness on which panel pays for a live query is worth more than the bytes.
+ * The first row is the trap I FELL INTO. Dropping `output=short` does filter
+ * correctly — and multiplies the payload 22x, because a full job row carries
+ * its `stages[].searchConfig` pipeline blob. `snapshotTimeline` issues one of
+ * these per entry, so the header's picker alone went from ~1.8 MB to ~42 MB and
+ * the Flow Map went from under 2 s to over 12. `filterExp` is honoured
+ * alongside the short projection and gives both: the right rows and the small
+ * body.
  *
  * THIS IS THE SECOND TIME THIS BUG HAS BEEN FIXED, which is why it is written
  * out at length. The first version filtered on `correlationId`, matched nothing,
@@ -323,11 +324,11 @@ export interface AccelStatus {
  */
 function historyQuery(): string {
   return new URLSearchParams({
-    // NO `output=short` — it overrides the type filter. See above; this is not
-    // a payload-size choice that can be reinstated.
-    // Without `type` the list is ad-hoc searches only, and a schedule's runs are
-    // invisible however correctly they are filtered afterwards.
-    type: 'scheduled',
+    // Both, and neither is optional: `output=short` keeps the body small, and
+    // `filterExp` is the filter that survives it. `type=scheduled` does NOT —
+    // the short projection ignores it.
+    output: 'short',
+    filterExp: "type=='scheduled'",
     limit: String(HISTORY_LIMIT),
     offset: '0',
     sortExp: 'timeCreated',

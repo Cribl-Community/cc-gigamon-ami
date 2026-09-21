@@ -118,13 +118,19 @@ describe('the path it calls', () => {
     // default list spanning a week held zero scheduled runs while sixteen
     // saved searches fired hourly. This is the parameter, not the filter, and
     // it is the second time this class of bug has been fixed here.
-    expect(qs.get('type')).toBe('scheduled')
-    // AND NO `output=short`: it overrides the type filter. Measured 2026-09-21
-    // on the same endpoint and limit — with the short form, 200 rows of which 9
-    // were scheduled; without it, 106 rows all scheduled. A version of this fix
-    // that kept `output=short` resolved 9 of 16 entries with one run each and
-    // read as a pass. This is not a payload-size choice to reinstate.
-    expect(qs.get('output')).toBeNull()
+    // BOTH, and the pairing is the point. `output=short` keeps the body small;
+    // it also silently ignores `type=scheduled`, so the filter has to be
+    // `filterExp`, which the short projection does honour. Measured 2026-09-21,
+    // same endpoint and limit:
+    //   type=scheduled                          106 rows, 106 scheduled, 2.64 MB
+    //   output=short&type=scheduled             200 rows,   9 scheduled,  115 KB
+    //   output=short&filterExp=type=='scheduled' 109 rows, 109 scheduled, 113 KB
+    // Dropping `output=short` filters correctly and costs 22x the payload, once
+    // PER ENTRY — that shipped for one commit and took the Flow Map from under
+    // 2 s to over 12.
+    expect(qs.get('filterExp')).toBe("type=='scheduled'")
+    expect(qs.get('output')).toBe('short')
+    expect(qs.get('type'), 'type is ignored by the short projection').toBeNull()
     expect(qs.get('sortExp')).toBe('timeCreated')
     expect(qs.get('sortDir')).toBe('desc')
     expect(qs.get('limit')).toBe(String(HISTORY_LIMIT))
