@@ -352,21 +352,27 @@ export interface PartitionLimits {
 }
 
 /**
- * Used when the Lake config read is refused or absent, and on this build it is
- * ALWAYS the operative value — which makes it load-bearing rather than a
- * fallback.
+ * Used when the Lake config read is refused or cannot be parsed. Three is what
+ * this tenant answers, confirmed twice over on 2026-09-21 and by two
+ * independent routes.
  *
- * `GET /products/lake/lakes/default/config` carried no `maxAcceleratedFieldsCount`
- * at all when P-S5 read it on 2026-09-21 (precondition PRE-3). The cap is real
- * regardless: P-S9 probed it the same day by setting 1, 2, 3 and 4 fields on a
- * throwaway dataset, and the fourth answered
+ * READ FROM CONFIG. `GET /products/lake/lakes/default/config` answers a LIST,
+ * not a flat object — six `{id, value, description}` items — and one of them is
+ *
+ *     { id: 'maxAcceleratedFieldsCount', value: 3 }
+ *
+ * (the others are `maxlakehouses` 10, `maxLakehouseIndexedFieldsCount` 5,
+ * `maxHTTPDADatasetsCount` 10, `maxLakeStorageLocationsCount` 20,
+ * `migrationSuccessful`). A reader that looks for a TOP-LEVEL key of that name
+ * finds nothing and concludes the cap is unpublished — which is exactly what
+ * this comment used to claim, on a parsing mistake rather than a reading.
+ *
+ * AND CONFIRMED BY ENFORCEMENT. P-S9 set 1, 2, 3 and 4 fields on a throwaway
+ * dataset; the fourth answered
  *
  *     400 — "Dataset 'zz_t1_p9a' cannot have more than 3 accelerated fields"
  *
- * so **3 is measured by enforcement, not read from config**, and the refusal was
- * atomic — the stored value stayed at the previous three. Do not read the config
- * field's absence as "no cap"; the server has one and will say so at the worst
- * possible moment otherwise.
+ * and the refusal was atomic — the stored value stayed at the previous three.
  *
  * `validatePartitions` says which limit it applied, so a refusal is never
  * silently permissive.
