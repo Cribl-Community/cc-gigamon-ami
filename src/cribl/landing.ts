@@ -1131,9 +1131,13 @@ export interface SpikeGate {
 export const SPIKE_GATED: readonly SpikeGate[] = Object.freeze([
   {
     control: 'Federated Search v1 → v2 toggle',
-    spikes: ['P-S5', 'P-S7'],
+    // P-S5 has now reported (2026-09-21) and answered the endpoint question.
+    // P-S7 has not, and it is the one that matters for THIS dataset: everything
+    // below was measured on empty throwaway datasets, where a reader change
+    // cannot be wrong about rows because there are no rows.
+    spikes: ['P-S7'],
     unknown:
-      'Which endpoint actually flips the reader — the Lake dataset’s searchConfig, or a full replacement of the Search-side dataset — and whether v2 on today’s JSON dataset returns identical rows without being slower. Two candidate request shapes exist and nobody has sent either.',
+      'Whether v2 on today’s JSON dataset returns identical rows without being slower — P-S7, and still unmeasured. What P-S5 settled on 2026-09-21: the Lake dataset’s searchConfig IS the endpoint (a PATCH there moved the Search side v1 → v2), so the flip needs no new grant. But the round trip is NOT clean: going to v2 and back to v1 permanently drops breakerRulesets ("Cribl Search") from the Search-side dataset, which is the event breaker applied when reading it. Restoring it needs a full-body PATCH on the Search-side dataset — the Lake side answers 400 for that field — so an undo costs a grant the flip itself does not.',
     instead: 'The live searchVersion, read from the Search-side dataset, shown as a value.',
   },
   {

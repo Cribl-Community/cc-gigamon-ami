@@ -596,7 +596,7 @@ describe('the controls this phase refused to build', () => {
     // which is worse than not building the control at all.
     expect(READER_GATE).toBeDefined()
     expect(PARTITION_GATE).toBeDefined()
-    expect(READER_GATE?.spikes).toContain('P-S5')
+    expect(READER_GATE?.spikes).toEqual(['P-S7'])
     expect(PARTITION_GATE?.spikes).toEqual(['P-S9'])
   })
 })
@@ -697,8 +697,14 @@ describe('the spike-gated rows', () => {
     stubWorkspace()
     await mount()
     expect(rowLabels()).toContain('Search reader')
-    expect(bodyText()).toContain('P-S5 and P-S7')
+    expect(bodyText()).toContain('P-S7 has to report first')
     expect(bodyText()).toContain('Not editable here yet')
+    // What P-S5 measured on 2026-09-21 is ON SCREEN, not just absent from the
+    // spike list. The row used to say nobody had sent either candidate request;
+    // one has now been sent, and the answer carries a warning an admin needs
+    // before anyone builds the control: the flip is free, the UNDO is not.
+    expect(bodyText()).toContain('searchConfig IS the endpoint')
+    expect(bodyText()).toContain('breakerRulesets')
     // Nothing on screen offers to change it.
     expect(buttonNamed('Switch to v2')).toBeUndefined()
   })

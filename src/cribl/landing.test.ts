@@ -704,7 +704,13 @@ describe('the refusals', () => {
       'Federated Search v1 → v2 toggle',
       'Partition (acceleratedFields) editor',
     ])
-    expect(SPIKE_GATED[0].spikes).toEqual(['P-S5', 'P-S7'])
+    // P-S5 REPORTED on 2026-09-21 and came off this list; P-S7 did not. The
+    // distinction is the whole point of the row: P-S5 answered the endpoint
+    // question on empty throwaway datasets, where a reader change cannot be
+    // wrong about rows because there are no rows. P-S7 is the one that asks
+    // whether v2 returns the same rows from THIS dataset, and only a spike on
+    // the live dataset can answer it.
+    expect(SPIKE_GATED[0].spikes).toEqual(['P-S7'])
     expect(SPIKE_GATED[1].spikes).toEqual(['P-S9'])
   })
 
