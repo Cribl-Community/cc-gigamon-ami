@@ -6,7 +6,11 @@
 // range picker was set to: 754.9 billable CPU-s every time somebody opened the
 // tab. It now reads the result of an hourly scheduled run over a settled
 // two-minute window, so THE FIELD LIST NO LONGER FOLLOWS THE PICKER while the
-// AMI coverage counts on the other two views still do.
+// AMI coverage counts on the other two views still do. — NO LONGER TRUE as of
+// 2026-09-18: the coverage scan is served by gno_presence_c1h, so while
+// acceleration is on neither view follows the picker and the tab has one window
+// again rather than two. It was the second of this tab’s two mount queries and
+// the one a hook census could not see, because it calls runSearch directly.
 //
 // That is a real behaviour change and the tab is required to say so out loud, in
 // three places, because a reader who changes the range and sees nothing move
@@ -27,12 +31,13 @@ import { useSearchParams } from 'react-router-dom'
 import { capSecondsFor, runFieldSummaries, runSearch, SearchTimeLimitError, type FieldSummary } from '../cribl/search'
 import { useCostSlot } from '../cribl/jobCost'
 import { accelEntry, type AccelId } from '../cribl/accel/manifest'
-import { readAccelFieldSummaries, type AccelSource } from '../cribl/accel/read'
+import { readAccelFieldSummaries, readAccelRows, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
+import { useSelectedSnapshot } from '../cribl/accel/selection'
 import { useAccelEnabled } from '../cribl/useSearch'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
-import { asOf, type ComputedFrom } from '../components/PanelInfo'
+import { type ComputedFrom } from '../components/PanelInfo'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { StatusPill } from '../components/StatusPill'
 import { fmtCount } from '../lib/format'
@@ -50,6 +55,18 @@ const SAMPLE_ACCEL: AccelId = 'gno_sample_2m_c1h'
  *  means one thing on a workspace that has applied acceleration and another on
  *  one that has not. */
 const SAMPLE_ENTRY = accelEntry(SAMPLE_ACCEL)
+
+/**
+ * The OTHER query this tab runs on mount, and the one a census of hooks cannot
+ * see: it calls runSearch directly rather than useSearch, so nothing that counts
+ * `accel` options ever counted it.
+ *
+ * Measured on the live workspace 2026-09-18: 187.6 and 354.8 billable CPU-s over
+ * -15m, 4.6 s and 5.5 s wall. That is what kept this tab at eight seconds after
+ * the sample beside it was already answering from a snapshot in 1.4 s.
+ */
+const PRESENCE_ACCEL: AccelId = 'gno_presence_c1h'
+const PRESENCE_ENTRY = accelEntry(PRESENCE_ACCEL)
 /** The schedule in words, for the panel's ⓘ. FieldExplorer.test.tsx holds this
  *  against the manifest's own cron, so changing one forces the other. */
 export const SAMPLE_CADENCE = 'once an hour, at 7 minutes past, in UTC'
@@ -69,6 +86,12 @@ interface FeedState {
   sampled: number
   /** Which read answered — a stored scheduled run, or a live one. */
   source: AccelSource
+  /** Why it ended up there. Null only before the first read finishes; this
+   *  panel always names a schedule, so "never had one" cannot apply to it. */
+  outcome: AccelOutcome | null
+  /** When a past moment was picked and no run of this entry exists at or before
+   *  it: the nearest run this entry does have, for the caption to offer. */
+  nearestAt: number | null
   /** Epoch ms the sample was taken. Never null once a read has finished: a
    *  stored run carries its own time, and a live run was taken just now. */
   at: number | null
@@ -91,15 +114,22 @@ interface FeedState {
 export function sampleNote(
   s: { source: AccelSource; at: number | null; stale: boolean; sampled: number },
   picker: { following: boolean; label: string },
-  now?: number,
 ): string {
   const rows = s.sampled > 0 ? ` (${s.sampled.toLocaleString()} rows)` : ''
   // Nothing has answered yet. Not "taken just now": on first paint that would be
   // a claim about a sample that does not exist.
   if (s.at === null) return 'sampling…'
   if (s.source === 'schedule') {
-    const when = asOf(s.at, now) ?? 'an unknown time'
-    return `sample taken ${when}${rows}${s.stale ? ' · schedule overdue' : ''}`
+    // WHICH sample, not WHEN it was taken. The panel header now carries a
+    // `snapshotNote` caption of its own — `snapshot 08:20 · 42m ago`, and
+    // `· schedule overdue` when it is late — because this panel is registered in
+    // the header's census like every other. Repeating the clock six words later
+    // is the same fact twice in the smallest type on the screen, and the two
+    // would drift the first time one of them was edited.
+    //
+    // The rule the doc comment above states is unchanged and still met: the time
+    // is on screen, in the one place that computes it for every panel in the app.
+    return `hourly sample${rows}`
   }
   if (picker.following) return `live sample · ${picker.label.toLowerCase()}${rows}`
   return `sample taken just now${rows}`
@@ -137,7 +167,7 @@ export function FieldExplorer() {
   const { range, refreshNonce, manualRefreshNonce } = useDashboard()
   const [state, setState] = useState<FeedState>({
     loading: true, error: null, errorTitle: null, fields: [], sampled: 0,
-    source: 'live', at: null, stale: false, note: null,
+    source: 'live', outcome: null, at: null, stale: false, note: null, nearestAt: null,
   })
   const [presence, setPresence] = useState<{ loading: boolean; error: string | null; errorTitle: string | null; count: Record<string, number> }>({
     loading: true, error: null, errorTitle: null, count: {},
@@ -166,6 +196,29 @@ export function FieldExplorer() {
   // is the schedule itself, in Guided Setup.
   const [liveOnly, setLiveOnly] = useState(false)
   const accelOn = useAccelEnabled() && !liveOnly
+  // WHICH PAST STATE THIS SAMPLE IS ANSWERING FOR. The header's snapshot picker
+  // says it chooses "which stored run every panel reads", and until this was
+  // threaded through, this panel was the exception that made the sentence false:
+  // it kept showing the newest sample under a header naming 04:20.
+  //
+  // accel/read.ts answers a moment BEFORE it consults the off switch, so this
+  // deliberately overrides `accelOn` — there is no live answer to a question
+  // about 04:20, and the "Run live" chip is hidden while one is picked for the
+  // same reason <Panel> hides its own.
+  const moment = useSelectedSnapshot()
+  // This panel's row in the header's census. It is a <Panel> like any other, but
+  // it builds its state from readAccelFieldSummaries rather than from useSearch,
+  // so the `snapshot` prop is assembled by hand here. Without it the In-feed
+  // panel was in the census's DENOMINATOR — <Panel> registers unconditionally —
+  // and never in its numerator, so the header read `0 of 2` on a tab where one
+  // of the two is served from an hourly schedule. Wrong, rather than incomplete.
+  const feedSnapshot = {
+    source: state.source,
+    outcome: state.outcome,
+    at: state.at,
+    stale: state.stale,
+    nearestAt: state.nearestAt,
+  }
   // Only the presence counts follow the global range and the auto-refresh tick
   // now, so only they are part of what a tick costs. An accelerated sample
   // re-reads its stored result on an explicit refresh and on nothing else.
@@ -175,6 +228,8 @@ export function FieldExplorer() {
   // dependency array — a `$vt_results` read ignores the picker, so an
   // accelerated sample carries no window in its key and re-runs on an explicit
   // refresh only. Both go back to following the page the moment it runs live.
+  const presenceWindowKey = accelOn ? '' : range.earliest
+  const presenceRefreshKey = accelOn ? manualRefreshNonce : refreshNonce
   const sampleWindowKey = accelOn ? '' : range.earliest
   const sampleRefreshKey = accelOn ? manualRefreshNonce : refreshNonce
 
@@ -188,6 +243,7 @@ export function FieldExplorer() {
     setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelFieldSummaries(SAMPLE_ACCEL, {
       enabled: accelOn,
+      asOf: moment ?? undefined,
       signal: ctrl.signal,
       live: () => runFieldSummaries(FEED_SAMPLE_QUERY, {
         earliest: accelOn ? SAMPLE_ENTRY.earliest : range.earliest,
@@ -200,9 +256,11 @@ export function FieldExplorer() {
         loading: false, error: null, errorTitle: null,
         fields: r.data.fields, sampled: r.data.sampled,
         // A live run was sampled now; a stored one carries the time its run
-        // finished. Either way the panel has a time to show, which is the
-        // condition for showing the number at all.
-        source: r.source, at: r.at ?? Date.now(), stale: r.stale, note: r.note,
+        // finished. A read for a moment nothing was stored for carries NEITHER,
+        // and must stay null: `Date.now()` there would caption an empty list
+        // "sample taken just now", which is the one reading that is false.
+        source: r.source, outcome: r.outcome, at: r.at ?? (r.source === 'live' ? Date.now() : null),
+        stale: r.stale, note: r.note, nearestAt: r.nearestAt,
       }))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
@@ -215,15 +273,55 @@ export function FieldExplorer() {
     // the identical stored rows. `sampleWindowKey` is what puts it back in the
     // key the moment the reader asks for live.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
+  }, [accelOn, moment, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
 
-  // Whole-window presence counts for the AMI coverage view (accurate for rare fields).
+  // Whole-window presence counts for the AMI coverage view (accurate for rare
+  // fields — one count() per field rather than a sample, which is why it is
+  // expensive and why it catches something like ssl_issuer that a sample misses).
+  //
+  // Served by the hourly schedule where there is one. The live fallback reads
+  // the SAME fifteen settled minutes the schedule does while acceleration is on,
+  // so turning it on changes when the answer was computed and never what it
+  // means; with acceleration off it follows the picker, as it always did.
   useEffect(() => {
     const ctrl = new AbortController()
     setPresence((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
-    runSearch(PRESENCE_QUERY, { earliest: range.earliest, signal: ctrl.signal, costSlot: presenceCost })
-      .then((res) => {
-        const row = (res.rows[0] ?? {}) as Record<string, unknown>
+    readAccelRows(PRESENCE_ACCEL, {
+      enabled: accelOn,
+      asOf: moment ?? undefined,
+      signal: ctrl.signal,
+      live: () => runSearch(PRESENCE_QUERY, {
+        earliest: accelOn ? PRESENCE_ENTRY.earliest : range.earliest,
+        latest: accelOn ? PRESENCE_ENTRY.latest : 'now',
+        signal: ctrl.signal,
+        costSlot: presenceCost,
+      }).then((res) => res.rows),
+    })
+      .then((r) => {
+        const row = (r.data[0] ?? {}) as Record<string, unknown>
+        // POSITIONAL ALIASES, AND THE HAZARD THEY CARRY. The body names its
+        // counts `c0…cN` in CHECK_FIELDS order, so a stored run from before a
+        // change to AMI_CATALOG has every alias after the insertion pointing at
+        // the wrong field — and a wrong count here reads as "this field is not
+        // arriving", which is the one answer this panel exists to give.
+        //
+        // The body is generated FROM CHECK_FIELDS, so a catalogue change changes
+        // the body, changes `body-sha256`, and provisioning reports the search as
+        // drifted and rewrites it. That fixes the schedule but not the runs
+        // already stored under the old shape, which stay readable until
+        // keepLastN cycles them out. So the width is checked here: a row whose
+        // `c` count does not match the catalogue is from a different catalogue
+        // and is discarded rather than read against the wrong names.
+        const width = Object.keys(row).filter((k) => /^c\d+$/.test(k)).length
+        if (r.source === 'schedule' && width !== CHECK_FIELDS.length) {
+          setPresence((s) => ({
+            ...s,
+            loading: false,
+            error: 'This stored run counted a different set of fields than this release knows about, so it was not read. The next scheduled run will match.',
+            errorTitle: 'Stored run is from an older field catalogue',
+          }))
+          return
+        }
         const count: Record<string, number> = {}
         CHECK_FIELDS.forEach((n, i) => { count[n] = Number(row[`c${i}`]) || 0 })
         setPresence({ loading: false, error: null, errorTitle: null, count })
@@ -233,7 +331,12 @@ export function FieldExplorer() {
         setPresence((s) => ({ ...s, loading: false, error: (e as Error).message, errorTitle: stoppedTitle(e) }))
       })
     return () => ctrl.abort()
-  }, [range.earliest, refreshNonce, nonce, presenceCost])
+    // `range.earliest` is read inside the effect and deliberately out of the
+    // key while accelerated, for the same reason the sample's effect above does
+    // it: the picker cannot change what comes back from a stored run, so
+    // re-running on a range change would submit a job to receive identical rows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accelOn, moment, presenceWindowKey, presenceRefreshKey, nonce, presenceCost])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {
@@ -370,16 +473,30 @@ export function FieldExplorer() {
               ))}
             </div>
             {/* Not a <GatedControl>: this reads, it does not write, and nothing
-                about it can be refused — it just costs a scan. */}
-            <button
-              type="button"
-              className={`chip ${liveOnly ? 'chip-active' : ''}`}
-              aria-pressed={liveOnly}
-              onClick={() => setLiveOnly((v) => !v)}
-              title={liveOnly ? 'Go back to the hourly sample' : 'Sample the time range on screen instead'}
-            >
-              {liveOnly ? 'Live · back to hourly sample' : 'Run live'}
-            </button>
+                about it can be refused — it just costs a scan.
+
+                HIDDEN WHILE A PAST MOMENT IS PICKED, which is the rule <Panel>
+                applies to its own version: "sample the range on screen" has
+                nothing to mean when the question is what the feed looked like at
+                04:20, and accel/read.ts refuses the live path there anyway. A
+                control that is present and does nothing is the worse of the two.
+
+                It stays in the controls row rather than moving into <Panel
+                onRunLive>: this one re-points the WINDOW as well as the source,
+                and the paragraph below is the sentence that explains that. The
+                generalised control in <Panel> only switches the source, and its
+                one-line caption cannot say this. */}
+            {moment === null && (
+              <button
+                type="button"
+                className={`chip ${liveOnly ? 'chip-active' : ''}`}
+                aria-pressed={liveOnly}
+                onClick={() => setLiveOnly((v) => !v)}
+                title={liveOnly ? 'Go back to the hourly sample' : 'Sample the time range on screen instead'}
+              >
+                {liveOnly ? 'Live · back to hourly sample' : 'Run live'}
+              </button>
+            )}
           </div>
           <p className="cov-src">
             {liveOnly ? (
@@ -390,13 +507,16 @@ export function FieldExplorer() {
             ) : (
               <>
                 The field list is {state.source === 'schedule' ? 'read from an hourly scheduled sample' : 'sampled'} of
-                {' '}{SAMPLE_WINDOW}, so <strong>the time range above does not change it</strong> — up there, the range
-                applies to the AMI coverage counts. <em>Run live</em> samples the selected range instead.
+                {' '}{SAMPLE_WINDOW}, and the AMI coverage counts are read from an hourly scheduled scan of a settled
+                fifteen minutes — so <strong>the time range above changes neither of them</strong>. <em>Run live</em>
+                puts both back on the selected range.
               </>
             )}
           </p>
           <Panel
             title="Fields"
+            snapshot={feedSnapshot}
+            liveOnly={liveOnly}
             onRefresh={refresh}
             refreshing={state.loading}
             query={FEED_SAMPLE_QUERY}

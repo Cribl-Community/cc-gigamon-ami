@@ -12,6 +12,9 @@ import { TopProgress } from './components/TopProgress'
 import { TourProvider } from './app/TourContext'
 import { TourLauncher, TourPicker, TourStrip } from './components/Tour'
 import { AppBanners } from './components/AppBanners'
+import { ModeToggle } from './components/ModeToggle'
+import { SnapshotPicker } from './components/SnapshotPicker'
+import { useDataMode } from './cribl/dataMode'
 import { JobWatchdogIndicator } from './components/JobWatchdog'
 import { Findings } from './tabs/Findings'
 import { Security } from './tabs/Security'
@@ -197,6 +200,7 @@ function useAutoRefreshCopy(tabName: string) {
 function Header({ tabName }: { tabName: string }) {
   const { range, setRange, refresh, autoSeconds, setAutoSeconds, lastRefresh } = useDashboard()
   const autoRefresh = useAutoRefreshCopy(tabName)
+  const mode = useDataMode()
   // Spin for exactly as long as work is actually happening, rather than a fixed
   // timeout that finishes while queries are still running (reads as a stall).
   const inflight = useInflight()
@@ -223,12 +227,30 @@ function Header({ tabName }: { tabName: string }) {
             tab because that is what keeps the watch running for as long as the
             app is open. */}
         <JobWatchdogIndicator />
-        <LastUpdated ts={lastRefresh} busy={busy} inflight={inflight} />
-        <label className="range-label">Range</label>
-        <select className="range-select" value={range.label} aria-label="Time range"
-          onChange={(e) => { const next = TIME_RANGES.find((r) => r.label === e.target.value); if (next) setRange(next) }}>
-          {TIME_RANGES.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
-        </select>
+        {/* ONE FRESHNESS STATEMENT AT A TIME. "updated 12s ago" is a claim about
+            when the queries on screen last ran, and in Snapshot mode most of
+            them did not run at all — the honest answer is the census line the
+            mode control carries ("3 of 6 panels · oldest 08:20"). While searches
+            are actually in flight this stays, in both modes, because that is a
+            statement about right now rather than about the data's age. */}
+        {(busy || mode === 'live') && <LastUpdated ts={lastRefresh} busy={busy} inflight={inflight} />}
+        {/* ONE TIME CONTROL, TWO MEANINGS BY MODE. In Live it asks how far back
+            from now; in Snapshot it asks which stored run, because a stored
+            result ignores the range picker entirely (accel/read.ts) and a
+            control that changes nothing is worse than one that is absent.
+            Rendering both would put two time controls in one header with only
+            one of them connected to anything. */}
+        {mode === 'live' ? (
+          <>
+            <label className="range-label" htmlFor="time-range">Range</label>
+            <select id="time-range" className="range-select" value={range.label} aria-label="Time range"
+              onChange={(e) => { const next = TIME_RANGES.find((r) => r.label === e.target.value); if (next) setRange(next) }}>
+              {TIME_RANGES.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
+            </select>
+          </>
+        ) : (
+          <SnapshotPicker />
+        )}
         <span className="auto-refresh">
           <select id="auto-refresh" className="range-select" value={autoSeconds} aria-label="Auto-refresh interval"
             aria-describedby="auto-refresh-note" onChange={(e) => setAutoSeconds(Number(e.target.value))}>
@@ -241,6 +263,10 @@ function Header({ tabName }: { tabName: string }) {
           </span>
           <PanelInfo aboutHeading="What auto-refresh costs" about={autoRefresh.about} label="What auto-refresh costs on this tab" />
         </span>
+        {/* Between auto-refresh and Refresh: the owner's "the logical place is
+            the refresh button", honoured by adjacency rather than by hiding the
+            state inside it. See components/ModeToggle.tsx. */}
+        <ModeToggle tabName={tabName} />
         <TourLauncher />
         <ThemeToggle />
         <button type="button" className="btn" onClick={doRefresh} aria-busy={busy}>

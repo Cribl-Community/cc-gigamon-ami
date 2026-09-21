@@ -5,6 +5,8 @@ import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
+import { mergeSnapshotStates } from '../components/snapshotCensus'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from '../cribl/accel/words'
 import { toNum, str, fmtCount } from '../lib/format'
 import { TECHNIQUES, type Tactic, type Technique } from '../data/techniques'
 import { COUNTS, SOURCES, drillQueryFor } from '../queries/security'
@@ -33,7 +35,7 @@ const isInternal = (ip: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)
 
 export function Security() {
   const { range } = useDashboard()
-  const counts = useSearch(COUNTS)
+  const counts = useSearch(COUNTS, { accel: 'gno_overview_c1h', accelPanel: 'security-technique-counts' })
   const sources = useSearch(SOURCES)
   const [sel, setSel] = useState<Technique | null>(null)
   const [tacticFilter, setTacticFilter] = useState<Tactic | null>(null)
@@ -69,6 +71,15 @@ export function Security() {
     ? srcRows.filter((s) => (sel.behaviour!.internalOnly ? isInternal(s.ip) : true) && s[sel.behaviour!.metric] >= sel.behaviour!.min)
     : []
 
+  // Two hooks in one card: the snapshot-served technique counts and the live
+  // per-source behaviour query. Merged to the worse of the two, so a card cannot
+  // claim a snapshot date for a picture half of which ran a moment ago.
+  const gridSnapshot = mergeSnapshotStates([
+    { source: counts.source, outcome: counts.outcome, at: counts.at, stale: counts.stale, nearestAt: counts.nearestAt },
+    { source: sources.source, outcome: sources.outcome, at: sources.at, stale: sources.stale },
+  ])
+  const gridComputed = { source: counts.source, outcome: counts.outcome, at: counts.at, stale: counts.stale, cadence: OVERVIEW_CADENCE, window: OVERVIEW_WINDOW, fallback: counts.note }
+
   return (
     <div className="tab">
       <div className="tab-intro">
@@ -86,12 +97,16 @@ export function Security() {
         <KpiTile label="Techniques firing" value={loading ? '…' : `${active}/${TECHNIQUES.length}`} accent={active > 3 ? 'warning' : 'info'}
           sub="ATT&CK techniques with activity" info="How many detectable techniques have activity, from two queries. Five fire on any matching event in the flow-count query on the Signal events tile. Two are thresholded in the app over the query below: 20+ destinations from a private-range source, or 6+ ports from any source." query={SOURCES} />
         <KpiTile label="Signal events" value={loading ? '…' : fmtCount(totalEvents)} accent="warning"
-          sub="flow-level detections in window" info="Total flow-level technique detections (tunneling, MSRPC, SSH, LDAP/Kerberos, SNMP creds). Behaviour tiles are counted as sources, not summed here." query={COUNTS} />
+          sub="flow-level detections in window" info="Total flow-level technique detections (tunneling, MSRPC, SSH, LDAP/Kerberos, SNMP creds). Behaviour tiles are counted as sources, not summed here." query={COUNTS} computed={gridComputed} />
         <KpiTile label="Coverage" value={String(TECHNIQUES.length)} unit={`/ ${TECHNIQUES.length + GAPS.length}`} accent="info"
-          sub={`${GAPS.length} not observable in this feed`} info="Techniques this AMI feed can detect vs the full reference set. The gap is a capture-richness question, listed honestly below." query={COUNTS} />
+          sub={`${GAPS.length} not observable in this feed`} info="Techniques this AMI feed can detect vs the full reference set. The gap is a capture-richness question, listed honestly below." query={COUNTS} computed={gridComputed} />
       </div>
 
+      {/* The technique counts come from the hourly snapshot; the per-source
+          behaviour query beside them does not, so the merged caption tells the
+          truth about the card as a whole — see mergeSnapshotStates. */}
       <Panel tourId="mitre-tactics" title="MITRE tactic summary" query={COUNTS} onRefresh={() => { counts.refetch(); sources.refetch() }} refreshing={loading}
+        snapshot={gridSnapshot} computed={gridComputed}
         info="Events rolled up by ATT&CK tactic — each block is sized by its total signal volume and coloured by tactic. Click a tactic to filter the technique grid below to it; click again to clear."
         note={tacticFilter ? `filtered to ${tacticFilter}` : 'click a tactic to filter'}>
         <QueryBoundary state={{ loading, error: counts.error || sources.error, rows: tacticTotals }} emptyLabel="No data in this window">
@@ -112,6 +127,7 @@ export function Security() {
       </Panel>
 
       <Panel tourId="mitre-grid" title="ATT&CK technique risk grid" query={COUNTS} onRefresh={() => { counts.refetch(); sources.refetch() }} refreshing={loading}
+        snapshot={gridSnapshot} computed={gridComputed}
         info="Risk is the editorial severity of the technique class; the number on each tile is live event volume from this feed. Colour follows risk band. Click a tile to see the flows and sources behind it. Behaviour tiles (fan-out / scan) are computed per source."
         note={`${active} of ${TECHNIQUES.length} firing${tacticFilter ? ` · ${tacticFilter} only` : ' · grouped by tactic'}`}>
         <QueryBoundary state={{ loading, error: counts.error || sources.error, rows: tiles }} emptyLabel="No data in this window">

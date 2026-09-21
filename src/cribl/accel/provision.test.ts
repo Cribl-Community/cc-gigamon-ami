@@ -40,7 +40,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
-import { accelEntry, accelSavedSearch } from './manifest'
+import { MANIFEST, accelEntry, accelSavedSearch, type AccelId } from './manifest'
 import {
   LIST_LIMIT,
   SAVED_PATH,
@@ -58,6 +58,32 @@ import { accelWritesSettled } from './store'
 
 const BASE = '/capi'
 const SAVED = '/m/default_search/search/saved'
+
+/**
+ * The same answer once per manifest entry.
+ *
+ * Written this way rather than as a literal pair because the literal pair was
+ * the reason adding three entries turned into twenty-four red assertions that
+ * said nothing about the change. What these cases are actually about is "every
+ * entry ends in this state", and that sentence does not have a length in it.
+ */
+const each = <T,>(value: T): T[] => MANIFEST.map(() => value)
+
+/** Every manifest entry present and exactly as this release would write it. */
+async function allCorrect(
+  overrides: Record<string, Record<string, unknown>> = {},
+): Promise<Record<string, Record<string, unknown>>> {
+  const saved: Record<string, Record<string, unknown>> = {}
+  for (const e of MANIFEST) saved[e.id] = await correct(e.id)
+  return { ...saved, ...overrides }
+}
+
+/** The same, with named exceptions: `per({ gno_sample_2m_c1h: 'paused' }, 'enabled')`. */
+const per = <T,>(exceptions: Partial<Record<AccelId, T>>, rest: T): T[] =>
+  MANIFEST.map((e) => exceptions[e.id] ?? rest)
+
+/** Every id but these, in manifest order. */
+const idsExcept = (...ids: AccelId[]): AccelId[] => MANIFEST.map((e) => e.id).filter((id) => !ids.includes(id))
 const LAKE = 'gno_lake_30d_c1d'
 const SAMPLE = 'gno_sample_2m_c1h'
 
@@ -184,12 +210,12 @@ function bodyOf(call: Call | undefined): Record<string, unknown> {
 }
 
 /** A correct object for an entry, as this release would write it. */
-const correct = async (id: 'gno_lake_30d_c1d' | 'gno_sample_2m_c1h') =>
+const correct = async (id: AccelId) =>
   (await accelSavedSearch(accelEntry(id))) as unknown as Record<string, unknown>
 
 /** …with the fields a customer's own edits and a future Cribl release would add,
  *  none of which this app knows about and all of which a PATCH must carry back. */
-async function correctPlusExtras(id: 'gno_lake_30d_c1d' | 'gno_sample_2m_c1h'): Promise<Record<string, unknown>> {
+async function correctPlusExtras(id: AccelId): Promise<Record<string, unknown>> {
   return {
     ...(await correct(id)),
     user: 'auth0|somebody',
@@ -251,7 +277,7 @@ describe('reading the workspace', () => {
   it('reports both entries absent on a workspace that has none', async () => {
     stubWorkspace()
     const state = await readAccelState()
-    expect(state.rows.map((r) => r.state)).toEqual(['absent', 'absent'])
+    expect(state.rows.map((r) => r.state)).toEqual(each('absent'))
     expect(state.error).toBe(null)
     expect(state.denied).toBe(false)
   })
@@ -261,7 +287,7 @@ describe('reading the workspace', () => {
     paused.schedule = { ...(paused.schedule as Record<string, unknown>), enabled: false }
     stubWorkspace({ saved: { [LAKE]: await correct(LAKE), [SAMPLE]: paused } })
     const state = await readAccelState()
-    expect(state.rows.map((r) => r.state)).toEqual(['enabled', 'paused'])
+    expect(state.rows.map((r) => r.state)).toEqual(per({ [LAKE]: 'enabled', [SAMPLE]: 'paused' }, 'absent'))
     expect(state.rows[1].enabled).toBe(false)
   })
 
@@ -347,7 +373,7 @@ describe('a refusal is a state, not a crash', () => {
     expect(state.error).toContain('cannot list')
     // Not "absent". The whole point: a refusal must never render as "nothing is
     // there" with an offer to create it.
-    expect(state.rows.map((r) => r.state)).toEqual(['unreadable', 'unreadable'])
+    expect(state.rows.map((r) => r.state)).toEqual(each('unreadable'))
   })
 
   it('does not blame a button for a status read that nobody clicked', async () => {
@@ -371,7 +397,7 @@ describe('a refusal is a state, not a crash', () => {
   it('writes nothing at all from a state it could not read', async () => {
     const { calls } = stubWorkspace({ status: { [`GET ${SAVED}`]: 403 } })
     const result = await applyAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['skipped', 'skipped'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('skipped'))
     expect(result.unchanged).toBe(true)
     expect(writes(calls)).toEqual([])
   })
@@ -382,7 +408,7 @@ describe('a refusal is a state, not a crash', () => {
       status: { [`GET ${SAVED}`]: 403 },
     })
     const result = await removeAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['skipped', 'skipped'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('skipped'))
     expect(writes(calls)).toEqual([])
   })
 
@@ -398,11 +424,11 @@ describe('a refusal is a state, not a crash', () => {
     const state = await readAccelState({ background: false })
     expect(state.error).toBe(null)
     expect(state.denied).toBe(true)
-    expect(state.rows.map((r) => r.state)).toEqual(['unreadable', 'absent'])
+    expect(state.rows.map((r) => r.state)).toEqual(per({ [LAKE]: 'unreadable' }, 'absent'))
 
     const result = await applyAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['skipped', 'created'])
-    expect(writes(calls).map((c) => c.method)).toEqual(['POST'])
+    expect(result.steps.map((s) => s.action)).toEqual(per({ [LAKE]: 'skipped' }, 'created'))
+    expect(writes(calls).map((c) => c.method)).toEqual(idsExcept(LAKE).map(() => 'POST'))
   })
 
   it('reports a refused pause rather than throwing at its caller', async () => {
@@ -417,12 +443,13 @@ describe('apply', () => {
   it('creates both, with exactly the body the manifest defines', async () => {
     const { calls } = stubWorkspace()
     const result = await applyAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['created', 'created'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('created'))
     expect(result.unchanged).toBe(false)
     const posts = savedCalls(calls).filter((c) => c.method === 'POST')
-    expect(posts.map((c) => c.path)).toEqual([SAVED, SAVED])
-    expect(posts[0].body).toEqual(await accelSavedSearch(accelEntry(LAKE)))
-    expect(posts[1].body).toEqual(await accelSavedSearch(accelEntry(SAMPLE)))
+    expect(posts.map((c) => c.path)).toEqual(each(SAVED))
+    for (const [i, entry] of MANIFEST.entries()) {
+      expect(posts[i].body, `${entry.id} was not posted as the manifest defines it`).toEqual(await accelSavedSearch(entry))
+    }
   })
 
   it('records what it wrote, so a later teardown can prove it is ours', async () => {
@@ -431,13 +458,13 @@ describe('apply', () => {
     await accelWritesSettled()
     const put = calls.find((c) => c.method === 'PUT' && c.path === '/kvstore/accel/state')
     const doc = (put?.body as { doc?: { created?: Record<string, unknown> } })?.doc
-    expect(Object.keys(doc?.created ?? {})).toEqual([LAKE, SAMPLE])
+    expect(Object.keys(doc?.created ?? {})).toEqual(MANIFEST.map((e) => e.id))
   })
 
   it('writes nothing on a workspace that is already correct, and says so', async () => {
-    const { calls } = stubWorkspace({ saved: { [LAKE]: await correct(LAKE), [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: await allCorrect() })
     const result = await applyAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['exists', 'exists'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('exists'))
     expect(result.unchanged).toBe(true)
     expect(writes(calls)).toEqual([])
   })
@@ -475,7 +502,7 @@ describe('apply', () => {
   it('leaves a paused-and-correct entry completely alone', async () => {
     const paused = await correct(LAKE)
     paused.schedule = { ...(paused.schedule as Record<string, unknown>), enabled: false }
-    const { calls } = stubWorkspace({ saved: { [LAKE]: paused, [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: await allCorrect({ [LAKE]: paused }) })
     const result = await applyAcceleration()
     expect(result.steps[0]).toEqual({ id: LAKE, action: 'exists', detail: 'already there, and paused' })
     expect(writes(calls)).toEqual([])
@@ -496,7 +523,7 @@ describe('apply', () => {
   it('reports a rejected create as an error rather than claiming success', async () => {
     const { calls } = stubWorkspace({ status: { [`POST ${SAVED}`]: 500 } })
     const result = await applyAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['error', 'error'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('error'))
     expect(result.unchanged).toBe(true)
     // Nothing was created, so nothing may be recorded as created.
     expect(calls.find((c) => c.method === 'PUT' && c.path === '/kvstore/accel/state')).toBeUndefined()
@@ -651,14 +678,13 @@ describe('pause and resume', () => {
 
 describe('remove', () => {
   it('deletes both and confirms they are gone', async () => {
-    const { calls } = stubWorkspace({ saved: { [LAKE]: await correct(LAKE), [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: await allCorrect() })
     const result = await removeAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['deleted', 'deleted'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('deleted'))
     expect(result.stillPresent).toEqual([])
-    expect(savedCalls(calls).filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
-      `${SAVED}/${LAKE}`,
-      `${SAVED}/${SAMPLE}`,
-    ])
+    expect(savedCalls(calls).filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(
+      MANIFEST.map((e) => `${SAVED}/${e.id}`),
+    )
   })
 
   it('refuses a saved search it cannot prove is its own, and says what it left', async () => {
@@ -689,14 +715,11 @@ describe('remove', () => {
   })
 
   it('re-reads, and reports anything Cribl agreed to delete and did not', async () => {
-    const { calls } = stubWorkspace({
-      saved: { [LAKE]: await correct(LAKE), [SAMPLE]: await correct(SAMPLE) },
-      deleteIsALie: true,
-    })
+    const { calls } = stubWorkspace({ saved: await allCorrect(), deleteIsALie: true })
     const result = await removeAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['deleted', 'deleted'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('deleted'))
     // The 200s claimed it worked. The re-read is the only thing that checks.
-    expect(result.stillPresent).toEqual([LAKE, SAMPLE])
+    expect(result.stillPresent).toEqual(MANIFEST.map((e) => e.id))
     expect(savedCalls(calls).filter((c) => c.method === 'GET' && c.path === SAVED)).toHaveLength(2)
   })
 
@@ -723,7 +746,7 @@ describe('remove', () => {
   it('treats an already-absent search as removed rather than as a failure', async () => {
     stubWorkspace()
     const result = await removeAcceleration()
-    expect(result.steps.map((s) => s.action)).toEqual(['exists', 'exists'])
+    expect(result.steps.map((s) => s.action)).toEqual(each('exists'))
     expect(result.steps[0].detail).toBe('not present')
   })
 
@@ -753,17 +776,18 @@ describe('what a confirmation is given to say', () => {
     expect(plan.willWrite).toEqual([
       'GNO Lake total 30 days (gno_lake_30d_c1d) — create, running 10 0 * * * UTC',
       'GNO Feed sample 2 minutes (gno_sample_2m_c1h) — overwrite, because the window it reads differs from what this release writes',
+      'GNO Overview hourly (gno_overview_c1h) — create, running 20 * * * * UTC',
+      'GNO Service map nodes (gno_svc_nodes_c1h) — create, running 21 * * * * UTC',
+      'GNO Service map edges (gno_svc_edges_c1h) — create, running 22 * * * * UTC',
+      'GNO Field presence 15 minutes (gno_presence_c1h) — create, running 23 * * * * UTC',
     ])
     expect(plan.willDelete).toEqual([])
   })
 
   it('names every search Remove will delete, by name and by id', async () => {
-    stubWorkspace({ saved: { [LAKE]: await correct(LAKE), [SAMPLE]: await correct(SAMPLE) } })
+    stubWorkspace({ saved: await allCorrect() })
     const plan = removalPlan(await readAccelState())
-    expect(plan.willDelete).toEqual([
-      'GNO Lake total 30 days (gno_lake_30d_c1d)',
-      'GNO Feed sample 2 minutes (gno_sample_2m_c1h)',
-    ])
+    expect(plan.willDelete).toEqual(MANIFEST.map((e) => `${e.name} (${e.id})`))
     expect(plan.willWrite).toEqual([])
   })
 

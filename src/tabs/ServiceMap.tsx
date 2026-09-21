@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { nodesQuery, edgesQuery, srcQuery, buildDomainsQuery, buildTrendQuery } from '../queries/serviceMap'
 import { Panel } from '../components/Panel'
 import { QueryBoundary } from '../components/QueryBoundary'
+import { mergeSnapshotStates } from '../components/snapshotCensus'
 import { TimeChart, type Series } from '../components/TimeChart'
 import { InfoTip } from '../components/InfoTip'
 import { ServiceNowModal } from '../components/ServiceNowModal'
@@ -46,9 +48,14 @@ export function ServiceMap() {
   const [sel, setSel] = useState<string | null>(null)
   const [snOpen, setSnOpen] = useState(false)
 
-  const nodesQ = useSearch(nodesQuery)
-  const edgesQ = useSearch(edgesQuery)
-  const srcQ = useSearch(srcQuery)
+  // The three scans behind the graph, each served by an hourly snapshot in
+  // Snapshot mode. This tab is the default route, so these three are what
+  // "opening the app in the morning" costs — and with twenty-four retained runs
+  // they are also what lets the map show 04:20 rather than only the last
+  // fifteen minutes.
+  const nodesQ = useSearch(nodesQuery, { accel: 'gno_svc_nodes_c1h', accelPanel: 'service-map-nodes' })
+  const edgesQ = useSearch(edgesQuery, { accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' })
+  const srcQ = useSearch(srcQuery, { accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-sources' })
 
   const { nodes, edges, extEdges, external, extTotal } = useMemo(() => {
     const raw = nodesQ.rows.map((r) => {
@@ -79,7 +86,14 @@ export function ServiceMap() {
     })
     const pos = new Map(nodes.map((n) => [n.id, n]))
     const edges = edgesQ.rows
-      .map((r) => ({ s: str(r, 'src_aws_flat_tags_name'), d: str(r, 'dst_aws_flat_tags_name'), flows: toNum(r.flows) }))
+      // `dst_svc` OR `dst_aws_flat_tags_name`, and the fallback is not defensive
+      // padding. The snapshot body groups by a coalesced destination so that
+      // flows to untagged peers keep a group of their own — without it the
+      // client-only totals beside this map come back short, in the direction
+      // nobody can see (src/queries/snapshots.ts). That column is named
+      // `dst_svc`; the live query's is `dst_aws_flat_tags_name`. One expression,
+      // two sources, and the manifest's `reads` list pins both.
+      .map((r) => ({ s: str(r, 'src_aws_flat_tags_name'), d: str(r, 'dst_svc') || str(r, 'dst_aws_flat_tags_name'), flows: toNum(r.flows) }))
       .filter((e) => pos.has(e.s) && pos.has(e.d) && e.s !== e.d)
       .map((e) => { const a = pos.get(e.s)!, b = pos.get(e.d)!; return { ...e, a, b, health: SEVERITY[a.health] >= SEVERITY[b.health] ? a.health : b.health } })
 
@@ -106,6 +120,15 @@ export function ServiceMap() {
   const breachingCount = nodes.filter((n) => n.health === 'danger').length
   const elevatedCount = nodes.filter((n) => n.health === 'warning').length
 
+  // Three searches, one card. Merged to the worst of the three: a graph drawn
+  // half from 04:20 and half from now would look completely normal, and is the
+  // one thing a timeline must never produce.
+  const graphSnapshot = mergeSnapshotStates([
+    { source: nodesQ.source, outcome: nodesQ.outcome, at: nodesQ.at, stale: nodesQ.stale, nearestAt: nodesQ.nearestAt },
+    { source: edgesQ.source, outcome: edgesQ.outcome, at: edgesQ.at, stale: edgesQ.stale, nearestAt: edgesQ.nearestAt },
+    { source: srcQ.source, outcome: srcQ.outcome, at: srcQ.at, stale: srcQ.stale, nearestAt: srcQ.nearestAt },
+  ])
+
   return (
     <div className="tab">
       <div className="tab-intro">
@@ -121,7 +144,7 @@ export function ServiceMap() {
         </p>
       </div>
 
-      <Panel tourId="service-graph" onRefresh={() => { nodesQ.refetch(); edgesQ.refetch(); srcQ.refetch() }} refreshing={nodesQ.loading || edgesQ.loading} title="Dependency graph" info="Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage." query={nodesQuery} note={`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`}>
+      <Panel snapshot={graphSnapshot} tourId="service-graph" onRefresh={() => { nodesQ.refetch(); edgesQ.refetch(); srcQ.refetch() }} refreshing={nodesQ.loading || edgesQ.loading} title="Dependency graph" info="Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage." query={nodesQuery} note={`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`}>
         <QueryBoundary state={nodesQ} emptyLabel="No AWS-enriched flows in this window">
           <div className="svc-graph-wrap">
             <svg viewBox="0 0 1000 360" className="svc-graph" role="img">
@@ -188,8 +211,12 @@ export function ServiceMap() {
 function LatencyDomains({ service, onIncident, onBack }: { service: string; onIncident: () => void; onBack: () => void }) {
   const domainsQuery = buildDomainsQuery(service)
   const domains = useSearch(domainsQuery, { deps: [service] })
+  // The four domain cards answer the question this view was opened to ask; the
+  // decomposition chart under them is the follow-up, so it waits its turn
+  // rather than sharing the admission queue with them.
+  const trendNear = useNearViewport()
   const trendQuery = buildTrendQuery(service)
-  const trend = useSearch(trendQuery, { deps: [service] })
+  const trend = useSearch(trendQuery, { deps: [service], deferred: !trendNear.near })
 
   const d = domains.rows[0] ?? {}
   const netMs = toNum(d.net) * 1000
@@ -282,7 +309,7 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
         </div>
 
         <div className="grid-2">
-          <Panel onRefresh={trend.refetch} refreshing={trend.loading} title="Latency decomposition over time" info="p95 of all four domains per minute on a log axis, so a 0.1ms and a 600ms domain are both visible." query={trendQuery} note="all four domains · p95 · per 1m · log ms">
+          <Panel anchorRef={trendNear.ref} onRefresh={trend.refetch} refreshing={trend.loading} title="Latency decomposition over time" info="p95 of all four domains per minute on a log axis, so a 0.1ms and a 600ms domain are both visible." query={trendQuery} note="all four domains · p95 · per 1m · log ms">
             <QueryBoundary state={trend} emptyLabel="No data" compact>
               <TimeChart series={latSeries} fmt={fmtMs} log />
             </QueryBoundary>

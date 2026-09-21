@@ -30,10 +30,21 @@ function scopeFor(pivot: Pivot, applied: string) {
   return applied ? `${p.field}="*${applied}*" ` : ''
 }
 
+/**
+ * The six aggregates behind the KPI tiles, as a fragment.
+ *
+ * Exported so the hourly snapshot body (src/queries/snapshots.ts) can hold the
+ * SAME characters rather than a retyped copy of them. The ⓘ over these tiles
+ * claims this computation produced the number; if the scheduled body restated it
+ * the two would drift the first time somebody edited one, silently, because both
+ * would still return six numbers.
+ */
+export const KPI_AGGS = 'total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)'
+
 /** Window totals behind the six KPI tiles. */
 export function buildKpiQuery(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)`)
+  return q(`${scope}| summarize ${KPI_AGGS}`)
 }
 
 /** Busiest entities by bytes, for the pivot in force. */

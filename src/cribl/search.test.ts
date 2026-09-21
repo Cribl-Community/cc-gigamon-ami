@@ -13,7 +13,7 @@
 // `withExecPrefix` is private for good reason.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MAX_CAP_SECONDS, MIN_CAP_SECONDS, capSecondsFor, parseCapTiers, q, runSearch } from './search'
+import { MAX_CAP_SECONDS, MIN_CAP_SECONDS, POLL_MAX_MS, REUSE_WINDOW, REUSE_WINDOW_SECONDS, capSecondsFor, parseCapTiers, pollDelayMs, q, runSearch } from './search'
 import { LAKE_DATASET } from './config'
 
 describe('q', () => {
@@ -141,3 +141,118 @@ describe('the query as submitted', () => {
     expect(body.query.startsWith('set max_running_time_per_search=900; ')).toBe(true)
   })
 })
+
+/**
+ * Letting Cribl answer from a result it already has.
+ *
+ * MEASURED (A-SP21): 30.92 s → 0.95 s, zero billed, on a repeat of the same
+ * query at the same relative range. What has to be pinned is not the saving —
+ * it is WHEN the directive is allowed on a job, because the two ways of getting
+ * this wrong are both silent. Sent on a `$vt_results` read it breaks A-D15 and
+ * the stored-result path starts negotiating about results with the results
+ * table. Sent on a measurement, or on the refresh a viewer just pressed, it
+ * answers a question about NOW with an answer from up to two minutes ago.
+ */
+describe('reusing a result Cribl already has', () => {
+  it('asks for it only when the caller says so, and the window is the one A-D15 set', async () => {
+    const calls = stubSearch(['{"totalEventCount":0,"job":"job-test"}'])
+    await runSearch(q('| limit 1'), { earliest: '-15m', reuse: true })
+    const body = JSON.parse(String(calls.find((c) => c.url.endsWith('/search/jobs'))!.init.body)) as { query: string }
+    // Cap first, then the reuse directive, then the query the ⓘ shows. Spelled
+    // out rather than rebuilt, because this is the string Cribl receives.
+    expect(body.query).toBe(`set max_running_time_per_search=120; set allow_previous_results="${REUSE_WINDOW}"; dataset="gigamon_ami" | limit 1`)
+    expect(REUSE_WINDOW).toBe('2min')
+    expect(REUSE_WINDOW_SECONDS).toBe(120)
+  })
+
+  it('is off unless asked, so a caller that submits a job to MEASURE something still measures', async () => {
+    // LakeLandingPanel's landing-lag probe is the case: a reused answer there
+    // would report how fresh the Lake was two minutes ago, as a measurement of
+    // how fresh it is now.
+    const calls = stubSearch(['{"totalEventCount":0,"job":"job-test"}'])
+    await runSearch(q('| limit 1'), { earliest: '-15m' })
+    const body = JSON.parse(String(calls.find((c) => c.url.endsWith('/search/jobs'))!.init.body)) as { query: string }
+    expect(body.query).not.toContain('allow_previous_results')
+  })
+
+  it('refuses it on a $vt_results read even when the caller asks for it (A-D15)', async () => {
+    // accel/read.ts passes no `reuse`, so this can only happen through a future
+    // call site — which is exactly why the refusal lives in the prefix builder
+    // and not in a convention every caller has to remember.
+    const calls = stubSearch(['{"totalEventCount":0,"job":"job-test"}'])
+    await runSearch('dataset="$vt_results" jobName="gno_lake_30d_c1d"', { earliest: '-7d', reuse: true })
+    const body = JSON.parse(String(calls.find((c) => c.url.endsWith('/search/jobs'))!.init.body)) as { query: string }
+    expect(body.query).toBe('set max_running_time_per_search=900; dataset="$vt_results" jobName="gno_lake_30d_c1d"')
+    expect(body.query).not.toContain('allow_previous_results')
+  })
+})
+
+/**
+ * How often a running job is asked whether it has finished.
+ *
+ * The flat 700 ms this replaced was undocumented and every panel paid it. The
+ * claim worth pinning is the SHAPE: quick enough that a 0.3 s stored read and a
+ * 0.95 s reused result are not rounded up to the next interval, backing off far
+ * enough that a half-minute scan is not polled forty-three times.
+ */
+describe('the poll ramp', () => {
+  it('starts fast, backs off, and settles at a ceiling', () => {
+    expect([0, 1, 2, 3, 4, 5].map(pollDelayMs)).toEqual([100, 150, 250, 400, 600, 900])
+    expect(pollDelayMs(6)).toBe(POLL_MAX_MS)
+    expect(pollDelayMs(400)).toBe(POLL_MAX_MS)
+    // The first answer is available 100 ms after the first check, not 700.
+    expect(pollDelayMs(0)).toBeLessThan(700)
+    // And the ramp is monotonic — a job does not get asked more often the
+    // longer it runs.
+    const steps = [0, 1, 2, 3, 4, 5, 6, 7].map(pollDelayMs)
+    expect(steps).toEqual([...steps].sort((a, b) => a - b))
+  })
+
+  it('is what a real wait actually uses, in order', async () => {
+    // Through waitForJob rather than against the table, because the bug this
+    // catches is a loop that computes the ramp and then sleeps a constant.
+    const delays: number[] = []
+    const realSetTimeout = globalThis.setTimeout
+    vi.stubGlobal('setTimeout', ((fn: () => void, ms?: number) => {
+      delays.push(ms ?? 0)
+      return realSetTimeout(fn, 0)
+    }) as typeof globalThis.setTimeout)
+    let checks = 0
+    const json = (body: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => body, text: async () => JSON.stringify(body) })
+    vi.stubGlobal('fetch', async (url: string) => {
+      const u = String(url)
+      if (u.endsWith('/search/jobs')) return json({ items: [{ id: 'job-test' }] })
+      if (u.includes('/status')) return json({ items: [{ status: ++checks > 3 ? 'completed' : 'running' }] })
+      return { ok: true, status: 200, statusText: 'OK', text: async () => '{"totalEventCount":0,"job":"job-test"}', json: async () => ({}) }
+    })
+    await runSearch(q('| limit 1'), { earliest: '-15m' })
+    expect(delays).toEqual([100, 150, 250])
+  })
+
+  it('still honours a caller that fixes the interval', async () => {
+    const delays: number[] = []
+    const realSetTimeout = globalThis.setTimeout
+    vi.stubGlobal('setTimeout', ((fn: () => void, ms?: number) => {
+      delays.push(ms ?? 0)
+      return realSetTimeout(fn, 0)
+    }) as typeof globalThis.setTimeout)
+    let checks = 0
+    const json = (body: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => body, text: async () => JSON.stringify(body) })
+    vi.stubGlobal('fetch', async (url: string) => {
+      const u = String(url)
+      if (u.endsWith('/search/jobs')) return json({ items: [{ id: 'job-test' }] })
+      if (u.includes('/status')) return json({ items: [{ status: ++checks > 2 ? 'completed' : 'running' }] })
+      return { ok: true, status: 200, statusText: 'OK', text: async () => '{"totalEventCount":0,"job":"job-test"}', json: async () => ({}) }
+    })
+    await runSearch(q('| limit 1'), { earliest: '-15m', pollMs: 42 })
+    expect(delays).toEqual([42, 42])
+  })
+})
+
+// ── What this file could not assert ─────────────────────────────────────────
+//  * That the reuse directive actually reuses anything. A-SP21 measured that
+//    against the live workspace; `fetch` is stubbed here, so all this proves is
+//    which bytes leave the browser.
+//  * That the ramp is faster in wall-clock terms. The delays are recorded and
+//    then fired immediately, because a test that really waited 2.4 s per case
+//    would be paid for on every run by everybody.

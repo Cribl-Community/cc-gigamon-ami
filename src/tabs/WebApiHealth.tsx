@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -8,16 +9,25 @@ import { QueryBoundary } from '../components/QueryBoundary'
 import { BarList, type BarItem } from '../components/BarList'
 import { TimeChart, type Series } from '../components/TimeChart'
 import { toNum, str, fmtCount, fmtMs, fmtPct } from '../lib/format'
+import { SnapshotCaption } from '../components/SnapshotCaption'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from '../cribl/accel/words'
 import { KPI, CODES, HOSTS, SLOW, TREND, H2, ERRORS_DRILL } from '../queries/webApiHealth'
 
 export function WebApiHealth() {
   const { range } = useDashboard()
-  const kpi = useSearch(KPI)
+  // Six queries on one mount, admitted ~1.6 s apart, means the last one does not
+  // begin for ~8 s. The three panels below the fold wait for the reader instead
+  // of queueing behind each other; the KPI row and the first pair do not.
+  const hostsNear = useNearViewport()
+  const trendNear = useNearViewport()
+  const h2Near = useNearViewport()
+
+  const kpi = useSearch(KPI, { accel: 'gno_overview_c1h', accelPanel: 'web-kpi' })
   const codes = useSearch(CODES)
-  const hosts = useSearch(HOSTS)
+  const hosts = useSearch(HOSTS, { deferred: !hostsNear.near })
   const slow = useSearch(SLOW)
-  const trend = useSearch(TREND)
-  const h2 = useSearch(H2)
+  const trend = useSearch(TREND, { deferred: !trendNear.near })
+  const h2 = useSearch(H2, { deferred: !h2Near.near })
 
   const k = kpi.rows[0] ?? {}
   const txns = toNum(k.txns)
@@ -54,6 +64,11 @@ export function WebApiHealth() {
     display: fmtCount(r.n),
   }))
 
+  // One state for the row's caption and every tile's ⓘ, so a tile can never date
+  // itself differently from the line above it.
+  const kpiSnapshot = { source: kpi.source, outcome: kpi.outcome, at: kpi.at, stale: kpi.stale, nearestAt: kpi.nearestAt }
+  const kpiComputed = { ...kpiSnapshot, cadence: OVERVIEW_CADENCE, window: OVERVIEW_WINDOW, fallback: kpi.note }
+
   const series: Series[] = useMemo(() => [
     { name: 'errors / min', color: '#f03e3e', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.errors) })) },
     { name: 'requests / min', color: '#4dabf7', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.total) })) },
@@ -71,16 +86,19 @@ export function WebApiHealth() {
         </p>
       </div>
 
+      <div className="kpi-row-head">
+        <SnapshotCaption state={kpiSnapshot} />
+      </div>
       <div className="kpi-row kpi-row-4">
         <KpiTile label="HTTP transactions" value={kpi.loading ? '…' : fmtCount(txns)} accent="info"
-          sub="http_code present" info="Flows carrying an HTTP response code in this window (HTTP/1.x only — HTTP/2 is counted separately)." query={KPI} />
+          sub="http_code present" info="Flows carrying an HTTP response code in this window (HTTP/1.x only — HTTP/2 is counted separately)." query={KPI} computed={kpiComputed} />
         <KpiTile label="Error rate" value={kpi.loading ? '…' : fmtPct(errRate, 2)}
           accent={errRate > 5 ? 'danger' : errRate > 1 ? 'warning' : 'success'}
-          sub={`${fmtCount(errors)} × 4xx/5xx`} info="Share of HTTP transactions returning 4xx or 5xx. 5xx implicates the server; 4xx is usually the caller." query={KPI} />
+          sub={`${fmtCount(errors)} × 4xx/5xx`} info="Share of HTTP transactions returning 4xx or 5xx. 5xx implicates the server; 4xx is usually the caller." query={KPI} computed={kpiComputed} />
         <KpiTile label="Server think-time p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95))} accent="warning"
-          sub="http_server_ms" info="95th-percentile server processing time — request timestamp to response timestamp, measured on the wire." query={KPI} />
+          sub="http_server_ms" info="95th-percentile server processing time — request timestamp to response timestamp, measured on the wire." query={KPI} computed={kpiComputed} />
         <KpiTile label="HTTP/2 transactions" value={kpi.loading ? '…' : fmtCount(toNum(k.h2))} accent="neutral"
-          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={KPI} />
+          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={KPI} computed={kpiComputed} />
       </div>
 
       <div className="grid-2">
@@ -99,7 +117,7 @@ export function WebApiHealth() {
         </Panel>
       </div>
 
-      <Panel tourId="web-hosts" title="Top endpoints by requests" query={HOSTS} onRefresh={hosts.refetch} refreshing={hosts.loading} note="http_host · error rate per host"
+      <Panel anchorRef={hostsNear.ref} tourId="web-hosts" title="Top endpoints by requests" query={HOSTS} onRefresh={hosts.refetch} refreshing={hosts.loading} note="http_host · error rate per host"
         info="Busiest HTTP hosts with the share of their responses that were 4xx/5xx. A high-volume host with a high error rate is the first thing to chase.">
         <QueryBoundary state={hosts} emptyLabel="No HTTP hosts in this window">
           <BarList items={hostItems} accent="info" />
@@ -107,14 +125,14 @@ export function WebApiHealth() {
       </Panel>
 
       <div className="grid-2">
-        <Panel tourId="web-trend" title="Requests and errors over time" query={TREND} onRefresh={trend.refetch} refreshing={trend.loading} note="per 1m"
+        <Panel anchorRef={trendNear.ref} tourId="web-trend" title="Requests and errors over time" query={TREND} onRefresh={trend.refetch} refreshing={trend.loading} note="per 1m"
           info="Request volume against 4xx/5xx count per minute. A spike in errors that does not track request volume is a server-side event, not load.">
           <QueryBoundary state={trend} emptyLabel="No data" compact>
             <TimeChart series={series} height={170} />
           </QueryBoundary>
         </Panel>
 
-        <Panel tourId="web-h2" title="HTTP/2 hosts" query={H2} onRefresh={h2.refetch} refreshing={h2.loading} note="http2_host · by volume"
+        <Panel anchorRef={h2Near.ref} tourId="web-h2" title="HTTP/2 hosts" query={H2} onRefresh={h2.refetch} refreshing={h2.loading} note="http2_host · by volume"
           info="HTTP/2 traffic, reported by Gigamon under a separate field set (http2_host / http2_code / http2_method). Shown here so modern traffic is not silently missing from the page.">
           <QueryBoundary state={h2} emptyLabel="No HTTP/2 traffic in this window">
             <BarList items={h2Items} accent="info" />

@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { accelEntry } from '../cribl/accel/manifest'
 import type { Row } from '../cribl/search'
+import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import { DataFlow, LAKE_CADENCE, lakeComputed, lakeHeldLabel } from './DataFlow'
 
 const LAKE = 'gno_lake_30d_c1d'
@@ -90,13 +91,20 @@ function stub(cfg: { stored?: Row[]; history?: unknown[] } = {}): void {
 /** The 30-day total as a live job — the query this phase exists to stop running. */
 const lakeLiveSubmits = () => submits.filter((s) => s.query.includes('total_bytes=sum(') && !s.query.includes('$vt_results'))
 const storedSubmits = () => submits.filter((s) => s.query.includes('$vt_results'))
+// The Lake tile's own stored read. This tab now has two accelerated hooks — the
+// volume figures read the hourly overview scan — so "a stored read happened" is
+// no longer the same claim as "the Lake tile read its own run".
+const lakeStoredSubmits = () => storedSubmits().filter((s) => s.query.includes('gno_lake_30d_c1d'))
 
+let census: SnapshotCensus | null = null
 let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  census = null
+  resetSnapshotCensus()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -104,6 +112,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount())
+  resetSnapshotCensus()
   container.remove()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -113,11 +122,18 @@ async function render(): Promise<void> {
   await act(async () => {
     root.render(
       <DashboardProvider>
+        <Census />
         <DataFlow />
       </DashboardProvider>,
     )
   })
   for (let i = 0; i < 14; i++) await act(async () => { await Promise.resolve() })
+}
+
+/** Reads the header's census without rendering the app header. */
+function Census() {
+  census = useSnapshotCensus()
+  return null
 }
 
 const cardLabels = () => [...container.querySelectorAll('.dop-card-label')].map((t) => t.textContent ?? '')
@@ -131,7 +147,7 @@ describe('the Cribl Lake card', () => {
     expect(dated, `the card showed a stored figure with no date on it: ${cardLabels().join(' | ')}`).toBeDefined()
     expect(dated).toMatch(/events held · as of \d{2}:\d{2}/)
     expect(lakeLiveSubmits(), 'the 9,297.7 CPU-s query ran anyway').toEqual([])
-    expect(storedSubmits()).toHaveLength(1)
+    expect(lakeStoredSubmits()).toHaveLength(1)
   })
 
   it('says on the page that the card is not reading the range picker', async () => {
@@ -170,6 +186,40 @@ describe('the Cribl Lake card', () => {
     expect(found).toContain(LAKE_CADENCE)
     expect(found).toContain('the last 30 days')
     expect(found, 'the ⓘ does not say how to get a live figure').toContain('Open in Search')
+  })
+})
+
+describe('what the header says about this tab', () => {
+  it('counts the two things on this tab that read a query, and the one served from a run', async () => {
+    // THE SENTENCE THIS REPLACED. The census registers inside <Panel>, and this
+    // tab renders none — it draws a diagram and a stage-detail card. So nothing
+    // registered, `census.panels` was 0, and the header read
+    // `Snapshot · nothing on this tab reads a query` on the tab that motivated
+    // the whole phase: three searches run here and two are served by schedules.
+    //
+    // Two slots, matching the two provenances the tab's own toolbar names:
+    //   * the diagram's volumes — record-derived (hourly) mixed with Cribl's own
+    //     telemetry (never scheduled). Merged, so it reports LIVE. A picture half
+    //     of which ran a moment ago may not carry a snapshot date.
+    //   * the Cribl Lake card, served by its own daily run.
+    stub()
+    await render()
+
+    expect(census!.panels, 'the tab that motivated the phase reports no panels at all').toBe(2)
+    expect(census!.snapshotted, 'the Lake card is served from a run and is not counted as one').toBe(1)
+    expect(census!.oldest, 'a counted snapshot contributed no time, so the header can date nothing').not.toBeNull()
+  })
+
+  it('claims no snapshot on a fresh install, where nothing has been scheduled yet', async () => {
+    // The denominator still stands up and says two: the queries exist and run,
+    // they are simply all live. `0 of 2` is the honest reading, and it is the
+    // one that climbs visibly when an admin applies the schedules.
+    stub({ stored: [], history: [] })
+    await render()
+
+    expect(census!.panels).toBe(2)
+    expect(census!.snapshotted, 'a live 30-day total was counted as a snapshot').toBe(0)
+    expect(census!.oldest).toBeNull()
   })
 })
 

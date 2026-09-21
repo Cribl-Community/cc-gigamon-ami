@@ -90,7 +90,9 @@ interface WorkspaceOpts {
   saved?: Record<string, Record<string, unknown>>
   /** `${METHOD} ${path}` (no query) → answer this status instead. */
   status?: Record<string, number>
-  /** Job history by correlationId, newest first. */
+  /** Job history per schedule, newest first. Keyed by saved-search id here for
+   *  legibility; the stub flattens it into the one unfiltered list the platform
+   *  actually returns, and each run carries its owner in its job id. */
   runs?: Record<string, Run[]>
   /** Billable CPU-seconds by job id. Absent means the metrics read 404s. */
   cpu?: Record<string, number>
@@ -136,8 +138,12 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
     }
 
     if (path === JOBS && method === 'GET') {
-      const id = new URLSearchParams(query).get('correlationId') ?? ''
-      const items = opts.runs?.[id] ?? []
+      // ONE unfiltered list, every schedule's runs in it. Measured live
+      // 2026-09-18: no request parameter selects a saved search's runs, and a
+      // run declares its owner in its own job id (`<savedSearchId>.<suffix>`).
+      // This stub used to key on `correlationId`, which returned nothing for
+      // every schedule and reported all of them as never having run.
+      const items = Object.values(opts.runs ?? {}).flat()
       return response(200, { items, count: items.length, totalCount: items.length })
     }
     if (path.startsWith(`${JOBS}/`) && path.endsWith('/metrics') && method === 'GET') {
@@ -206,7 +212,10 @@ async function foreign(id: typeof LAKE): Promise<Record<string, unknown>> {
 }
 
 const run = (over: Partial<Run> = {}): Run => ({
-  id: '1789600000000.abcdef',
+  // `<savedSearchId>.<epochMs>.<rand>` — the shape the platform emits, measured
+  // live 2026-09-18. listRuns selects a schedule’s runs by that prefix, so a bare
+  // id belongs to no schedule and the table reports "Never run".
+  id: `${LAKE}.1789600000000.abcdef`,
   status: 'completed',
   timeCreated: NOW - 3600_000,
   timeStarted: NOW - 3600_000,
@@ -353,7 +362,7 @@ describe('health', () => {
 
   it('reports a slipped cadence without inventing a severity for it', () => {
     const late = status({
-      runs: [asRun(run()), asRun(run({ id: 'b' }))],
+      runs: [asRun(run()), asRun(run({ id: `${LAKE}.b` }))],
       last: asRun(run()),
       observedIntervalMs: 72 * 3600_000,
       expectedIntervalMs: 24 * 3600_000,
@@ -469,7 +478,8 @@ describe('what a confirmation names', () => {
     const state = await readAccelState()
     const plan = applyPlan(state)
     const named = applyResources(state).map((r) => r.id)
-    expect(named).toEqual([LAKE])
+    // Every entry but the one already stored correctly.
+    expect(named).toEqual(MANIFEST.map((e) => e.id).filter((id) => id !== SAMPLE))
     for (const id of named) expect(plan.willWrite.some((w) => w.includes(id))).toBe(true)
     for (const leave of plan.willLeave) expect(named.some((id) => leave.label.includes(id))).toBe(false)
   })
@@ -558,8 +568,8 @@ describe('the table', () => {
   it('renders an enabled search with its last run and what that run billed', async () => {
     stubWorkspace({
       saved: { [LAKE]: await stored(LAKE) },
-      runs: { [LAKE]: [run(), run({ id: 'older', timeCreated: NOW - 25 * 3600_000, timeStarted: NOW - 25 * 3600_000, timeCompleted: NOW - 24.9 * 3600_000 })] },
-      cpu: { '1789600000000.abcdef': 9297.7 },
+      runs: { [LAKE]: [run(), run({ id: `${LAKE}.older`, timeCreated: NOW - 25 * 3600_000, timeStarted: NOW - 25 * 3600_000, timeCompleted: NOW - 24.9 * 3600_000 })] },
+      cpu: { [`${LAKE}.1789600000000.abcdef`]: 9297.7 },
     })
     await mount()
     expect(bodyText()).toContain('enabled')
@@ -659,8 +669,8 @@ describe('a confirmed write', () => {
     await press(buttonNamed('Yes, create them'))
     await settle()
     const writes = savedWrites(calls)
-    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([`POST ${SAVED}`, `POST ${SAVED}`])
-    expect(writes.map((w) => w.body?.id).sort()).toEqual([LAKE, SAMPLE])
+    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual(MANIFEST.map(() => `POST ${SAVED}`))
+    expect(writes.map((w) => w.body?.id).sort()).toEqual(MANIFEST.map((e) => e.id).sort())
   })
 
   it('pauses by sending the WHOLE body back, schedule and all', async () => {

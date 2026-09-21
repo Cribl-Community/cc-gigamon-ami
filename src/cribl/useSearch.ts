@@ -18,18 +18,39 @@
 // numbers without rendering its date has broken the only safety argument this
 // phase has. See <PanelInfo computed={…}> for the words.
 //
-// ── THE RANGE PICKER DOES NOT REACH AN ACCELERATED PANEL ────────────────────
+// ── THE RANGE PICKER DOES NOT REACH A SNAPSHOT-SERVED PANEL ─────────────────
 // A `$vt_results` read ignores the time picker entirely: the rows are whatever
-// the named run stored, over whatever window that run read. So an accelerated
-// hook is treated exactly like one that pins its own `earliest` — it re-runs on
-// an explicit refresh and never on a range change or an auto-refresh tick.
-// Leaving the range in the dependency key would re-submit a job on every pick to
-// receive the identical stored rows, and would make the live FALLBACK mean
-// something different from the accelerated read it replaced.
+// the named run stored, over whatever window that run read. So a panel the
+// schedule is actually answering is treated exactly like one that pins its own
+// `earliest` — it re-runs on an explicit refresh and never on a range change or
+// an auto-refresh tick. Leaving the range in the dependency key would re-submit
+// a job on every pick to receive the identical stored rows, and would make the
+// live FALLBACK mean something different from the accelerated read it replaced.
 //
-// That is also why an accelerated hook with no `earliest` of its own borrows the
+// That is also why such a hook with no `earliest` of its own borrows the
 // manifest entry's window rather than the page's: whichever path answers, the
 // number has to mean the same thing.
+//
+// IN LIVE MODE IT IS AN ORDINARY PANEL AGAIN. This used to key on "does this
+// panel have a schedule" rather than "is the schedule answering it", so pressing
+// Live gave a live query over the schedule's window that then ignored the picker
+// and every tick. See `snapshotServed` below.
+//
+// ── TWO THINGS THAT CHANGED FOR EVERY PANEL, ACCELERATED OR NOT ─────────────
+// WHEN A QUERY IS SUBMITTED. Concurrent jobs from one user are admitted ~1.6 s
+// apart, so a tab firing six of them on mount does not START its sixth for
+// ~8 s — a cost no per-query speed-up can touch. `deferred` lets a panel below
+// the fold wait until the reader is near it (components/nearViewport.ts), which
+// takes it out of the opening queue entirely. A deferred hook reports `loading`,
+// never an empty result: see the option's comment.
+//
+// WHETHER CRIBL MAY ANSWER FROM A RESULT IT ALREADY HAS. Every submit from this
+// hook carries `set allow_previous_results` — measured 30.92 s → 0.95 s and
+// zero billed on a repeat of the same query at the same relative range (A-SP21)
+// — EXCEPT when the viewer asked for fresh data. The two ways they ask are the
+// page's Refresh and a panel's own, and there is a third case in the effect: an
+// auto-refresh cadence faster than the reuse window, where reuse would re-serve
+// the answer the previous tick produced.
 //
 // ── WHY THE TWO CALL SITES PASS A STRING, NOT A PanelQuery ──────────────────
 // `useSearch` takes `string | PanelQuery` because the plan asked for it and
@@ -43,12 +64,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { runSearch, SearchTimeLimitError, type Row } from './search'
+import { runSearch, REUSE_WINDOW_SECONDS, SearchTimeLimitError, type Row } from './search'
 import { useCostSlot } from './jobCost'
 import { useDashboard } from '../app/DashboardContext'
 import { accelEntry, type AccelId } from './accel/manifest'
+import { MEASURED } from './accel/estimate'
 import { readAccelRows, type AccelOutcome, type AccelSource } from './accel/read'
-import { loadAccelPrefs } from './accel/store'
+import { useAccelModeHydrated } from './accel/mode'
+import { useSelectedSnapshot } from './accel/selection'
+import { useDataMode } from './dataMode'
+
+// `useAccelEnabled` was this module's export for the whole of Phase 2 and the
+// tabs import it from here. Same name, same boolean — it now reads
+// cribl/dataMode.ts, so it is reactive.
+export { useAccelEnabled, type AccelMode } from './accel/mode'
 
 /** A panel's query together with the scheduled search that may serve it. */
 export interface PanelQuery {
@@ -85,11 +114,36 @@ export interface UseSearchState {
   /** One sentence a panel may render about the read. Never Cribl's words:
    *  accel/read.ts writes these, an API response never reaches one. */
   note: string | null
+  /** When a past moment was picked and this panel has no run from it: the
+   *  nearest stored run it does have, for the caption to offer.
+   *
+   *  Optional so the test fixtures that build a state by hand do not each have
+   *  to carry a field about a feature they are not exercising; `useSearch`
+   *  itself always answers with it. */
+  nearestAt?: number | null
 }
 
 export interface UseSearchOptions {
   /** Skip execution (e.g. waiting on a required parameter). */
   enabled?: boolean
+  /**
+   * Hold this query back until the panel is worth running — set by
+   * `useNearViewport()` for a panel below the fold.
+   *
+   * SEPARATE FROM `enabled`, and the difference is what the reader is told.
+   * `enabled: false` means the query cannot be asked (nothing is selected), and
+   * the panel correctly reports no rows; `deferred` means it has not been asked
+   * YET, so the hook keeps reporting `loading` and <QueryBoundary> keeps its
+   * spinner. Folding the two together would put "No results" under a panel
+   * whose query is about to run, which is a wrong answer rather than a missing
+   * one.
+   *
+   * WHY IT EXISTS AT ALL: concurrent jobs from one user are admitted ~1.6 s
+   * apart, so the sixth query a tab fires on mount does not BEGIN for ~8 s. No
+   * amount of per-query speed touches that; firing fewer at once is the only
+   * lever, and it is worth more than anything else in this file.
+   */
+  deferred?: boolean
   /** Extra dependencies that should re-trigger the query. */
   deps?: unknown[]
   limit?: number
@@ -98,12 +152,31 @@ export interface UseSearchOptions {
   /** Serve this panel from that scheduled search's stored result when it can. */
   accel?: AccelId
   /**
-   * False sends the panel straight to its live query — the per-viewer escape
-   * hatch (`useAccelEnabled`), and whatever per-panel control a tab offers.
-   * It costs whatever the live query costs; on the Lake total that is the
-   * 9,297.7 CPU-s this phase exists to stop paying 15–24 times a day.
+   * False sends the panel straight to its live query — whatever per-panel
+   * control a tab offers, ANDed with the global mode this hook reads for itself
+   * (accel/mode.ts). It costs whatever the live query costs; on the Lake total
+   * that is the 9,297.7 CPU-s this phase exists to stop paying 15–24 times a
+   * day, and it is why the control that flips it carries a price.
    */
   accelEnabled?: boolean
+  /**
+   * Which of that entry's served panels this hook is — the `queryId` in the
+   * manifest.
+   *
+   * An hourly entry is ONE scan answering several panels, and each panel's rows
+   * are cut out of the shared result by a `tail` the manifest holds. The tail
+   * lives there and not here on purpose: it is inside the entry's display
+   * digest, so an operator can tell whether the app is still reading the search
+   * the way it says it is. A tab naming its own tail would put that string
+   * outside everything that checks it.
+   *
+   * REQUIRED ON A MULTI-PANEL ENTRY. Left out, the hook runs LIVE rather than
+   * reading the shared row whole: the un-tailed row carries every other panel's
+   * columns too, and a panel reading a column it did not ask for is the exact
+   * shape of a plausible wrong number. Falling back costs a scan and says so in
+   * the panel's own caption; guessing costs nothing and is silent.
+   */
+  accelPanel?: string
 }
 
 /** What one read of either kind answers with, before it becomes panel state. */
@@ -114,6 +187,7 @@ interface PanelRead {
   at: number | null
   stale: boolean
   note: string | null
+  nearestAt: number | null
 }
 
 /**
@@ -127,16 +201,87 @@ interface PanelRead {
  * changing.
  */
 export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {}): UseSearchState {
-  const { enabled = true, deps = [], limit, earliest, accelEnabled = true } = opts
+  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel } = opts
   const text = typeof query === 'string' ? query : query.query
   const accel = (typeof query === 'string' ? undefined : query.accel) ?? opts.accel ?? null
-  const { range, refreshNonce, manualRefreshNonce } = useDashboard()
-  const pinned = earliest !== undefined || accel !== null
-  // An accelerated hook with no window of its own takes the scheduled run's, so
-  // the live fallback reads the same window the schedule does.
-  const effectiveEarliest = earliest ?? (accel !== null ? accelEntry(accel).earliest : range.earliest)
+  const { range, refreshNonce, manualRefreshNonce, autoSeconds } = useDashboard()
+  const mode = useDataMode()
+  const modeKnown = useAccelModeHydrated()
+  // WHICH PAST STATE THIS PANEL IS ANSWERING FOR, or null for the newest.
+  //
+  // Only in Snapshot mode, and only on a panel a schedule serves. In Live mode
+  // the header's time control IS the range picker and there is no moment to
+  // honour; on a panel with no schedule there is no stored past to read, and
+  // handing it a moment would mean running its live query and labelling the
+  // answer with a time it does not describe.
+  const moment = useSelectedSnapshot()
+
+  // WHETHER THE SCHEDULE IS ACTUALLY GOING TO ANSWER THIS PANEL, which is a
+  // different question from "does this panel have a schedule" — and confusing
+  // the two is the bug this replaces. `pinned` used to key on `accel !== null`,
+  // so a panel switched to Live still ignored the range picker and every
+  // auto-refresh tick: the reader pressed Live and got a live query over the
+  // SCHEDULE's window that then refused to follow anything they did next.
+  //
+  // In Live mode an accelerated panel is an ordinary live panel. The one thing
+  // that does not change is a window the panel pinned for itself: Data Flow's
+  // Lake tile passes `earliest: '-30d'` because the tile MEANS thirty days, and
+  // handing it the picker's `-15m` in Live mode would change the number rather
+  // than its freshness.
+  // The tail that cuts this panel's columns out of a shared body, and whether
+  // the entry can answer this hook at all. See `accelPanel`.
+  const served = accel !== null ? accelEntry(accel).panels : null
+  const servedPanel = served ? (accelPanel !== undefined ? served.find((p) => p.queryId === accelPanel) : served.length === 1 ? served[0] : undefined) : undefined
+  const addressable = accel === null || servedPanel !== undefined
+  const tail = servedPanel?.tail
+
+  const snapshotServed = accel !== null && accelEnabled && addressable && mode === 'snapshot'
+  // A MOMENT OVERRIDES THE PER-PANEL LIVE SWITCH, and read.ts says why in full:
+  // there is no live answer to a question about 04:20, so "run this one now"
+  // has nothing to mean. `snapshotServed` deliberately stays false in that case,
+  // which keeps the panel pinned and out of the auto-refresh ticks — a panel
+  // showing a past state must not re-run on a timer.
+  const asOf = accel !== null && addressable && mode === 'snapshot' && moment !== null ? moment : undefined
+  const atMoment = asOf !== undefined
+  const pinned = earliest !== undefined || snapshotServed || atMoment
+  // A snapshot-served hook with no window of its own takes the scheduled run's,
+  // so the live fallback reads the same window the schedule does — whichever
+  // path answers, the number means the same thing.
+  const effectiveEarliest = earliest ?? (snapshotServed || atMoment ? accelEntry(accel as AccelId).earliest : range.earliest)
   const refreshKey = pinned ? manualRefreshNonce : refreshNonce
-  const costSlot = useCostSlot(enabled && !pinned)
+
+  // THE DOUBLE SUBMIT, AND WHY IT IS CURED BY WAITING RATHER THAN BY HYDRATING
+  // EARLIER. The old `useAccelEnabled` started `true` and could only fall to
+  // `false` once the KV round trip landed, so a panel in Live mode fired a
+  // stored read and then re-fired live when its own preference arrived — two
+  // jobs on every mount, for every viewer who had chosen Live.
+  //
+  // Hydrating before the first submit sounds cleaner and is not available: the
+  // preference read is asynchronous however early it starts, so a panel mounting
+  // in the same tick still has to decide something. Waiting is the honest
+  // version of the same idea, and the machinery already exists — a panel whose
+  // mode is not yet known reports `loading`, exactly as a deferred one does, so
+  // <QueryBoundary> shows a spinner rather than a number from the wrong source.
+  //
+  // ONLY PANELS THE MODE CAN CHANGE WAIT. For a hook with no schedule the mode
+  // changes neither the query, the window, nor the pin, so making it wait would
+  // put one KV round trip in front of all thirty-seven of them for nothing —
+  // against an app whose whole brief is to feel fast. accel/mode.ts caps the
+  // wait at HYDRATE_DEADLINE_MS for the two that do.
+  const waitingForMode = accel !== null && !modeKnown
+  // A panel that has not run yet still holds its cost slot: deferral is about
+  // WHEN a query is submitted, not whether. The auto-refresh cost label answers
+  // "what does a refresh of this tab cost", and every deferred panel will have
+  // run by the first tick.
+  const active = enabled && !deferred && !waitingForMode
+  const costSlot = useCostSlot({
+    autoRefresh: enabled && !pinned,
+    willRun: enabled,
+    // What this panel's own query costs run live, for the session in which it
+    // has only ever been served from its schedule and so has measured nothing
+    // itself. Measured runs, not the regressor — see accel/estimate.ts.
+    liveHint: accel !== null ? MEASURED[accel].liveRunCpuSeconds : null,
+  })
   // Local nonce for per-panel refresh — bumping it re-runs only this hook.
   const [localNonce, setLocalNonce] = useState(0)
   const refetch = useCallback(() => setLocalNonce((n) => n + 1), [])
@@ -152,12 +297,44 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     at: null,
     stale: false,
     note: null,
+    nearestAt: null,
   })
   const reqId = useRef(0)
 
+  // Whether THIS run of the effect was asked for by a person.
+  //
+  // Refresh — the page button and a panel's own — is the one control that means
+  // "I do not want the number you already have", so it must not be answered out
+  // of Cribl's result reuse (REUSE_WINDOW below). Both nonces are summed because
+  // either one rising is the same request; the ref carries the value across
+  // effect runs, so a range change or an auto tick, which move neither nonce,
+  // stays eligible for reuse.
+  const explicitKey = manualRefreshNonce + localNonce
+  const lastExplicit = useRef(explicitKey)
+  const lastTick = useRef(refreshNonce)
+
   useEffect(() => {
-    if (!enabled) {
-      setState((s) => ({ ...s, loading: false }))
+    const explicit = explicitKey !== lastExplicit.current
+    const ticked = refreshNonce !== lastTick.current && !explicit
+    lastExplicit.current = explicitKey
+    lastTick.current = refreshNonce
+    // Whether Cribl may answer this out of a result it already has — measured
+    // 30.92 s → 0.95 s and zero billed on a repeat of the same query at the same
+    // relative range (A-SP21). Two things take it away:
+    //   * an explicit refresh, above: the one control that means "not that one".
+    //   * an auto-refresh cadence faster than the reuse window. A tick every
+    //     minute answered from a two-minute-old result is a refresh that is
+    //     GUARANTEED to show the same number, and the header would date it
+    //     "updated 0s ago" while doing it. A viewer who set a cadence has said
+    //     how old they will accept, and it is shorter than this.
+    // A range change, a remount and the first paint of a tab keep it, which is
+    // where the whole win is: opening the app, and switching away and back.
+    const reuse = !explicit && !(ticked && autoSeconds > 0 && autoSeconds < REUSE_WINDOW_SECONDS)
+    if (!active) {
+      // Deferred, or waiting on the mode, is not finished: keep reporting
+      // `loading` so the panel shows a spinner rather than "No results" for a
+      // query nobody has asked yet.
+      setState((s) => ({ ...s, loading: enabled && (deferred || waitingForMode) }))
       return
     }
     const controller = new AbortController()
@@ -173,7 +350,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // live query is what ran.
     let liveTotal: number | null = null
     const live = async (): Promise<Row[]> => {
-      const res = await runSearch(text, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot })
+      const res = await runSearch(text, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot, reuse })
       liveTotal = res.totalEventCount
       return res.rows
     }
@@ -185,8 +362,8 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // states and must not be renderable as the same words.
     const read: Promise<PanelRead> =
       accel !== null
-        ? readAccelRows(accel, { live, enabled: accelEnabled, limit, signal: controller.signal, costSlot })
-        : live().then((rows) => ({ data: rows, source: 'live' as const, outcome: null, at: null, stale: false, note: null }))
+        ? readAccelRows(accel, { live, enabled: snapshotServed, asOf, tail, limit, signal: controller.signal, costSlot })
+        : live().then((rows) => ({ data: rows, source: 'live' as const, outcome: null, at: null, stale: false, note: null, nearestAt: null }))
 
     read
       .then((res) => {
@@ -203,6 +380,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
           at: res.at,
           stale: res.stale,
           note: res.note,
+          nearestAt: res.nearestAt,
         })
       })
       .catch((err: unknown) => {
@@ -215,37 +393,21 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
         }))
       })
     return () => controller.abort()
+    // `snapshotServed` rather than `accelEnabled`: it already folds in the global
+    // mode, so a press of Snapshot / Live re-runs exactly the panels whose SOURCE
+    // it changed, and none of the others.
+    //
+    // THE SUPPRESSION BELOW HAS TO BE THE LINE IMMEDIATELY ABOVE THE ARRAY.
+    // `eslint-disable-next-line` covers exactly one line, and prose written
+    // between it and the `}, [...]` silently moves the array out from under it —
+    // which is how this effect started reporting two warnings again after the
+    // snapshot work added the explanation above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, accel, accelEnabled, enabled, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
+  }, [text, accel, snapshotServed, asOf, tail, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }
 
-/**
- * Whether this viewer wants accelerated reads at all.
- *
- * Reads the per-viewer preference once per mount (`accel/prefs/<userId>`), and
- * can only ever answer false — it starts true and stays true unless the stored
- * preference says otherwise. That asymmetry is deliberate: while the preference
- * is in flight the panel does the CHEAP thing. A viewer who has turned
- * `liveReads` on therefore pays for one 0.2 CPU-s stored read before their live
- * query runs, which is the right way round; the opposite default would make
- * every panel in the app wait on a KV round trip to find out that nothing was
- * stored, and would run the expensive query on a store that simply failed to
- * answer.
- *
- * It is a read, never a write, so it is allowed on mount (AGENTS.md).
- */
-export function useAccelEnabled(): boolean {
-  const [enabled, setEnabled] = useState(true)
-  useEffect(() => {
-    let alive = true
-    void loadAccelPrefs().then((prefs) => {
-      if (alive && prefs.liveReads) setEnabled(false)
-    })
-    return () => {
-      alive = false
-    }
-  }, [])
-  return enabled
-}
+// `useAccelEnabled` used to live here as `useState(true)` plus a one-way mount
+// effect. It is now accel/mode.ts's reactive store and is re-exported at the top
+// of this file under the same name.

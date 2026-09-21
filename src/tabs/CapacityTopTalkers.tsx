@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { PIVOTS, pivotFor, buildKpiQuery, buildTalkersQuery, buildAppmixQuery, buildL4Query, type Pivot } from '../queries/capacityTopTalkers'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -8,6 +9,8 @@ import { QueryBoundary } from '../components/QueryBoundary'
 import { BarList, type BarItem } from '../components/BarList'
 import { Donut } from '../components/Donut'
 import { InfoTip } from '../components/InfoTip'
+import { SnapshotCaption } from '../components/SnapshotCaption'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from '../cribl/accel/words'
 import { toNum, str, fmtBytes, fmtCount, fmtMs, windowSeconds } from '../lib/format'
 
 const LINK_SPEEDS = [1, 10, 100]
@@ -27,13 +30,30 @@ export function CapacityTopTalkers() {
   const pctOfLink = (bytes: number) => (linkBits > 0 ? (bytes * 8 * 100) / linkBits : 0)
 
   const kpiQuery = buildKpiQuery(pivot, applied)
-  const kpis = useSearch(kpiQuery, { deps: [applied, pivot] })
+  // Only the UNFILTERED row is snapshot-served. A filter a viewer types becomes
+  // part of the query text, and no stored run holds an answer for a filter
+  // nobody had typed when the scan fired — so the moment somebody applies one,
+  // this hook goes back to being an ordinary live query and its caption says so.
+  const kpis = useSearch(kpiQuery, {
+    deps: [applied, pivot],
+    accel: 'gno_overview_c1h',
+    accelPanel: 'capacity-kpi',
+    accelEnabled: applied === '',
+  })
+  // One state object, read by the row's caption and by every tile's ⓘ, so a
+  // tile can never date itself differently from the line above it.
+  const kpiSnapshot = { source: kpis.source, outcome: kpis.outcome, at: kpis.at, stale: kpis.stale, nearestAt: kpis.nearestAt }
+  const kpiComputed = { ...kpiSnapshot, cadence: OVERVIEW_CADENCE, window: OVERVIEW_WINDOW, fallback: kpis.note }
   const talkersQuery = buildTalkersQuery(pivot, applied)
   const talkers = useSearch(talkersQuery, { deps: [pivot, applied] })
+  // The KPI row and the talkers table are what this tab is opened for; the two
+  // mix charts sit under them and can wait for the scroll.
+  const appmixNear = useNearViewport()
+  const l4Near = useNearViewport()
   const appmixQuery = buildAppmixQuery(pivot, applied)
-  const appmix = useSearch(appmixQuery, { deps: [applied] })
+  const appmix = useSearch(appmixQuery, { deps: [applied], deferred: !appmixNear.near })
   const l4Query = buildL4Query(pivot, applied)
-  const l4 = useSearch(l4Query, { deps: [applied] })
+  const l4 = useSearch(l4Query, { deps: [applied], deferred: !l4Near.near })
 
   const k = kpis.rows[0] ?? {}
   const appTotal = appmix.rows.reduce((s, r) => s + toNum(r.bytes), 0) || 1
@@ -68,13 +88,16 @@ export function CapacityTopTalkers() {
         </div>
       </div>
 
+      <div className="kpi-row-head">
+        <SnapshotCaption state={kpiSnapshot} />
+      </div>
       <div className="kpi-row kpi-row-6">
-        <KpiTile label="Total traffic" value={fmtBytes(k.total)} sub="total_bytes · observed window" info="Sum of src+dst bytes across all flows in the current time range and filter." query={kpiQuery} />
-        <KpiTile label="Traffic in" value={fmtBytes(k.tin)} sub="dst_bytes" accent="info" info="Bytes received by destinations (dst_bytes)." query={kpiQuery} />
-        <KpiTile label="Traffic out" value={fmtBytes(k.tout)} sub="src_bytes" accent="info" info="Bytes sent by sources (src_bytes)." query={kpiQuery} />
-        <KpiTile label="Avg RTT" value={fmtMs(toNum(k.rtt) * 1000)} sub="tcp_rtt" info="Mean network round-trip time (tcp_rtt) over TCP flows." query={kpiQuery} />
-        <KpiTile label="Packets" value={fmtCount(k.pkts)} sub="src+dst" info="Total packet count (src_packets + dst_packets)." query={kpiQuery} />
-        <KpiTile label="Retransmits" value={fmtCount(k.retrans)} accent="warning" sub="tcp_dup_ack" info="Duplicate-ACK count — a retransmission proxy (tcp_retransmission_bytes isn't in this AMI feed)." query={kpiQuery} />
+        <KpiTile label="Total traffic" value={fmtBytes(k.total)} sub="total_bytes · observed window" info="Sum of src+dst bytes across all flows in the current time range and filter." query={kpiQuery} computed={kpiComputed} />
+        <KpiTile label="Traffic in" value={fmtBytes(k.tin)} sub="dst_bytes" accent="info" info="Bytes received by destinations (dst_bytes)." query={kpiQuery} computed={kpiComputed} />
+        <KpiTile label="Traffic out" value={fmtBytes(k.tout)} sub="src_bytes" accent="info" info="Bytes sent by sources (src_bytes)." query={kpiQuery} computed={kpiComputed} />
+        <KpiTile label="Avg RTT" value={fmtMs(toNum(k.rtt) * 1000)} sub="tcp_rtt" info="Mean network round-trip time (tcp_rtt) over TCP flows." query={kpiQuery} computed={kpiComputed} />
+        <KpiTile label="Packets" value={fmtCount(k.pkts)} sub="src+dst" info="Total packet count (src_packets + dst_packets)." query={kpiQuery} computed={kpiComputed} />
+        <KpiTile label="Retransmits" value={fmtCount(k.retrans)} accent="warning" sub="tcp_dup_ack" info="Duplicate-ACK count — a retransmission proxy (tcp_retransmission_bytes isn't in this AMI feed)." query={kpiQuery} computed={kpiComputed} />
       </div>
 
       <Panel
@@ -105,7 +128,7 @@ export function CapacityTopTalkers() {
       </Panel>
 
       <div className="grid-2">
-        <Panel title="App protocol mix" info="Share of bytes by application (app_name). Donut + ranked list." query={appmixQuery} onRefresh={appmix.refetch} refreshing={appmix.loading} note="app_name · by bytes">
+        <Panel anchorRef={appmixNear.ref} title="App protocol mix" info="Share of bytes by application (app_name). Donut + ranked list." query={appmixQuery} onRefresh={appmix.refetch} refreshing={appmix.loading} note="app_name · by bytes">
           <QueryBoundary state={appmix} emptyLabel="No data">
             <div className="mix-wrap">
               <Donut slices={donutSlices} />
@@ -126,7 +149,7 @@ export function CapacityTopTalkers() {
           </QueryBoundary>
         </Panel>
 
-        <Panel title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
+        <Panel anchorRef={l4Near.ref} title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
           <QueryBoundary state={l4} emptyLabel="No data">
             <BarList items={l4Items} accent="info" />
           </QueryBoundary>

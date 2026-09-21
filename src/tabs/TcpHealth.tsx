@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
+import { useNearViewport } from '../components/nearViewport'
 import { METRICS, metricFor, subnetFields, buildHeatQuery, buildDrillQuery, buildTrendQuery, latencyQuery, type MetricKey, type Mask } from '../queries/tcpHealth'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
@@ -30,9 +31,14 @@ export function TcpHealth() {
 
   const drillQuery = buildDrillQuery(sel, mask)
   const drill = useSearch(drillQuery, { enabled: !!sel, deps: [sel?.row, sel?.col, mask] })
+  // The heatmap is the tab, and it is above the fold; the two charts under it
+  // are not. Held back, they stop taking the two admission slots after the
+  // heatmap's — which is what decides when the heatmap itself finishes.
+  const trendNear = useNearViewport()
+  const latencyNear = useNearViewport()
   const trendQuery = buildTrendQuery(metric)
-  const trend = useSearch(trendQuery, { deps: [metric] })
-  const latency = useSearch(latencyQuery)
+  const trend = useSearch(trendQuery, { deps: [metric], deferred: !trendNear.near })
+  const latency = useSearch(latencyQuery, { deferred: !latencyNear.near })
 
   // Build top-N × top-N matrix; cell = per-flow rate (metric / flows).
   const matrix = useMemo(() => {
@@ -203,12 +209,12 @@ export function TcpHealth() {
       )}
 
       <div className="grid-2">
-        <Panel onRefresh={trend.refetch} refreshing={trend.loading} title={`${m.label} over time`} info="Per-flow rate of the selected wire-error metric, per 1-minute bin." query={trendQuery} note="per 1m · wire-error trend">
+        <Panel anchorRef={trendNear.ref} onRefresh={trend.refetch} refreshing={trend.loading} title={`${m.label} over time`} info="Per-flow rate of the selected wire-error metric, per 1-minute bin." query={trendQuery} note="per 1m · wire-error trend">
           <QueryBoundary state={trend} emptyLabel="No data" compact>
             <TimeChart series={trendSeries} />
           </QueryBoundary>
         </Panel>
-        <Panel tourId="tcp-latency" onRefresh={latency.refetch} refreshing={latency.loading} title="Network vs app latency" info="p95 tcp_rtt (network path) vs tcp_rtt_app (application response), with a shaded min–max band. Log axis so both scales are visible." query={latencyQuery} note="tcp_rtt vs tcp_rtt_app · p95 · min–max band · log ms">
+        <Panel anchorRef={latencyNear.ref} tourId="tcp-latency" onRefresh={latency.refetch} refreshing={latency.loading} title="Network vs app latency" info="p95 tcp_rtt (network path) vs tcp_rtt_app (application response), with a shaded min–max band. Log axis so both scales are visible." query={latencyQuery} note="tcp_rtt vs tcp_rtt_app · p95 · min–max band · log ms">
           <QueryBoundary state={latency} emptyLabel="No RTT records in this window" compact>
             <TimeChart series={latSeries} fmt={fmtMs} log />
           </QueryBoundary>

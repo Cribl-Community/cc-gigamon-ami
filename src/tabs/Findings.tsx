@@ -5,6 +5,8 @@ import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
 import { QueryBoundary } from '../components/QueryBoundary'
+import { SnapshotCaption } from '../components/SnapshotCaption'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from '../cribl/accel/words'
 import { StatusPill } from '../components/StatusPill'
 import { toNum, fmtCount, fmtPct } from '../lib/format'
 import { FINDINGS, type Finding, type Severity } from '../data/findings'
@@ -31,11 +33,19 @@ function investigationPrompt(f: Finding & { count: number }, total: number, wind
 
 export function Findings() {
   const { range } = useDashboard()
-  const res = useSearch(FINDINGS_QUERY)
+  const res = useSearch(FINDINGS_QUERY, { accel: 'gno_overview_c1h', accelPanel: 'findings-counts' })
   const row = res.rows[0]
 
   const { hits, total, bySev } = useMemo(() => {
-    const total = toNum(row?.total)
+    // `total` live, `findings_total` from the hourly snapshot — and the two
+    // names are not interchangeable decoration. The shared body cannot call this
+    // `total`, because the Capacity tiles reading the same row mean
+    // sum(total_bytes) by that name; a body defining it once would hand one of
+    // the two panels the other's number, correctly formatted and wrong by ten
+    // orders of magnitude. The snapshot's tail projects only `findings_total`,
+    // so `total` is not a column this row can even carry. See
+    // src/queries/snapshots.ts.
+    const total = toNum(row?.total ?? row?.findings_total)
     const hits = FINDINGS
       .map((f, i) => ({ ...f, count: toNum(row?.[`f${i}`]) }))
       .filter((f) => f.count > 0)
@@ -43,6 +53,9 @@ export function Findings() {
     const bySev = (s: Severity) => hits.filter((h) => h.severity === s).length
     return { hits, total, bySev }
   }, [row])
+
+  const findingsSnapshot = { source: res.source, outcome: res.outcome, at: res.at, stale: res.stale, nearestAt: res.nearestAt }
+  const findingsComputed = { ...findingsSnapshot, cadence: OVERVIEW_CADENCE, window: OVERVIEW_WINDOW, fallback: res.note }
 
   return (
     <div className="tab">
@@ -61,18 +74,22 @@ export function Findings() {
           app has one banner treatment and an admin who never opens this tab is
           still offered it. See components/AppBanners.tsx. */}
 
+      <div className="kpi-row-head">
+        <SnapshotCaption state={findingsSnapshot} />
+      </div>
       <div className="kpi-row kpi-row-4">
         <KpiTile label="Critical" value={res.loading ? '…' : String(bySev('critical'))} accent="danger"
-          sub="immediate exposure" info="Findings judged to warrant immediate action — cleartext credentials or possible interception." query={FINDINGS_QUERY} />
+          sub="immediate exposure" info="Findings judged to warrant immediate action — cleartext credentials or possible interception." query={FINDINGS_QUERY} computed={findingsComputed} />
         <KpiTile label="High" value={res.loading ? '…' : String(bySev('high'))} accent="warning"
-          sub="investigate today" info="Covert channels, lateral-movement protocols, session theft risk and wire corruption." query={FINDINGS_QUERY} />
+          sub="investigate today" info="Covert channels, lateral-movement protocols, session theft risk and wire corruption." query={FINDINGS_QUERY} computed={findingsComputed} />
         <KpiTile label="Medium / low" value={res.loading ? '…' : String(bySev('medium') + bySev('low'))} accent="info"
-          sub="baseline & monitor" info="Worth baselining — benign in many environments but the signal you need when it changes." query={FINDINGS_QUERY} />
+          sub="baseline & monitor" info="Worth baselining — benign in many environments but the signal you need when it changes." query={FINDINGS_QUERY} computed={findingsComputed} />
         <KpiTile label="Flows analysed" value={res.loading ? '…' : fmtCount(total)} accent="neutral"
-          sub="in the selected window" info="Total AMI flow records evaluated for every detection on this page." query={FINDINGS_QUERY} />
+          sub="in the selected window" info="Total AMI flow records evaluated for every detection on this page." query={FINDINGS_QUERY} computed={findingsComputed} />
       </div>
 
       <Panel tourId="findings-list" title="Detections" query={FINDINGS_QUERY} onRefresh={res.refetch} refreshing={res.loading}
+        snapshot={findingsSnapshot} computed={findingsComputed}
         info="Each detection is one aggregation over the window. Counts are flows matching the condition (for resets, the summed reset count). Severity is a fixed judgement about the class of issue, not a function of volume — a single cleartext-credential flow still matters."
         note={`${hits.length} of ${FINDINGS.length} detections firing`}>
         <QueryBoundary state={res} emptyLabel="No findings in this window">

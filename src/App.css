@@ -674,7 +674,109 @@ body {
   background: none; border: none; color: var(--gm-fg-subtle);
   padding: var(--gm-sp-4) var(--gm-sp-14); border-radius: 6px; cursor: pointer; font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium');
 }
-.seg-active { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); }
+/* THE SEGMENTED-CONTROL FILL, AND WHY IT IS NOT THE INFO TOKEN PAIR.
+   `foreground.info.contrast` on `background.info.solid.default` measures
+   **3.26:1** in both themes — the pairing contrast.test.ts's REJECTED table
+   already asserts as a failure, and the one slice 1.9 moved the house buttons
+   off. It sat here anyway because nothing asserted it: the pressed segment of a
+   pivot control is how a reader knows which view they are looking at, so it is
+   load-bearing text, not decoration.
+
+   The fix is the app's own existing answer rather than a new colour — the same
+   hue darkened until #fff clears AA, which is what `--gm-btn-primary` is
+   (#1971c2, 5.02:1). `.mode-toggle` reached for it first and its comment said
+   the other five "belong in a change that can look at all five at once". This is
+   that change: `.pivot-toggle` (Capacity ×3, TCP Health ×2) and `.seg-sm`
+   (Field Explorer) now draw the same fill, so there is ONE pressed-segment
+   treatment in the app instead of two that differ only in whether they pass. */
+.seg-active { background: var(--gm-btn-primary); color: #fff; }
+
+/* ---------- Snapshot / Live, and what each panel says underneath it ---------
+   THE SEGMENTS ARE `.seg`, NOT A NEW FAMILY. The app already draws a two- or
+   three-way segmented choice five times (`.pivot-toggle`), and a header control
+   that looked like none of them would be teaching the reader a sixth shape for
+   the same idea. What is new here is only the box it sits in: `.pivot-toggle`
+   is `align-self: flex-start` inside a column, and this one lives in the
+   header's flex row.
+
+   NO NEW COLOUR PAIRINGS ANYWHERE IN THIS BLOCK. The segments are `.seg` on
+   `neutral.subtle`; the state line is `.last-updated`'s own ink and size; the
+   panel captions are `--gm-fg` / `--gm-fg-subtle` / `--gm-st-warning` on the
+   panel, all three already measured in src/app/contrast.test.ts. */
+.mode-toggle-wrap { display: inline-flex; align-items: center; gap: var(--gm-sp-8); flex-wrap: wrap; }
+.mode-toggle {
+  display: inline-flex; gap: var(--gm-sp-4);
+  background: token('color.background.neutral.subtle');
+  padding: var(--gm-sp-2); border-radius: token('radius.md');
+}
+/* THE ONE PLACE THIS CONTROL LEAVES `.seg-active`, AND WHY.
+   `.seg-active` paints `foreground.info.contrast` on `background.info.solid.default`,
+   which measures 3.26:1 in both themes — the identical pairing the REJECTED
+   table in contrast.test.ts asserts as a failure, and the one slice 1.9 moved
+   the house buttons off. The pressed segment here carries a PRICE in its own
+   text ("Live — about 0.14 credits"), so it is the first use of that pairing
+   where the words are a number somebody is meant to read and act on, and it
+   cannot ship at 3.26.
+
+   The fix is the app's own existing answer rather than a new colour: the same
+   hue darkened until #fff clears AA, which is exactly what --gm-btn-primary is
+   (#1971c2, 5.02:1, defined at the top of this file with its own measurement
+   beside it). No new token, no new pairing — contrast.test.ts has measured #fff
+   on --gm-btn-primary since the buttons merged.
+
+   RESOLVED 2026-09-18: the other five carried the same 3.26:1 and now draw this
+   same fill from the base `.seg-active` rule, so this override is redundant and
+   is gone. The reasoning stays here because it is where somebody looks when they
+   wonder why a segmented control is not using the info tokens. */
+/* The census line. `.last-updated` carries the ink, the size and the tabular
+   figures; this adds only the width at which it stops pushing the header
+   controls onto a second row. */
+.mode-state { max-width: 320px; }
+/* A refused write, said in visible text rather than on hover. Warning ink
+   because it is a thing that will not happen, not a thing that went wrong. */
+.mode-unsaved { color: var(--gm-st-warning); font-size: var(--gm-fs-11); max-width: 260px; }
+
+/* The panel caption. Mono and 12px to match `.panel-note`, which it sits beside
+   and which is the same kind of statement — a fact about the data rather than a
+   label for it.
+
+   THE FOUR TONES, and why muting is the one that carries information. A stored
+   run under an hour old is what the schedule promises, so it takes the panel's
+   normal ink. Past an hour it goes subtle: an hourly snapshot that is more than
+   an hour behind is the first visible symptom of a schedule that has stopped
+   firing, and it arrives long before STALE_FACTOR's two cadences call it
+   overdue. Overdue itself takes warning ink. `live` is subtle because it is the
+   ordinary state for 37 of the 39 panels and shouting it would make the app look
+   broken everywhere. In every tone the WORDS say the same thing as the colour —
+   StatusPill's rule, applied to a caption. */
+/* The snapshot picker takes the range picker's place in Snapshot mode, so it
+   sits on the same baseline as the selects beside it. The note under it is the
+   horizon sentence — visible, not sr-only: how far back the list goes is the
+   fact that makes the control trustworthy. */
+/* One line above a row of KPI tiles, saying where those figures came from. The
+   tiles have no header of their own and six identical captions would be the
+   same fact six times. */
+.kpi-row-head { display: flex; justify-content: flex-end; margin-bottom: var(--gm-sp-6); }
+.snap-picker { display: inline-flex; align-items: center; gap: var(--gm-sp-6); }
+.snap-picker-note {
+  color: var(--gm-fg-subtle);
+  font-size: var(--gm-fs-12);
+  /* The sentence changes length as runs land and as a moment is picked, and a
+     header that reflows on every read is worse than one that clips. */
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.snap-note { font-size: var(--gm-fs-12); font-family: var(--gm-mono); color: var(--gm-fg-subtle); }
+.snap-note-fresh { color: var(--gm-fg); }
+.snap-note-aged { color: var(--gm-fg-subtle); }
+.snap-note-overdue { color: var(--gm-st-warning); }
+.snap-note-live { color: var(--gm-fg-subtle); }
+/* Nothing stored from the moment that was picked. Warning-coloured because it is
+   a gap the reader has to act on (pick another time), and the words say the same
+   thing — colour is never the only signal. */
+.snap-note-absent { color: var(--gm-st-warning); }
 
 /* ---------- Query states ---------- */
 .qb-center {
@@ -1090,7 +1192,7 @@ body {
 .toggle-grp { display: flex; align-items: center; gap: var(--gm-sp-10); }
 .toggle-lbl { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); display: inline-flex; align-items: center; }
 .seg-sm { background: token('color.background.neutral.subtle'); border: 1px solid var(--gm-border); color: var(--gm-fg-subtle); border-radius: 6px; padding: var(--gm-sp-2) var(--gm-sp-8); font-size: var(--gm-fs-11); cursor: pointer; margin-left: var(--gm-sp-4); }
-.seg-sm.seg-active { background: token('color.background.info.solid.default'); color: token('color.foreground.info.contrast'); border-color: transparent; }
+.seg-sm.seg-active { background: var(--gm-btn-primary); color: #fff; border-color: transparent; }
 
 /* ---------- Heatmap color scale ---------- */
 .heat-scale { display: flex; align-items: center; gap: var(--gm-sp-10); margin-top: var(--gm-sp-14); font-size: var(--gm-fs-11); color: var(--gm-fg-subtle); font-family: var(--gm-mono); }

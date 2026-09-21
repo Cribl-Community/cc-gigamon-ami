@@ -333,7 +333,16 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/kv.ts#putDoc',
     gates: [],
     surface: 'app',
-    why: 'Writes one of this app\'s own documents in the app-scoped store, which AGENTS.md grants with the app itself. Its callers report their own refusal in their own words (searchCaps.ts, prefs.ts, setupMemory.ts); only the one a customer pressed Save for is gated, as search_caps.save.',
+    why:
+      'Writes one of this app\'s own documents in the app-scoped store, which AGENTS.md grants with the app itself. Its ' +
+      'callers report their own refusal in their own words (searchCaps.ts, prefs.ts, setupMemory.ts, and accel/mode.ts ' +
+      'for the Snapshot / Live choice, whose refusal surfaces as the line beside the control). Only the one a customer ' +
+      'pressed Save for is gated, as search_caps.save. THE SNAPSHOT / LIVE MODE DELIBERATELY GETS NO WriteId OF ITS OWN, ' +
+      'against the handoff note that asked for one: a WriteId is the id a GatedControl carries, and the ' +
+      '"every gate is actually rendered" case in gatedWrites.test.ts fails any GATED_WRITES entry nothing renders a ' +
+      'control for — for EVERY surface, not only config, which is what that note misread. The control it would force is ' +
+      'a dialog asking permission to remember a display preference, and a fourth confirmation pattern makes the three ' +
+      'that guard Worker Process restarts cheaper. The reasoning in full is in cribl/dataMode.ts\'s header.',
   },
   {
     at: 'cribl/kv.ts#deleteDoc',

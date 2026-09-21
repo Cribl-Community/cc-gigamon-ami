@@ -177,8 +177,17 @@ export function measuredCpuSeconds(cpuSeconds: number): CpuEstimate {
 // ── What each entry costs today ─────────────────────────────────────────────
 
 export interface MeasuredEntry {
-  /** Billable CPU-seconds one LIVE run of the panel's query costs. Measured. */
+  /**
+   * Billable CPU-seconds one LIVE paint of everything this entry serves costs.
+   *
+   * Measured on the two Phase 2 entries. On the three hourly ones it is
+   * MODELLED — nobody ran a stopwatch over the Capacity tiles — and
+   * `liveCostModelled` says so, so a saving built on it is never printed as a
+   * measurement.
+   */
   liveRunCpuSeconds: number
+  /** True where `liveRunCpuSeconds` comes from the model rather than a run. */
+  liveCostModelled?: boolean
   /** How often it runs live today. Measured, or null when nobody measured it. */
   liveRunsPerDay: Span | null
   /** Stands in when `liveRunsPerDay` is null. AN ASSUMPTION; every figure
@@ -230,6 +239,74 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     scheduledRunCpuSeconds: null,
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
     what: 'Field Explorer — In feed (field summaries)',
+  },
+
+  gno_presence_c1h: {
+    // MEASURED on the live workspace, 2026-09-18, two runs over -15m read from
+    // /jobs/:id/metrics: 187.6 CPU-s in 4.6 s and 354.8 CPU-s in 5.5 s. The mean
+    // is what ships; the spread is 1.9x on identical query text over the same
+    // window length, which is the run-to-run variance this workspace shows
+    // everywhere (A-SP0 saw 4-17 CPU-s between back-to-back identical jobs, and
+    // a trivial count() measured 102.4 one day and 73.6 the next). Do not quote
+    // this to three figures.
+    //
+    // This is the scan that kept Field Explorer at eight seconds after its
+    // sample was already being served from a snapshot: the tab fires TWO jobs on
+    // mount and only one of them was accelerated.
+    liveRunCpuSeconds: 271.2,
+    // NOT MEASURED, and per-viewer rather than a property of the workspace:
+    // nobody counted how often Field Explorer is opened. Same assumption as the
+    // sample entry beside it, and it must move if either ever is counted.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain (5–50),
+    // which the 30-day entry's window is not.
+    scheduledRunCpuSeconds: null,
+    // ~96 count() aggregates in one pass. Wider than a sum-or-count body by some
+    // margin, and the measured 1.43x is the widest this plan has evidence for —
+    // so this is the right multiplier and probably still an under-estimate.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Field Explorer — AMI field coverage (which fields are arriving)',
+  },
+  // ── The three hourly snapshots ────────────────────────────────────────────
+  // These are not here to save money and the numbers below should not be read as
+  // if they were. They exist so a viewer can ask what the tiles said at 04:20,
+  // which no live query answers at any price. Every figure on them is MODELLED
+  // from A-SP0 (CPU-s ≈ 2.6 × data-minutes × shape) over the manifest's own
+  // 15-minute window, and both flags are set, so the panel that renders a saving
+  // from them says out loud that it is an estimate on an assumption.
+  gno_overview_c1h: {
+    // Five panels, each a whole-window scan of its own at the modelled 39 CPU-s.
+    liveRunCpuSeconds: 195,
+    liveCostModelled: true,
+    // Nobody counted how often these five tabs get opened, and it is per-viewer
+    // behaviour rather than a property of the workspace.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 12,
+    scheduledRunCpuSeconds: null,
+    // Wide: the union body carries roughly forty aggregates, which is the shape
+    // the 1.43 multiplier was measured on.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Capacity, Web, Security, Findings and Data Flow — the opening tiles on five tabs',
+  },
+  gno_svc_nodes_c1h: {
+    liveRunCpuSeconds: 55.8,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    // Service map is the default route: every arrival at the app runs it.
+    assumedRunsPerDay: 24,
+    scheduledRunCpuSeconds: null,
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Service map — the graph nodes',
+  },
+  gno_svc_edges_c1h: {
+    liveRunCpuSeconds: 78,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 24,
+    scheduledRunCpuSeconds: null,
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'Service map — the edges and the per-source outbound totals',
   },
 })
 
@@ -292,6 +369,10 @@ export interface EntrySaving {
   breakEvenRunsPerDay: number | null
   /** True when the frequency this rests on is an assumption, not a measurement. */
   assumedFrequency: boolean
+  /** True when what the panels cost live was modelled rather than run. The
+   *  saving is then an estimate on both sides, and a surface quoting it has to
+   *  say so — see `provenance`. */
+  modelledLiveCost: boolean
   provenance: string
 }
 
@@ -343,9 +424,23 @@ export function estimateEntrySaving(id: AccelId, runsPerDayOverride?: number): E
     scheduledRunsPerDay: scheduledPerDay,
     breakEvenRunsPerDay: perRead > 0 ? (scheduledRun.cpuSeconds * scheduledPerDay) / perRead : null,
     assumedFrequency,
-    provenance: assumedFrequency
-      ? `${scheduledRun.provenance} How often this panel is opened was never measured; ${measured.assumedRunsPerDay} views a day is an assumption.`
-      : scheduledRun.provenance,
+    modelledLiveCost: measured.liveCostModelled === true,
+    provenance: [
+      scheduledRun.provenance,
+      assumedFrequency
+        ? `How often this panel is opened was never measured; ${measured.assumedRunsPerDay} views a day is an assumption.`
+        : '',
+      // Said separately from the frequency assumption because they are different
+      // admissions: one is about how often somebody looks, the other about what
+      // the thing they are looking at costs when it runs. An entry that exists to
+      // make a past state readable rather than to save money has both, and the
+      // saving it prints is arithmetic over two estimates.
+      measured.liveCostModelled
+        ? 'What these panels cost run live is modelled from the same fit, not measured, so the saving is an estimate on both sides.'
+        : '',
+    ]
+      .filter((s) => s !== '')
+      .join(' '),
   }
 }
 
@@ -356,6 +451,8 @@ export interface WorkspaceSaving {
   /** True when any entry's figure rests on an assumed frequency. The total is
    *  then an assumption too, and a UI that shows only the total must say so. */
   assumedFrequency: boolean
+  /** True when any entry's live cost was modelled rather than measured. */
+  modelledLiveCost: boolean
   provenance: string
 }
 
@@ -367,11 +464,13 @@ export function estimateWorkspaceSaving(ids: readonly AccelId[] = MANIFEST.map((
     high: entries.reduce((n, e) => n + e.savedCpuSeconds.high, 0),
   }
   const assumedFrequency = entries.some((e) => e.assumedFrequency)
+  const modelledLiveCost = entries.some((e) => e.modelledLiveCost)
   return {
     entries,
     savedCpuSeconds,
     savedCredits: { low: creditsFor(savedCpuSeconds.low), high: creditsFor(savedCpuSeconds.high) },
     assumedFrequency,
+    modelledLiveCost,
     provenance: assumedFrequency
       ? `${MEASUREMENT_PROVENANCE} Part of this total rests on an assumed viewing frequency rather than a measured one.`
       : MEASUREMENT_PROVENANCE,

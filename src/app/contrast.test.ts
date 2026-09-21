@@ -604,6 +604,30 @@ const PAIRS: Pair[] = [
     where: '.gs-checklist-head',
   },
   {
+    what: 'status: warning, in the header, on the page itself',
+    fg: 'var(--gm-st-warning)',
+    bg: [PAGE],
+    threshold: 4.5,
+    where:
+      '.mode-unsaved (11px) — the line the Snapshot/Live control shows when the KV store refused to remember the choice. The header sets no background of its own, so this is the only pairing in the file drawn straight onto the page.',
+  },
+  {
+    what: 'the pressed segment of every segmented control',
+    fg: '#fff',
+    bg: ['var(--gm-btn-primary)', PAGE],
+    threshold: 4.5,
+    where:
+      '.seg-active — EVERY pressed segment: the Snapshot / Live control, .pivot-toggle (Capacity ×3, TCP Health ×2) and .seg-sm (Field Explorer). Until 2026-09-18 only the Snapshot / Live one drew this fill; the other five painted foreground.info.contrast on background.info.solid.default = 3.26:1 — the pairing this file’s own REJECTED table asserts as a failure. It passed anyway because no row named that pairing at THIS call site, which is the gap this row closes. A pressed segment is how a reader knows which view they are looking at, so it is load-bearing text, not decoration.',
+  },
+  {
+    what: 'the unpressed segment of the Snapshot / Live control',
+    fg: 'var(--gm-fg-subtle)',
+    bg: ["token('color.background.neutral.subtle')", PAGE],
+    threshold: 4.5,
+    where:
+      '.seg inside .mode-toggle (13px medium). Listed because this control quotes a price in that text; the same pairing has been drawn by .pivot-toggle since before this table existed.',
+  },
+  {
     what: 'status: danger',
     fg: 'var(--gm-st-danger)',
     bg: ['var(--gm-panel)', PAGE],

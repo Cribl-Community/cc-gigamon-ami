@@ -254,19 +254,30 @@ export interface AccelPrefs {
    * looks wrong" is a real thing to need to check, and the honest way to check
    * it is to run the same query live — not because anyone should leave it on.
    *
-   * READ BUT NOT YET WRITTEN ANYWHERE. `useAccelEnabled()` in cribl/useSearch.ts
-   * honours it; no control sets it, so today it is reachable only by writing the
-   * KV document directly. That is deliberate rather than unfinished: the two
-   * off-switches a customer actually needs already exist and are visible —
-   * Pause/Remove in the Acceleration panel (install-wide, stops the bill) and
-   * Field Explorer's per-panel "Run live" (one question, one query). A third,
-   * invisible, per-viewer switch that silently bills the install for somebody
-   * else's page loads wants a control that says the price beside it, and that
-   * screen has not been designed. The field stays because the read path is
-   * built and tested around it; if it is still unwritten when the next surface
-   * lands, give it a control or take it out.
+   * IT NOW HAS THE CONTROL PHASE 2 SAID IT NEEDED. This field was read but
+   * never written: the note here said "if it is still unwritten when the next
+   * surface lands, give it a control or take it out". The Snapshot / Live
+   * control is that surface, and accel/mode.ts is what writes this — with an
+   * expiry beside it, because the objection to writing it was that an invisible
+   * per-viewer switch bills the install for somebody else's page loads until
+   * somebody notices.
    */
   liveReads?: boolean
+  /**
+   * Epoch ms after which `liveReads` means nothing — the next local midnight
+   * after the press that set it.
+   *
+   * A CHOICE FOR TODAY, not a setting. The owner's design is that the morning
+   * open is instant, and a `Live` nobody turned off is the standing charge that
+   * would break it. accel/mode.ts evaluates this ON READ and deliberately does
+   * NOT repair an expired document: a repair is a write, reads run on load, and
+   * CLAUDE.md forbids writing on load.
+   *
+   * Absent with `liveReads: true` is read as EXPIRED, not as forever — the only
+   * documents in that shape are hand-written or from a release with no control,
+   * which is exactly the forgotten case. See accel/mode.ts's header.
+   */
+  liveReadsUntil?: number
 }
 
 /**
@@ -294,13 +305,40 @@ export async function loadAccelPrefs(): Promise<AccelPrefs> {
  * refused — and the caller must say so rather than showing the choice as saved.
  */
 export async function saveAccelPref<K extends keyof AccelPrefs>(name: K, value: AccelPrefs[K]): Promise<boolean> {
+  return saveAccelPrefs({ [name]: value } as Partial<AccelPrefs>)
+}
+
+/**
+ * Set SEVERAL preferences as one document write.
+ *
+ * WHY THIS EXISTS AND `saveAccelPref` TWICE DOES NOT DO. `liveReads` and
+ * `liveReadsUntil` are one decision — "Live, until tonight" — and two serialised
+ * writes leave a real interval in which the store holds `liveReads: true` with
+ * no expiry beside it. A page that closed in that interval would have written
+ * precisely the forgotten-forever state the expiry exists to cap. Two fields
+ * that mean one thing go in one PUT.
+ *
+ * A key whose value is `undefined` is REMOVED rather than written, so a caller
+ * can retract a field it set earlier without a second shape for "delete". That
+ * is the only way to spell removal here, and it is what Snapshot uses to leave
+ * no stale expiry behind.
+ *
+ * Same read-merge-write, same serialised turn, same false-on-refusal contract as
+ * `saveAccelPref` — the fields a caller does not mention survive, including ones
+ * written by a release this one has never heard of.
+ */
+export async function saveAccelPrefs(patch: Partial<AccelPrefs>): Promise<boolean> {
   const id = await currentUserId()
   if (!id) return false
   const key = accelPrefsKey(id)
   return serialise(async () => {
     const stored = await getDoc<AccelPrefs>(key)
-    const prefs = stored && typeof stored === 'object' ? stored : {}
-    return putDoc<AccelPrefs>(key, { ...prefs, [name]: value })
+    const prefs: AccelPrefs = stored && typeof stored === 'object' ? { ...stored } : {}
+    for (const [name, value] of Object.entries(patch)) {
+      if (value === undefined) delete prefs[name as keyof AccelPrefs]
+      else (prefs as Record<string, unknown>)[name] = value
+    }
+    return putDoc<AccelPrefs>(key, prefs)
   })
 }
 
