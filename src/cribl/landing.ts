@@ -438,8 +438,22 @@ export interface PartitionVerdict {
  * Note what is NOT checked: whether Lake prunes usefully by any of these at all,
  * how much a partition multiplies the object count, and whether existing objects
  * are re-partitioned. All three are P-S9's, all three are unknown, and the
- * partitions EDITOR is not built for exactly that reason (see SPIKE_GATED). This
- * function exists so that it can be, in an afternoon, once the spike reports.
+ * partitions EDITOR is not built — and P-S9 reported on 2026-09-21 that it never
+ * can be: `acceleratedFields` is honoured only when a Lake dataset is CREATED,
+ * and a PATCH onto an existing one answers 200 and changes nothing (see
+ * `SPIKE_GATED`, whose partitions row now carries `settled` rather than a spike).
+ *
+ * So this function's job changed without its code changing. It no longer guards
+ * an edit somebody can walk back; it guards the ONE moment the choice is made,
+ * for the life of the dataset. That makes it more load-bearing, not less — and
+ * its only caller should be the creation path.
+ *
+ * What P-S9 measured, for the warnings below: a single-field partition
+ * (3 values) turned 30 objects into 68 over the same six minutes, and a
+ * two-field partition with 31 live combinations turned them into 500. The
+ * object count tracks the combinations that actually OCCUR, not the product of
+ * the fields' cardinalities. Those magnitudes are demo-scale (I-D24) and gate
+ * nothing; the shape of the relationship is what the warnings encode.
  */
 export function validatePartitions(
   fields: readonly string[],
@@ -492,7 +506,7 @@ export function validatePartitions(
     if (stat.distinct > PARTITION_DISTINCT_CEILING) {
       warnings.push({
         field,
-        reason: `${field} had ${stat.distinct} distinct values in the measured window. Partitions multiply the number of objects roughly by that, and how far Lake stays faster under that is unmeasured (P-S9).`,
+        reason: `${field} had ${stat.distinct} distinct values in the measured window. Partitions multiply the number of objects roughly by the number of value combinations that actually occur, and every search opens more, smaller objects as a result.`,
       })
     }
   }

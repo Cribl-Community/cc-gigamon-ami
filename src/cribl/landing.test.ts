@@ -671,7 +671,13 @@ describe('validatePartitions', () => {
     const verdict = validatePartitions(['app_name'], wide)
     expect(verdict.ok).toBe(true)
     expect(verdict.warnings[0].reason).toContain(String(PARTITION_DISTINCT_CEILING + 1))
-    expect(verdict.warnings[0].reason).toContain('P-S9')
+    // The warning used to cite P-S9 as the thing nobody had measured. P-S9 ran
+    // on 2026-09-21, so the sentence states the relationship instead of naming
+    // a pending spike — and must not silently drop the consequence while doing
+    // it, which is the part a reader acts on.
+    expect(verdict.warnings[0].reason).not.toContain('P-S9')
+    expect(verdict.warnings[0].reason).toContain('combinations that actually occur')
+    expect(verdict.warnings[0].reason).toContain('more, smaller objects')
   })
 
   it('warns when a field has not been measured at all, rather than assuming it is fine', () => {
