@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useSearch } from '../cribl/useSearch'
+import { useSearch, type UseSearchState } from '../cribl/useSearch'
 import { useNearViewport } from '../components/nearViewport'
 import { PIVOTS, pivotFor, buildKpiQuery, buildTalkersQuery, buildAppmixQuery, buildL4Query, type Pivot } from '../queries/capacityTopTalkers'
 import { useDashboard } from '../app/DashboardContext'
@@ -10,11 +10,43 @@ import { BarList, type BarItem } from '../components/BarList'
 import { Donut } from '../components/Donut'
 import { InfoTip } from '../components/InfoTip'
 import { SnapshotCaption } from '../components/SnapshotCaption'
-import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from '../cribl/accel/words'
+import { type PanelSnapshotState } from '../components/snapshotCensus'
+import { type ComputedFrom } from '../components/PanelInfo'
+import { OVERVIEW_CADENCE, OVERVIEW_WINDOW, SNAPSHOT_WINDOW } from '../cribl/accel/words'
+import { type AccelId } from '../cribl/accel/manifest'
 import { toNum, str, fmtBytes, fmtCount, fmtMs, windowSeconds } from '../lib/format'
 
 const LINK_SPEEDS = [1, 10, 100]
 const MIX_COLORS = ['#4dabf7', '#38d9a9', '#ffa94d', '#b197fc', '#ff6b9d', '#63e6be', '#ffd43b', '#74c0fc']
+
+/**
+ * The scheduled search behind the three byte panels on this tab.
+ *
+ * One hourly rollup of bytes by (app_name, l4_proto): the mix donut sums it
+ * along the application key, the L4 split sums it along the protocol key, and
+ * the top-talkers bar list sums it along the application key while that is the
+ * pivot in force. Summing an additive two-key rollup along one key is the same
+ * number a one-key scan returns, which is what makes all three exact rather
+ * than approximate — see src/queries/snapshots.ts.
+ */
+const MIX_ACCEL: AccelId = 'gno_app_l4_c1h'
+/** The schedule in words, for the ⓘ. CapacityTopTalkers.test.tsx holds these
+ *  against the manifest's own cron and window, so moving one forces the other. */
+export const MIX_CADENCE = 'once an hour, at 47 minutes past, in UTC'
+export const MIX_WINDOW = SNAPSHOT_WINDOW
+
+/**
+ * A group key as this tab renders it, with the snapshot body's empty-string
+ * sentinel reading the way a missing value already read.
+ *
+ * The scan turns a null `app_name` or `l4_proto` into `""` before grouping, so
+ * that the panel summing along the OTHER key still counts those bytes. That
+ * sentinel then arrives here as a label, and `str`'s fallback only fires on
+ * null — so without this the snapshot path would print a blank row where the
+ * live path printed "(none)". Same rows, same bytes, a different word: exactly
+ * the kind of difference a reader reports as the app disagreeing with itself.
+ */
+const label = (row: Record<string, unknown>, key: string, fallback: string): string => str(row, key, fallback) || fallback
 
 export function CapacityTopTalkers() {
   const { range } = useDashboard()
@@ -44,28 +76,93 @@ export function CapacityTopTalkers() {
   // tile can never date itself differently from the line above it.
   const kpiSnapshot = { source: kpis.source, outcome: kpis.outcome, at: kpis.at, stale: kpis.stale, nearestAt: kpis.nearestAt }
   const kpiComputed = { ...kpiSnapshot, cadence: OVERVIEW_CADENCE, window: OVERVIEW_WINDOW, fallback: kpis.note }
+
+  // ── THE OTHER THREE PANELS, FROM ONE HOURLY ROLLUP ───────────────────────
+  // Every hook below repeats the gate above verbatim, and that repetition is
+  // the whole safety of this tab: `applied` is free text spliced into the query
+  // head, so the argument domain is unbounded and no stored run can hold an
+  // answer for it. A served panel that ignored the filter would show
+  // unfiltered numbers under a filtered heading — worse than being slow,
+  // because nothing on screen would say so.
+  const unfiltered = applied === ''
+
   const talkersQuery = buildTalkersQuery(pivot, applied)
-  const talkers = useSearch(talkersQuery, { deps: [pivot, applied] })
+  // ONE OF THE THREE PIVOT STATES, AND ONLY ONE. The scan groups by app_name
+  // and l4_proto; `src_ip` and `dst_aws_flat_tags_name` are not keys it carries,
+  // so those two states stay live rather than being answered from a grouping
+  // that cannot express them. A partial is honest; a tail returning a different
+  // top-12 from the live query would not be.
+  const talkers = useSearch(talkersQuery, {
+    deps: [pivot, applied],
+    accel: MIX_ACCEL,
+    accelPanel: 'capacity-talkers-app',
+    accelEnabled: unfiltered && pivot === 'app_name',
+  })
   // The KPI row and the talkers table are what this tab is opened for; the two
-  // mix charts sit under them and can wait for the scroll.
+  // mix charts sit under them and can wait for the scroll. Deferral and
+  // acceleration answer different questions — WHEN a query is submitted, and
+  // WHETHER it scans the Lake — so a deferred panel still reads the schedule
+  // when it finally runs.
   const appmixNear = useNearViewport()
   const l4Near = useNearViewport()
+  // `deps: [applied]` and not `[applied, pivot]` on these two, deliberately:
+  // `scopeFor` puts the pivot field into the text ONLY when a filter is
+  // applied, so with nothing applied all three pivots build the identical
+  // string and re-running on a pivot click would be a scan that returns what is
+  // already on screen. The pivot buttons also clear `applied`, which is what
+  // moves the text when it needs to move.
   const appmixQuery = buildAppmixQuery(pivot, applied)
-  const appmix = useSearch(appmixQuery, { deps: [applied], deferred: !appmixNear.near })
+  const appmix = useSearch(appmixQuery, {
+    deps: [applied],
+    deferred: !appmixNear.near,
+    accel: MIX_ACCEL,
+    accelPanel: 'capacity-app-mix',
+    accelEnabled: unfiltered,
+  })
   const l4Query = buildL4Query(pivot, applied)
-  const l4 = useSearch(l4Query, { deps: [applied], deferred: !l4Near.near })
+  const l4 = useSearch(l4Query, {
+    deps: [applied],
+    deferred: !l4Near.near,
+    accel: MIX_ACCEL,
+    accelPanel: 'capacity-l4',
+    accelEnabled: unfiltered,
+  })
+
+  // Where each of the three figures came from, for block 4 of its ⓘ and for the
+  // caption under its title. THREE, not one: they share a schedule but they are
+  // three reads, and one can fall back to live while the others answer from the
+  // run — a panel dated from its neighbour's read would be the false claim the
+  // dating exists to prevent.
+  const computedFrom = (state: UseSearchState): ComputedFrom => ({
+    source: state.source,
+    at: state.at,
+    stale: state.stale,
+    cadence: MIX_CADENCE,
+    window: MIX_WINDOW,
+    fallback: state.note,
+  })
+  const snapshotOf = (state: UseSearchState): PanelSnapshotState => ({
+    source: state.source,
+    outcome: state.outcome,
+    at: state.at,
+    stale: state.stale,
+    nearestAt: state.nearestAt,
+  })
+  const talkersComputed = computedFrom(talkers)
+  const appmixComputed = computedFrom(appmix)
+  const l4Computed = computedFrom(l4)
 
   const k = kpis.rows[0] ?? {}
   const appTotal = appmix.rows.reduce((s, r) => s + toNum(r.bytes), 0) || 1
 
   const talkerItems: BarItem[] = talkers.rows.map((r) => ({
-    label: str(r, p.field, '(none)'),
+    label: label(r, p.field, '(none)'),
     value: toNum(r.bytes),
     display: fmtBytes(r.bytes),
     note: `${pctOfLink(toNum(r.bytes)).toFixed(2)}% of ${linkGbps}G`,
   }))
-  const l4Items: BarItem[] = l4.rows.map((r) => ({ label: str(r, 'l4_proto', '?'), value: toNum(r.bytes), display: fmtBytes(r.bytes) }))
-  const donutSlices = appmix.rows.map((r, i) => ({ label: str(r, 'app_name', '(none)'), value: toNum(r.bytes), color: MIX_COLORS[i % MIX_COLORS.length] }))
+  const l4Items: BarItem[] = l4.rows.map((r) => ({ label: label(r, 'l4_proto', '?'), value: toNum(r.bytes), display: fmtBytes(r.bytes) }))
+  const donutSlices = appmix.rows.map((r, i) => ({ label: label(r, 'app_name', '(none)'), value: toNum(r.bytes), color: MIX_COLORS[i % MIX_COLORS.length] }))
 
   const applyFilter = () => setApplied(filterInput.trim())
 
@@ -102,6 +199,7 @@ export function CapacityTopTalkers() {
 
       <Panel
         tourId="cap-talkers"
+        snapshot={snapshotOf(talkers)} computed={talkersComputed}
         onRefresh={() => { talkers.refetch(); kpis.refetch() }} refreshing={talkers.loading}
         title={`Top ${p.noun} — by total bytes`}
         info="Busiest entities by bytes. The right-hand % recomputes each row's traffic as a share of the selected link speed over the window — a quick capacity-utilization read. Click a row to scope the whole view to it."
@@ -128,13 +226,13 @@ export function CapacityTopTalkers() {
       </Panel>
 
       <div className="grid-2">
-        <Panel anchorRef={appmixNear.ref} title="App protocol mix" info="Share of bytes by application (app_name). Donut + ranked list." query={appmixQuery} onRefresh={appmix.refetch} refreshing={appmix.loading} note="app_name · by bytes">
+        <Panel anchorRef={appmixNear.ref} snapshot={snapshotOf(appmix)} computed={appmixComputed} title="App protocol mix" info="Share of bytes by application (app_name). Donut + ranked list." query={appmixQuery} onRefresh={appmix.refetch} refreshing={appmix.loading} note="app_name · by bytes">
           <QueryBoundary state={appmix} emptyLabel="No data">
             <div className="mix-wrap">
               <Donut slices={donutSlices} />
               <ul className="mixlist">
                 {appmix.rows.map((r, i) => {
-                  const name = str(r, 'app_name', '(none)')
+                  const name = label(r, 'app_name', '(none)')
                   const pct = (toNum(r.bytes) / appTotal) * 100
                   return (
                     <li className="mixrow" key={`${name}-${i}`}>
@@ -149,7 +247,7 @@ export function CapacityTopTalkers() {
           </QueryBoundary>
         </Panel>
 
-        <Panel anchorRef={l4Near.ref} title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
+        <Panel anchorRef={l4Near.ref} snapshot={snapshotOf(l4)} computed={l4Computed} title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
           <QueryBoundary state={l4} emptyLabel="No data">
             <BarList items={l4Items} accent="info" />
           </QueryBoundary>

@@ -80,14 +80,30 @@
 import { APP_VERSION } from '../config'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY, VOLUME_AGGS, VOLUME_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY, PRESENCE_QUERY } from '../../queries/fieldExplorer'
-import { KPI_AGGS as CAPACITY_KPI_AGGS, buildKpiQuery } from '../../queries/capacityTopTalkers'
-import { KPI_AGGS as WEB_KPI_AGGS, KPI as WEB_KPI_QUERY } from '../../queries/webApiHealth'
+import { KPI_AGGS as CAPACITY_KPI_AGGS, buildAppmixQuery, buildKpiQuery, buildL4Query, buildTalkersQuery } from '../../queries/capacityTopTalkers'
+import {
+  KPI_AGGS as WEB_KPI_AGGS,
+  KPI as WEB_KPI_QUERY,
+  CODES as WEB_CODES_QUERY,
+  HOSTS as WEB_HOSTS_QUERY,
+  SLOW as WEB_SLOW_QUERY,
+  TREND as WEB_TREND_QUERY,
+  H2 as WEB_H2_QUERY,
+} from '../../queries/webApiHealth'
 import { COUNT_AGGS as SECURITY_COUNT_AGGS, COUNTS as SECURITY_COUNTS_QUERY } from '../../queries/security'
 import { FINDING_AGGS, FINDINGS_QUERY } from '../../queries/findings'
 import { nodesQuery } from '../../queries/serviceMap'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
-import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY, WEB_HOST_SNAPSHOT_QUERY } from '../../queries/snapshots'
+// TCP health's subnet heatmap: the four metric sums the scheduled bodies carry,
+// and the panel's own query builder, so the four `display` strings below are the
+// four strings that panel actually shows rather than copies of them.
+import { TCP_SUBNET16_SNAPSHOT_QUERY, TCP_SUBNET24_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { METRICS as TCP_METRICS, buildHeatQuery, subnetFields, type Mask } from '../../queries/tcpHealth'
+// Capacity's (application, transport) rollup: three of that tab's four panels
+// re-aggregate this one grouping along one key each.
+import { APP_L4_SNAPSHOT_QUERY } from '../../queries/snapshots'
 
 /**
  * The manifest's own version, stamped into every saved search's description.
@@ -117,6 +133,13 @@ export type AccelId =
   | 'gno_app_src_c1h'
   | 'gno_dns_resolver_c1h'
   | 'gno_pipeline_c1h'
+  | 'gno_web_host_c1h'
+  | 'gno_web_code_c1h'
+  | 'gno_web_trend_c1h'
+  | 'gno_web_h2_c1h'
+  | 'gno_app_l4_c1h'
+  | 'gno_tcp_subnet24_c1h'
+  | 'gno_tcp_subnet16_c1h'
 
 /**
  * The shape ids take, and the ONLY thing that tells this app's scheduled
@@ -407,6 +430,35 @@ const VOLUME_COLUMNS = aliasesOf(VOLUME_AGGS)
 // was followed here and was not enough. The spec is not the contract; the server is.
 // Keep the `GNO ` prefix (an operator scans the shared Saved Searches list by it, and
 // manifest.test.ts pins it) and keep every other character inside that class.
+/**
+ * The four panel states one subnet-pair body serves, at one mask.
+ *
+ * GENERATED FROM THE METRICS LIST, not typed out four times. The heatmap is one
+ * panel whose query is rebuilt each time the reader presses one of four metric
+ * buttons, so the four `display` strings here have to be the four strings that
+ * panel's ⓘ shows — which is exactly what `buildHeatQuery` returns. Typed as
+ * literals they would agree on the day they were written; generated, a fifth
+ * metric added to METRICS reaches here and the body's aggregates together, or
+ * neither.
+ *
+ * THE TAIL IS A PURE PROJECTION, and that is the whole claim of these two
+ * entries. It re-aggregates nothing, so no summed-`dcount` question arises: it
+ * renames one of the four stored sums to `v`, the column the panel reads, on
+ * rows that ARE the rows the live query would have kept. src/queries/snapshots.ts
+ * carries the argument for why a stored top-120 is good for all four metrics,
+ * and src/queries/tcpHealth.ts sits beside the sort key that makes it so.
+ */
+const tcpHeatPanels = (mask: Mask): AccelServed[] => {
+  const { sf, df } = subnetFields(mask)
+  return TCP_METRICS.map((m) => ({
+    queryId: `tcp-heatmap-${mask}-${m.key}`,
+    what: `TCP health — the ${m.label} heatmap at /${mask}`,
+    display: buildHeatQuery(m.key, mask),
+    tail: `| project ${sf}, ${df}, v=${m.key}, flows`,
+    reads: [sf, df, 'v', 'flows'],
+  }))
+}
+
 export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   entry({
     id: 'gno_lake_30d_c1d',
@@ -485,7 +537,13 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
       },
       {
         queryId: 'web-kpi',
-        what: 'Web and API health — the three KPI tiles',
+        // FOUR, and this line said three until the coverage audit counted them.
+        // The tab renders HTTP transactions, error rate, server think-time p95
+        // and HTTP/2 transactions off this row — the fourth reads `k.h2`, which
+        // is in WEB_KPI_AGGS and always was. This string is what an operator
+        // deciding whether to pause the schedule reads, so it has to be the
+        // number of tiles that actually go dark.
+        what: 'Web and API health — the four KPI tiles',
         display: WEB_KPI_QUERY,
         tail: projectionOf(WEB_KPI_AGGS),
         reads: WEB_KPI_COLUMNS,
@@ -809,6 +867,313 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     keepLastN: 24,
     why:
       "The last live query on the Data Flow tab, and nobody proposed it before the coverage audit: the two figures beside it — the record-derived volumes and the 30-day Lake total — have been served since Phase 2, so this one query was what kept the whole diagram reporting LIVE and undated. It reads cribl_metrics rather than gigamon_ami, which gno_lake_30d_c1d has been doing on a schedule since Phase 2, so the mechanism is proven on this dataset. With it the tab reaches three of three, and the diagram gains a past: twenty-four retained runs mean an operator can ask whether the destination was blocked at 04:24 rather than only whether it is blocked now.",
+  }),
+
+  // ── WEB & API HEALTH: FOUR ENTRIES FOR FIVE PANELS ────────────────────────
+  //
+  // This tab fires SIX queries on mount and below the fold — the KPI row (served
+  // by the overview scan since Phase 2) plus five panels, none of them served.
+  // Three of those five are deferred until the reader scrolls near them, which
+  // moves the wait rather than removing it: the first thing the reader does on a
+  // tab about error rates is scroll to the error chart.
+  //
+  // Four entries rather than three, and the split is the whole judgement call on
+  // this tab. It is argued at `gno_web_code_c1h` below.
+
+  entry({
+    id: 'gno_web_host_c1h',
+    name: 'GNO Web hosts',
+    panels: [
+      {
+        queryId: 'web-hosts',
+        what: 'Web and API health — top endpoints by requests, with the error share of each host',
+        display: WEB_HOSTS_QUERY,
+        // `n=all_n`, and the rename is the point. The body defines NO alias
+        // called `n`, because the panel below this one means something else by
+        // that name — see the alias trap in src/queries/snapshots.ts. Each tail
+        // renames the count it actually means, so neither panel can read the
+        // other's population, and the renderer keeps reading `r.n` exactly as it
+        // does live.
+        tail: '| extend n=all_n | sort by all_n desc | limit 12',
+        reads: ['http_host', 'n', 'err'],
+      },
+      {
+        queryId: 'web-slow',
+        what: 'Web and API health — slowest hosts by server think-time p95',
+        display: WEB_SLOW_QUERY,
+        // `| where srv_n > 0` is this panel's `http_server_ms=*` head, moved to
+        // where it belongs: keep hosts carrying no server timing at all out of a
+        // ranking BY server timing. Left in the body it would have taken the
+        // transaction counts the panel above reads with it.
+        tail: '| where srv_n > 0 | extend n=srv_n | sort by p95 desc | limit 10',
+        reads: ['http_host', 'p95', 'n'],
+      },
+    ],
+    body: WEB_HOST_SNAPSHOT_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    // :45. The minutes from :37 up were free when this landed; three of them are
+    // taken by the other entries below, spaced three apart, because concurrent
+    // jobs from one account are admitted about 1.6 s apart and two entries on one
+    // minute queue rather than run.
+    cron: '45 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "Two of Web and API health's five panels group by http_host and both scan the whole window: the busiest endpoints with their error share, and the slowest hosts by server think-time p95. One grouping carries both, and the second of them is the panel a reader scrolls to first when an error rate looks wrong. It also gives the pair a past — twenty-four retained runs mean somebody chasing a host that started returning 502s can ask what it looked like at 04:45, which no live query answers at any price.",
+  }),
+
+  entry({
+    id: 'gno_web_code_c1h',
+    name: 'GNO Web status codes',
+    panels: [
+      {
+        queryId: 'web-codes',
+        what: 'Web and API health — the status-code distribution',
+        display: WEB_CODES_QUERY,
+        // No tail: the body IS the panel's query, sort and limit included.
+        reads: ['http_code', 'n'],
+      },
+    ],
+    body: WEB_CODES_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    cron: '48 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    // ── WHY THIS IS TWO ENTRIES AND NOT ONE, WHICH IS THE ONE REAL DECISION
+    //    ON THIS TAB ───────────────────────────────────────────────────────
+    // The coverage audit's N4 folds this panel and the request/error chart below
+    // into a single scan: `http_code=* | summarize n=count() by http_code,
+    // bin(_time,1m)`, with each panel re-grouping the stored rows on read. It is
+    // the best ratio on the tab — one scan, two panels — and the audit itself
+    // calls it the most platform risk in the document. THAT MERGE IS NOT TAKEN,
+    // and the reasoning matters more than the choice:
+    //
+    //   1. A `bin()` GROUP KEY HAS NEVER BEEN STORED AND RE-GROUPED HERE (M-1).
+    //      The live chart reads `bin_time_1m`, so that is what a LIVE result
+    //      names the column. Whether `$vt_results` keeps a stored row's bin
+    //      column under that name, and whether `| summarize … by bin_time_1m`
+    //      can re-group it, is unrun.
+    //   2. THE GROUP KEY WOULD BE COMPARED AS A NUMBER AFTER A ROUND TRIP.
+    //      The chart's tail would be `sum(iif(http_code >= 400, n, 0))` — gating
+    //      a pre-counted sum on the group key. Live, `http_code` is a field on a
+    //      record. Stored, it is a group key the renderer already treats as a
+    //      string (`str(r,'http_code')`, then `.startsWith('5')`). If `"404" >=
+    //      400` does not compare the way the raw field did, the error series
+    //      reads ZERO: a flat line under a plausible snapshot timestamp, on the
+    //      chart the tab exists for, in the one direction a viewer cannot check.
+    //
+    // Both failures are silent and both are wrong-number failures rather than
+    // fallback-to-live failures, which is the class this repo spends its comments
+    // on. Split, each body runs VERBATIM: no re-grouping, no re-comparison, no
+    // unverified behaviour anywhere in the chain, and `display === body` on both
+    // — the Phase 2 promise rather than the loosened one.
+    //
+    // What it costs is one extra scan an hour, ~39 modelled CPU-s. The owner has
+    // said speed and usefulness win over CPU-seconds, and both panels end up
+    // equally instant either way; the merge would have bought a cheaper bill and
+    // paid for it with two unrun behaviours on the same chart. If M-1 and the
+    // comparison above are ever measured, these two collapse into one entry and
+    // the panels do not change.
+    why:
+      "The status-code distribution is the first panel under Web and API health's tiles and it scans the whole window to count twelve numbers. Run hourly it is read from a stored row instead. It is deliberately its own scan rather than folded into the request/error chart beside it: that merge needs a bin() group key to survive storage and be re-grouped, and a status code to compare as a number after a round trip through $vt_results, neither of which has been run on this platform — and both would fail as a wrong chart rather than as an error.",
+  }),
+
+  entry({
+    id: 'gno_web_trend_c1h',
+    name: 'GNO Web requests and errors per minute',
+    panels: [
+      {
+        queryId: 'web-trend',
+        what: 'Web and API health — requests and errors over time',
+        display: WEB_TREND_QUERY,
+        // No tail, and that is the safe half of the decision argued above: the
+        // chart reads `bin_time_1m` off a row this body produced with its own
+        // `by bin(_time,1m)`, exactly as it does from a live run. Nothing
+        // re-groups a stored bin column, because nothing needs to.
+        reads: ['bin_time_1m', 'errors', 'total'],
+      },
+    ],
+    body: WEB_TREND_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    cron: '51 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    // FIFTEEN POINTS, which is what the app's default range already draws for
+    // this chart, and the reason the longer trend window the TCP audit argues for
+    // is not taken here: a snapshot whose window differs from the live default
+    // makes the same panel mean two things depending on a toggle. The picker is
+    // where the history lives — twenty-four retained runs are a day of these
+    // charts, not one chart of a day.
+    why:
+      "Requests and errors per minute is the panel a reader scrolls to the moment the error-rate tile looks wrong, and it is deferred until they do — which moves the four-to-eight-second wait to exactly the worst moment rather than removing it. Run hourly, the chart is drawn from a stored result. Twenty-four retained runs also give it a past: an error spike that has since subsided is still on the 04:51 snapshot, which no live query can be asked for.",
+  }),
+
+  entry({
+    id: 'gno_web_h2_c1h',
+    name: 'GNO Web HTTP2 hosts',
+    panels: [
+      {
+        queryId: 'web-h2',
+        what: 'Web and API health — the HTTP/2 hosts',
+        display: WEB_H2_QUERY,
+        // No tail: the body IS the panel's query.
+        reads: ['http2_host', 'n'],
+      },
+    ],
+    body: WEB_H2_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    cron: '54 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    // ── WHY THIS IS NOT FOLDED INTO EITHER ENTRY ABOVE, AND THE REASON IS
+    //    STRUCTURAL RATHER THAN CAUTIOUS ────────────────────────────────────
+    // Gigamon reports HTTP/2 under its own field set: these flows carry
+    // `http2_host` and NO `http_code`. Merging this into the host grouping or the
+    // status-code one means dropping both heads and grouping two nullable keys at
+    // once — a cross product of (http_host, http2_host) where most cells are the
+    // absence of one or the other. Whether `summarize … by` keeps a null group
+    // key is the behaviour SERVICE_EDGES_SNAPSHOT_QUERY and
+    // DNS_RESOLVER_SNAPSHOT_QUERY each wrote an `extend`/`iif` sentinel to avoid
+    // depending on, and this would need two of them, on a product, for one bar
+    // list below the fold. Its own scan costs a cron minute.
+    why:
+      "The HTTP/2 bar list is the last live query on Web and API health and the one most easily forgotten, because Gigamon reports HTTP/2 under a separate field set that none of the http_* panels above can see — which is exactly why it is on the page. It is a whole-window scan, deferred until the reader scrolls to it. Run hourly it is a stored read, and with it this tab reaches six of six: nothing on Web and API health scans the Lake on arrival.",
+  }),
+  // ── TCP health's subnet heatmap: two masks, eight panel states, two scans ──
+  //
+  // These two entries are the one place in the manifest where an
+  // ARGUMENT-DEPENDENT call site is served, and the reason it works is worth
+  // reading before a third is added. The heatmap's query is built from two
+  // arguments, and they behave completely differently:
+  //
+  //   `metric` is one of FOUR COMPILE-TIME CONSTANTS (src/queries/tcpHealth.ts's
+  //   METRICS). A body carrying every variant's aggregate answers all four, and
+  //   each panel state projects the one it wants. Four panels for one scan.
+  //
+  //   `mask` is one of two, and it does NOT fold the same way, because it
+  //   changes the GROUP KEY rather than the aggregate. Two scans.
+  //
+  // The test is not "is the domain small" — it is "does the argument change what
+  // is aggregated, or what it is aggregated BY". Capacity's typed filter changes
+  // the rows, which is why that tab correctly turns acceleration off instead.
+  entry({
+    id: 'gno_tcp_subnet24_c1h',
+    name: 'GNO TCP subnet pairs 24',
+    panels: tcpHeatPanels('24'),
+    body: TCP_SUBNET24_SNAPSHOT_QUERY,
+    // The house window, for the house reasons: fifteen minutes is what the app's
+    // default range shows, so the stored answer means the same thing as the live
+    // one, and the run ends three minutes back to clear the 120 s file flush the
+    // Lake landing profile sets.
+    earliest: '-18m',
+    latest: '-3m',
+    // :40. Concurrent jobs from one account are admitted about 1.6 s apart, so
+    // every hourly entry takes a minute nothing else is on (manifest.test.ts
+    // fails on a collision). :40 and :41 keep this pair adjacent — an operator
+    // reading the Saved Searches list sees the two masks together — and leave
+    // the run of minutes below them for the entries the same audit puts ahead of
+    // these in its build order.
+    cron: '40 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "TCP health's heatmap is one panel that runs a fresh whole-window scan every time the reader presses one of its four metric buttons — so the cost of comparing resets against dup ACKs against CRC errors is three more scans and three more waits, which is exactly the comparison the panel exists to support. One scan carrying all four sums serves every press, and the fourth press is as instant as the first. It is exact rather than approximate because the panel's own `sort by flows desc | limit 120` has no metric in it: the 120 rows stored are the 120 rows each per-metric query would have kept. Twenty-four retained runs also give the tab a past — somebody investigating a burst of resets can ask what the subnet matrix looked like at 04:40, which no live query answers at any price.",
+  }),
+
+  entry({
+    id: 'gno_tcp_subnet16_c1h',
+    name: 'GNO TCP subnet pairs 16',
+    panels: tcpHeatPanels('16'),
+    body: TCP_SUBNET16_SNAPSHOT_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    // :41, one minute after the /24 scan. See that entry for why they are
+    // adjacent and why they cannot share a minute.
+    cron: '41 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "The same heatmap at /16, and it needs a scan of its own rather than a rollup of the /24 one. Rolling a stored top-120 of /24 pairs up to /16 is lossy in exactly the place the coarser view exists for: a /24 pair that missed the top 120 still contributes every one of its flows to its /16 pair's total, and gathering up precisely those pairs is what widening the mask is for. A rollup would render a plausible matrix that is short by an amount no viewer can see. Two masks, two scans — and the four metric states at this mask come free from this one, the same way they do at /24.",
+  }),
+
+
+  // ── Capacity's byte mix: one two-key rollup, three of that tab's panels ───
+  entry({
+    id: 'gno_app_l4_c1h',
+    name: 'GNO App and L4 bytes',
+    panels: [
+      {
+        queryId: 'capacity-talkers-app',
+        // Named for the pivot it answers, because it answers ONLY that one. The
+        // bar list has three states and this scan carries one of the three keys.
+        what: 'Capacity & top talkers — the top-apps bar list, while the pivot is App',
+        // The panel's own query in the state this entry serves: pivot App, no
+        // filter. Built from the panel's builder rather than retyped, so the
+        // string the ⓘ shows and the string this claims to have produced cannot
+        // come apart.
+        display: buildTalkersQuery('app_name', ''),
+        // `where app != ""` IS the live query's `app_name=*` head, moved: in the
+        // stored rows those records are the body's empty-string sentinel. Then
+        // the (app, l4) cells are summed back along `app`, which is exact
+        // because sum is additive — see src/queries/snapshots.ts. `app_name` is
+        // restored by name because that is the column the bar list reads; the
+        // body could not group on it without losing the sentinel.
+        tail: '| where app != "" | summarize bytes=sum(bytes) by app | extend app_name=app | sort by bytes desc | limit 12',
+        reads: ['app_name', 'bytes'],
+      },
+      {
+        queryId: 'capacity-app-mix',
+        what: 'Capacity & top talkers — the app protocol mix donut and its ranked list',
+        // Pivot-independent, and that is a property of the query rather than a
+        // convenience: `scopeFor` puts the pivot field in the text ONLY when a
+        // filter is applied, and this entry serves nothing with a filter
+        // applied. So all three pivots produce this identical string, and this
+        // display matches whichever one the reader is on.
+        display: buildAppmixQuery('app_name', ''),
+        // No `where`: this panel's live query has no head, so it counts records
+        // that name no application too, and the sentinel group is how they
+        // survive the cross product. `limit 8` is the panel's view of the
+        // grouping and stays in the tail, where the stored rows still hold all
+        // of it.
+        tail: '| summarize bytes=sum(bytes) by app | extend app_name=app | sort by bytes desc | limit 8',
+        reads: ['app_name', 'bytes'],
+      },
+      {
+        queryId: 'capacity-l4',
+        what: 'Capacity & top talkers — the traffic-by-L4-protocol split',
+        display: buildL4Query('app_name', ''),
+        // The same sum along the other key. This is the panel the app-name
+        // sentinel exists for: unclassified traffic still carries a protocol,
+        // and dropping it here would take the TCP/UDP/ICMP totals down by
+        // exactly the traffic a capacity reader is hunting for.
+        tail: '| summarize bytes=sum(bytes) by l4 | extend l4_proto=l4 | sort by bytes desc',
+        reads: ['l4_proto', 'bytes'],
+      },
+    ],
+    body: APP_L4_SNAPSHOT_QUERY,
+    // The house window, for the house reasons: fifteen minutes is what the
+    // app's default range shows, so the stored answer means the same thing as
+    // the live one, and the run ends three minutes back to clear the 120 s file
+    // flush the Lake landing profile sets. It matters more than usual here —
+    // the bar list renders each row as a percentage of a link speed over the
+    // window, so a window of a different length would move every one of those
+    // percentages without moving the bytes.
+    earliest: '-18m',
+    latest: '-3m',
+    // :47, and well clear of the block in use rather than next to it. Jobs from
+    // one account are admitted about 1.6 s apart, so entries sharing a minute
+    // queue behind each other instead of running; this tranche adds several
+    // entries at once and leaving gaps between them is what keeps a later
+    // addition from having to renumber anything.
+    cron: '47 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "Capacity & top talkers fires four whole-window scans in its default view and only the KPI row was served, so the tab still waited on three. One rollup by application and transport protocol carries three of them — the mix donut, the L4 split, and the top-apps bar list — because each is the same sum(total_bytes) grouped by one of those two keys, and summing an additive two-key rollup along one key is the same number rather than an approximation of it. What it deliberately does not serve is anything with the tab's filter box in use: that text goes into the query head, no stored run holds an answer for it, and every hook here drops back to live the moment somebody applies one. It also gives the tab a past — twenty-four retained runs mean somebody investigating a traffic spike can ask which applications were moving the bytes at 04:47.",
   }),
 ])
 

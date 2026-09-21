@@ -59,13 +59,25 @@
 
 import { q } from '../cribl/search'
 import { KPI_AGGS as CAPACITY_KPI_AGGS } from './capacityTopTalkers'
-import { KPI_AGGS as WEB_KPI_AGGS } from './webApiHealth'
+import {
+  KPI_AGGS as WEB_KPI_AGGS,
+  HOST_ERR_AGG as WEB_HOST_ERR_AGG,
+  SERVER_P95_AGG as WEB_SERVER_P95_AGG,
+} from './webApiHealth'
 import { COUNT_AGGS as SECURITY_COUNT_AGGS } from './security'
 import { FINDING_AGGS } from './findings'
 import { VOLUME_AGGS } from './dataFlow'
 // The DNS reply-code aggregates, imported rather than retyped: the stored body
 // and the ⓘ beside the number have to be the same characters. See dnsHealth.ts.
 import { REPLY_CODE_AGGS } from './dnsHealth'
+// The byte aggregate Capacity's three byte panels are built from, imported for
+// the same reason: one scan rolls it up by (app_name, l4_proto) and all three
+// panels sum the stored rows back along one key. See capacityTopTalkers.ts.
+import { BYTES_AGG } from './capacityTopTalkers'
+// The four wire-error sums and the mask's column pair, imported for the same
+// reason: the scheduled body and the panel's own query have to agree about
+// which columns exist and what they are called. See tcpHealth.ts.
+import { HEAT_METRIC_AGGS, subnetFields, type Mask } from './tcpHealth'
 
 /**
  * One unfiltered scan of the window, carrying every whole-window aggregate five
@@ -212,4 +224,189 @@ export const DNS_RESOLVER_SNAPSHOT_QUERY = q(
   'app_name="dns" | extend dns_h=iif(isnotnull(dns_host), dns_host, "") | summarize p50=percentile(dns_response_time,50), ' +
     REPLY_CODE_AGGS +
     ', total=count() by dns_h',
+)
+
+/**
+ * Every HTTP host seen in the window, with its transaction count, its error
+ * count, its server-latency p95 — and, separately, HOW MANY of its transactions
+ * that percentile was computed over.
+ *
+ * ONE SCAN FOR THE TWO HOST PANELS. "Top endpoints by requests" and "Slowest
+ * hosts — server think-time p95" both group by `http_host` and both run on
+ * mount, so they are admitted ~1.6 s apart and the reader waits for the second
+ * one to start. One grouping carries both.
+ *
+ * ── THE ALIAS TRAP, AND IT IS THE REASON THIS BODY DEFINES NO `n` ───────────
+ * THE TWO PANELS USE THE SAME ALIAS FOR DIFFERENT POPULATIONS, and this is the
+ * single thing to get right here:
+ *
+ *   HOSTS's `n` is `count()` over `http_host=*`            — ALL transactions.
+ *   SLOW's  `n` is `count()` over `http_server_ms=* http_host=*`
+ *                                                          — only the ones that
+ *                                                            carry a server-time
+ *                                                            measurement.
+ *
+ * SLOW renders its `n` as the bar note "<n> txns", right beside a latency
+ * figure. A body defining `n` once and letting both panels read it would put a
+ * number on screen that is correctly formatted, plausible, larger than the
+ * truth, and attached to an ⓘ that describes the other query. Nothing would
+ * error and nothing on screen would look wrong.
+ *
+ * So THIS BODY DEFINES NO ALIAS CALLED `n` AT ALL. It defines `all_n` and
+ * `srv_n`, and each panel's tail renames the one that panel actually means into
+ * `n` with an `extend` — the same move `gno_dns_resolver_c1h` makes to restore
+ * `dns_host`. That is stronger than a comment: a panel cannot read the wrong `n`
+ * from this body, because there is no `n` in it to read. DO NOT MERGE THE TWO
+ * COUNTS back into one alias, whatever the row looks like.
+ *
+ * `| where srv_n > 0` in the slow panel's tail is what its `http_server_ms=*`
+ * head did live: keep hosts with no server timing at all out of a ranking BY
+ * server timing, where they would otherwise appear with a null p95.
+ *
+ * ── THE ONE UNVERIFIED BEHAVIOUR (M-8), STATED RATHER THAN HIDDEN ───────────
+ * This body has no `http_server_ms=*` head — it cannot have one, because the
+ * transaction counts the other panel reads are computed over every row. So `p95`
+ * is computed over a group that includes rows carrying no server time, where
+ * SLOW's live query computed it over only the rows that do. The two agree if and
+ * only if `percentile()` ignores nulls rather than treating them as zero.
+ *
+ * Nobody has run that pair of queries against this platform. What IS established
+ * here is the same behaviour one family over: `count(field)` counts non-null
+ * occurrences on this platform — `txns=count(http_code)` in KPI_AGGS is the
+ * transaction count the tile shows, and PRESENCE_QUERY's ninety-six
+ * `count(field)` aggregates are a whole shipped panel built on it. An aggregate
+ * that skipped nulls for `count` and folded them to zero for `percentile` would
+ * be a very strange platform. `srv_n` is carried partly so the difference is at
+ * least VISIBLE in the stored rows if anybody ever goes looking: a host whose
+ * `srv_n` is far below its `all_n` is where a null-folding percentile would show
+ * up first.
+ */
+export const WEB_HOST_SNAPSHOT_QUERY = q(
+  'http_host=* | summarize all_n=count(), ' +
+    WEB_HOST_ERR_AGG +
+    ', ' +
+    WEB_SERVER_P95_AGG +
+    ', srv_n=count(http_server_ms) by http_host',
+)
+
+/**
+ * Every busy TCP subnet pair in the window, with all four wire-error sums at
+ * once — one body at /24, one at /16.
+ *
+ * ONE SCAN FOR FOUR PANEL STATES. TCP health's heatmap is a single panel whose
+ * query is rebuilt every time the reader presses one of four metric buttons, and
+ * each press is another whole-window scan of the AMI records. A body carrying all
+ * four sums answers every one of those presses from one stored result, and the
+ * fifth press — back to the first metric — costs nothing at all.
+ *
+ * ── WHY THIS IS EXACT AND NOT AN APPROXIMATION ──────────────────────────────
+ * A stored top-N is normally only good for the ranking it was sorted by. This
+ * one is good for all four because THE PANEL'S OWN SORT KEY HAS NO METRIC IN IT:
+ * `sort by flows desc | limit 120`, and `flows` is `count()`. Whichever metric
+ * the reader selects, the live query would keep the same 120 rows this body
+ * keeps — so projecting one of the four stored sums off those rows gives the
+ * live query's rows column for column, not a close approximation of them.
+ *
+ * That property is the whole entry. src/queries/tcpHealth.ts's HEAT_METRIC_AGGS
+ * carries the same note beside the METRICS list, because either half moving
+ * breaks it: a metric-dependent sort key, or a tail projecting a column the
+ * panel did not ask for.
+ *
+ * ── WHY TWO BODIES AND NOT ONE ──────────────────────────────────────────────
+ * The mask is the other argument, and unlike the metric it cannot be projected
+ * out of one scan. Rolling the /24 top-120 up to /16 is lossy in exactly the
+ * place a /16 view needs: a /24 pair that missed the top 120 still contributes
+ * every one of its flows to its /16 pair's total, and those are precisely the
+ * rows a coarser grouping exists to gather up. Two masks, two scans, two entries.
+ *
+ * ── THE HEAD IS THE PANEL'S OWN, CHARACTER FOR CHARACTER ────────────────────
+ * `protocol=6 <src>=* <dst>=*`, the same filter `buildHeatQuery` writes. That is
+ * what makes the empty-group question — the one SERVICE_EDGES_SNAPSHOT_QUERY and
+ * DNS_RESOLVER_SNAPSHOT_QUERY each needed an `extend`/`iif` sentinel for — not
+ * arise here: no panel on this entry sums across a group the live query filters
+ * out, because the live query filters out exactly the same rows. A sentinel
+ * would be a column nothing reads.
+ *
+ * ── THE ALIAS RULE ──────────────────────────────────────────────────────────
+ * The four sums are aliased by metric KEY (`dupacks`, `resets`, `crc`, `loss`),
+ * and every panel on this entry has a `| project` tail that renames the one it
+ * wants to `v` — the name the panel reads today. So no panel ever reads a body
+ * column directly, and a panel added to this entry WITHOUT a tail must not read
+ * `crc` or `loss`: the endpoint drill beside this heatmap defines both, per
+ * src→dst IP pair rather than per subnet pair, and they are different numbers.
+ */
+const tcpSubnetSnapshot = (mask: Mask): string => {
+  const { sf, df } = subnetFields(mask)
+  return q(`protocol=6 ${sf}=* ${df}=* | summarize ${HEAT_METRIC_AGGS}, flows=count() by ${sf}, ${df} | sort by flows desc | limit 120`)
+}
+
+export const TCP_SUBNET24_SNAPSHOT_QUERY = tcpSubnetSnapshot('24')
+export const TCP_SUBNET16_SNAPSHOT_QUERY = tcpSubnetSnapshot('16')
+
+/**
+ * Every (application, transport protocol) pair seen in the window, with the
+ * bytes on it.
+ *
+ * THREE OF CAPACITY'S FOUR PANELS FROM ONE SCAN — the app-protocol-mix donut,
+ * the L4 split beside it, and the top-talkers bar list while that list is
+ * pivoted to App. Each one is a `sum(total_bytes)` grouped by ONE of these two
+ * keys today, and each fires its own whole-window scan.
+ *
+ * ── WHY SUMMING THE STORED ROWS IS EXACT AND NOT AN APPROXIMATION ──────────
+ * `sum` is additive: summing a two-key rollup along one key gives precisely
+ * what the one-key query gives, because every record lands in exactly one
+ * (app, l4) cell and every cell is added into exactly one app — or into exactly
+ * one protocol — on the way out. Nothing is estimated and nothing is capped in
+ * here, so the derivation is not "close enough", it is the same arithmetic in a
+ * different order.
+ *
+ * THAT ARGUMENT IS ABOUT `sum` AND NOTHING ELSE. An average, a percentile or a
+ * distinct count does not compose this way, and a panel on this entry must
+ * never be given one by re-aggregating stored rows: `avg` needs the weights,
+ * percentiles need the distribution, and a summed `dcount` double-counts
+ * anything appearing under two keys. If Capacity ever grows a mean-bytes or a
+ * distinct-talkers figure, it needs a grouping of its own or it stays live.
+ *
+ * ── THE EMPTY-GROUP GUARD, WHICH IS THE CORRECTNESS OF THE CROSS PRODUCT ───
+ * Neither live query has a head filter: `by app_name` counts every record in
+ * the window including ones that name no protocol, and `by l4_proto` counts
+ * every record including ones AMI could not classify into an application.
+ * Group naively `by app_name, l4_proto` and whether a null key survives is
+ * something this app has never measured — if it does not, EVERY panel here
+ * loses those records. The L4 split would come back short by all the
+ * unclassified traffic, which is exactly the traffic a capacity reader is
+ * looking for; smaller, correctly formatted, and in the one direction nobody
+ * can check.
+ *
+ * So both nulls become groups of their own before the grouping happens — the
+ * same trick SERVICE_EDGES_SNAPSHOT_QUERY and DNS_RESOLVER_SNAPSHOT_QUERY use,
+ * on both keys because both keys are nullable. `app` and `l4` are empty for
+ * exactly those records: the two mix panels sum across the sentinel (which is
+ * what their unfiltered `count`/`sum` does live) and the top-talkers tail
+ * filters it out (which is what that query's own `app_name=*` head does).
+ *
+ * ── THE ALIAS RULE ─────────────────────────────────────────────────────────
+ * `bytes` is defined once, and every panel here re-aggregates it — `bytes` on
+ * a stored row is one (app, protocol) cell, and the alias each panel reads is
+ * the one its own tail defines. A panel added to this entry WITHOUT a tail
+ * would read the cell rather than the total, so there must not be one. The
+ * group keys are renamed `app`/`l4` rather than shadowing `app_name`/`l4_proto`
+ * so that a tail restoring the panel's own column name is doing something
+ * visible, not relying on a redefinition nobody has run.
+ *
+ * ── WHAT THIS ENTRY CANNOT SERVE, AND MUST NOT PRETEND TO ──────────────────
+ * Anything with Capacity's filter box applied. `scopeFor` splices the typed
+ * text into the query head, so the argument domain is unbounded free text and
+ * no stored run holds an answer for it. The tab gates every hook on
+ * `applied === ''` for that reason — a served panel that ignored the filter
+ * would show unfiltered numbers under a filtered heading, which is worse than
+ * being slow. The same goes for the top-talkers list under its other two
+ * pivots: `src_ip` and `dst_aws_flat_tags_name` are not in this grouping, so
+ * those two states stay live rather than being answered from a key this scan
+ * does not carry.
+ */
+export const APP_L4_SNAPSHOT_QUERY = q(
+  '| extend app=iif(isnotnull(app_name), app_name, ""), l4=iif(isnotnull(l4_proto), l4_proto, "") | summarize ' +
+    BYTES_AGG +
+    ' by app, l4',
 )

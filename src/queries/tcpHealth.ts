@@ -58,3 +58,24 @@ export function buildTrendQuery(metric: MetricKey) {
 
 /** p95 network vs application RTT, with the min–max band. */
 export const latencyQuery = q('| summarize net=percentile(tcp_rtt,95), net_lo=min(tcp_rtt), net_hi=max(tcp_rtt), app=percentile(tcp_rtt_app,95), app_lo=min(tcp_rtt_app), app_hi=max(tcp_rtt_app) by bin(_time, 1m) | sort by _time asc')
+
+// ── The fragment the hourly subnet snapshots are built from ─────────────────
+//
+// `buildHeatQuery` sums ONE metric because the panel shows one at a time. The
+// scheduled body sums ALL FOUR, and each of the four panel states projects its
+// own out of the stored rows — which is exact rather than approximate for a
+// reason worth stating here, beside the strings it is about:
+//
+//   the live query's own `sort by flows desc | limit 120` sorts on `flows`,
+//   which is `count()` and carries NO METRIC IN IT.
+//
+// So the 120 rows kept are the same 120 rows whichever metric is selected, and
+// a tail that projects one of four stored sums off those rows returns the rows
+// the live query would have returned, column for column. Change that sort to
+// anything metric-dependent — `sort by v desc` — and this stops being true and
+// the entries in accel/manifest.ts have to go.
+//
+// Aliased by METRIC KEY rather than by field name, because the manifest's tails
+// are generated from the same METRICS list: `v=${m.key}`. Retyped in either
+// place the two agree today and drift the first time a metric is added.
+export const HEAT_METRIC_AGGS = METRICS.map((m) => `${m.key}=sum(${m.field})`).join(', ')

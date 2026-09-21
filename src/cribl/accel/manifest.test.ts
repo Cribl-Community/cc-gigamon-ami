@@ -66,7 +66,7 @@ const dns = accelEntry('gno_dns_resolver_c1h')
 const HOURLY_SNAPSHOTS = MANIFEST.filter((e) => /^\d+ \* \* \* \*$/.test(e.cron) && e.id !== 'gno_sample_2m_c1h')
 
 describe('the manifest', () => {
-  it('holds exactly these nine', () => {
+  it('holds exactly these, in this order', () => {
     // Literal, not a count. An entry is a decision about a customer's bill and
     // about what the teardown will delete, so adding one changes this line too.
     expect(MANIFEST.map((e) => e.id)).toEqual([
@@ -79,6 +79,13 @@ describe('the manifest', () => {
       'gno_app_src_c1h',
       'gno_dns_resolver_c1h',
       'gno_pipeline_c1h',
+      'gno_web_host_c1h',
+      'gno_web_code_c1h',
+      'gno_web_trend_c1h',
+      'gno_web_h2_c1h',
+      'gno_tcp_subnet24_c1h',
+      'gno_tcp_subnet16_c1h',
+      'gno_app_l4_c1h',
     ])
   })
 
@@ -343,7 +350,7 @@ describe('the bodies', () => {
     expect(sample.earliest).toBe('-5m')
     expect(sample.latest).toBe('-3m')
     // Every hourly snapshot, not the three that existed when this was written.
-    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(7)
+    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(14)
     for (const e of HOURLY_SNAPSHOTS) {
       expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
       expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')

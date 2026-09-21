@@ -17,7 +17,7 @@
     "links": 23,
     "briefs": 17,
     "prose": 18,
-    "modules": 149,
+    "modules": 157,
     "catalogs": 13,
     "states": 35,
     "passthrough": 3,
@@ -162,6 +162,7 @@
   },
   "modules": {
     "src/queries/capacityTopTalkers.ts": {
+      "BYTES_AGG": "bytes=sum(total_bytes)",
       "KPI_AGGS": "total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
       "PIVOTS": "3 entries · sha256 391cc2ad78ec29ac",
       "buildAppmixQuery(\"app_name\", \"\")": "dataset=\"gigamon_ami\" | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
@@ -292,12 +293,17 @@
       "appsQuery": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90"
     },
     "src/queries/snapshots.ts": {
+      "APP_L4_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | extend app=iif(isnotnull(app_name), app_name, \"\"), l4=iif(isnotnull(l4_proto), l4_proto, \"\") | summarize bytes=sum(total_bytes) by app, l4",
       "APP_SRC_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
       "DNS_RESOLVER_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" app_name=\"dns\" | extend dns_h=iif(isnotnull(dns_host), dns_host, \"\") | summarize p50=percentile(dns_response_time,50), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), total=count() by dns_h",
       "OVERVIEW_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
-      "SERVICE_EDGES_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc"
+      "SERVICE_EDGES_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
+      "TCP_SUBNET16_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" protocol=6 src_subnet16=* dst_subnet16=* | summarize dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), flows=count() by src_subnet16, dst_subnet16 | sort by flows desc | limit 120",
+      "TCP_SUBNET24_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" protocol=6 src_subnet=* dst_subnet=* | summarize dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), flows=count() by src_subnet, dst_subnet | sort by flows desc | limit 120",
+      "WEB_HOST_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" http_host=* | summarize all_n=count(), err=sum(iif(http_code>=400,1,0)), p95=percentile(http_server_ms,95), srv_n=count(http_server_ms) by http_host"
     },
     "src/queries/tcpHealth.ts": {
+      "HEAT_METRIC_AGGS": "dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count)",
       "METRICS": "4 entries · sha256 57dc3cc5459aec60",
       "buildDrillQuery(10.0.0→10.1.1 · /16)": "dataset=\"gigamon_ami\" protocol=6 src_subnet16=\"10.0.0\" dst_subnet16=\"10.1.1\" | summarize flows=count(), retrans=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95) by src_ip, dst_ip | sort by flows desc | limit 100",
       "buildDrillQuery(10.0.0→10.1.1 · /24)": "dataset=\"gigamon_ami\" protocol=6 src_subnet=\"10.0.0\" dst_subnet=\"10.1.1\" | summarize flows=count(), retrans=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95) by src_ip, dst_ip | sort by flows desc | limit 100",
@@ -333,8 +339,10 @@
       "ERRORS_DRILL": "dataset=\"gigamon_ami\" http_code>=400 | limit 200",
       "H2": "dataset=\"gigamon_ami\" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10",
       "HOSTS": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12",
+      "HOST_ERR_AGG": "err=sum(iif(http_code>=400,1,0))",
       "KPI": "dataset=\"gigamon_ami\" | summarize txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)",
       "KPI_AGGS": "txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)",
+      "SERVER_P95_AGG": "p95=percentile(http_server_ms,95)",
       "SLOW": "dataset=\"gigamon_ami\" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10",
       "TREND": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc"
     }
@@ -548,19 +556,34 @@
           "ref": "talkersQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" src_ip=* | summarize bytes=sum(total_bytes) by src_ip | sort by bytes desc | limit 12",
-          "options": "{ deps: [pivot, applied] }"
+          "options": "{ deps: [pivot, applied], accel: MIX_ACCEL, accelPanel: 'capacity-talkers-app', accelEnabled: unfiltered && pivot === 'app_name', }",
+          "optionsValue": {
+            "accel": "gno_app_l4_c1h",
+            "accelPanel": "capacity-talkers-app",
+            "accelEnabled": false
+          }
         },
         "appmix": {
           "ref": "appmixQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
-          "options": "{ deps: [applied], deferred: !appmixNear.near }"
+          "options": "{ deps: [applied], deferred: !appmixNear.near, accel: MIX_ACCEL, accelPanel: 'capacity-app-mix', accelEnabled: unfiltered, }",
+          "optionsValue": {
+            "accel": "gno_app_l4_c1h",
+            "accelPanel": "capacity-app-mix",
+            "accelEnabled": true
+          }
         },
         "l4": {
           "ref": "l4Query",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize bytes=sum(total_bytes) by l4_proto | sort by bytes desc",
-          "options": "{ deps: [applied], deferred: !l4Near.near }"
+          "options": "{ deps: [applied], deferred: !l4Near.near, accel: MIX_ACCEL, accelPanel: 'capacity-l4', accelEnabled: unfiltered, }",
+          "optionsValue": {
+            "accel": "gno_app_l4_c1h",
+            "accelPanel": "capacity-l4",
+            "accelEnabled": true
+          }
         }
       },
       "links": {},
@@ -1766,7 +1789,7 @@
           "reads": [
             "drill"
           ],
-          "info": "Every src→dst endpoint pair inside the selected subnet cell, with flows and per-pair wire-error counts plus p95 network (tcp_rtt) and application (tcp_rtt_app) latency. This resolves which specific hosts are driving the heatmap cell."
+          "info": "Every src→dst endpoint pair inside the selected subnet cell, with flows and per-pair wire-error counts plus p95 network (tcp_rtt) and application (tcp_rtt_app) latency. This resolves which specific hosts are driving the heatmap cell. This table always runs live — a clicked subnet pair is not something a schedule can precompute — so when the heatmap above is showing a snapshot, these rows cover a different window and need not add up to the cell."
         },
         "Panel · ${m.label} over time": {
           "ref": "trendQuery",
@@ -1794,7 +1817,11 @@
           "ref": "heatQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" protocol=6 src_subnet=* dst_subnet=* | summarize v=sum(tcp_reset), flows=count() by src_subnet, dst_subnet | sort by flows desc | limit 120",
-          "options": "{ deps: [metric, mask] }"
+          "options": "{ deps: [metric, mask], accel: TCP_ACCEL[mask], accelPanel: `tcp-heatmap-${mask}-${metric}`, }",
+          "optionsValue": {
+            "accel": "gno_tcp_subnet24_c1h",
+            "accelPanel": "tcp-heatmap-24-resets"
+          }
         },
         "drill": {
           "ref": "drillQuery",
@@ -2025,30 +2052,52 @@
         "codes": {
           "ref": "CODES",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" http_code=* | summarize n=count() by http_code | sort by n desc | limit 12"
+          "query": "dataset=\"gigamon_ami\" http_code=* | summarize n=count() by http_code | sort by n desc | limit 12",
+          "options": "{ accel: 'gno_web_code_c1h', accelPanel: 'web-codes' }",
+          "optionsValue": {
+            "accel": "gno_web_code_c1h",
+            "accelPanel": "web-codes"
+          }
         },
         "hosts": {
           "ref": "HOSTS",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12",
-          "options": "{ deferred: !hostsNear.near }"
+          "options": "{ accel: 'gno_web_host_c1h', accelPanel: 'web-hosts', deferred: !hostsNear.near }",
+          "optionsValue": {
+            "accel": "gno_web_host_c1h",
+            "accelPanel": "web-hosts"
+          }
         },
         "slow": {
           "ref": "SLOW",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10"
+          "query": "dataset=\"gigamon_ami\" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10",
+          "options": "{ accel: 'gno_web_host_c1h', accelPanel: 'web-slow' }",
+          "optionsValue": {
+            "accel": "gno_web_host_c1h",
+            "accelPanel": "web-slow"
+          }
         },
         "trend": {
           "ref": "TREND",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc",
-          "options": "{ deferred: !trendNear.near }"
+          "options": "{ accel: 'gno_web_trend_c1h', accelPanel: 'web-trend', deferred: !trendNear.near }",
+          "optionsValue": {
+            "accel": "gno_web_trend_c1h",
+            "accelPanel": "web-trend"
+          }
         },
         "h2": {
           "ref": "H2",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10",
-          "options": "{ deferred: !h2Near.near }"
+          "options": "{ accel: 'gno_web_h2_c1h', accelPanel: 'web-h2', deferred: !h2Near.near }",
+          "optionsValue": {
+            "accel": "gno_web_h2_c1h",
+            "accelPanel": "web-h2"
+          }
         }
       },
       "links": {
@@ -2056,7 +2105,7 @@
           "ref": "ERRORS_DRILL",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" http_code>=400 | limit 200",
-          "window": "range.earliest"
+          "window": "drillEarliest"
         }
       },
       "briefs": {},

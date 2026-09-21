@@ -41,6 +41,21 @@ function scopeFor(pivot: Pivot, applied: string) {
  */
 export const KPI_AGGS = 'total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)'
 
+/**
+ * The one aggregate the three byte panels below share: bytes, summed.
+ *
+ * Exported for the same reason KPI_AGGS is. The hourly snapshot body in
+ * src/queries/snapshots.ts rolls this up by (app_name, l4_proto) and each of
+ * those three panels sums the stored rows back along one key, so the scheduled
+ * scan and the ⓘ over the number have to hold the SAME characters. Retyped,
+ * they agree today and drift the first time somebody changes what "bytes"
+ * means here — silently, because both still return a byte count.
+ *
+ * The builders below are composed from it and produce exactly the strings they
+ * produced before; this is a fragment being named, not a query being edited.
+ */
+export const BYTES_AGG = 'bytes=sum(total_bytes)'
+
 /** Window totals behind the six KPI tiles. */
 export function buildKpiQuery(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
@@ -51,17 +66,17 @@ export function buildKpiQuery(pivot: Pivot, applied: string) {
 export function buildTalkersQuery(pivot: Pivot, applied: string) {
   const p = pivotFor(pivot)
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}${p.field}=* | summarize bytes=sum(total_bytes) by ${p.field} | sort by bytes desc | limit 12`)
+  return q(`${scope}${p.field}=* | summarize ${BYTES_AGG} by ${p.field} | sort by bytes desc | limit 12`)
 }
 
 /** App protocol mix (donut + ranked list). */
 export function buildAppmixQuery(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8`)
+  return q(`${scope}| summarize ${BYTES_AGG} by app_name | sort by bytes desc | limit 8`)
 }
 
 /** Byte split across transport protocols. */
 export function buildL4Query(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| summarize bytes=sum(total_bytes) by l4_proto | sort by bytes desc`)
+  return q(`${scope}| summarize ${BYTES_AGG} by l4_proto | sort by bytes desc`)
 }
