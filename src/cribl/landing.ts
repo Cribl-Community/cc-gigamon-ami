@@ -126,10 +126,29 @@ export function flushPresetOf(settings: FlushSettings): FlushPresetId | 'custom'
  * The Parquet writer settings this app would use, held as data rather than
  * spread through a spec builder so Phase 4 can read them without running one.
  *
- * `fileNameSuffix` is the one that has to be explicit. Cribl's own `__format`
- * token is documented as yielding `json` or `raw` — never `parquet` — so a
- * destination relying on it writes `.json` objects full of Parquet. The worker
- * id component is what stops two Worker Processes colliding on an object name.
+ * THERE IS DELIBERATELY NO `fileNameSuffix` HERE, and the reason is the most
+ * expensive thing this phase learned.
+ *
+ * It used to carry `` `.${C.env["CRIBL_WORKER_ID"]}.parquet` ``, on the reasoning
+ * that Cribl documents `__format` as yielding `json` or `raw` — never
+ * `parquet` — so a destination relying on it would write `.json` objects full
+ * of Parquet. SPEC §2 does say that, and it is **wrong**. Measured 2026-09-21
+ * against a throwaway dataset: when the destination genuinely writes Parquet,
+ * `__format` resolves to `parquet` and the default suffix produces
+ * `CriblOut-<rand>.<worker>.parquet`, exactly as wanted.
+ *
+ * Hard-coding it was not merely unnecessary, it was harmful. The default suffix
+ * is `` `.${C.env["CRIBL_WORKER_ID"]}.${__format}${__compression === "gzip" ? ".gz" : ""}` ``,
+ * and both tokens report what the writer ACTUALLY did. A hand-written `.parquet`
+ * overrides that reporting, so when the writer produced gzipped JSON — which is
+ * what it does when the target dataset was not created as Parquet, see
+ * `datasetSpec` — the object was named `.parquet`, sent to the Parquet reader,
+ * and every query over it died with "Parquet magic bytes not found in footer".
+ * The default suffix would have named the same bytes `.json.gz` and they would
+ * have read fine.
+ *
+ * The rule: let the tokens name the file. They know what was written; this
+ * module only knows what was asked for, and those are not the same thing.
  *
  * `enablePageChecksum:false` because the object store already checksums, and
  * paying twice shows up in every write.
@@ -146,7 +165,6 @@ export const PARQUET_DEFAULTS = Object.freeze({
   shouldLogInvalidRows: true,
   maxOpenFiles: 250,
   baseFileName: '`CriblOut`',
-  fileNameSuffix: '`.${C.env["CRIBL_WORKER_ID"]}.parquet`',
   systemFields: ['cribl_pipe'],
 })
 
@@ -558,10 +576,19 @@ export const DATASET_DESCRIPTION = 'Gigamon Application Metadata Intelligence (A
  *
  * Two lists rather than one object, because "remove this key" cannot be said in
  * an overlay: `{ compress: undefined }` is a key that JSON.stringify drops, so
- * an overlay can add and change and can never delete — and deleting is exactly
- * what a Parquet destination needs, since `compress`/`compressionLevel` are not
- * available on Parquet and leaving them behind is what the API is being asked
- * about. Making removal explicit also makes it diffable, which is the point.
+ * an overlay can add and change and can never delete. Making removal explicit
+ * also makes it diffable, which is the point.
+ *
+ * The `remove` list used to be justified by the Parquet compression keys. That
+ * example is gone — P-S1 measured that `compress` cannot be removed from a
+ * cribl_lake destination at all, and does not need to be. `pipeline` is what
+ * uses the list now: unbinding the prep pipeline when `dropRaw` goes false is a
+ * real deletion with no default to fall back to.
+ *
+ * Beware what a removal MEANS on this API. An omitted key is not "unmentioned":
+ * the object is rebuilt from the submitted body plus schema defaults, so a
+ * removed key is deleted if it has no default and silently reset if it has one.
+ * That is measured — see `DESTINATION_READONLY_KEYS`.
  */
 export interface DestinationEdit {
   set: Record<string, unknown>
@@ -624,10 +651,23 @@ export function destinationSpec(profile: LandingProfile): DestinationEdit {
 
   if (profile.format === 'parquet') {
     Object.assign(set, PARQUET_DEFAULTS)
-    // Not available when the data format is Parquet. Whether the API rejects
-    // them or quietly ignores them is P-S1's to record; either way the app does
-    // not leave a setting behind that it has stopped meaning.
-    remove.push('compress', 'compressionLevel')
+    // `compress` IS DELIBERATELY LEFT ALONE, and it used to be removed here.
+    //
+    // P-S1 recorded what actually happens, 2026-09-21. Two things, and they
+    // point the same way:
+    //
+    //   1. `compress` CANNOT be removed from a cribl_lake destination. Omitting
+    //      it resets it to its default (`gzip`), and setting it to `"none"`
+    //      answers 200 and leaves it `gzip` — with format json and parquet
+    //      alike. The removal was a no-op that read like a safeguard.
+    //   2. It does not need removing. When the destination genuinely writes
+    //      Parquet, `__compression` reports no compression — the objects come
+    //      out `.parquet`, not `.parquet.gz`. The setting is inert for Parquet,
+    //      exactly as DOCS §2.5 says, and Cribl ignores it rather than honouring
+    //      it.
+    //
+    // So this app no longer asks for something the API will not do. If a future
+    // build starts honouring it, the tokens in the filename will say so.
   } else {
     set.compress = 'gzip'
   }

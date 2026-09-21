@@ -143,22 +143,29 @@ describe('pathFilterRows', () => {
 // ── The destination spec ────────────────────────────────────────────────────
 
 describe('destinationSpec', () => {
-  it('keeps gzip on JSON and takes both compression keys away on Parquet', () => {
+  it('keeps gzip on JSON and leaves compression alone on Parquet', () => {
     expect(destinationSpec(DEFAULT_PROFILE).set.compress).toBe('gzip')
     const parquet = destinationSpec(profile({ format: 'parquet' }))
+    // Neither set nor removed. P-S1 measured (2026-09-21) that `compress`
+    // cannot be removed from a cribl_lake destination — omitting it resets it
+    // to gzip, setting it to "none" answers 200 and leaves it gzip — and that
+    // it is inert for Parquet anyway, since the written objects come out
+    // `.parquet` rather than `.parquet.gz`. Asking was a no-op that read like
+    // a safeguard.
     expect(parquet.set).not.toHaveProperty('compress')
-    expect(parquet.remove).toContain('compress')
-    expect(parquet.remove).toContain('compressionLevel')
+    expect(parquet.remove).not.toContain('compress')
+    expect(parquet.remove).not.toContain('compressionLevel')
   })
 
-  it('names the Parquet object suffix explicitly instead of relying on the format token', () => {
-    // Cribl documents `__format` as yielding `json` or `raw` — never `parquet` —
-    // so a destination relying on it writes `.json` objects full of Parquet. The
-    // worker-id component is what stops two Worker Processes colliding.
-    const suffix = destinationSpec(profile({ format: 'parquet' })).set.fileNameSuffix as string
-    expect(suffix).toContain('CRIBL_WORKER_ID')
-    expect(suffix).toContain('.parquet')
-    expect(suffix).not.toContain('__format')
+  it('lets the format token name the Parquet object, because it reports what was written', () => {
+    // This used to assert the opposite, on SPEC §2's claim that `__format`
+    // yields only `json` or `raw`. Measured 2026-09-21: when the destination
+    // genuinely writes Parquet, `__format` resolves to `parquet` and the
+    // default suffix gives `.<worker>.parquet`. Hard-coding `.parquet` was
+    // worse than redundant — it named gzipped JSON `.parquet` whenever the
+    // target dataset had not been created as Parquet, and every query over
+    // those objects failed with "Parquet magic bytes not found in footer".
+    expect(destinationSpec(profile({ format: 'parquet' })).set).not.toHaveProperty('fileNameSuffix')
   })
 
   it('binds the prep pipeline only when _raw is being dropped, and unbinds it otherwise', () => {
@@ -255,9 +262,14 @@ describe('diffDestination', () => {
     const byKind = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.key)
     // `pipeline` is not on the live object, so it is not a removal — see the
     // "says nothing about removing a key that is not there" case above.
-    expect(byKind('removed')).toEqual(['compress'])
+    // `compress` is no longer removed (it cannot be) and `fileNameSuffix` is no
+    // longer added (the default token expression is correct), so a JSON→Parquet
+    // change touches the flush keys and the parquet writer settings and nothing
+    // about compression or naming.
+    expect(byKind('removed')).toEqual([])
     expect(byKind('changed')).toContain('maxFileSizeMB')
-    expect(byKind('added')).toContain('fileNameSuffix')
+    expect(byKind('added')).toContain('parquetVersion')
+    expect(byKind('added')).not.toContain('fileNameSuffix')
   })
 })
 
