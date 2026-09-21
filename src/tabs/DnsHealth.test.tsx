@@ -180,14 +180,18 @@ describe('the tab, served from one scheduled run', () => {
     await render()
 
     expect(container.textContent).toContain('2.00%')
-    expect(container.textContent).toContain('20 of 1,000 responses')
+    expect(container.textContent).toContain('20 of 1.0K responses')
   })
 
   it('dates every figure it took from a run', async () => {
+    // The panel's own caption, in snapshotNote's words: `snapshot HH:MM · 1h
+    // ago`. The ⓘ says it again in prose ("The run it read finished at…"), and
+    // the tiles above are covered by that ⓘ — they have no caption line of
+    // their own to carry a date on.
     stub()
     await render()
 
-    expect(container.textContent, 'a stored figure appeared with no date on it').toMatch(/as of \d{2}:\d{2}/)
+    expect(container.textContent, 'a stored figure appeared with no date on it').toMatch(/snapshot \d{2}:\d{2}/)
   })
 
   it('says in its ⓘ that the figure came from a schedule, and which one', async () => {
@@ -214,7 +218,7 @@ describe('the tab, served from one scheduled run', () => {
     await render()
 
     expect(liveScans()).toHaveLength(2)
-    expect(container.textContent, 'a live figure was dated as if it came from a run').not.toMatch(/as of \d{2}:\d{2}/)
+    expect(container.textContent, 'a live figure was dated as if it came from a run').not.toMatch(/snapshot \d{2}:\d{2}/)
   })
 })
 
