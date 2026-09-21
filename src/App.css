@@ -218,13 +218,29 @@ body {
 }
 
 /* ---------- Header ---------- */
+/* Two stacked rows. See App.tsx for why: one row made the identity and nine
+   controls compete for the same width, and the <h1> was what gave way. */
 .app-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--gm-sp-16);
+  flex-direction: column;
+  gap: var(--gm-sp-10);
   padding: var(--gm-sp-20) 0 var(--gm-sp-14);
 }
+/* Row 1: identity left, once-a-session chrome right. */
+.app-idbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gm-sp-16);
+}
+/* Title and its chips on ONE line, not stacked. */
+.app-id {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gm-sp-12);
+  min-width: 0;
+}
+.app-chrome { display: flex; align-items: center; gap: var(--gm-sp-8); flex: none; }
 .app-title {
   display: flex;
   align-items: center;
@@ -234,6 +250,12 @@ body {
   font-weight: token('core.fontWeight.bold');
   letter-spacing: -0.01em;
 }
+/* THE TITLE NEVER WRAPS AND NEVER SHRINKS. A product name broken across two
+   lines reads as a layout failure, and it is the one string on the page whose
+   job is to be recognised at a glance rather than read. `nowrap` is on the name
+   itself: on `.app-title`, which is the flex CONTAINER, it would not apply to
+   the text inside. */
+.app-title-name { white-space: nowrap; }
 .title-bar {
   width: 5px;
   height: 26px;

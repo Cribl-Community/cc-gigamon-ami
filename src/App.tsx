@@ -207,18 +207,39 @@ function Header({ tabName }: { tabName: string }) {
   const busy = inflight > 0
   const doRefresh = () => refresh()
   return (
+    /* TWO ROWS, SPLIT BY HOW OFTEN YOU TOUCH THEM.
+       Everything used to sit in one flex row, so the identity and nine controls
+       competed for the same horizontal space and the <h1> lost — "Gigamon
+       Network Observability" wrapped onto two lines while three sentences of
+       explanatory prose sat beside it.
+
+       Row 1 is identity plus the chrome you press once a session (tour, theme).
+       Row 2 is the data-state toolbar: what am I looking at, and refresh it.
+       The split is what gives the title a full row to itself, and gives the
+       explanatory lines room to sit without squeezing anything. */
     <header className="app-header">
-      <div className="app-title-block">
-        <h1 className="app-title">
-          <span className="title-bar" />Gigamon Network Observability
-          <span className="title-preview">(Preview)</span>
-        </h1>
-        <p className="app-subtitle">
-          {/* Kept dev-only: in the installed app it just says "Cribl", but on the
-              dev server it is the one cue that this is not the installed app. */}
-          {!IS_INSTALLED && <span className="env-chip env-dev">dev preview</span>}
-          <span className="version-chip" title="App version (from package.json)">v{APP_VERSION}</span>
-        </p>
+      <div className="app-idbar">
+        <div className="app-id">
+          <h1 className="app-title">
+            <span className="title-bar" />
+            {/* Its own element so `white-space: nowrap` lands on the NAME and not
+                on the flex container, which would not stop it wrapping. */}
+            <span className="app-title-name">Gigamon Network Observability</span>
+            <span className="title-preview">(Preview)</span>
+          </h1>
+          {/* Beside the title now, not stacked under it: two chips on their own
+              line cost a row of height and read as a second heading. */}
+          <p className="app-subtitle">
+            {/* Kept dev-only: in the installed app it just says "Cribl", but on the
+                dev server it is the one cue that this is not the installed app. */}
+            {!IS_INSTALLED && <span className="env-chip env-dev">dev preview</span>}
+            <span className="version-chip" title="App version (from package.json)">v{APP_VERSION}</span>
+          </p>
+        </div>
+        <div className="app-chrome">
+          <TourLauncher />
+          <ThemeToggle />
+        </div>
       </div>
       <div className="app-controls">
         {/* First, so a warning is the leftmost thing in this cluster — and
@@ -266,9 +287,11 @@ function Header({ tabName }: { tabName: string }) {
         {/* Between auto-refresh and Refresh: the owner's "the logical place is
             the refresh button", honoured by adjacency rather than by hiding the
             state inside it. See components/ModeToggle.tsx. */}
+        {/* Still immediately left of Refresh — the owner's "the logical place is
+            the refresh button", honoured by adjacency. The tour and theme
+            buttons moved up to row 1 rather than this one moving, because they
+            are session chrome and this is data state. */}
         <ModeToggle tabName={tabName} />
-        <TourLauncher />
-        <ThemeToggle />
         <button type="button" className="btn" onClick={doRefresh} aria-busy={busy}>
           <span className={`refresh-ic ${busy ? 'spin' : ''}`}><RefreshIcon /></span> {busy ? 'Refreshing…' : 'Refresh'}
         </button>
