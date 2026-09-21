@@ -23,8 +23,11 @@
 import { describe, expect, it } from 'vitest'
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY } from '../../queries/fieldExplorer'
+import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
+import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
+import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
 import { APP_VERSION } from '../config'
-import { OVERVIEW_CADENCE, OVERVIEW_WINDOW } from './words'
+import { APP_SRC_CADENCE, APP_SRC_WINDOW, OVERVIEW_CADENCE, OVERVIEW_WINDOW } from './words'
 import {
   MANIFEST,
   MANIFEST_VERSION,
@@ -43,9 +46,27 @@ const sample = accelEntry('gno_sample_2m_c1h')
 const overview = accelEntry('gno_overview_c1h')
 const nodes = accelEntry('gno_svc_nodes_c1h')
 const edges = accelEntry('gno_svc_edges_c1h')
+const appSrc = accelEntry('gno_app_src_c1h')
+const dns = accelEntry('gno_dns_resolver_c1h')
+
+/**
+ * Every hourly SNAPSHOT entry — derived, not listed, and that is the point.
+ *
+ * The window and retention loops below used to run over a literal
+ * `[overview, nodes, edges]`, written when those were the only hourly entries.
+ * Four more arrived and the loops kept passing over the original three while
+ * saying nothing at all about the new ones: a test that silently narrows its own
+ * domain as the code grows, which is the failure this file exists to avoid.
+ *
+ * The sample is hourly too and is excluded by id rather than by cron, because
+ * its two-minute window is a deliberate exception pinned directly above. Naming
+ * it here is what stops "hourly" quietly meaning "whatever the loop happens to
+ * cover".
+ */
+const HOURLY_SNAPSHOTS = MANIFEST.filter((e) => /^\d+ \* \* \* \*$/.test(e.cron) && e.id !== 'gno_sample_2m_c1h')
 
 describe('the manifest', () => {
-  it('holds exactly these six', () => {
+  it('holds exactly these nine', () => {
     // Literal, not a count. An entry is a decision about a customer's bill and
     // about what the teardown will delete, so adding one changes this line too.
     expect(MANIFEST.map((e) => e.id)).toEqual([
@@ -55,6 +76,9 @@ describe('the manifest', () => {
       'gno_svc_nodes_c1h',
       'gno_svc_edges_c1h',
       'gno_presence_c1h',
+      'gno_app_src_c1h',
+      'gno_dns_resolver_c1h',
+      'gno_pipeline_c1h',
     ])
   })
 
@@ -179,18 +203,97 @@ describe('the bodies', () => {
     expect(columnsOf(capacity?.tail as string, columnsOf(overview.body).outputs as Set<string>).outputs).toContain('total')
   })
 
-  it('keeps the untagged destination as a group of its own, for the panel that sums across it', () => {
+  it('keeps the untagged destination as a group of its own, for the view that sums across it', () => {
     // Service map's client-only totals are every flow OUT of a source service,
     // including flows to peers carrying no AWS name tag. Whether a `summarize`
     // keeps a null group key is not something this app has measured, and if it
     // drops them that number comes back short with nothing on screen to say so.
     // The body coalesces the null into a sentinel before grouping, so both
-    // panels are exact by construction: this pins the mechanism, because
-    // removing the `extend` would leave both tails still parsing.
+    // derivations are exact by construction: this pins the mechanism, because
+    // removing the `extend` would leave the panel still rendering.
     expect(edges.body).toContain('extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name)')
-    const sources = edges.panels.find((p) => p.queryId === 'service-map-sources')
-    expect(sources?.tail, 'the client-only panel must sum across every destination group').toContain('sum(flows)')
-    expect(sources?.tail, 'summing only the tagged destinations is the bug this entry exists to avoid').not.toContain('dst_svc')
+  })
+
+  it('reads the service graph once, un-tailed, because two panels meant two stored reads', () => {
+    // WHAT THIS REPLACES, AND WHY THE ASSERTION MOVED. This entry used to carry
+    // `service-map-edges` and `service-map-sources`: two panel records, two
+    // tails, and therefore two `$vt_results` jobs for one stored result, on the
+    // route the app opens on. read.ts submits one read per served panel and its
+    // memo caches the read key rather than the rows, so the second was never
+    // going to be free. ServiceMap.tsx now filters, sorts and sums over the rows
+    // of a single un-tailed read.
+    //
+    // The tail being ABSENT is the thing worth pinning: bring one back and the
+    // tab silently goes back to two reads, or — worse — one panel starts reading
+    // the other panel's tailed view.
+    expect(edges.panels.map((p) => p.queryId)).toEqual(['service-map-edges'])
+    expect(edges.panels[0].tail, 'a tail here is a second read, or a wrong row').toBeUndefined()
+    // One panel, no tail, so the Phase 2 promise applies again: the ⓘ shows the
+    // string that produced the number. The generic case above enforces it; this
+    // says out loud which string that now is.
+    expect(edges.panels[0].display).toBe(SERVICE_EDGES_SNAPSHOT_QUERY)
+    expect(edges.body).toBe(SERVICE_EDGES_SNAPSHOT_QUERY)
+    // Both client-side derivations read these three and nothing else.
+    expect([...edges.panels[0].reads].sort()).toEqual(['dst_svc', 'flows', 'src_aws_flat_tags_name'])
+  })
+
+  it('serves all three of Shadow AI from one grouping, each ⓘ still its own query', () => {
+    // The tab fired three unfiltered whole-window scans on mount and none was
+    // served. These are the three, by identity against the modules the panels'
+    // ⓘ renders from — a retyped copy here would agree on the day it was written
+    // and drift the first time somebody edited one of them.
+    expect(appSrc.body).toBe(APP_SRC_SNAPSHOT_QUERY)
+    expect(appSrc.panels.map((p) => p.queryId)).toEqual(['shadow-ai-apps', 'shadow-ai-overall', 'shadow-ai-users'])
+    expect(appSrc.panels.find((p) => p.queryId === 'shadow-ai-apps')?.display).toBe(appsQuery)
+    expect(appSrc.panels.find((p) => p.queryId === 'shadow-ai-overall')?.display).toBe(aiOverallQuery)
+    expect(appSrc.panels.find((p) => p.queryId === 'shadow-ai-users')?.display).toBe(aiUsersQuery)
+  })
+
+  it('serves both of DNS health from one grouping, each ⓘ still its own query', () => {
+    // THE GAP THIS CLOSES. DnsHealth.test.tsx pins this entry thoroughly — the
+    // sentinel guard, the tails, the cron, the words — but every one of those
+    // is about what RUNS. Nothing anywhere asserted that the two `display`
+    // strings are the modules the panels' ⓘ actually renders from, and the
+    // generic rule above cannot reach them: it covers only single-panel,
+    // tail-less entries, and this one is two panels with a tail each.
+    //
+    // By identity, not by text. A retyped copy agrees on the day it is written
+    // and drifts the first time somebody edits one of them — silently, because
+    // both still render a number.
+    expect(dns.panels.map((p) => p.queryId)).toEqual(['dns-resolver-table', 'dns-overall'])
+    expect(dns.panels.find((p) => p.queryId === 'dns-resolver-table')?.display).toBe(DNS_PER_RESOLVER_QUERY)
+    expect(dns.panels.find((p) => p.queryId === 'dns-overall')?.display).toBe(DNS_OVERALL_QUERY)
+    expect(dns.body).toBe(DNS_RESOLVER_SNAPSHOT_QUERY)
+  })
+
+  it('groups Shadow AI by application AND source, because summing per-app dcounts double-counts', () => {
+    // THE CORRECTNESS OF THE ENTRY IN ONE TEST. A body grouped by app_name alone
+    // stores a distinct-user count per app; the "AI users" tile would then add
+    // those up and count anybody using two AI apps twice — high, plausible, and
+    // in the one direction a viewer cannot check. Grouped on the pair, the tile
+    // RECOMPUTES the distinct count over stored rows instead of summing one.
+    expect(appSrc.body).toContain('by app_name, src_ip')
+    const overall = appSrc.panels.find((p) => p.queryId === 'shadow-ai-overall')
+    expect(overall?.tail, 'the AI users tile must recount distinct sources, never sum stored counts').toContain(
+      'users=dcount(src_ip)',
+    )
+    expect(overall?.tail).not.toContain('sum(users)')
+    // Same argument for the per-source app-diversity badge.
+    expect(appSrc.panels.find((p) => p.queryId === 'shadow-ai-users')?.tail).toContain('aiapps=dcount(app_name)')
+  })
+
+  it('filters the AI tails with the same predicate the live queries embed', () => {
+    // Two of the three tails select the AI apps out of the shared grouping, and
+    // they have to select exactly what the live query selects. AI_FILTER is
+    // imported by both sides for that reason: adding a vendor to AI_APPS has to
+    // move the schedule's tails and the panels' own queries together.
+    for (const id of ['shadow-ai-overall', 'shadow-ai-users']) {
+      expect(appSrc.panels.find((p) => p.queryId === id)?.tail, `${id} does not filter to the AI apps`).toContain(
+        AI_FILTER,
+      )
+    }
+    expect(aiOverallQuery).toContain(AI_FILTER)
+    expect(aiUsersQuery).toContain(AI_FILTER)
   })
 
   it('gives every panel of a shared body its own tail', () => {
@@ -239,7 +342,9 @@ describe('the bodies', () => {
     // wrong in the direction nobody can see.
     expect(sample.earliest).toBe('-5m')
     expect(sample.latest).toBe('-3m')
-    for (const e of [overview, nodes, edges]) {
+    // Every hourly snapshot, not the three that existed when this was written.
+    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(7)
+    for (const e of HOURLY_SNAPSHOTS) {
       expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
       expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')
     }
@@ -262,9 +367,16 @@ describe('the schedules', () => {
     // past states a viewer can move between rather than a number nothing uses.
     // It also has to stay inside Cribl's own seven-day result retention, or the
     // picker would offer times whose results the platform had already reaped.
-    for (const e of [overview, nodes, edges]) {
+    //
+    // Selected by cron shape, so the "hourly" in the sentence is the same
+    // hourly the assertion tests — the old literal list asserted this of three
+    // entries while four more carried the same claim unchecked.
+    for (const e of HOURLY_SNAPSHOTS) {
       expect(e.keepLastN, `${e.id} does not retain a day of hourly runs`).toBe(24)
-      expect(e.cron, `${e.id} is not hourly, so keepLastN: 24 is not a day`).toMatch(/^2[0-2] \* \* \* \*$/)
+      // 24 hourly runs is 24 hours, and the platform reaps results at 7 days —
+      // the margin that makes the picker's oldest offer readable rather than a
+      // time whose result Cribl already deleted.
+      expect(e.keepLastN, `${e.id} retains past Cribl's 7-day result retention`).toBeLessThanOrEqual(24 * 7)
     }
   })
 
@@ -277,6 +389,23 @@ describe('the schedules', () => {
     expect(OVERVIEW_CADENCE).toContain('20 past the hour')
     expect(OVERVIEW_WINDOW).toContain('fifteen minutes')
     expect(OVERVIEW_WINDOW).toContain('three minutes')
+    // Shadow AI's three panels quote their own sentence, because this entry
+    // fires at :36 rather than :20 — one more place a cron can move without the
+    // words moving with it.
+    expect(appSrc.cron).toBe('36 * * * *')
+    expect(APP_SRC_CADENCE).toContain('36 past the hour')
+    expect(APP_SRC_WINDOW).toContain('fifteen minutes')
+  })
+
+  it('gives the Shadow AI scan a cron minute nothing else is using', () => {
+    // Concurrent jobs from one account are admitted about 1.6 s apart, so two
+    // entries on one minute queue behind each other instead of running. This is
+    // the cheap version of that rule: every hourly entry on its own minute.
+    const minutes = MANIFEST.filter((e) => /^\d+ \* \* \* \*$/.test(e.cron)).map((e) => e.cron.split(' ')[0])
+    expect(new Set(minutes).size, 'two hourly entries share a submit minute').toBe(minutes.length)
+    expect(appSrc.keepLastN).toBe(24)
+    expect(appSrc.earliest).toBe('-18m')
+    expect(appSrc.latest).toBe('-3m')
   })
 
   it('submits the hourly entries a minute apart', () => {

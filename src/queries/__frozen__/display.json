@@ -13,11 +13,11 @@
   ],
   "counts": {
     "surfaces": 77,
-    "searches": 39,
+    "searches": 38,
     "links": 23,
     "briefs": 17,
     "prose": 18,
-    "modules": 145,
+    "modules": 149,
     "catalogs": 13,
     "states": 35,
     "passthrough": 3,
@@ -201,6 +201,7 @@
     "src/queries/dnsHealth.ts": {
       "OVERALL": "dataset=\"gigamon_ami\" app_name=\"dns\" | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), resolvers=dcount(dns_host)",
       "PER_RESOLVER": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=* | summarize p50=percentile(dns_response_time,50), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), total=count() by dns_host | sort by total desc | limit 500",
+      "REPLY_CODE_AGGS": "noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0))",
       "resolverDrillQuery(\"10.0.0.53\")": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=\"10.0.0.53\" | summarize count() by dns_reply_code, dns_query | sort by dns_query desc | limit 200"
     },
     "src/queries/fieldExplorer.ts": {
@@ -285,11 +286,14 @@
       "srcQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20"
     },
     "src/queries/shadowAi.ts": {
+      "AI_FILTER": "app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\")",
       "aiOverallQuery": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)",
       "aiUsersQuery": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15",
       "appsQuery": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90"
     },
     "src/queries/snapshots.ts": {
+      "APP_SRC_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
+      "DNS_RESOLVER_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" app_name=\"dns\" | extend dns_h=iif(isnotnull(dns_host), dns_host, \"\") | summarize p50=percentile(dns_response_time,50), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), total=count() by dns_h",
       "OVERVIEW_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "SERVICE_EDGES_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc"
     },
@@ -579,7 +583,11 @@
         "met": {
           "ref": "METRICS_QUERY",
           "shape": "query",
-          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"pipe.in_events\" and namespace==\"data_insights\" and from_input==\"datagen:in_gigamon_datagen\", value, 0)), pipe_events=sum(iif(metric==\"pipe.out_events\" and namespace==\"data_insights\" and id==\"gigamon_ami\", value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))"
+          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"pipe.in_events\" and namespace==\"data_insights\" and from_input==\"datagen:in_gigamon_datagen\", value, 0)), pipe_events=sum(iif(metric==\"pipe.out_events\" and namespace==\"data_insights\" and id==\"gigamon_ami\", value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+          "options": "{ accel: PIPELINE_ACCEL, accelEnabled }",
+          "optionsValue": {
+            "accel": "gno_pipeline_c1h"
+          }
         },
         "lakeTotal": {
           "ref": "LAKE_TOTAL_QUERY",
@@ -713,12 +721,22 @@
         "overall": {
           "ref": "OVERALL",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" app_name=\"dns\" | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), resolvers=dcount(dns_host)"
+          "query": "dataset=\"gigamon_ami\" app_name=\"dns\" | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), resolvers=dcount(dns_host)",
+          "options": "{ accel: DNS_ACCEL, accelPanel: 'dns-overall' }",
+          "optionsValue": {
+            "accel": "gno_dns_resolver_c1h",
+            "accelPanel": "dns-overall"
+          }
         },
         "resolvers": {
           "ref": "PER_RESOLVER",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=* | summarize p50=percentile(dns_response_time,50), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), total=count() by dns_host | sort by total desc | limit 500"
+          "query": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=* | summarize p50=percentile(dns_response_time,50), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), total=count() by dns_host | sort by total desc | limit 500",
+          "options": "{ accel: DNS_ACCEL, accelPanel: 'dns-resolver-table' }",
+          "optionsValue": {
+            "accel": "gno_dns_resolver_c1h",
+            "accelPanel": "dns-resolver-table"
+          }
         }
       },
       "links": {
@@ -726,7 +744,7 @@
           "ref": "resolverDrillQuery(host)",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=\"10.0.0.53\" | summarize count() by dns_reply_code, dns_query | sort by dns_query desc | limit 200",
-          "window": "range.earliest"
+          "window": "drillEarliest"
         }
       },
       "briefs": {},
@@ -1550,9 +1568,8 @@
           "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
           "reads": [
             "domains",
-            "edgesQ",
-            "nodesQ",
-            "srcQ"
+            "graphQ",
+            "nodesQ"
           ],
           "info": "Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage.",
           "note": "`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`"
@@ -1589,24 +1606,14 @@
             "accelPanel": "service-map-nodes"
           }
         },
-        "edgesQ": {
-          "ref": "edgesQuery",
+        "graphQ": {
+          "ref": "SERVICE_EDGES_SNAPSHOT_QUERY",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40",
+          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
           "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' }",
           "optionsValue": {
             "accel": "gno_svc_edges_c1h",
             "accelPanel": "service-map-edges"
-          }
-        },
-        "srcQ": {
-          "ref": "srcQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20",
-          "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-sources' }",
-          "optionsValue": {
-            "accel": "gno_svc_edges_c1h",
-            "accelPanel": "service-map-sources"
           }
         },
         "domains": {
@@ -1707,17 +1714,32 @@
         "apps": {
           "ref": "appsQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90"
+          "query": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90",
+          "options": "{ accel: 'gno_app_src_c1h', accelPanel: 'shadow-ai-apps' }",
+          "optionsValue": {
+            "accel": "gno_app_src_c1h",
+            "accelPanel": "shadow-ai-apps"
+          }
         },
         "aiOverall": {
           "ref": "aiOverallQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)"
+          "query": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)",
+          "options": "{ accel: 'gno_app_src_c1h', accelPanel: 'shadow-ai-overall' }",
+          "optionsValue": {
+            "accel": "gno_app_src_c1h",
+            "accelPanel": "shadow-ai-overall"
+          }
         },
         "aiUsers": {
           "ref": "aiUsersQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15"
+          "query": "dataset=\"gigamon_ami\" | where app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\") | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15",
+          "options": "{ accel: 'gno_app_src_c1h', accelPanel: 'shadow-ai-users' }",
+          "optionsValue": {
+            "accel": "gno_app_src_c1h",
+            "accelPanel": "shadow-ai-users"
+          }
         }
       },
       "links": {},

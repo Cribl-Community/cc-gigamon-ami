@@ -38,7 +38,7 @@
 #      dataset, a Git commit on the Leader and a deploy that restarts that
 #      group's Worker Processes. Behind a confirmation in
 #      components/ProvisionPanel.tsx that names each object.
-#   2. The two scheduled saved searches (Phase 2 acceleration) — created,
+#   2. The scheduled saved searches (acceleration) — created,
 #      corrected, paused, resumed and deleted. Behind confirmations in
 #      components/AccelPanel.tsx that name the ids and state the recurring cost.
 #   3. The Lake landing panel (Phase 3), a second panel on the Guided Setup page —
@@ -165,13 +165,24 @@ policies:
   - object: '/m/default_search/search/jobs/:jobId/cancel'
     actions: ['POST']
 
-  # --- The two scheduled saved searches (Phase 2, acceleration) ---------------
+  # --- The scheduled saved searches (acceleration) -----------------------------
   # src/cribl/accel/provision.ts, reached only from the Acceleration panel's
-  # confirmed Apply / Pause / Resume / Remove controls. The app writes exactly
-  # two objects here, with fixed ids — `gno_lake_30d_c1d` and
-  # `gno_sample_2m_c1h` — defined in src/cribl/accel/manifest.ts. Each runs the
-  # same query a panel already runs live, on a cron, so the panel can read the
-  # stored result instead: 9,297.7 billable CPU-s a run becomes about 0.2.
+  # confirmed Apply / Pause / Resume / Remove controls. The app writes a fixed
+  # set of objects here, every one of them an id defined in
+  # src/cribl/accel/manifest.ts — that list is the authority, and this comment
+  # deliberately does not restate the count. It said "exactly two" and named
+  # them, which was true of Phase 2 and silently stopped being true twice: the
+  # set went two → six → nine while this text still told an admin they were
+  # approving two crons. Wrong in the direction that understates the spend, in
+  # the one paragraph that asks to be read hardest.
+  #
+  # Each entry runs on a cron so a panel can read the stored result instead of
+  # scanning live. Two of them replace a query measured as expensive (the 30-day
+  # Lake total, 9,297.7 billable CPU-s a run, becomes about 0.2). The rest are
+  # hourly snapshots that also buy something no live query sells at any price —
+  # a day of past states a viewer can move between — and those cost their ~40
+  # CPU-s an hour whether or not anybody opens the tab. `why` on each manifest
+  # entry states which of the two it is.
   #
   # READ THIS ONE HARDEST, because it is the only grant in the file that lets
   # the app start something that keeps costing money after the click.
@@ -186,7 +197,7 @@ policies:
   #
   # What narrows it is the app rather than the grant, and it is worth knowing
   # exactly how far that goes:
-  #   * it POSTs only those two ids, on the crons and windows in the manifest;
+  #   * it POSTs only manifest ids, on the crons and windows in the manifest;
   #   * every write is behind a confirmation naming the searches;
   #   * it DELETEs only an id matching `gno_` that is in the manifest AND
   #     carries this app's own `GNO …` stamp in its description — a saved search
@@ -199,8 +210,8 @@ policies:
   #
   # GET on the collection lists the whole workspace's saved searches, not just
   # ours: their names, queries and schedules, wherever the caller's own role
-  # already allows that. The app shows none of them. It picks out its own two
-  # ids, notices a `gno_` search an older release left behind, and counts the
+  # already allows that. The app shows none of them. It picks out its own
+  # manifest ids, notices a `gno_` search an older release left behind, and counts the
   # rest only as "there may be more than one page". GET on the child path reads
   # one object whole, and is part of every write rather than a separate
   # convenience: a PATCH deletes every field it omits (measured, A-SP23), so the

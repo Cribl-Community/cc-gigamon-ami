@@ -78,14 +78,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { APP_VERSION } from '../config'
-import { LAKE_TOTAL_QUERY, VOLUME_AGGS, VOLUME_QUERY } from '../../queries/dataFlow'
+import { LAKE_TOTAL_QUERY, METRICS_QUERY, VOLUME_AGGS, VOLUME_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY, PRESENCE_QUERY } from '../../queries/fieldExplorer'
 import { KPI_AGGS as CAPACITY_KPI_AGGS, buildKpiQuery } from '../../queries/capacityTopTalkers'
 import { KPI_AGGS as WEB_KPI_AGGS, KPI as WEB_KPI_QUERY } from '../../queries/webApiHealth'
 import { COUNT_AGGS as SECURITY_COUNT_AGGS, COUNTS as SECURITY_COUNTS_QUERY } from '../../queries/security'
 import { FINDING_AGGS, FINDINGS_QUERY } from '../../queries/findings'
-import { edgesQuery, nodesQuery, srcQuery } from '../../queries/serviceMap'
-import { OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { nodesQuery } from '../../queries/serviceMap'
+import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
+import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
+import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
 
 /**
  * The manifest's own version, stamped into every saved search's description.
@@ -112,6 +114,9 @@ export type AccelId =
   | 'gno_svc_nodes_c1h'
   | 'gno_svc_edges_c1h'
   | 'gno_presence_c1h'
+  | 'gno_app_src_c1h'
+  | 'gno_dns_resolver_c1h'
+  | 'gno_pipeline_c1h'
 
 /**
  * The shape ids take, and the ONLY thing that tells this app's scheduled
@@ -362,16 +367,33 @@ const FINDING_COLUMNS = aliasesOf(FINDING_AGGS)
 const VOLUME_COLUMNS = aliasesOf(VOLUME_AGGS)
 
 /**
- * THE FIVE ENTRIES.
+ * THE NINE ENTRIES.
  *
- * The first two replace a live query this workspace measured as expensive. The
- * three hourly ones do something the first two do not, and it changes the bar
- * they have to clear: they make a question ANSWERABLE. "What did the network
- * look like at 04:00?" has no price today — a live query only ever reads now,
- * and the range picker only widens a window that still ends now. Twenty-four
- * retained runs of an hourly scan are a day of past states a viewer can move
- * between. So these are not judged by a saving: each one costs about 40 CPU-s an
- * hour whether or not anybody opens the tab, and `why` says what it buys.
+ * Five when this comment was written, and the count is deliberately not the
+ * heading's point — it went five → six → nine in two days and a number in prose
+ * is the first thing to rot. What holds is the division below, which is the only
+ * thing a reader needs before adding a tenth.
+ *
+ * `gno_lake_30d_c1d` and `gno_sample_2m_c1h` replace a live query this workspace
+ * measured as expensive, and are judged by that saving.
+ *
+ * Every hourly snapshot after them does something those two do not, and it
+ * changes the bar they have to clear: they make a question ANSWERABLE. "What did
+ * the network look like at 04:00?" has no price today — a live query only ever
+ * reads now, and the range picker only widens a window that still ends now.
+ * Twenty-four retained runs of an hourly scan are a day of past states a viewer
+ * can move between. So these are not judged by a saving: each one costs roughly
+ * 40 CPU-s an hour whether or not anybody opens the tab, and `why` says what it
+ * buys.
+ *
+ * The later ones add a third argument the first hourly three did not make. One
+ * scan can serve several panels — the overview carries five across five tabs,
+ * Shadow AI's grouping carries that whole tab, the DNS grouping carries both of
+ * that tab's mount queries — and where it does, the saving is not one query
+ * replaced by a cheaper one but N replaced by one. That is why the grouping of a
+ * shared body is load-bearing in a way a single-panel body's never is: it has to
+ * be fine enough that every panel can recompute its own figure from the stored
+ * rows. src/queries/snapshots.ts carries that argument beside the strings.
  */
 // NAME CHARACTER SET, measured 2026-09-18 against a live workspace, NOT documented.
 // Cribl refuses a saved search whose `name` does not match /^[a-zA-Z0-9 _-]+$/ —
@@ -547,27 +569,34 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   entry({
     id: 'gno_svc_edges_c1h',
     name: 'GNO Service map edges',
+    // ONE PANEL, AND IT USED TO BE TWO. The entry served `service-map-edges`
+    // and `service-map-sources` — two records, two tails, and therefore TWO
+    // STORED READS on the app's default route, because read.ts submits a
+    // `$vt_results` job per served panel (its KEY_MEMO caches the read key, not
+    // the rows). One scan was being asked for twice.
+    //
+    // The two tails were `| where dst_svc != "" | sort by flows desc | limit 40`
+    // and `| summarize out=sum(flows) by src_aws_flat_tags_name | sort by out
+    // desc | limit 20`. Both are now done in ServiceMap.tsx over the rows of a
+    // single un-tailed read — which the tab was already half doing, since its
+    // external-peer spokes have always been arithmetic over the edge rows.
+    //
+    // This cost nothing and bought a whole read on the route every arrival lands
+    // on. It also made the ⓘ claim STRONGER rather than weaker: `display` is now
+    // the body, run verbatim, so this entry is back inside the Phase 2 promise
+    // that a served panel shows the string that produced its number. In Live
+    // mode the tab submits this same body once instead of two narrower scans.
     panels: [
       {
         queryId: 'service-map-edges',
-        what: 'Service map — the edges between services',
-        display: edgesQuery,
-        // The head this replaces is `dst_aws_flat_tags_name=*`. In the stored
-        // rows that group is the empty-string sentinel the body created, so the
-        // filter moves here and means exactly what it meant live.
-        tail: '| where dst_svc != "" | sort by flows desc | limit 40',
+        what: 'Service map — the edges between services and the per-source outbound totals',
+        display: SERVICE_EDGES_SNAPSHOT_QUERY,
+        // No tail: the panel reads the whole grouping and cuts both of its own
+        // views out of it. The sentinel group the body's `extend` creates is
+        // what makes that safe — see src/queries/snapshots.ts. Dropping the
+        // untagged destinations server-side would take the client-only totals
+        // with it, short, with nothing on screen to say so.
         reads: ['src_aws_flat_tags_name', 'dst_svc', 'flows'],
-      },
-      {
-        queryId: 'service-map-sources',
-        what: 'Service map — outbound flows per source service',
-        display: srcQuery,
-        // Summed across every destination group INCLUDING the sentinel, which is
-        // what `count() by src` does live. This is the panel the body's `extend`
-        // exists for: drop the untagged destinations and this number comes back
-        // short, with nothing on screen to say so.
-        tail: '| summarize out=sum(flows) by src_aws_flat_tags_name | sort by out desc | limit 20',
-        reads: ['src_aws_flat_tags_name', 'out'],
       },
     ],
     body: SERVICE_EDGES_SNAPSHOT_QUERY,
@@ -577,7 +606,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     tz: 'UTC',
     keepLastN: 24,
     why:
-      "The other two scans behind Service map's graph — the edges and the per-source outbound totals — out of one grouping. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
+      "The other two scans behind Service map's graph — the edges and the per-source outbound totals — out of one grouping, read once. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
   }),
 
   entry({
@@ -615,6 +644,171 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     keepLastN: 24,
     why:
       "Field Explorer's coverage view answers which of the ~319 AMI fields are actually arriving, with one count() per field over the whole window — measured at 4.6 s on the live workspace, and the reason the tab still took eight seconds after its sample was accelerated. It is the second of that tab's two mount queries and the one a census of hooks never saw, because it calls runSearch directly.",
+  }),
+
+  entry({
+    id: 'gno_app_src_c1h',
+    name: 'GNO App by source 15 minutes',
+    panels: [
+      {
+        queryId: 'shadow-ai-apps',
+        what: 'Shadow AI — apps on the wire, and the known-SaaS list beside them',
+        display: appsQuery,
+        // The live query's `flows`, `bytes` and `users` for one app, rebuilt
+        // from the (app, source) pairs. `users` is RECOMPUTED here rather than
+        // summed — see the body's own comment: one row per pair means
+        // dcount(src_ip) is the true distinct-source count, and a stored per-app
+        // dcount could not be added up safely anywhere else on this entry.
+        tail: '| summarize flows=sum(flows), bytes=sum(bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90',
+        reads: ['app_name', 'flows', 'bytes', 'users'],
+      },
+      {
+        queryId: 'shadow-ai-overall',
+        what: 'Shadow AI — the AI users, AI flows and AI bytes tiles',
+        display: aiOverallQuery,
+        // THE TILE THE GROUPING EXISTS FOR. `users` here is every distinct
+        // source that reached ANY AI app, counted once. A body grouped by
+        // app_name alone could only offer per-app counts for this tile to add
+        // up, and anybody using two AI apps would be counted twice — high, in
+        // the direction nobody can check, on the number the tab is named after.
+        //
+        // AI_FILTER is the same string the live query embeds, imported rather
+        // than retyped, so adding a vendor to AI_APPS moves both together.
+        tail: `| where ${AI_FILTER} | summarize users=dcount(src_ip), flows=sum(flows), bytes=sum(bytes)`,
+        reads: ['users', 'flows', 'bytes'],
+      },
+      {
+        queryId: 'shadow-ai-users',
+        what: 'Shadow AI — the top AI users, with the app-diversity badge',
+        display: aiUsersQuery,
+        // `aiapps` is the badge beside each source, and it is exact for the same
+        // reason: one stored row per (app, source), so counting distinct
+        // app_name within a source counts each app once.
+        tail: `| where ${AI_FILTER} | summarize aiflows=sum(flows), aiapps=dcount(app_name), bytes=sum(bytes) by src_ip | sort by aiflows desc | limit 15`,
+        reads: ['src_ip', 'aiflows', 'aiapps', 'bytes'],
+      },
+    ],
+    body: APP_SRC_SNAPSHOT_QUERY,
+    // The house window, for the house reason: fifteen minutes is what the app's
+    // default range shows, so the stored answer means the same thing as the live
+    // one, and the run ends three minutes back to clear the 120 s file flush the
+    // Lake landing profile sets.
+    earliest: '-18m',
+    latest: '-3m',
+    // :36 — the audit's own minute for this entry, and well clear of the five
+    // minutes already in use (:07, :20, :21, :22, :23). Jobs from one account
+    // are admitted about 1.6 s apart, so entries that share a minute queue
+    // behind each other instead of running.
+    cron: '36 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      'Shadow AI is the slowest tab in the app: three unfiltered whole-window scans on mount, none of them served, and the reader waits for all three because they are admitted about 1.6 s apart. One grouping by application and source carries all three — the app bar lists, the AI tiles and the top-AI-users table — and each panel re-aggregates the columns it needs out of the stored pairs. It also gives the tab a past: twenty-four retained runs mean somebody investigating an AI-usage spike can ask what it looked like at 04:36, which no live query answers at any price.',
+  }),
+
+  entry({
+    id: 'gno_dns_resolver_c1h',
+    name: 'GNO DNS resolvers',
+    panels: [
+      {
+        queryId: 'dns-resolver-table',
+        what: 'DNS health — the resolver table and the slowest-resolver tile',
+        display: DNS_PER_RESOLVER_QUERY,
+        // The head this replaces is `dns_host=*`. In the stored rows those rows
+        // are the empty-string sentinel the body's `extend` created, so the
+        // filter moves here and means exactly what it meant live. `dns_host` is
+        // restored by name because that is what the row renderer reads — the
+        // body could not group on it without losing the sentinel.
+        //
+        // AND THIS IS WHERE `limit 500` LIVES NOW. It is the panel's view of the
+        // grouping, not a property of the scan: left in the body it would cap
+        // the tiles above at the top 500 resolvers' worth of DNS as well.
+        tail: '| where dns_h != "" | extend dns_host=dns_h | sort by total desc | limit 500',
+        reads: ['dns_host', 'p50', 'noerr', 'sf', 'nx', 'total'],
+      },
+      {
+        queryId: 'dns-overall',
+        what: 'DNS health — the SERVFAIL / error-rate and distinct-resolver tiles',
+        display: DNS_OVERALL_QUERY,
+        // Summed across every group INCLUDING the sentinel, which is what
+        // `app_name="dns" | summarize count()` does live. This is the panel the
+        // body's `extend` exists for: drop the responses that name no resolver
+        // and both this total and the failure rate over it come back short.
+        //
+        // `resolvers` is a COUNT OF ROWS, not a composed `dcount`. The body
+        // emits one row per distinct resolver, so counting the non-sentinel ones
+        // is the distinct count by definition — see src/queries/snapshots.ts for
+        // why that is the honest way to serve this tile and why a summed
+        // per-group `dcount` would not be.
+        tail: '| summarize total=sum(total), noerr=sum(noerr), sf=sum(sf), nx=sum(nx), resolvers=sum(iif(dns_h != "", 1, 0))',
+        reads: ['total', 'sf', 'nx', 'resolvers'],
+      },
+    ],
+    body: DNS_RESOLVER_SNAPSHOT_QUERY,
+    // The house window, for the house reasons: fifteen minutes is what the app's
+    // default range shows, so the stored answer means the same thing as the live
+    // one, and the run ends three minutes back to clear the 120 s file flush the
+    // Lake landing profile sets.
+    earliest: '-18m',
+    latest: '-3m',
+    // :33 — the audit's own minute for this entry. Clear of the block already in
+    // use (:07, :20…:24) and of the Shadow AI scan at :36, because jobs from one
+    // account are admitted about 1.6 s apart and entries sharing a minute queue
+    // behind each other instead of running.
+    cron: '33 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "DNS health is the longest wait in the app on open: two whole-window scans fire together and the reader waits for both, roughly 7-12 seconds. One grouping by resolver carries both — the resolver table and the three tiles above it — and each reads its own view out of the stored rows. The bigger prize is not the seconds. A percentile over a high-cardinality grouping is this app's most hang-prone shape, and the jobs that hang are the ones a viewer is sitting in front of; on a schedule a slow run costs a retained result rather than a blank tab. It also gives the tab a past: twenty-four retained runs mean somebody investigating a resolver that started failing can ask what it looked like at 04:33.",
+  }),
+
+  entry({
+    id: 'gno_pipeline_c1h',
+    name: 'GNO Pipeline telemetry',
+    panels: [
+      {
+        queryId: 'data-flow-pipeline',
+        what: 'Data Flow — the Cribl stage counters (source, pipeline, destination, blocked, backpressure)',
+        display: METRICS_QUERY,
+        // No tail: the body IS the panel's query, one row of six counters.
+        reads: ['src_events', 'pipe_events', 'dst_events', 'dst_bytes', 'blocked', 'backpressure'],
+      },
+    ],
+    body: METRICS_QUERY,
+    // ── WHY THIS WINDOW, WHEN THE PANEL HAS NONE OF ITS OWN ──────────────────
+    // METRICS_QUERY is the one query on this tab that simply follows the range
+    // picker (DataFlow.tsx passes no `earliest`), so unlike the sample or the
+    // Lake total there was no pinned window to copy. It is also a COUNTER SUM
+    // rather than a scan: the window is not a sample of a population, it IS the
+    // interval being counted, so halving it halves every figure on the diagram.
+    //
+    // -18m…-3m, and the fifteen minutes are chosen to match `gno_overview_c1h`
+    // rather than for their own sake. The diagram's whole claim is that the
+    // Cribl stages and the AMI records agree — that nothing is dropped between
+    // source, pipeline, Lake and Search — and the records side of that
+    // comparison is VOLUME_QUERY, served by the overview scan over exactly this
+    // window. Serve the telemetry over a different length and the two sides stop
+    // being comparable: the diagram would show a shortfall that is a window
+    // difference and reads as loss.
+    //
+    // The three minutes are the same 120 s flush margin every other entry keeps,
+    // and they matter here for a second reason: cribl_metrics counters for the
+    // current minute are still being written, so a window ending at `now` counts
+    // a partial minute as a whole one and under-reports the newest stage.
+    earliest: '-18m',
+    latest: '-3m',
+    // :24, one minute after the presence scan and four after the overview one
+    // whose numbers this entry's are read beside. That is the closest free
+    // minute to it — the two windows then overlap in eleven of their fifteen
+    // minutes rather than being identical, which is the price of not making two
+    // schedules compete for the same admission slot. On a steady feed the
+    // residual is noise; on a bursty one, a small difference between the records
+    // side of the diagram and the telemetry side is that offset.
+    cron: '24 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "The last live query on the Data Flow tab, and nobody proposed it before the coverage audit: the two figures beside it — the record-derived volumes and the 30-day Lake total — have been served since Phase 2, so this one query was what kept the whole diagram reporting LIVE and undated. It reads cribl_metrics rather than gigamon_ami, which gno_lake_30d_c1d has been doing on a schedule since Phase 2, so the mechanism is proven on this dataset. With it the tab reaches three of three, and the diagram gains a past: twenty-four retained runs mean an operator can ask whether the destination was blocked at 04:24 rather than only whether it is blocked now.",
   }),
 ])
 

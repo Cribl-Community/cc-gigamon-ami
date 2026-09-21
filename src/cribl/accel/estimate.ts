@@ -300,13 +300,106 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     what: 'Service map — the graph nodes',
   },
   gno_svc_edges_c1h: {
-    liveRunCpuSeconds: 78,
+    // 39, and it was 78. It used to be two live scans of the window — the edges
+    // and the per-source totals — at the modelled 39 CPU-s each. The tab now
+    // runs the union body ONCE and derives both client-side, so a live paint of
+    // everything this entry serves is one scan, in Live mode as well as through
+    // the schedule. The saving below therefore got smaller and truer: the thing
+    // it is measured against is cheaper than it was.
+    liveRunCpuSeconds: 39,
     liveCostModelled: true,
     liveRunsPerDay: null,
     assumedRunsPerDay: 24,
     scheduledRunCpuSeconds: null,
     shapeMultiplier: NARROW_BODY_MULTIPLIER,
     what: 'Service map — the edges and the per-source outbound totals',
+  },
+
+  gno_app_src_c1h: {
+    // Three unfiltered whole-window scans on mount at the modelled 39 CPU-s
+    // each. MODELLED, not measured — nobody put a stopwatch on the Shadow AI
+    // tab; what was observed is the wall time, about eight seconds, which is
+    // mostly the ~1.6 s admission stagger between the three jobs rather than any
+    // one of them being slow.
+    liveRunCpuSeconds: 117,
+    liveCostModelled: true,
+    // NOT MEASURED. Shadow AI is a discovery tab somebody opens when they are
+    // asking the question, not the route the app lands on, so this is the same
+    // assumption Field Explorer carries and it must move if either is ever
+    // counted.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain.
+    scheduledRunCpuSeconds: null,
+    // WIDE, and the body is a two-aggregate count-and-sum, which argues for
+    // narrow. The multiplier is used here for the other half of what it stands
+    // for: this body returns one row per (app_name, src_ip) pair, and that
+    // cardinality is the one thing about this entry nobody has measured. 1.43 is
+    // the widest shape this plan has evidence for, so it is the pessimistic end
+    // — the right end to be wrong at when the figure sits beside the word
+    // "saves".
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Shadow AI — the AI tiles, the app and SaaS bar lists, and the top AI users',
+  },
+
+  gno_dns_resolver_c1h: {
+    // Two whole-window scans on mount: 39 for the five-aggregate single row
+    // (OVERALL), 55.8 for the per-resolver grouping (PER_RESOLVER), which is the
+    // same 2.6 x 15 x 1.43 the service-map node query carries and for the same
+    // reason — a percentile over a grouping returns many rows, not one. Both
+    // MODELLED; nobody put a stopwatch on this tab. What was observed is the
+    // wall time, 7-12 seconds, and that is mostly the ~1.6 s admission stagger
+    // plus this workspace's ~5 s floor rather than either job being expensive.
+    liveRunCpuSeconds: 94.8,
+    liveCostModelled: true,
+    // NOT MEASURED. DNS health is an operational tab somebody opens when DNS is
+    // suspected, not the route the app lands on. The same assumption Field
+    // Explorer and Shadow AI carry, and it must move if any of them is counted.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain.
+    scheduledRunCpuSeconds: null,
+    // WIDE: one row per distinct resolver, and this feed's resolver cardinality
+    // is the thing about this entry nobody has measured. 1.43 is the widest
+    // shape this plan has evidence for, so it is the pessimistic end.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'DNS health — the resolver table and the three tiles above it',
+  },
+
+  gno_pipeline_c1h: {
+    // ── THE FIGURE BELOW IS THE MODEL'S, AND THE MODEL WAS NOT FIT ON THIS
+    //    DATASET. Said plainly because this row is the one place in the table
+    //    where that is true.
+    //
+    // A-SP0 was fit over twelve scans of gigamon_ami. METRICS_QUERY reads
+    // cribl_metrics — a counter series, not flow records — and the only
+    // measurement this workspace has on that dataset is the 30-day Lake total:
+    // 9,297.7 CPU-s over 43,200 data-minutes, which is 0.215 CPU-s per
+    // data-minute against A-SP0's 2.6. Scaled that way, fifteen minutes of
+    // cribl_metrics would be about 3 CPU-s rather than the 39 below.
+    //
+    // 39 SHIPS ANYWAY, and deliberately: the scheduled side of this row is
+    // modelled from the same fit, so both sides carry the same unknown factor
+    // and the one number that matters survives it. `breakEvenRunsPerDay` is a
+    // RATIO of the two — 24.1 views a day at either scaling (39/39 gives 24.1,
+    // 3.2/3.2 gives 25.6) — and that is the honest statement about this entry:
+    // it pays for itself only if the tab is opened about as often as it runs.
+    // What does not survive is the absolute CPU-s column, which is an order of
+    // magnitude high on both sides. Do not quote it; quote the break-even.
+    liveRunCpuSeconds: 39,
+    liveCostModelled: true,
+    // MEASURED, and this is the one hourly entry that can say so. This query
+    // runs on the same mount as the 30-day Lake total, whose 15-24 paints a day
+    // were counted from this workspace's own job history. It is a lower bound
+    // rather than an estimate: the Lake tile is pinned to -30d and does not
+    // re-run on a range change, while this one follows the picker and does.
+    liveRunsPerDay: { low: 15, high: 24 },
+    assumedRunsPerDay: 15,
+    scheduledRunCpuSeconds: null,
+    // NARROW: six sum(iif(…)) counters, one row out. Whatever the dataset costs
+    // to read, the result body is as small as a body gets.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'Data Flow — the Cribl stage counters behind the diagram',
   },
 })
 
