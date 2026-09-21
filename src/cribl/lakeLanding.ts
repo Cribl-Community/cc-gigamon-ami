@@ -38,6 +38,30 @@
 // `{description}` — on claim C6: that this endpoint updates only the fields it
 // is given. C6 was inferred from the spec's example bodies and nothing else.
 //
+// A 2026-09-21 read of the spec bundle makes that basis WEAKER than the
+// sentence above suggests, so do not let the wording reassure anyone:
+//
+//   * The operation is in the SILENT set. Of 152 PATCH/PUT operations, 85 carry
+//     "Cribl removes any omitted fields", 4 affirm partial updates, and 63 say
+//     nothing. `PATCH /products/lake/lakes/{lakeId}/datasets/{id}` is one of
+//     the 63. Silence is not an affirmation.
+//   * Its sibling on the SAME object is explicitly destructive.
+//     `PATCH /search/datasets/{id}` reads "This endpoint does not support
+//     partial updates. Cribl removes any omitted fields when updating the
+//     Dataset." Two endpoints, one dataset, opposite assumed semantics.
+//   * THE SEPARATE `…Update` SCHEMA IS NOT EVIDENCE. The tempting read is that
+//     a distinct `CriblLakeDatasetUpdate` body implies partial semantics. It is
+//     field-for-field IDENTICAL to the full `CriblLakeDataset`; the only
+//     difference is that `id` is `required` in one and optional in the other,
+//     annotated "the path parameter `id` is authoritative". That is a
+//     required-ness difference and says nothing about merge versus replace.
+//
+// Which is to say: the read-modify-write below is not belt-and-braces over a
+// probably-fine endpoint. It is the only thing standing between this app and
+// stripping `retentionPeriodInDays`, `acceleratedFields`, `storageLocationId`
+// and `format` off a live dataset. Do not "simplify" it back to one field.
+// P-S5 step S5-9 and P-S9 step S9-4 are what would actually settle C6.
+//
 // The optimistic reading of a Cribl PATCH has already been disproved once in
 // this workspace. A-SP23 measured `PATCH /search/saved/{id}` in this same
 // product: a body carrying only the schema-required fields answered 200 and
