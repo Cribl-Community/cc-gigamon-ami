@@ -11,7 +11,7 @@
 // codebase does not have one. The pinning is a test that fails when the cron
 // moves and this sentence does not.
 
-/** How often the overview and service-map scans fire. All three are hourly. */
+/** How often the overview and flow-map scans fire. All three are hourly. */
 export const HOURLY_CADENCE = 'once an hour, at 20 past the hour UTC'
 
 /**

@@ -117,7 +117,7 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
     sel: { $expr: "TECHNIQUES.find((t) => t.kind === 'flow')" } satisfies ExprFixture,
   },
 
-  'src/tabs/ServiceMap.tsx': {
+  'src/tabs/FlowMap.tsx': {
     // The service selected on the dependency graph.
     service: 'donot_delete_Postgres_Sql_GEM',
   },
@@ -184,7 +184,7 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     drillQueryFor: { over: ['TECHNIQUES'] },
   },
 
-  'src/queries/serviceMap.ts': {
+  'src/queries/flowMap.ts': {
     buildDomainsQuery: { over: ["['donot_delete_Postgres_Sql_GEM']"] },
     buildTrendQuery: { over: ["['donot_delete_Postgres_Sql_GEM']"] },
   },

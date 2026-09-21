@@ -9,7 +9,7 @@
 // looking at.
 //
 // ── IT IS A VIEWING MODE, SO IT IS APP-WIDE AND IT SURVIVES A TAB CHANGE ────
-// A reader who picks 04:20 on Service map and clicks through to Findings is
+// A reader who picks 04:20 on Flow map and clicks through to Findings is
 // asking the same question of both. Per-tab state would answer it on one tab and
 // silently answer a different question on the next — two tabs side by side
 // showing different times with nothing saying so. So it lives here, beside

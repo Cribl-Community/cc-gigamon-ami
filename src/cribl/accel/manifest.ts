@@ -92,7 +92,7 @@ import {
 } from '../../queries/webApiHealth'
 import { COUNT_AGGS as SECURITY_COUNT_AGGS, COUNTS as SECURITY_COUNTS_QUERY } from '../../queries/security'
 import { FINDING_AGGS, FINDINGS_QUERY } from '../../queries/findings'
-import { nodesQuery } from '../../queries/serviceMap'
+import { nodesQuery } from '../../queries/flowMap'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
 import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY, WEB_HOST_SNAPSHOT_QUERY } from '../../queries/snapshots'
@@ -601,11 +601,11 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   }),
   entry({
     id: 'gno_svc_nodes_c1h',
-    name: 'GNO Service map nodes',
+    name: 'GNO Flow map nodes',
     panels: [
       {
-        queryId: 'service-map-nodes',
-        what: 'Service map — the graph nodes',
+        queryId: 'flow-map-nodes',
+        what: 'Flow map — the graph nodes',
         display: nodesQuery,
         // No tail: the body IS the panel's query, sort and limit included. The
         // multi-panel machinery is not used where it would buy nothing.
@@ -622,20 +622,20 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     tz: 'UTC',
     keepLastN: 24,
     why:
-      'Service map is the default route, so it is what "opening the app in the morning" actually means. Its graph is three scans of the window before anything is on screen. This one is the node query verbatim, run hourly — and it is what lets the map show a past state rather than only the last fifteen minutes.',
+      'Flow map is the default route, so it is what "opening the app in the morning" actually means. Its graph is three scans of the window before anything is on screen. This one is the node query verbatim, run hourly — and it is what lets the map show a past state rather than only the last fifteen minutes.',
   }),
   entry({
     id: 'gno_svc_edges_c1h',
-    name: 'GNO Service map edges',
-    // ONE PANEL, AND IT USED TO BE TWO. The entry served `service-map-edges`
-    // and `service-map-sources` — two records, two tails, and therefore TWO
+    name: 'GNO Flow map edges',
+    // ONE PANEL, AND IT USED TO BE TWO. The entry served `flow-map-edges`
+    // and `flow-map-sources` — two records, two tails, and therefore TWO
     // STORED READS on the app's default route, because read.ts submits a
     // `$vt_results` job per served panel (its KEY_MEMO caches the read key, not
     // the rows). One scan was being asked for twice.
     //
     // The two tails were `| where dst_svc != "" | sort by flows desc | limit 40`
     // and `| summarize out=sum(flows) by src_aws_flat_tags_name | sort by out
-    // desc | limit 20`. Both are now done in ServiceMap.tsx over the rows of a
+    // desc | limit 20`. Both are now done in FlowMap.tsx over the rows of a
     // single un-tailed read — which the tab was already half doing, since its
     // external-peer spokes have always been arithmetic over the edge rows.
     //
@@ -646,8 +646,8 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     // mode the tab submits this same body once instead of two narrower scans.
     panels: [
       {
-        queryId: 'service-map-edges',
-        what: 'Service map — the edges between services and the per-source outbound totals',
+        queryId: 'flow-map-edges',
+        what: 'Flow map — the edges between services and the per-source outbound totals',
         display: SERVICE_EDGES_SNAPSHOT_QUERY,
         // No tail: the panel reads the whole grouping and cuts both of its own
         // views out of it. The sentinel group the body's `extend` creates is
@@ -664,7 +664,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     tz: 'UTC',
     keepLastN: 24,
     why:
-      "The other two scans behind Service map's graph — the edges and the per-source outbound totals — out of one grouping, read once. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
+      "The other two scans behind Flow map's graph — the edges and the per-source outbound totals — out of one grouping, read once. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
   }),
 
   entry({

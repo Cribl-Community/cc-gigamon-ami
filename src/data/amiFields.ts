@@ -98,7 +98,7 @@ export const AMI_CATALOG: AmiField[] = [
   { name: 'ssl_validity_not_before', family: 'SSL / TLS', desc: 'Certificate start date.', useCase: 'Validity window.' },
   { name: 'ssl_serial_number', family: 'SSL / TLS', desc: 'Certificate serial number.', useCase: 'Cert fingerprinting.' },
   { name: 'ssl_cipher_suite_id', family: 'SSL / TLS', desc: 'Negotiated cipher suite.', useCase: 'Weak-cipher detection.' },
-  { name: 'ssl_alert_level', family: 'SSL / TLS', desc: 'TLS alert level (2 = fatal / handshake failing).', useCase: 'TLS-outage epicenter on the service map.' },
+  { name: 'ssl_alert_level', family: 'SSL / TLS', desc: 'TLS alert level (2 = fatal / handshake failing).', useCase: 'TLS-outage epicenter on the flow map.' },
   { name: 'ssl_alert_description', family: 'SSL / TLS', desc: 'TLS alert reason code.', useCase: 'Root-cause of handshake failures.' },
   { name: 'ssl_ja3', family: 'SSL / TLS', desc: 'JA3 TLS client fingerprint (hash of ClientHello params).', useCase: 'Threat hunting / malware C2 identification without decryption (JA4 is the modern successor).' },
   { name: 'ssl_ja3s', family: 'SSL / TLS', desc: 'JA3S TLS server fingerprint (hash of ServerHello params).', useCase: 'Pair with JA3 to fingerprint client↔server sessions.' },

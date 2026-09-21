@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Modal } from '@capra/core'
 
 interface Props {
-  /** Controlled by the caller. See the note in tabs/ServiceMap.tsx on why this
+  /** Controlled by the caller. See the note in tabs/FlowMap.tsx on why this
    *  is a prop rather than the component being mounted only when it is open. */
   isOpen: boolean
   service: string

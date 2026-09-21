@@ -293,11 +293,11 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     liveRunCpuSeconds: 55.8,
     liveCostModelled: true,
     liveRunsPerDay: null,
-    // Service map is the default route: every arrival at the app runs it.
+    // Flow map is the default route: every arrival at the app runs it.
     assumedRunsPerDay: 24,
     scheduledRunCpuSeconds: null,
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
-    what: 'Service map — the graph nodes',
+    what: 'Flow map — the graph nodes',
   },
   gno_svc_edges_c1h: {
     // 39, and it was 78. It used to be two live scans of the window — the edges
@@ -312,7 +312,7 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     assumedRunsPerDay: 24,
     scheduledRunCpuSeconds: null,
     shapeMultiplier: NARROW_BODY_MULTIPLIER,
-    what: 'Service map — the edges and the per-source outbound totals',
+    what: 'Flow map — the edges and the per-source outbound totals',
   },
 
   gno_app_src_c1h: {
@@ -345,7 +345,7 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
   gno_dns_resolver_c1h: {
     // Two whole-window scans on mount: 39 for the five-aggregate single row
     // (OVERALL), 55.8 for the per-resolver grouping (PER_RESOLVER), which is the
-    // same 2.6 x 15 x 1.43 the service-map node query carries and for the same
+    // same 2.6 x 15 x 1.43 the flow-map node query carries and for the same
     // reason — a percentile over a grouping returns many rows, not one. Both
     // MODELLED; nobody put a stopwatch on this tab. What was observed is the
     // wall time, 7-12 seconds, and that is mostly the ~1.6 s admission stagger

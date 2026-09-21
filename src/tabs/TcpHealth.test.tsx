@@ -334,7 +334,7 @@ describe('the two entries', () => {
   })
 
   it('needs no empty-group sentinel, because it borrows the panel’s own head', () => {
-    // Service map's edges and DNS's resolvers each needed an `extend`/`iif`
+    // Flow map's edges and DNS's resolvers each needed an `extend`/`iif`
     // sentinel, because a panel summing across a group the live query filtered
     // out would come back short. Nothing on these entries does: the body's head
     // IS the panel's head, character for character, and every tail is a

@@ -211,7 +211,7 @@ describe('the bodies', () => {
   })
 
   it('keeps the untagged destination as a group of its own, for the view that sums across it', () => {
-    // Service map's client-only totals are every flow OUT of a source service,
+    // Flow map's client-only totals are every flow OUT of a source service,
     // including flows to peers carrying no AWS name tag. Whether a `summarize`
     // keeps a null group key is not something this app has measured, and if it
     // drops them that number comes back short with nothing on screen to say so.
@@ -223,17 +223,17 @@ describe('the bodies', () => {
 
   it('reads the service graph once, un-tailed, because two panels meant two stored reads', () => {
     // WHAT THIS REPLACES, AND WHY THE ASSERTION MOVED. This entry used to carry
-    // `service-map-edges` and `service-map-sources`: two panel records, two
+    // `flow-map-edges` and `flow-map-sources`: two panel records, two
     // tails, and therefore two `$vt_results` jobs for one stored result, on the
     // route the app opens on. read.ts submits one read per served panel and its
     // memo caches the read key rather than the rows, so the second was never
-    // going to be free. ServiceMap.tsx now filters, sorts and sums over the rows
+    // going to be free. FlowMap.tsx now filters, sorts and sums over the rows
     // of a single un-tailed read.
     //
     // The tail being ABSENT is the thing worth pinning: bring one back and the
     // tab silently goes back to two reads, or — worse — one panel starts reading
     // the other panel's tailed view.
-    expect(edges.panels.map((p) => p.queryId)).toEqual(['service-map-edges'])
+    expect(edges.panels.map((p) => p.queryId)).toEqual(['flow-map-edges'])
     expect(edges.panels[0].tail, 'a tail here is a second read, or a wrong row').toBeUndefined()
     // One panel, no tail, so the Phase 2 promise applies again: the ⓘ shows the
     // string that produced the number. The generic case above enforces it; this

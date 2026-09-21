@@ -74,7 +74,7 @@ describe('the chosen moment', () => {
   })
 
   it('survives everything else, because it is a viewing mode and not a panel’s state', () => {
-    // A reader who picks 04:20 on Service map and clicks through to Findings is
+    // A reader who picks 04:20 on Flow map and clicks through to Findings is
     // asking the same question of both. Module-level state is what makes a tab
     // change keep it; there is nothing to mount and nothing to unmount.
     setSelectedSnapshot(AT)

@@ -12,7 +12,7 @@
 // ── IT COUNTS PANELS, AND THAT IS THE WHOLE REASON IT IS HERE AND NOT IN
 // cribl/jobCost.ts ──────────────────────────────────────────────────────────
 // The census could have been built on the search hooks, which is where the
-// acceleration state comes from. It would then have counted Service Map's graph
+// acceleration state comes from. It would then have counted Flow Map's graph
 // as three (Q1 + Q2 + Q3 are one visual) and Data Flow's toolbar as three, and
 // `3 of 6` would have been a sentence about a unit the reader cannot see.
 // `<Panel>` IS the customer's unit — one card, one title, one ⓘ — so the
@@ -177,7 +177,7 @@ export function resetSnapshotCensus(): void {
 /**
  * One caption for a panel several hooks feed.
  *
- * Service map's graph is three searches in one card, and Data Flow's toolbar is
+ * Flow map's graph is three searches in one card, and Data Flow's toolbar is
  * three. `<Panel>` takes one state because the reader sees one card, so the
  * three have to be reduced to one — and the reduction is not an average, it is
  * the worst case:

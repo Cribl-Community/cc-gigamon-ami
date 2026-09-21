@@ -27,7 +27,7 @@
     "src/tabs/DataFlow.tsx": {
       "s": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "7 entries · sha256 aaf32d8f2e71a2ca"
+        "value": "7 entries · sha256 d8023170ee8096ec"
       }
     },
     "src/tabs/DnsHealth.tsx": {
@@ -36,7 +36,7 @@
     "src/tabs/FieldExplorer.tsx": {
       "rows": {
         "from": "AMI_FAMILIES.map((fam) => ({ label: fam, value: AMI_CATALOG.filter((f) => f.family === fam).map((f) => ({ f })) }))",
-        "value": "7 entries · sha256 2975c4af596570c3"
+        "value": "7 entries · sha256 7f1f65ffcdf2b119"
       },
       "uc": {
         "from": "AMI_USE_CASES.map((x) => ({ label: x.name, value: x }))",
@@ -54,6 +54,9 @@
       },
       "total": 1284000
     },
+    "src/tabs/FlowMap.tsx": {
+      "service": "donot_delete_Postgres_Sql_GEM"
+    },
     "src/tabs/PqcReadiness.tsx": {
       "filter": {
         "from": "serverFilter(\"login.example.com\")",
@@ -65,9 +68,6 @@
         "from": "TECHNIQUES.find((t) => t.kind === 'flow')",
         "value": "9 keys · sha256 1557490ba91d68d4"
       }
-    },
-    "src/tabs/ServiceMap.tsx": {
-      "service": "donot_delete_Postgres_Sql_GEM"
     },
     "src/tabs/TcpHealth.tsx": {
       "sel": {
@@ -123,13 +123,13 @@
       "open": "null",
       "search": "''"
     },
+    "src/tabs/FlowMap.tsx": {
+      "sel": "null",
+      "snOpen": "false"
+    },
     "src/tabs/Security.tsx": {
       "sel": "null",
       "tacticFilter": "null"
-    },
-    "src/tabs/ServiceMap.tsx": {
-      "sel": "null",
-      "snOpen": "false"
     },
     "src/tabs/TcpHealth.tsx": {
       "mask": "'24'",
@@ -147,7 +147,7 @@
   },
   "catalogs": {
     "src/data/aiApps.ts › AI_APPS": "35 entries · sha256 4b541f0494e99133",
-    "src/data/amiFields.ts › AMI_CATALOG": "94 entries · sha256 0174d361ccc9e7f3",
+    "src/data/amiFields.ts › AMI_CATALOG": "94 entries · sha256 c684215431cfbb7f",
     "src/data/amiFields.ts › AMI_FAMILIES": "7 entries · sha256 e5f2d01d4ff0566f",
     "src/data/amiFields.ts › AMI_USE_CASES": "11 entries · sha256 8c65985e5d5a08fb",
     "src/data/findings.ts › FINDINGS": "17 entries · sha256 0d59f3fc5cd62c84",
@@ -250,6 +250,13 @@
       "findingFlowsQuery(#tcpcrc)": "dataset=\"gigamon_ami\" tcp_wrong_crc>0 | limit 200",
       "findingFlowsQuery(#udpcrc)": "dataset=\"gigamon_ami\" udp_wrong_crc>0 | limit 200"
     },
+    "src/queries/flowMap.ts": {
+      "buildDomainsQuery(\"donot_delete_Postgres_Sql_GEM\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
+      "buildTrendQuery(\"donot_delete_Postgres_Sql_GEM\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
+      "edgesQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40",
+      "nodesQuery": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
+      "srcQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20"
+    },
     "src/queries/lakeLanding.ts": {
       "LAG_CPU_SECONDS": "number · sha256 9f14025af0065b30",
       "LANDING_LAG_EARLIEST": "-5m",
@@ -278,13 +285,6 @@
       "drillQueryFor(#T1110)": "dataset=\"gigamon_ami\" snmp_community=* | summarize flows=count() by src_ip, dst_ip, app_name, dst_port | sort by flows desc | limit 100",
       "drillQueryFor(#T1570)": "dataset=\"gigamon_ami\" dcerpc_service=* | summarize flows=count() by src_ip, dst_ip, app_name, dst_port | sort by flows desc | limit 100",
       "drillQueryFor(#T1572)": "dataset=\"gigamon_ami\" icmp_tunneling=* | summarize flows=count() by src_ip, dst_ip, app_name, dst_port | sort by flows desc | limit 100"
-    },
-    "src/queries/serviceMap.ts": {
-      "buildDomainsQuery(\"donot_delete_Postgres_Sql_GEM\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
-      "buildTrendQuery(\"donot_delete_Postgres_Sql_GEM\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
-      "edgesQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40",
-      "nodesQuery": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
-      "srcQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20"
     },
     "src/queries/shadowAi.ts": {
       "AI_FILTER": "app_name in (\"openai\",\"chatgpt\",\"claude\",\"anthropic\",\"perplexity-ai\",\"midjourney\",\"elevenlabs-io\",\"stability-ai\",\"runway\",\"descript\",\"copy-ai\",\"jasper-ai\",\"writesonic\",\"poe\",\"bard\",\"meta-ai\",\"ms-copilot\",\"codewhisperer\",\"mistral-ai\",\"deepseek\",\"deepseek-net\",\"google-gen\",\"notebooklm\",\"personal-ai\",\"inflection-ai\",\"muse-ai\",\"mem-ai\",\"aiva\",\"lasco-ai\",\"emailtree-ai\",\"murf-ai\",\"llm-stats\",\"swe-bench\",\"anyword\",\"pixlr\")",
@@ -1380,6 +1380,79 @@
       },
       "prose": {}
     },
+    "src/tabs/FlowMap.tsx": {
+      "surfaces": {
+        "Panel · Dependency graph": {
+          "ref": "nodesQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
+          "reads": [
+            "domains",
+            "graphQ",
+            "nodesQ"
+          ],
+          "info": "Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage.",
+          "note": "`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`"
+        },
+        "Panel · Latency decomposition over time": {
+          "ref": "trendQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
+          "reads": [
+            "trend"
+          ],
+          "info": "p95 of all four domains per minute on a log axis, so a 0.1ms and a 600ms domain are both visible.",
+          "note": "all four domains · p95 · per 1m · log ms"
+        },
+        "Panel · Triage · ${label} — where is the time, and is it the network?": {
+          "ref": "domainsQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
+          "reads": [
+            "domains"
+          ],
+          "info": "id-join + packet evidence: p95 across all flows to this service, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_server_ms vs dns_response_time), plus packet-health counters that exonerate or implicate the network.",
+          "note": "id-join + packet evidence"
+        }
+      },
+      "searches": {
+        "nodesQ": {
+          "ref": "nodesQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
+          "options": "{ accel: 'gno_svc_nodes_c1h', accelPanel: 'flow-map-nodes' }",
+          "optionsValue": {
+            "accel": "gno_svc_nodes_c1h",
+            "accelPanel": "flow-map-nodes"
+          }
+        },
+        "graphQ": {
+          "ref": "SERVICE_EDGES_SNAPSHOT_QUERY",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
+          "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'flow-map-edges' }",
+          "optionsValue": {
+            "accel": "gno_svc_edges_c1h",
+            "accelPanel": "flow-map-edges"
+          }
+        },
+        "domains": {
+          "ref": "domainsQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
+          "options": "{ deps: [service] }"
+        },
+        "trend": {
+          "ref": "trendQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
+          "options": "{ deps: [service], deferred: !trendNear.near }"
+        }
+      },
+      "links": {},
+      "briefs": {},
+      "prose": {}
+    },
     "src/tabs/PqcReadiness.tsx": {
       "surfaces": {
         "KpiTile · PQC readiness score": {
@@ -1582,79 +1655,6 @@
           "info": "Techniques the reference NDR dashboard includes but this AMI capture has no signal for. Shown so the picture is honest — capability gaps are a capture question, not a detection failure to hide."
         }
       }
-    },
-    "src/tabs/ServiceMap.tsx": {
-      "surfaces": {
-        "Panel · Dependency graph": {
-          "ref": "nodesQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
-          "reads": [
-            "domains",
-            "graphQ",
-            "nodesQ"
-          ],
-          "info": "Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage.",
-          "note": "`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`"
-        },
-        "Panel · Latency decomposition over time": {
-          "ref": "trendQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
-          "reads": [
-            "trend"
-          ],
-          "info": "p95 of all four domains per minute on a log axis, so a 0.1ms and a 600ms domain are both visible.",
-          "note": "all four domains · p95 · per 1m · log ms"
-        },
-        "Panel · Triage · ${label} — where is the time, and is it the network?": {
-          "ref": "domainsQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
-          "reads": [
-            "domains"
-          ],
-          "info": "id-join + packet evidence: p95 across all flows to this service, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_server_ms vs dns_response_time), plus packet-health counters that exonerate or implicate the network.",
-          "note": "id-join + packet evidence"
-        }
-      },
-      "searches": {
-        "nodesQ": {
-          "ref": "nodesQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
-          "options": "{ accel: 'gno_svc_nodes_c1h', accelPanel: 'service-map-nodes' }",
-          "optionsValue": {
-            "accel": "gno_svc_nodes_c1h",
-            "accelPanel": "service-map-nodes"
-          }
-        },
-        "graphQ": {
-          "ref": "SERVICE_EDGES_SNAPSHOT_QUERY",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
-          "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' }",
-          "optionsValue": {
-            "accel": "gno_svc_edges_c1h",
-            "accelPanel": "service-map-edges"
-          }
-        },
-        "domains": {
-          "ref": "domainsQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
-          "options": "{ deps: [service] }"
-        },
-        "trend": {
-          "ref": "trendQuery",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
-          "options": "{ deps: [service], deferred: !trendNear.near }"
-        }
-      },
-      "links": {},
-      "briefs": {},
-      "prose": {}
     },
     "src/tabs/ShadowAi.tsx": {
       "surfaces": {

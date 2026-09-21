@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
 import { useNearViewport } from '../components/nearViewport'
-import { nodesQuery, buildDomainsQuery, buildTrendQuery } from '../queries/serviceMap'
+import { nodesQuery, buildDomainsQuery, buildTrendQuery } from '../queries/flowMap'
 import { SERVICE_EDGES_SNAPSHOT_QUERY } from '../queries/snapshots'
 import { Panel } from '../components/Panel'
 import { QueryBoundary } from '../components/QueryBoundary'
@@ -45,7 +45,7 @@ function statusOf(n: { appN: number; appMs: number; dnsN: number; dnsMs: number;
   return 'healthy'
 }
 
-export function ServiceMap() {
+export function FlowMap() {
   const [sel, setSel] = useState<string | null>(null)
   const [snOpen, setSnOpen] = useState(false)
 
@@ -61,8 +61,8 @@ export function ServiceMap() {
   // and the two views are cut out of it below. Nothing new is scanned — in Live
   // mode this submits the union body once where it used to submit two narrower
   // queries, and in Snapshot mode it reads one stored result instead of two.
-  const nodesQ = useSearch(nodesQuery, { accel: 'gno_svc_nodes_c1h', accelPanel: 'service-map-nodes' })
-  const graphQ = useSearch(SERVICE_EDGES_SNAPSHOT_QUERY, { accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' })
+  const nodesQ = useSearch(nodesQuery, { accel: 'gno_svc_nodes_c1h', accelPanel: 'flow-map-nodes' })
+  const graphQ = useSearch(SERVICE_EDGES_SNAPSHOT_QUERY, { accel: 'gno_svc_edges_c1h', accelPanel: 'flow-map-edges' })
 
   const { nodes, edges, extEdges, external, extTotal } = useMemo(() => {
     const raw = nodesQ.rows.map((r) => {
@@ -155,7 +155,7 @@ export function ServiceMap() {
   return (
     <div className="tab">
       <div className="tab-intro">
-        <h2 className="tab-h">Service map</h2>
+        <h2 className="tab-h">Flow map</h2>
         <p className="tab-sub">
           Service-to-service dependencies from flow metadata — no sidecar, no eBPF.{' '}
           <strong className="d-danger">Pulsing red</strong> = breaching epicenter (&gt;90% resets or 3× SLO) →
@@ -318,7 +318,7 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
   return (
     <>
       <div className="domain-head">
-        <button type="button" className="btn" onClick={onBack}>← service map</button>
+        <button type="button" className="btn" onClick={onBack}>← flow map</button>
         <h3 className="panel-title">{label} — four latency domains<InfoTip text="Each domain is scored independently at p95 against its own SLO — never averaged — so you can see exactly where the time goes." /></h3>
         <button type="button" className="btn btn-primary" onClick={onIncident}>Create ServiceNow incident</button>
       </div>
