@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MEASUREMENT THIS EXISTS FOR. Concurrent search jobs from one user are
 // admitted about 1.6 s apart. Web & API fires six queries the moment it mounts,
-// Service Map five, TCP Health four — so Web & API's last query does not BEGIN
+// Flow Map five, TCP Health four — so Web & API's last query does not BEGIN
 // until roughly eight seconds in, and nothing about how fast a query runs
 // touches that. The only lever is firing fewer at once, and the cheapest way to
 // fire fewer is to notice that half of them are drawing charts below the fold

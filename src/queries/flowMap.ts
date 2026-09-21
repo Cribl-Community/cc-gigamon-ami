@@ -1,4 +1,4 @@
-// Every Cribl Search (KQL) query the Service map tab runs.
+// Every Cribl Search (KQL) query the Flow map tab runs.
 //
 // These strings are customer-visible: a panel's ⓘ shows the exact query behind
 // its numbers, so the text IS the provenance of the figure on screen. Nothing here
@@ -24,7 +24,7 @@ export const nodesQuery = q('dst_aws_flat_tags_name=* | summarize app=percentile
 // They are kept, unedited, because they are the exact statements of what those
 // two derivations compute, and because deleting a customer-visible query string
 // is a change to the display freeze rather than a tidy-up. Anyone checking that
-// the client-side arithmetic in ServiceMap.tsx is right checks it against these.
+// the client-side arithmetic in FlowMap.tsx is right checks it against these.
 
 /** Solid edges: src→dst pairs where both endpoints carry an AWS name tag. */
 export const edgesQuery = q('src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40')

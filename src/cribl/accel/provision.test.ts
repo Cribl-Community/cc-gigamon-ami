@@ -777,12 +777,19 @@ describe('what a confirmation is given to say', () => {
       'GNO Lake total 30 days (gno_lake_30d_c1d) — create, running 10 0 * * * UTC',
       'GNO Feed sample 2 minutes (gno_sample_2m_c1h) — overwrite, because the window it reads differs from what this release writes',
       'GNO Overview hourly (gno_overview_c1h) — create, running 20 * * * * UTC',
-      'GNO Service map nodes (gno_svc_nodes_c1h) — create, running 21 * * * * UTC',
-      'GNO Service map edges (gno_svc_edges_c1h) — create, running 22 * * * * UTC',
+      'GNO Flow map nodes (gno_svc_nodes_c1h) — create, running 21 * * * * UTC',
+      'GNO Flow map edges (gno_svc_edges_c1h) — create, running 22 * * * * UTC',
       'GNO Field presence 15 minutes (gno_presence_c1h) — create, running 23 * * * * UTC',
       'GNO App by source 15 minutes (gno_app_src_c1h) — create, running 36 * * * * UTC',
       'GNO DNS resolvers (gno_dns_resolver_c1h) — create, running 33 * * * * UTC',
       'GNO Pipeline telemetry (gno_pipeline_c1h) — create, running 24 * * * * UTC',
+      'GNO Web hosts (gno_web_host_c1h) — create, running 45 * * * * UTC',
+      'GNO Web status codes (gno_web_code_c1h) — create, running 48 * * * * UTC',
+      'GNO Web requests and errors per minute (gno_web_trend_c1h) — create, running 51 * * * * UTC',
+      'GNO Web HTTP2 hosts (gno_web_h2_c1h) — create, running 54 * * * * UTC',
+      'GNO TCP subnet pairs 24 (gno_tcp_subnet24_c1h) — create, running 40 * * * * UTC',
+      'GNO TCP subnet pairs 16 (gno_tcp_subnet16_c1h) — create, running 41 * * * * UTC',
+      'GNO App and L4 bytes (gno_app_l4_c1h) — create, running 47 * * * * UTC',
     ])
     expect(plan.willDelete).toEqual([])
   })

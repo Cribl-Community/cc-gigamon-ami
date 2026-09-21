@@ -11,7 +11,7 @@ network-observability dashboard. It runs [Cribl Search](https://docs.cribl.io/se
 renders the results across focused tabs — service dependencies, TCP/DNS/TLS health, capacity and
 top talkers, security findings, and more — without moving the data anywhere.
 
-![The Service Map tab: a service-to-service dependency graph built from Gigamon AMI flow metadata, sized by flow volume and colored by reset/latency health](./docs/screenshot-service-map.png)
+![The Flow Map tab: a service-to-service dependency graph built from Gigamon AMI flow metadata, sized by flow volume and colored by reset/latency health](./docs/screenshot-flow-map.png)
 
 ## Why
 
@@ -56,7 +56,7 @@ into the raw Cribl Search UI whenever you want to go deeper.
 
 The dashboard is organized into tabs, each answering a different operational question:
 
-- **Service Map** — service-to-service dependencies and traffic relationships (default landing tab)
+- **Flow Map** — service-to-service dependencies and traffic relationships (default landing tab)
 - **Capacity & Top Talkers** — throughput, byte volumes, and the busiest hosts/services
 - **TCP Health** — retransmits, resets, and connection-quality signals
 - **DNS Health** — query volumes, response codes, and latency

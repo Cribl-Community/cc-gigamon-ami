@@ -188,4 +188,4 @@ Formatting helpers are in `src/lib/format.ts`.
   search-job and AI/dataset-intelligence paths". It now declares the Guided Setup Stream writes and
   deletes, the Git commit and deploy paths, and the job-list, cancel and metrics reads as well —
   read the file, don't trust a count written here.*
-- The default route redirects to `/service-map`; unknown routes fall back there too.
+- The default route redirects to `/flow-map`; unknown routes fall back there too.

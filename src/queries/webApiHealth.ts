@@ -18,8 +18,25 @@ export const KPI_AGGS =
   'server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code)'
 export const KPI = q('| summarize ' + KPI_AGGS)
 export const CODES = q('http_code=* | summarize n=count() by http_code | sort by n desc | limit 12')
-export const HOSTS = q('http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)) by http_host | sort by n desc | limit 12')
-export const SLOW = q('http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10')
+
+/**
+ * The per-host error count, and the per-host server-latency percentile, as
+ * fragments — so `WEB_HOST_SNAPSHOT_QUERY` holds THESE characters rather than a
+ * retyped copy of them.
+ *
+ * Both panels below are served by one hourly grouping by `http_host`, and the
+ * whole honesty of that arrangement is that the stored body computes the same
+ * aggregate the ⓘ beside the number advertises. Retyped they would agree the day
+ * they were written and drift the first time somebody edited one — silently,
+ * because both forms still return a number of the right shape. This is the same
+ * move `REPLY_CODE_AGGS` makes in dnsHealth.ts, and it leaves `HOSTS` and `SLOW`
+ * byte-identical to what they were.
+ */
+export const HOST_ERR_AGG = 'err=sum(iif(http_code>=400,1,0))'
+export const SERVER_P95_AGG = 'p95=percentile(http_server_ms,95)'
+
+export const HOSTS = q('http_host=* | summarize n=count(), ' + HOST_ERR_AGG + ' by http_host | sort by n desc | limit 12')
+export const SLOW = q('http_server_ms=* http_host=* | summarize ' + SERVER_P95_AGG + ', n=count() by http_host | sort by p95 desc | limit 10')
 export const TREND = q('http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc')
 export const H2 = q('http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10')
 

@@ -35,21 +35,21 @@ export const PERSONAS: Persona[] = [
     question: 'Something is slow — is it the network?',
     steps: [
       {
-        route: '/service-map',
+        route: '/flow-map',
         target: 'service-graph',
         title: 'Start at the epicenters',
         body: 'Service-to-service dependencies built purely from flow metadata — no agent, no sidecar, no eBPF. Node colour is health; size is flow volume.',
         look: 'Red nodes pulse: >90% resets or 3x the latency SLO. Dashed grey spokes are traffic to peers with no AWS name tag.',
       },
       {
-        route: '/service-map',
+        route: '/flow-map',
         target: 'service-graph',
         title: 'Drill a breaching service',
         body: 'Click any red node. That opens the four latency domains — network, application, server and DNS — each scored independently at p95 against its own SLO, never averaged.',
         look: 'Compare tcp_rtt (network) against tcp_rtt_app (application). This is the split that settles the argument.',
       },
       {
-        route: '/service-map',
+        route: '/flow-map',
         title: 'Read the verdict',
         body: 'Below the domains, the triage table joins packet evidence per flow id: retransmits, resets, dup-acks and wrong-CRC counts.',
         look: 'When the network counters are clean, the callout states that NetOps is exonerated and names which domain actually owns the time.',

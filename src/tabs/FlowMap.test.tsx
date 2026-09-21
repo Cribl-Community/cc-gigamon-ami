@@ -1,7 +1,7 @@
 // The default route, and how many jobs it takes to draw.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// WHAT THIS FILE IS GUARDING. Service map's graph was three searches: the nodes,
+// WHAT THIS FILE IS GUARDING. Flow map's graph was three searches: the nodes,
 // the edges, and the outbound total per source. Two of those three were already
 // one scheduled scan — but they were registered as two PANELS of that entry, and
 // accel/read.ts submits a `$vt_results` job per served panel (its memo caches
@@ -36,7 +36,7 @@ import { accelEntry } from '../cribl/accel/manifest'
 import { resetAccelKeyMemo } from '../cribl/accel/read'
 import { resetSelectedSnapshot } from '../cribl/accel/selection'
 import { resetSnapshotCensus } from '../components/snapshotCensus'
-import { ServiceMap } from './ServiceMap'
+import { FlowMap } from './FlowMap'
 
 const NODES = 'gno_svc_nodes_c1h'
 const EDGES = 'gno_svc_edges_c1h'
@@ -151,9 +151,9 @@ afterEach(() => {
 async function render(): Promise<void> {
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={['/service-map']}>
+      <MemoryRouter initialEntries={['/flow-map']}>
         <DashboardProvider>
-          <ServiceMap />
+          <FlowMap />
         </DashboardProvider>
       </MemoryRouter>,
     )

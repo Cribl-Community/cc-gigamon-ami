@@ -225,7 +225,7 @@ describe('the tab, served from one scheduled run', () => {
 describe('the entry this tab reads', () => {
   it('keeps the responses that name no resolver as a group of their own', () => {
     // The mechanism, not the number: both tails still parse without the
-    // `extend`, and the tiles simply come back short. Service map's edges body
+    // `extend`, and the tiles simply come back short. Flow map's edges body
     // does this for the same reason and the same way.
     expect(entry.body).toContain('extend dns_h=iif(isnotnull(dns_host)')
     expect(tiles.tail, 'the tiles must sum across every group, sentinel included').toContain('total=sum(total)')

@@ -293,11 +293,11 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     liveRunCpuSeconds: 55.8,
     liveCostModelled: true,
     liveRunsPerDay: null,
-    // Service map is the default route: every arrival at the app runs it.
+    // Flow map is the default route: every arrival at the app runs it.
     assumedRunsPerDay: 24,
     scheduledRunCpuSeconds: null,
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
-    what: 'Service map — the graph nodes',
+    what: 'Flow map — the graph nodes',
   },
   gno_svc_edges_c1h: {
     // 39, and it was 78. It used to be two live scans of the window — the edges
@@ -312,7 +312,7 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     assumedRunsPerDay: 24,
     scheduledRunCpuSeconds: null,
     shapeMultiplier: NARROW_BODY_MULTIPLIER,
-    what: 'Service map — the edges and the per-source outbound totals',
+    what: 'Flow map — the edges and the per-source outbound totals',
   },
 
   gno_app_src_c1h: {
@@ -345,7 +345,7 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
   gno_dns_resolver_c1h: {
     // Two whole-window scans on mount: 39 for the five-aggregate single row
     // (OVERALL), 55.8 for the per-resolver grouping (PER_RESOLVER), which is the
-    // same 2.6 x 15 x 1.43 the service-map node query carries and for the same
+    // same 2.6 x 15 x 1.43 the flow-map node query carries and for the same
     // reason — a percentile over a grouping returns many rows, not one. Both
     // MODELLED; nobody put a stopwatch on this tab. What was observed is the
     // wall time, 7-12 seconds, and that is mostly the ~1.6 s admission stagger
@@ -400,6 +400,149 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     // to read, the result body is as small as a body gets.
     shapeMultiplier: NARROW_BODY_MULTIPLIER,
     what: 'Data Flow — the Cribl stage counters behind the diagram',
+  },
+
+  // ── The four Web & API health scans ───────────────────────────────────────
+  // Every figure in these four rows is MODELLED — nobody put a stopwatch on this
+  // tab. What was observed is the wall time: roughly 6.4 s for the three queries
+  // that fire on mount, and another ~8 s when the reader scrolls the three
+  // deferred panels into view. Most of that is the ~1.6 s admission stagger
+  // between concurrent jobs from one account plus this workspace's ~5 s floor,
+  // not any one of these queries being expensive. The modelled 39 CPU-s is
+  // A-SP0's 2.6 x 15 data-minutes at the narrow shape.
+  //
+  // liveRunsPerDay is null on all four for the same reason it is null on Shadow
+  // AI and DNS: nobody counted how often this tab is opened, and it is
+  // per-viewer behaviour rather than a property of the workspace. 4 is the
+  // house assumption for a tab somebody opens when they are asking the question.
+  // Every figure derived through it is flagged `assumedFrequency`.
+
+  gno_web_host_c1h: {
+    // Two whole-window groupings by http_host at the modelled 39 CPU-s each.
+    liveRunCpuSeconds: 78,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain (5-50).
+    scheduledRunCpuSeconds: null,
+    // WIDE: one row per distinct HTTP host, carrying a percentile. A percentile
+    // over a grouping is the shape gno_svc_nodes_c1h and gno_dns_resolver_c1h
+    // both carry the wide multiplier for, and this feed's http_host cardinality
+    // is the one thing about this entry nobody has measured. 1.43 is the widest
+    // shape this plan has evidence for, so it is the pessimistic end — the right
+    // end to be wrong at beside the word "saves".
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Web and API health — the top endpoints and the slowest hosts',
+  },
+
+  gno_web_code_c1h: {
+    liveRunCpuSeconds: 39,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: null,
+    // NARROW: one count() by status code, at most a couple of dozen rows out.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'Web and API health — the status-code distribution',
+  },
+
+  gno_web_trend_c1h: {
+    liveRunCpuSeconds: 39,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: null,
+    // NARROW: two counters by minute, fifteen rows out.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'Web and API health — requests and errors over time',
+  },
+
+  gno_web_h2_c1h: {
+    liveRunCpuSeconds: 39,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: null,
+    // NARROW: one count() by http2_host, capped at ten rows in the body itself.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'Web and API health — the HTTP/2 hosts',
+  },
+  // ── TCP health's two subnet heatmaps ──────────────────────────────────────
+  // The live figure below is DELIBERATELY UNDERSTATED, and the understatement is
+  // in the safe direction. 55.8 is one scan — the modelled 2.6 × 15 × 1.43 that
+  // every grouped body in this table carries — and one scan is what ONE PAINT of
+  // the heatmap costs. But the panel this entry serves has four metric buttons
+  // and each press is another whole scan, so a reader actually comparing resets
+  // against CRC errors pays two, three, four times this. Counting only the first
+  // paint makes the saving smaller than it is, which is the right end to be wrong
+  // at when the number sits next to the word "saves".
+
+  gno_tcp_subnet24_c1h: {
+    liveRunCpuSeconds: 55.8,
+    liveCostModelled: true,
+    // NOT MEASURED. TCP health is an operational tab somebody opens when the
+    // network is suspected, not the route the app lands on — the same assumption
+    // DNS health, Shadow AI and Field Explorer carry, and it must move if any of
+    // them is ever counted.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain.
+    scheduledRunCpuSeconds: null,
+    // WIDE: up to 120 rows of five aggregates. The body carries four sums where
+    // the live query carries one, which is more work per row and is exactly what
+    // buys the other three panel states.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'TCP health — the wire-error heatmap at /24, all four metrics',
+  },
+
+  gno_tcp_subnet16_c1h: {
+    liveRunCpuSeconds: 55.8,
+    liveCostModelled: true,
+    liveRunsPerDay: null,
+    // Two rather than the /24 entry's four, and the difference is a judgement
+    // rather than a measurement: /24 is the state the tab opens in, and /16 is a
+    // second look somebody takes deliberately. Stated separately so that it is
+    // an assumption somebody can argue with rather than a copied number.
+    assumedRunsPerDay: 2,
+    scheduledRunCpuSeconds: null,
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'TCP health — the wire-error heatmap at /16, all four metrics',
+  },
+
+
+  gno_app_l4_c1h: {
+    // Three whole-window scans on mount in the tab's default view at the
+    // modelled 39 CPU-s each: the top-talkers bar list, the app-mix donut and
+    // the L4 split. MODELLED, not measured — nobody put a stopwatch on this
+    // tab; what was observed is the wall time, about five seconds, and most of
+    // that is this workspace's ~5 s floor plus the ~1.6 s admission stagger
+    // rather than any one of the three being expensive.
+    //
+    // NARROW on the live side, and it is worth saying why when the scheduled
+    // side below is wide. All three live queries end in a `limit` of 12, 8 or a
+    // handful of protocol rows, so the result body each one carries back is as
+    // small as a body gets. The 1.43x multiplier was measured on a body of
+    // whole AMI events; applying it here would overstate what the tab costs
+    // today, and the figure this row feeds sits beside the word "saves".
+    liveRunCpuSeconds: 117,
+    liveCostModelled: true,
+    // NOT MEASURED. Nobody counted how often this tab is opened. 12 is the
+    // overview entry's assumption, taken deliberately rather than reinvented:
+    // that row already stands behind this same tab's KPI strip, so two rows
+    // serving one tab assuming different open rates would be two answers to one
+    // question.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 12,
+    // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain.
+    scheduledRunCpuSeconds: null,
+    // WIDE, where the three live queries are narrow, and the asymmetry is the
+    // point: the scan stores the whole (app_name, l4_proto) cross product so
+    // that each panel can sum it back along one key, which the audit puts at
+    // roughly 450 rows — about ninety applications by a few protocols. That is
+    // an estimate of a cardinality nobody has counted, so the pessimistic
+    // multiplier is the right end to be wrong at.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'Capacity & top talkers — the app mix, the L4 split and the top-apps bar list',
   },
 })
 

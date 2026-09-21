@@ -394,7 +394,7 @@ const BUTTON_PAIRS: Pair[] = [
     fg: 'var(--gm-btn-primary)',
     bg: ['var(--gm-panel)', PAGE],
     threshold: 3,
-    where: '.btn-primary inside a Panel — Guided Setup’s action column, the Service Map domain header',
+    where: '.btn-primary inside a Panel — Guided Setup’s action column, the Flow Map domain header',
   },
   {
     what: 'a filled danger button against the modal surface',
@@ -463,7 +463,7 @@ const TABLE_PAIRS: Pair[] = [
     fg: 'var(--gm-fg-subtle)',
     bg: PANEL,
     threshold: 4.5,
-    where: '.dtable thead th (10px uppercase) — Service Map triage, the three drill-downs',
+    where: '.dtable thead th (10px uppercase) — Flow Map triage, the three drill-downs',
   },
   {
     // The long-running-search drawer puts the same table on Capra's drawer

@@ -66,7 +66,7 @@ const dns = accelEntry('gno_dns_resolver_c1h')
 const HOURLY_SNAPSHOTS = MANIFEST.filter((e) => /^\d+ \* \* \* \*$/.test(e.cron) && e.id !== 'gno_sample_2m_c1h')
 
 describe('the manifest', () => {
-  it('holds exactly these nine', () => {
+  it('holds exactly these, in this order', () => {
     // Literal, not a count. An entry is a decision about a customer's bill and
     // about what the teardown will delete, so adding one changes this line too.
     expect(MANIFEST.map((e) => e.id)).toEqual([
@@ -79,6 +79,13 @@ describe('the manifest', () => {
       'gno_app_src_c1h',
       'gno_dns_resolver_c1h',
       'gno_pipeline_c1h',
+      'gno_web_host_c1h',
+      'gno_web_code_c1h',
+      'gno_web_trend_c1h',
+      'gno_web_h2_c1h',
+      'gno_tcp_subnet24_c1h',
+      'gno_tcp_subnet16_c1h',
+      'gno_app_l4_c1h',
     ])
   })
 
@@ -204,7 +211,7 @@ describe('the bodies', () => {
   })
 
   it('keeps the untagged destination as a group of its own, for the view that sums across it', () => {
-    // Service map's client-only totals are every flow OUT of a source service,
+    // Flow map's client-only totals are every flow OUT of a source service,
     // including flows to peers carrying no AWS name tag. Whether a `summarize`
     // keeps a null group key is not something this app has measured, and if it
     // drops them that number comes back short with nothing on screen to say so.
@@ -216,17 +223,17 @@ describe('the bodies', () => {
 
   it('reads the service graph once, un-tailed, because two panels meant two stored reads', () => {
     // WHAT THIS REPLACES, AND WHY THE ASSERTION MOVED. This entry used to carry
-    // `service-map-edges` and `service-map-sources`: two panel records, two
+    // `flow-map-edges` and `flow-map-sources`: two panel records, two
     // tails, and therefore two `$vt_results` jobs for one stored result, on the
     // route the app opens on. read.ts submits one read per served panel and its
     // memo caches the read key rather than the rows, so the second was never
-    // going to be free. ServiceMap.tsx now filters, sorts and sums over the rows
+    // going to be free. FlowMap.tsx now filters, sorts and sums over the rows
     // of a single un-tailed read.
     //
     // The tail being ABSENT is the thing worth pinning: bring one back and the
     // tab silently goes back to two reads, or — worse — one panel starts reading
     // the other panel's tailed view.
-    expect(edges.panels.map((p) => p.queryId)).toEqual(['service-map-edges'])
+    expect(edges.panels.map((p) => p.queryId)).toEqual(['flow-map-edges'])
     expect(edges.panels[0].tail, 'a tail here is a second read, or a wrong row').toBeUndefined()
     // One panel, no tail, so the Phase 2 promise applies again: the ⓘ shows the
     // string that produced the number. The generic case above enforces it; this
@@ -343,7 +350,7 @@ describe('the bodies', () => {
     expect(sample.earliest).toBe('-5m')
     expect(sample.latest).toBe('-3m')
     // Every hourly snapshot, not the three that existed when this was written.
-    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(7)
+    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(14)
     for (const e of HOURLY_SNAPSHOTS) {
       expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
       expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')

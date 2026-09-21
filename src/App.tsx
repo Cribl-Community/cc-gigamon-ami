@@ -19,7 +19,7 @@ import { JobWatchdogIndicator } from './components/JobWatchdog'
 import { Findings } from './tabs/Findings'
 import { Security } from './tabs/Security'
 import { WebApiHealth } from './tabs/WebApiHealth'
-import { ServiceMap } from './tabs/ServiceMap'
+import { FlowMap } from './tabs/FlowMap'
 import { CapacityTopTalkers } from './tabs/CapacityTopTalkers'
 import { TcpHealth } from './tabs/TcpHealth'
 import { DnsHealth } from './tabs/DnsHealth'
@@ -34,7 +34,7 @@ import { GuidedSetup } from './tabs/GuidedSetup'
 const TABS = [
   { to: '/findings', label: 'Findings', el: <Findings /> },
   { to: '/security', label: 'Security', el: <Security /> },
-  { to: '/service-map', label: 'Service Map', el: <ServiceMap /> },
+  { to: '/flow-map', label: 'Flow Map', el: <FlowMap /> },
   { to: '/capacity', label: 'Capacity & Top Talkers', el: <CapacityTopTalkers /> },
   { to: '/tcp-health', label: 'TCP Health', el: <TcpHealth /> },
   { to: '/dns-health', label: 'DNS Health', el: <DnsHealth /> },
@@ -130,7 +130,7 @@ const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en
  *    pinned hook on `manualRefreshNonce`, and `useCostSlot(enabled && !pinned)`
  *    keeps it out of the tick cost entirely. Counting the hooks that still
  *    re-run on a tick, Data Flow is now 2 — the second-cheapest tab in the app.
- *    Web & API is the worst at 6, Service Map 5, Capacity and TCP Health 4.
+ *    Web & API is the worst at 6, Flow Map 5, Capacity and TCP Health 4.
  *
  * 2. THERE IS NO LONGER A THRESHOLD TO CROSS. A-D29 removed 15 s and 30 s from
  *    the menu, so AUTO_REFRESH is `Off` and `1m` and nothing else. "The
@@ -304,11 +304,20 @@ export default function App() {
         <main className="app-main">
           <ErrorBoundary resetKey={location.pathname}>
             <Routes>
-              <Route path="/" element={<Navigate to="/service-map" replace />} />
+              <Route path="/" element={<Navigate to="/flow-map" replace />} />
+              {/* The Flow Map was called the Service Map until 2026-09-21, and
+                  /service-map was the DEFAULT route — so it is what every
+                  bookmark, every guided-tour anchor and every link anybody has
+                  shared points at. The catch-all below would already send it to
+                  /flow-map, but only by accident: it sends EVERYTHING there. If
+                  the default route ever moves, an old Service Map link would
+                  silently land on whatever became the default instead of on the
+                  tab it names. This says where it goes, and why. */}
+              <Route path="/service-map" element={<Navigate to="/flow-map" replace />} />
               {TABS.map((t) => (
                 <Route key={t.to} path={t.to} element={t.el} />
               ))}
-              <Route path="*" element={<Navigate to="/service-map" replace />} />
+              <Route path="*" element={<Navigate to="/flow-map" replace />} />
             </Routes>
           </ErrorBoundary>
         </main>
