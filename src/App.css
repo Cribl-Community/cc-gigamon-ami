@@ -63,6 +63,23 @@
   --gm-sp-24: token('spacing.xl');          /* 24px */
   --gm-sp-32: token('spacing.2xl');         /* 32px */
 
+  /* How wide the page shell is allowed to get.
+   *
+   * `none` — the shell fills the window. This is a DASHBOARD: the things that
+   * want width are the graph, the heatmaps, the KPI rows and the wide tables,
+   * and on a 1900px display a 1500px cap left ~200px dead on each side.
+   *
+   * It is safe to let the shell run wide ONLY because long-form text is capped
+   * where it is written rather than by the shell — `.tab-sub` at 960px,
+   * `.uc-lead` at 900px, `.qb-msg` at 640px and so on. A paragraph 1900px wide
+   * is unreadable, and removing this cap without those would trade dead space
+   * for bad typography. If a new block of prose is added, cap the PROSE.
+   *
+   * Two rules use this and they must agree: the shell itself and the tour
+   * strip's inner row, which is `position: fixed` and would otherwise line up
+   * with nothing. That is why it is a variable and not two numbers. */
+  --gm-shell-max: none;
+
   /* 10–14 is the entire caption/body range; 18/24/26 are the display sizes. */
   --gm-fs-10: token('core.fontSize.xxs');   /* 10px */
   --gm-fs-11: 11px;                         /* no Capra step */
@@ -195,7 +212,7 @@ body {
 
 .app {
   min-height: 100%;
-  max-width: 1500px;
+  max-width: var(--gm-shell-max);
   margin: 0 auto;
   padding: 0 var(--gm-sp-24) 48px;
 }
@@ -917,7 +934,25 @@ body {
 
 /* ---------- Service map ---------- */
 .svc-graph-wrap { display: flex; flex-direction: column; gap: var(--gm-sp-10); }
-.svc-graph { width: 100%; height: 420px; display: block; }
+/* ASPECT-RATIO, NOT A FIXED HEIGHT, and the difference is ~600px of dead space.
+ *
+ * The svg is `viewBox="0 0 1000 360"` and sets no `preserveAspectRatio`, so it
+ * defaults to `xMidYMid meet`: the drawing keeps its 2.78:1 shape and is
+ * CENTRED inside whatever box it is given. With a fixed 420px height that box
+ * could only ever be 420 x 2.78 = 1167px wide, so on an 1800px panel the graph
+ * sat in the middle with ~315px blank on each side, inside the panel, whatever
+ * the page width was.
+ *
+ * `aspect-ratio` makes the box itself 2.78:1, so it fills the width and the
+ * drawing fills the box. Circles stay circular — which is why this is right
+ * here and `preserveAspectRatio="none"` is not. `<TimeChart>` DOES use `none`,
+ * correctly: stretching time against value distorts nothing, whereas stretching
+ * a node-link diagram turns every node into an ellipse.
+ *
+ * Node radii and the ellipse layout are in viewBox units (FlowMap.tsx), so they
+ * scale with it and the wider box is genuinely more room for labels — which is
+ * what that file's own comment says the 2.8:1 shape is for. */
+.svc-graph { width: 100%; aspect-ratio: 1000 / 360; height: auto; display: block; }
 .svc-edge { stroke: token('color.background.neutral.selected'); opacity: 0.7; }
 .svc-node { cursor: pointer; }
 .svc-node circle { transition: r 0.1s ease; }
@@ -1256,7 +1291,9 @@ body {
   box-shadow: 0 -10px 30px rgba(0,0,0,0.35);
 }
 .tour-strip-inner {
-  max-width: 1500px; margin: 0 auto; padding: var(--gm-sp-12) var(--gm-sp-24);
+  /* Must track `.app`, or this fixed strip stops lining up with the content
+   * above it. Same variable, not a matching literal. */
+  max-width: var(--gm-shell-max); margin: 0 auto; padding: var(--gm-sp-12) var(--gm-sp-24);
   display: flex; align-items: center; gap: var(--gm-sp-20); flex-wrap: wrap;
 }
 .tour-strip-meta { display: flex; flex-direction: column; gap: var(--gm-sp-4); min-width: 168px; flex: none; }
