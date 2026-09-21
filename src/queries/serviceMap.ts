@@ -13,6 +13,19 @@ import { q } from '../cribl/search'
 /** Graph nodes: one row per AWS name-tagged destination service. */
 export const nodesQuery = q('dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12')
 
+// ── THE TWO THE TAB NO LONGER SUBMITS ───────────────────────────────────────
+// `edgesQuery` and `srcQuery` are the two questions the service graph asks about
+// the traffic between services, and they used to be two jobs. The tab now runs
+// SERVICE_EDGES_SNAPSHOT_QUERY (./snapshots.ts) once and derives both from its
+// rows — in Live mode as well as from the hourly snapshot — because read.ts
+// submits a stored-result job per served panel, so two panels of one entry meant
+// two reads of one result on the app's default route.
+//
+// They are kept, unedited, because they are the exact statements of what those
+// two derivations compute, and because deleting a customer-visible query string
+// is a change to the display freeze rather than a tidy-up. Anyone checking that
+// the client-side arithmetic in ServiceMap.tsx is right checks it against these.
+
 /** Solid edges: src→dst pairs where both endpoints carry an AWS name tag. */
 export const edgesQuery = q('src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40')
 

@@ -27,3 +27,14 @@ export const SNAPSHOT_WINDOW = 'fifteen minutes, ending three minutes before the
 /** The overview entry's cadence sentence, pinned to the entry it describes. */
 export const OVERVIEW_CADENCE = HOURLY_CADENCE
 export const OVERVIEW_WINDOW = SNAPSHOT_WINDOW
+
+/**
+ * The Shadow AI scan's cadence — its own sentence, not HOURLY_CADENCE.
+ *
+ * That constant names 20 past the hour, and this entry fires at :36 so the
+ * hourly scans queue rather than compete for the same admission slot. Three
+ * panels on one tab quote this one, and manifest.test.ts pins it against the
+ * cron so the schedule cannot move without the sentence moving.
+ */
+export const APP_SRC_CADENCE = 'once an hour, at 36 past the hour UTC'
+export const APP_SRC_WINDOW = SNAPSHOT_WINDOW

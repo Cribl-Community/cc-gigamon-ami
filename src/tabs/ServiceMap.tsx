@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
 import { useNearViewport } from '../components/nearViewport'
-import { nodesQuery, edgesQuery, srcQuery, buildDomainsQuery, buildTrendQuery } from '../queries/serviceMap'
+import { nodesQuery, buildDomainsQuery, buildTrendQuery } from '../queries/serviceMap'
+import { SERVICE_EDGES_SNAPSHOT_QUERY } from '../queries/snapshots'
 import { Panel } from '../components/Panel'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { mergeSnapshotStates } from '../components/snapshotCensus'
@@ -48,14 +49,20 @@ export function ServiceMap() {
   const [sel, setSel] = useState<string | null>(null)
   const [snOpen, setSnOpen] = useState(false)
 
-  // The three scans behind the graph, each served by an hourly snapshot in
-  // Snapshot mode. This tab is the default route, so these three are what
-  // "opening the app in the morning" costs — and with twenty-four retained runs
-  // they are also what lets the map show 04:20 rather than only the last
-  // fifteen minutes.
+  // TWO SCANS BEHIND THE GRAPH, AND IT USED TO BE THREE. This tab is the default
+  // route, so these are what "opening the app in the morning" costs — and with
+  // twenty-four retained runs they are also what lets the map show 04:20 rather
+  // than only the last fifteen minutes.
+  //
+  // The edges and the per-source outbound totals were two hooks naming two
+  // panels of the SAME entry, which meant two `$vt_results` jobs for one stored
+  // result: read.ts submits one per served panel, and its memo caches the read
+  // key rather than the rows. They are one hook now, over the un-tailed body,
+  // and the two views are cut out of it below. Nothing new is scanned — in Live
+  // mode this submits the union body once where it used to submit two narrower
+  // queries, and in Snapshot mode it reads one stored result instead of two.
   const nodesQ = useSearch(nodesQuery, { accel: 'gno_svc_nodes_c1h', accelPanel: 'service-map-nodes' })
-  const edgesQ = useSearch(edgesQuery, { accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' })
-  const srcQ = useSearch(srcQuery, { accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-sources' })
+  const graphQ = useSearch(SERVICE_EDGES_SNAPSHOT_QUERY, { accel: 'gno_svc_edges_c1h', accelPanel: 'service-map-edges' })
 
   const { nodes, edges, extEdges, external, extTotal } = useMemo(() => {
     const raw = nodesQ.rows.map((r) => {
@@ -63,9 +70,23 @@ export function ServiceMap() {
       return { id: str(r, 'dst_aws_flat_tags_name'), flows, appMs: toNum(r.app) * 1000, appN: toNum(r.app_n), dnsMs: toNum(r.dns) * 1000, dnsN: toNum(r.dns_n), resets, resetRate: flows > 0 ? resets / flows : 0, srcOnly: false }
     }).filter((n) => n.id)
 
-    // Outbound flow count per source service.
-    const outByService = new Map<string, number>()
-    srcQ.rows.forEach((r) => { const id = str(r, 'src_aws_flat_tags_name'); if (id) outByService.set(id, toNum(r.out)) })
+    // ONE READ, THREE DERIVATIONS. `graphQ` holds the un-tailed grouping: a row
+    // per (source service, destination service), with flows to peers carrying no
+    // AWS name tag kept as an empty-string sentinel group rather than dropped
+    // (src/queries/snapshots.ts says why that sentinel has to exist). The drawn
+    // edges, the per-source outbound totals and the external spokes are all
+    // arithmetic over these rows.
+    const pairs = graphQ.rows
+      .map((r) => ({ s: str(r, 'src_aws_flat_tags_name'), d: str(r, 'dst_svc'), flows: toNum(r.flows) }))
+      .filter((p) => p.s)
+
+    // Outbound flow count per source service, summed across EVERY destination
+    // group INCLUDING the sentinel — which is exactly what the `count() by src`
+    // query this replaces did. Top 20, the limit that query carried, kept so the
+    // set of client-only nodes below does not silently widen.
+    const totalOut = new Map<string, number>()
+    for (const p of pairs) totalOut.set(p.s, (totalOut.get(p.s) ?? 0) + p.flows)
+    const outByService = new Map([...totalOut.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20))
 
     // A service that only ORIGINATES traffic never appears in the destination-
     // grouped node query — add it so client-only workloads aren't invisible.
@@ -85,15 +106,15 @@ export function ServiceMap() {
       return { ...n, label: cleanName(n.id), health, status: n.srcOnly ? 'client only' : statusOf(n), r: 9 + 9 * Math.sqrt(n.flows / maxFlows), x: cx + RX * Math.cos(a), y: cy + RY * Math.sin(a) }
     })
     const pos = new Map(nodes.map((n) => [n.id, n]))
-    const edges = edgesQ.rows
-      // `dst_svc` OR `dst_aws_flat_tags_name`, and the fallback is not defensive
-      // padding. The snapshot body groups by a coalesced destination so that
-      // flows to untagged peers keep a group of their own — without it the
-      // client-only totals beside this map come back short, in the direction
-      // nobody can see (src/queries/snapshots.ts). That column is named
-      // `dst_svc`; the live query's is `dst_aws_flat_tags_name`. One expression,
-      // two sources, and the manifest's `reads` list pins both.
-      .map((r) => ({ s: str(r, 'src_aws_flat_tags_name'), d: str(r, 'dst_svc') || str(r, 'dst_aws_flat_tags_name'), flows: toNum(r.flows) }))
+    // The drawn edges: tagged destinations only, top 40 by flows. That is the
+    // `| where dst_svc != "" | sort by flows desc | limit 40` the manifest used
+    // to apply server-side, moved here so one read feeds both views. The order
+    // matters: the limit was always applied before the drawability filter below,
+    // and narrowing it first would change which edges survive.
+    const edges = pairs
+      .filter((p) => p.d)
+      .sort((a, b) => b.flows - a.flows)
+      .slice(0, 40)
       .filter((e) => pos.has(e.s) && pos.has(e.d) && e.s !== e.d)
       .map((e) => { const a = pos.get(e.s)!, b = pos.get(e.d)!; return { ...e, a, b, health: SEVERITY[a.health] >= SEVERITY[b.health] ? a.health : b.health } })
 
@@ -102,31 +123,33 @@ export function ServiceMap() {
     // peers (total outbound − outbound to named services) into one hub.
     // Sum from the UNFILTERED rows: traffic to any named peer counts as named,
     // even if that edge was dropped from the drawing (self-loop / outside top-N).
+    // Summed over EVERY tagged pair, not only the forty that get drawn — a
+    // correction the merged read made possible. This hook used to receive the
+    // already-limited top 40, so traffic to a named peer outside that cut
+    // counted as unnamed and inflated the external spoke. The comment above has
+    // always said that traffic to any named peer counts as named even if the
+    // edge was dropped from the drawing; it is now true.
     const namedOut = new Map<string, number>()
-    edgesQ.rows.forEach((r) => {
-      const s = str(r, 'src_aws_flat_tags_name')
-      if (s) namedOut.set(s, (namedOut.get(s) ?? 0) + toNum(r.flows))
-    })
+    for (const p of pairs) if (p.d) namedOut.set(p.s, (namedOut.get(p.s) ?? 0) + p.flows)
     const external = { id: EXTERNAL_ID, label: 'External / unnamed', x: cx, y: cy, r: 13 }
     const extEdges = nodes
       .map((n) => ({ s: n.id, a: n, flows: Math.max(0, (outByService.get(n.id) ?? 0) - (namedOut.get(n.id) ?? 0)) }))
       .filter((e) => e.flows > 0)
     const extTotal = extEdges.reduce((t, e) => t + e.flows, 0)
     return { nodes, edges, extEdges, external, extTotal }
-  }, [nodesQ.rows, edgesQ.rows, srcQ.rows])
+  }, [nodesQ.rows, graphQ.rows])
 
   const maxEdge = edges.reduce((m, e) => Math.max(m, e.flows), 1)
   const maxExt = extEdges.reduce((m, e) => Math.max(m, e.flows), 1)
   const breachingCount = nodes.filter((n) => n.health === 'danger').length
   const elevatedCount = nodes.filter((n) => n.health === 'warning').length
 
-  // Three searches, one card. Merged to the worst of the three: a graph drawn
-  // half from 04:20 and half from now would look completely normal, and is the
-  // one thing a timeline must never produce.
+  // Two searches, one card. Merged to the worse of the two: a graph drawn half
+  // from 04:20 and half from now would look completely normal, and is the one
+  // thing a timeline must never produce.
   const graphSnapshot = mergeSnapshotStates([
     { source: nodesQ.source, outcome: nodesQ.outcome, at: nodesQ.at, stale: nodesQ.stale, nearestAt: nodesQ.nearestAt },
-    { source: edgesQ.source, outcome: edgesQ.outcome, at: edgesQ.at, stale: edgesQ.stale, nearestAt: edgesQ.nearestAt },
-    { source: srcQ.source, outcome: srcQ.outcome, at: srcQ.at, stale: srcQ.stale, nearestAt: srcQ.nearestAt },
+    { source: graphQ.source, outcome: graphQ.outcome, at: graphQ.at, stale: graphQ.stale, nearestAt: graphQ.nearestAt },
   ])
 
   return (
@@ -144,7 +167,7 @@ export function ServiceMap() {
         </p>
       </div>
 
-      <Panel snapshot={graphSnapshot} tourId="service-graph" onRefresh={() => { nodesQ.refetch(); edgesQ.refetch(); srcQ.refetch() }} refreshing={nodesQ.loading || edgesQ.loading} title="Dependency graph" info="Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage." query={nodesQuery} note={`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`}>
+      <Panel snapshot={graphSnapshot} tourId="service-graph" onRefresh={() => { nodesQ.refetch(); graphQ.refetch() }} refreshing={nodesQ.loading || graphQ.loading} title="Dependency graph" info="Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage." query={nodesQuery} note={`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`}>
         <QueryBoundary state={nodesQ} emptyLabel="No AWS-enriched flows in this window">
           <div className="svc-graph-wrap">
             <svg viewBox="0 0 1000 360" className="svc-graph" role="img">

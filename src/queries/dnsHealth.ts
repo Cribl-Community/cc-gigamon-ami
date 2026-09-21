@@ -12,16 +12,29 @@
 
 import { q } from '../cribl/search'
 
-export const OVERALL = q(
-  'app_name="dns" | summarize total=count(), ' +
-    'noerr=sum(iif(dns_reply_code=="0",1,0)), sf=sum(iif(dns_reply_code=="2",1,0)), ' +
-    'nx=sum(iif(dns_reply_code=="3",1,0)), resolvers=dcount(dns_host)',
-)
+/**
+ * The reply-code breakdown both queries below carry, character for character.
+ *
+ * Exported as a fragment for the same reason VOLUME_AGGS and KPI_AGGS are: the
+ * hourly snapshot body in ./snapshots.ts has to compute THESE aggregates, not a
+ * retyped copy of them that agrees on the day it was written. Reading a stored
+ * run under an ⓘ showing one of the strings below is only honest while the two
+ * are the same characters, and a copy-paste here is a wrong number rather than a
+ * lint complaint — nothing on screen would change if one of them drifted.
+ *
+ * Extracting it does not move either query's text: both resolve to exactly what
+ * they resolved to before, which the display freeze checks by value.
+ */
+export const REPLY_CODE_AGGS =
+  'noerr=sum(iif(dns_reply_code=="0",1,0)), sf=sum(iif(dns_reply_code=="2",1,0)), ' +
+  'nx=sum(iif(dns_reply_code=="3",1,0))'
+
+export const OVERALL = q('app_name="dns" | summarize total=count(), ' + REPLY_CODE_AGGS + ', resolvers=dcount(dns_host)')
 
 export const PER_RESOLVER = q(
   'app_name="dns" dns_host=* | summarize p50=percentile(dns_response_time,50), ' +
-    'noerr=sum(iif(dns_reply_code=="0",1,0)), sf=sum(iif(dns_reply_code=="2",1,0)), ' +
-    'nx=sum(iif(dns_reply_code=="3",1,0)), total=count() by dns_host | sort by total desc | limit 500',
+    REPLY_CODE_AGGS +
+    ', total=count() by dns_host | sort by total desc | limit 500',
 )
 
 /** The reply-code / query breakdown a clicked resolver row opens in Cribl Search. */

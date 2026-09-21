@@ -3,7 +3,9 @@ import { useAccelEnabled, useSearch, type UseSearchState } from '../cribl/useSea
 import { VOLUME_QUERY, METRICS_QUERY, LAKE_TOTAL_QUERY } from '../queries/dataFlow'
 import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
 import { capSecondsFor } from '../cribl/search'
-import type { AccelId } from '../cribl/accel/manifest'
+import { accelEntry, type AccelId } from '../cribl/accel/manifest'
+import { windowMinutes } from '../cribl/accel/estimate'
+import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
 import { asOf, PanelInfo, type ComputedFrom } from '../components/PanelInfo'
 import { DopDiagram, type DopNode, type HopId, type HopState, type InfoKey, type SlotId } from '../components/DopDiagram'
@@ -27,6 +29,40 @@ const LAKE_EARLIEST = '-30d'
 /** The schedule in words, for the card's ⓘ. DataFlow.test.tsx holds this against
  *  the manifest's own cron, so changing one forces the other. */
 export const LAKE_CADENCE = 'once a day, at 00:10 UTC'
+
+/**
+ * The scheduled search behind the Cribl stage counters — the last live query on
+ * this tab.
+ *
+ * The two figures beside it have been served since Phase 2: the record-derived
+ * volumes read the hourly overview scan and the Lake total reads its own daily
+ * run. This one query was what kept the whole diagram reporting LIVE, and an
+ * undated diagram is the one thing the merge below could not fix.
+ *
+ * THE WINDOW IS THE POINT HERE, not the cost. METRICS_QUERY sums counters, so
+ * the window is not a sample of a population — it IS the interval being counted,
+ * and every figure on the diagram scales with it. The entry therefore reads the
+ * same fifteen settled minutes the overview scan does, because the diagram's
+ * whole claim is that the record-derived count and the telemetry count AGREE.
+ * Served over different lengths they would not, and the shortfall would read as
+ * data being dropped between two stages.
+ */
+const PIPELINE_ACCEL: AccelId = 'gno_pipeline_c1h'
+const PIPELINE_ENTRY = accelEntry(PIPELINE_ACCEL)
+/** The schedule in words, for the stage ⓘs. DataFlow.test.tsx holds these
+ *  against the manifest's own cron and window, so moving one forces the other. */
+export const PIPELINE_CADENCE = 'once an hour, at 24 minutes past, in UTC'
+export const PIPELINE_WINDOW = SNAPSHOT_WINDOW
+/**
+ * How many seconds of data a served run of it covers.
+ *
+ * Read off the manifest and off BOTH bounds, which `windowSeconds('-18m')` would
+ * not do: the window is -18m…-3m, so it is fifteen minutes and not eighteen.
+ * The rate under the Sources plate divides an event count by this, and dividing
+ * a fifteen-minute count by the picker's twenty-four hours would report a rate
+ * ninety-six times too low — formatted exactly like a correct one.
+ */
+const PIPELINE_WINDOW_SECONDS = (windowMinutes(PIPELINE_ENTRY) ?? 15) * 60
 
 /** Volume figures for the current window, shared by every stage. */
 interface Volume {
@@ -256,20 +292,27 @@ function buildNodes(v: Volume): Record<SlotId, DopNode> {
  * click away on the diagram itself rather than only on the selected stage below.
  * Destinations and Cribl Lake are two halves of the same stage, so they share one.
  */
-function stageInfo(lake: ComputedFrom): Partial<Record<InfoKey, ReactNode>> {
+function stageInfo(lake: ComputedFrom, telemetry: ComputedFrom): Partial<Record<InfoKey, ReactNode>> {
   const of = (id: string, computed?: ComputedFrom) => {
     const s = STAGES.find((x) => x.id === id)!
     return <PanelInfo about={s.purpose} aboutHeading="What this stage does" links={s.links} computed={computed} />
   }
   return {
+    // No "how this was computed" on these two: both figures are read back off
+    // the AMI records rather than from any counter, and they follow the volume
+    // query's own provenance, which the diagram's caption already carries.
     gigasmart: of('gigasmart'),
     amx: of('amx'),
-    sources: of('datagen'),
-    stream: of('pipeline'),
-    // Only the Cribl Lake card carries a figure that may come from a scheduled
-    // run; Destinations shares this stage's prose but reports what the selected
-    // window wrote, live, so it gets no "how this was computed" block.
-    destinations: of('lake'),
+    // The three plates that read cribl_metrics. Each one now carries where its
+    // counter came from, because each can answer from the hourly run — a figure
+    // from a stored run is never shown undated, and these have a title and an ⓘ
+    // of their own inside the diagram.
+    sources: of('datagen', telemetry),
+    stream: of('pipeline', telemetry),
+    // Destinations shares the Lake stage's prose but reports what the window
+    // WROTE, which is a cribl_metrics counter — so it takes the telemetry
+    // provenance, not the Lake card's daily one.
+    destinations: of('lake', telemetry),
     lake: of('lake', lake),
     search: of('search'),
     app: of('app'),
@@ -304,8 +347,12 @@ export function DataFlow() {
   // Served by the hourly overview scan, which carries these three aggregates
   // alongside four other panels' — one scan instead of five.
   const agg = useSearch(VOLUME_QUERY, { accel: 'gno_overview_c1h', accelPanel: 'data-flow-volume', accelEnabled })
-  // Cribl's own component telemetry for the Cribl stages.
-  const met = useSearch(METRICS_QUERY)
+  // Cribl's own component telemetry for the Cribl stages, served by its own
+  // hourly run of the same string over the same fifteen minutes the volume
+  // figures beside it read. See PIPELINE_ACCEL: this was the last live query on
+  // the tab, and the reason the diagram reported LIVE with the two figures
+  // either side of it already coming from stored runs.
+  const met = useSearch(METRICS_QUERY, { accel: PIPELINE_ACCEL, accelEnabled })
   // Lake total is deliberately pinned to the retention period, NOT the page
   // range, and loads independently so its ~17s scan never blocks the diagram.
   // It is served by a daily scheduled run of this same string where there is one
@@ -316,13 +363,17 @@ export function DataFlow() {
   // one ⓘ. This tab draws a diagram and a stage-detail card instead, so nothing
   // registered and the header read `Snapshot · nothing on this tab reads a
   // query` on the tab that motivated the whole phase: three searches run here,
-  // two of them served from schedules, one of them the 9,297.7 CPU-s Lake total.
+  // ALL THREE now served from schedules, one of them the 9,297.7 CPU-s Lake
+  // total. (It said "two of them" until gno_pipeline_c1h landed.)
   //
   // Two slots, because the tab's own toolbar already tells the reader these are
   // two provenances and not one:
-  //   * the diagram's volumes — record-derived (`agg`, hourly) mixed with Cribl's
-  //     own telemetry (`met`, never scheduled). Merged, so it reports LIVE: a
-  //     picture half of which ran a moment ago may not carry a snapshot date.
+  //   * the diagram's volumes — record-derived (`agg`, hourly) beside Cribl's
+  //     own telemetry (`met`, hourly since gno_pipeline_c1h). Still merged, and
+  //     the merge is what makes the answer honest in BOTH directions: with both
+  //     served it reports the older of the two runs, and the moment either one
+  //     falls back to live it reports LIVE again, because a picture half of
+  //     which ran a moment ago may not carry a snapshot date.
   //     mergeSnapshotStates's rule, and the same one Security's grid follows.
   //   * the Cribl Lake card, which has a title and an ⓘ of its own inside the
   //     diagram and is served by its own daily run. It is the figure a reader
@@ -361,7 +412,11 @@ export function DataFlow() {
     dstBytes: toNum(mrow?.dst_bytes),
     blocked: toNum(mrow?.blocked),
     backpressure: toNum(mrow?.backpressure),
-    windowSec: windowSeconds(range.earliest),
+    // The window the TELEMETRY was counted over, which is the only thing this
+    // is used for (the events/second under the Sources plate). Once `met` can
+    // answer from a stored run, that is the schedule's fifteen minutes and not
+    // whatever the picker says — see PIPELINE_WINDOW_SECONDS.
+    windowSec: met.source === 'schedule' ? PIPELINE_WINDOW_SECONDS : windowSeconds(range.earliest),
     lakeTotalEvents: toNum(lrow?.total_events),
     lakeTotalBytes: toNum(lrow?.total_bytes),
     lakeTotalLoading: lakeTotal.loading,
@@ -370,6 +425,18 @@ export function DataFlow() {
     lakeTotalStale: lakeTotal.stale,
   }
   const loading = agg.loading || met.loading
+  /** Where the three cribl_metrics plates got their counters, for block 4 of
+   *  each one's ⓘ. */
+  const metComputed: ComputedFrom = {
+    source: met.source,
+    at: met.at,
+    stale: met.stale,
+    cadence: PIPELINE_CADENCE,
+    window: PIPELINE_WINDOW,
+    fallback: met.note,
+    live: 'switch the header to Live — this counter is cheap to run, unlike the Lake total below it',
+    capSeconds: capSecondsFor(met.source === 'schedule' ? PIPELINE_ENTRY.earliest : range.earliest),
+  }
   const selected = STAGES.find((s) => s.id === sel)!
 
   return (
@@ -399,11 +466,22 @@ export function DataFlow() {
           aria-label="Refresh data-flow volumes" title="Refresh data-flow volumes">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></svg>
         </button>
+        {/* THE RANGE SENTENCE USED TO SAY "every figure is scoped to the range
+            above", and by the time the telemetry was served that was true of
+            neither side of the diagram: the record-derived volumes read the
+            hourly overview scan and the counters read their own hourly run.
+            Both read the same fifteen settled minutes, which is what keeps the
+            two sides comparable — and that is worth saying, because the whole
+            diagram is an argument that they agree. */}
         <span className="flow-tb-note">
-          <span className="prov prov-cribl">Cribl metrics</span> = live component telemetry from{' '}
+          <span className="prov prov-cribl">Cribl metrics</span> = component telemetry from{' '}
           <code>cribl_metrics</code>; <span className="prov prov-records">from records</span> = computed from the
-          AMI data itself. Every figure is scoped to the range above, except the <em>Cribl Lake</em> card, which reports
-          the full 30-day retention{lakeTotal.source === 'schedule'
+          AMI data itself.{agg.source === 'schedule' || met.source === 'schedule'
+            ? <> The diagram{agg.source === met.source ? "'s two sides both read" : ' reads'} the same settled fifteen
+              minutes from an hourly run, so the stages still compare — each plate&apos;s <strong>ⓘ</strong> says
+              which run it read. The range above applies to whatever is still running live.</>
+            : <> Every figure is scoped to the range above.</>} The <em>Cribl Lake</em> card is separate either way: it
+          reports the full 30-day retention{lakeTotal.source === 'schedule'
             ? <> from a scheduled daily run — the card says when that run finished, and its <strong>ⓘ</strong> says why</>
             : <> by totalling thirty days now</>}.
         </span>
@@ -419,7 +497,7 @@ export function DataFlow() {
         selected={sel}
         onSelect={setSel}
         loading={loading}
-        info={stageInfo(lakeComputed(lakeTotal))}
+        info={stageInfo(lakeComputed(lakeTotal), metComputed)}
       />
 
       <section className="panel">
@@ -431,7 +509,13 @@ export function DataFlow() {
           <span className="panel-note">
             {loading
               ? 'querying…'
-              : <><span className={`flow-pulse ${vol.dstEvents > 0 ? 'flow-pulse-on' : ''}`} />{fmtCount(vol.dstEvents)} events into Lake · {range.label.toLowerCase()}</>}
+              : <><span className={`flow-pulse ${vol.dstEvents > 0 ? 'flow-pulse-on' : ''}`} />{fmtCount(vol.dstEvents)} events into Lake · {
+                  // This is a cribl_metrics counter, so it answers for the
+                  // window that counted it. Labelling a fifteen-minute figure
+                  // "last 24 hours" because the picker says so is the one
+                  // mislabelling a reader cannot catch.
+                  met.source === 'schedule' ? 'hourly snapshot · 15 min' : range.label.toLowerCase()
+                }</>}
           </span>
         </header>
         <div className="panel-body">
