@@ -686,16 +686,30 @@ describe('the two Lake specs', () => {
     expect(DESTINATION_SPEC).toEqual({ id: 'gigamon_lake', type: 'cribl_lake', ...destinationSpec(DEFAULT_PROFILE).set })
   })
 
-  it('still describes exactly what this app has always provisioned', () => {
-    // The point of parameterising is that the DEFAULT is unchanged. If this
-    // fails, Phase 3 changed a customer's landing, which it is explicitly not
-    // allowed to do — the format migration is Phase 4's, behind P-S1 and P-S5.
-    expect(DATASET_SPEC).toEqual({
+  it('still lands a customer on JSON, 30 days — the part Phase 3 may not change', () => {
+    // WHAT THIS GUARDS, and it is narrower than it was. `format` and
+    // `retentionPeriodInDays` decide a customer's LANDING, and `format` is
+    // creation-only — get it wrong and the tenant is locked into it for the life
+    // of the dataset. Those two stay pinned.
+    //
+    // The READER is a different kind of setting and it was deliberately changed
+    // on 2026-09-22: `searchConfig` now says v2, because P-S7 measured v2 at
+    // 3.7-12.7x on identical rows and the app was still creating v1 datasets
+    // while this workspace ran v2. It is not creation-only, so it is reversible;
+    // the default was wrong, not the mechanism.
+    expect(DATASET_SPEC).toMatchObject({
       id: 'gigamon_ami',
       description: 'Gigamon Application Metadata Intelligence (AMI) flow records',
       retentionPeriodInDays: 30,
       format: 'json',
     })
+    // The reader is v2 and reads BOTH object kinds — a dataset created today
+    // holds only JSON, but the filter that would drop Parquet later is the one
+    // that makes a format change unreadable, so it is never written narrow.
+    expect((DATASET_SPEC as { searchConfig?: { searchVersion?: string } }).searchConfig?.searchVersion).toBe('v2')
+    // Still creation-only and still empty: partitions are Phase 4's, and an
+    // empty acceleratedFields is omitted rather than sent as [].
+    expect(DATASET_SPEC).not.toHaveProperty('acceleratedFields')
     expect(DESTINATION_SPEC).toEqual({
       id: 'gigamon_lake',
       type: 'cribl_lake',

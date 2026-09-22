@@ -225,7 +225,21 @@ export const DEFAULT_PROFILE: LandingProfile = Object.freeze({
   partitions: Object.freeze([]) as readonly string[],
   flush: Object.freeze({ maxFileSizeMB: 5, maxFileOpenTimeSec: 60, maxFileIdleTimeSec: 15 }) as FlushSettings,
   dropRaw: false,
-  searchVersion: 'v1' as SearchVersion,
+  // v2, AND THE OLD DEFAULT WAS A SHIPPED DEFECT. This read 'v1' until
+  // 2026-09-22, so every tenant onboarded by Guided Setup got the SLOW reader
+  // while this workspace ran the fast one — P-S7 flipped `gigamon_ami` to v2 by
+  // hand on 2026-09-21 and nothing moved the default behind it.
+  //
+  // Measured that day, same rows, one frozen 15-minute window, three runs each:
+  // Q1 3,166 ms -> 867, Q13 11,341 -> 892, Q29 3,182 -> 809, Q32 3,155 -> 847.
+  // Identical results — additive columns, group keys and all 52 percentile
+  // values agreed. Q13 is the slowest interactive class in the app and v2 moves
+  // it inside the sub-second band.
+  //
+  // Unlike `format` and `acceleratedFields` this is NOT creation-only, so an
+  // existing dataset can still be flipped. The default matters anyway: nobody
+  // flips what they were never told was slow.
+  searchVersion: 'v2' as SearchVersion,
 })
 
 // ── Retention ───────────────────────────────────────────────────────────────

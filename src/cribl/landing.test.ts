@@ -118,7 +118,15 @@ describe('datasetSpec', () => {
   })
 
   it('omits searchConfig on v1 and carries both object kinds on a Parquet dataset', () => {
-    expect(datasetSpec(DEFAULT_PROFILE)).not.toHaveProperty('searchConfig')
+    // v1 is no longer the DEFAULT — that changed on 2026-09-22 — but it is still
+    // a profile a caller can build, and on it the key must be absent rather than
+    // present-and-empty. Asserted through an explicit v1 profile now that
+    // DEFAULT_PROFILE no longer supplies one.
+    expect(datasetSpec(profile({ searchVersion: 'v1' }))).not.toHaveProperty('searchConfig')
+    // And the default a new install gets IS v2, reading both object kinds.
+    const dflt = datasetSpec(DEFAULT_PROFILE).searchConfig as { searchVersion: string; pathFilters: unknown[] }
+    expect(dflt.searchVersion).toBe('v2')
+    expect(dflt.pathFilters).toHaveLength(1)
 
     const json = datasetSpec(profile({ searchVersion: 'v2' })).searchConfig as { pathFilters: unknown[] }
     expect(json.pathFilters).toHaveLength(1)
