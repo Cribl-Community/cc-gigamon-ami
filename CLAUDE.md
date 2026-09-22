@@ -89,7 +89,13 @@ Key constants in `config.ts`: `SEARCH_GROUP = 'default_search'` (search **always
   Nothing here may import a `.tsx` or anything that reaches one (`../cribl/useSearch`, `../app/*`,
   `../components/*`), because the extractor loads these modules under plain Node. Static reference
   data that *generates* queries (`FINDINGS`, `TECHNIQUES`, `AI_APPS`) lives in `src/data/` for the
-  same reason; the rest of `src/data/` is display reference (`amiFields`, `pqc`).
+  same reason; the rest of `src/data/` is display reference (`amiFields`, `pqc`) and **client-side
+  classifiers** (`SAAS_APPS`) — a list that appears in no query string but decides which rows land
+  in a panel. The extractor's own word for why the third kind belongs here is the `catalogs` bucket:
+  *"data that moves a number without ever appearing in a query string"*. **Export them as arrays,
+  never as `Set`s** — the digest is `JSON.stringify(value)`, every `Set` stringifies to `"{}"`, so a
+  `Set` here freezes to a constant that an empty one would also produce, and the gate is dead while
+  still looking live. Build the `Set` in the tab, as `ShadowAi.tsx` does.
   *Corrected in PR #4 (2026-09-16). This section used to say each tab "define[s] KQL query constants
   at module scope".*
 - `src/cribl/search.ts` — the Search client. `runSearch(query, opts)` POSTs a job to `/m/default_search/search/jobs`, polls `/status` to completion, then reads `/results` (NDJSON: a header line with `totalEventCount`, then one JSON row per line). Retries 429/5xx with backoff. `q(pipeline)` prefixes `dataset="gigamon_ami"` onto a pipeline. `withExecPrefix` prefixes `set max_running_time_per_search=` from the cap tiers, scaled by the window the query reads — **execution only, never in an ⓘ**. It also prefixes `set allow_previous_results="2min"` (`REUSE_WINDOW`) when the caller passes `reuse` — measured 30.92 s → 0.95 s and zero billed on a repeat of the same query at the same relative range (A-SP21), matched on the *relative* range spec. It is off by default, and refused outright on a `$vt_results` read (A-D15), so a caller that submits a job to measure something still measures. Job status is polled on a ramp (`POLL_RAMP_MS`: 100 ms rising to a 1.5 s ceiling), not the flat 700 ms it used to be. A job the cap stops ends `failed` and surfaces as `SearchTimeLimitError`, which panels render as *Search stopped*; `cancelJob` stops an abandoned or over-running job on the server. `runFieldSummaries` uses the `/field-summaries` endpoint. **KQL reminders live in the header comment** — e.g. use `count_distinct()`/`dcount()` not `dc()`, `sort by <col> desc`.

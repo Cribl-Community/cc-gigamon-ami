@@ -159,7 +159,7 @@ export const LABELS: readonly MetricLabel[] = Object.freeze([
   { name: 'src_service', from: 'src_aws_flat_tags_name', fallback: 'untagged', cardinality: 10, note: 'present on 7.6% of events' },
   { name: 'l4', from: 'l4_proto', fallback: 'unknown', cardinality: 3 },
   { name: 'app', from: 'app_name', fallback: 'unknown', cardinality: 90 },
-  { name: 'app_class', from: null, fallback: 'other', cardinality: 3, note: 'ai | saas | other, from the repo AI_APPS and SAAS_APPS sets — a FUNCTION of app, not independent of it' },
+  { name: 'app_class', from: null, fallback: 'other', cardinality: 3, note: 'ai | saas | other, from the repo AI_APPS and SAAS_APPS lists — a FUNCTION of app, not independent of it' },
   { name: 'http_class', from: 'http_code', fallback: 'unknown', cardinality: 5, note: '1xx..5xx' },
   { name: 'http_host', from: 'http_host', fallback: 'unknown', cardinality: 14, note: 'guarded' },
   { name: 'http2_host', from: 'http2_host', fallback: 'unknown', cardinality: 40, note: 'guarded' },

@@ -18,7 +18,7 @@
     "briefs": 17,
     "prose": 18,
     "modules": 157,
-    "catalogs": 13,
+    "catalogs": 14,
     "states": 35,
     "passthrough": 3,
     "unbound": 22
@@ -158,6 +158,7 @@
     "src/data/pqc.ts › classifyGroup": "function · sha256 c6352d9e3949317a",
     "src/data/pqc.ts › sensitivityOf": "function · sha256 0460d99aea2f45d0",
     "src/data/pqc.ts › tlsVersionLabel": "function · sha256 3794410062707cad",
+    "src/data/saasApps.ts › SAAS_APPS": "28 entries · sha256 9f4f59f2fca97b55",
     "src/data/techniques.ts › TECHNIQUES": "7 entries · sha256 2218150543922c22"
   },
   "modules": {

@@ -8,15 +8,15 @@ import { type ComputedFrom } from '../components/PanelInfo'
 import { APP_SRC_CADENCE, APP_SRC_WINDOW } from '../cribl/accel/words'
 import { toNum, str, fmtCount, fmtBytes } from '../lib/format'
 import { AI_APPS } from '../data/aiApps'
+import { SAAS_APPS } from '../data/saasApps'
 import { appsQuery, aiOverallQuery, aiUsersQuery } from '../queries/shadowAi'
 
-// Sanctioned/common SaaS (for the shadow-vs-known split).
-const SAAS_APPS = new Set([
-  'office365', 'microsoft', 'google', 'facebook', 'instagram', 'whatsapp', 'spotify', 'zoom', 'webex',
-  'gotomeeting', 'discord', 'notion', 'splunk', 'datadog', 'launchpad', 'quantcast', 'disqus', 'yahoo',
-  'amazon-cognito', 'google-ads', 'gstatic', 'amazon-aws', 'gcp', 'alibaba-cloud', 'docker', 'capcut',
-  'wondershare', 'filmora',
-])
+// Both lists arrive as arrays and become Sets here. They are arrays in
+// `src/data/` because the query freeze digests `JSON.stringify(value)`, and
+// every Set stringifies to `"{}"` — so a Set there would freeze to a constant
+// and stop catching edits. The Set is what the filter wants; this is where it
+// belongs.
+const SAAS_SET = new Set(SAAS_APPS)
 const AI_SET = new Set(AI_APPS)
 
 /**
@@ -67,7 +67,7 @@ export function ShadowAi() {
   const usersComputed = computedFrom(aiUsers)
 
   const aiApps = apps.rows.filter((r) => AI_SET.has(str(r, 'app_name')))
-  const saasApps = apps.rows.filter((r) => SAAS_APPS.has(str(r, 'app_name')))
+  const saasApps = apps.rows.filter((r) => SAAS_SET.has(str(r, 'app_name')))
   const o = aiOverall.rows[0] ?? {}
   const topAi = aiApps[0] ? str(aiApps[0], 'app_name') : '—'
 

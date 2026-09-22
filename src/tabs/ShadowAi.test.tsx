@@ -236,6 +236,30 @@ describe('Shadow AI, served by one hourly scan', () => {
     expect(tileValue('Top AI app')).toBe('openai')
   })
 
+  it('sends each app to the panel its own list claims it', async () => {
+    // THE ONE THING THE QUERY FREEZE CANNOT CHECK. Both lists live in
+    // `src/data/` and are digested there, so an edit to either is caught — but
+    // the digest says nothing about which panel a list is WIRED to. Swap the two
+    // `Set`s in ShadowAi.tsx and every gate in the repo still passes while the
+    // SaaS panel lists GenAI apps. `zoom` is on the SaaS list and not the AI
+    // one, and `openai` the reverse, so one row each way pins the wiring.
+    stub()
+    await render()
+
+    const panelBody = (title: string) =>
+      [...container.querySelectorAll('.panel')]
+        .find((p) => p.querySelector('.panel-title')?.textContent?.startsWith(title))
+        ?.textContent ?? ''
+
+    const saas = panelBody('SaaS applications')
+    const ai = panelBody('AI & LLM applications')
+
+    expect(saas, 'a known-SaaS app must reach the SaaS panel').toContain('zoom')
+    expect(saas, 'a GenAI app must not reach the SaaS panel').not.toContain('openai')
+    expect(ai, 'a GenAI app must reach the AI panel').toContain('openai')
+    expect(ai, 'a known-SaaS app must not reach the AI panel').not.toContain('zoom')
+  })
+
   it('says when each number was produced', async () => {
     // A schedule that stops firing leaves a perfectly readable result behind. A
     // panel rendering it without a date is the one failure this phase cannot
