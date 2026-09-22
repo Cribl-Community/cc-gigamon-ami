@@ -814,6 +814,20 @@ describe('engineState', () => {
   it('prefers effectiveStatus, which is what the API says is in force', () => {
     expect(engineState([{ status: 'provisioning', effectiveStatus: 'ready' }])).toBe('ready')
   })
+
+  it('does not call a fleet ready while part of it is still building', () => {
+    // THIS SHIPPED THE OTHER WAY ROUND and is the same shape as the defect the
+    // row was repaired for: true of part of the evidence, presented as true of
+    // all of it. A workspace with one engine serving and one still provisioning
+    // is not settled, and the row that says so must not claim it is.
+    expect(engineState([READY, PROVISIONING])).toBe('provisioning')
+    expect(engineState([PROVISIONING, READY])).toBe('provisioning')
+  })
+
+  it('needs EVERY engine ready before it says ready', () => {
+    expect(engineState([READY, READY])).toBe('ready')
+    expect(engineState([READY, { id: 'e2', effectiveStatus: 'failed' }])).toBe('other')
+  })
 })
 
 describe('servesDataset', () => {

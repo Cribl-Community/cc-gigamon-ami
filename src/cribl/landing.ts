@@ -1122,8 +1122,17 @@ export type EngineState = 'none' | 'provisioning' | 'ready' | 'other'
 export function engineState(records: readonly EngineRecordLike[]): EngineState {
   if (records.length === 0) return 'none'
   const states = records.map((e) => String(e.effectiveStatus ?? e.status ?? ''))
-  if (states.some((s) => s === 'ready')) return 'ready'
+  // PROVISIONING WINS OVER READY, and the precedence is a decision rather than
+  // an accident of ordering. This shipped the other way round first — `ready` if
+  // ANY engine was ready — which on a fleet of one ready and one still building
+  // reported a settled workspace and said nothing about the half that was not.
+  // That is the same shape as the defect this row was just repaired for: a
+  // sentence that is true of part of the evidence, presented as true of all of
+  // it. The row answers "is this workspace settled?", so anything still building
+  // makes the answer no, and the error leans toward claiming LESS readiness than
+  // exists rather than more.
   if (states.some((s) => s === 'provisioning')) return 'provisioning'
+  if (states.every((s) => s === 'ready')) return 'ready'
   return 'other'
 }
 

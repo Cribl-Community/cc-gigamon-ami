@@ -1,7 +1,10 @@
 // The typed read client for everything the Lake landing panel shows.
 //
-// Nine endpoints across three product surfaces — Cribl Lake, Cribl Search and
-// Cribl Stream — all over `capi`, none of them a write. The writes are next door
+// Ten paths across three product surfaces — Cribl Lake, Cribl Search and
+// Cribl Stream — all over `capi`, none of them a write. Ten paths but NINE
+// landing rows: `localSearch` is one row that reads two of them (see
+// `getLocalSearch`), which is why a count of rows and a count of paths disagree
+// here and the header says both. The writes are next door
 // in cribl/lakeLanding.ts, and the split is deliberate rather than tidy: every
 // write in this phase edits a live shared object behind a confirmation, so
 // keeping them in one file means the "only after `confirm`" rule is checkable by

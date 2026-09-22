@@ -328,10 +328,14 @@ policies:
   - object: '/m/default_search/search/datasets/gigamon_ami'
     actions: ['GET']
 
-  # Whether this workspace has Cribl Search local engines — the acceleration tier
-  # the panel reports. A 404 means local search is not enabled, which is the
-  # ordinary state of most tenants and is shown as a value, not as a fault. The
-  # engines are counted only once local search says it exists.
+  # Whether this workspace has Cribl Search local engines. A 404 means local
+  # search is not enabled, which is the ordinary state of most tenants and is
+  # shown as a value, not as a fault. BOTH paths are read every time, including
+  # on that 404: the engines list does not 404 in the zero-engine state, it
+  # answers 200 with an empty list, so it is the only response that separates
+  # "local search is on and nothing is sized for it" from "local search is not on
+  # this tenant". An engine serves the local_search ingest datasets; it does not
+  # accelerate a Cribl Lake dataset, which is what the panel row now says.
   - object: '/m/default_search/search/local_search'
     actions: ['GET']
   - object: '/m/default_search/search/local_search/engines'
