@@ -35,6 +35,8 @@ import {
   listDatasets,
   listInputs,
   listLocalEngines,
+  engineState,
+  servesDataset,
   listRoutes,
   listStreamGroupsCurrent,
 } from './lake'
@@ -295,7 +297,7 @@ describe('getLocalSearch', () => {
     stub({ [PATH]: [404, { message: 'LocalSearch is not enabled' }] })
     const r = await getLocalSearch()
     expect(r.outcome).toBe('ok')
-    expect(r.value).toEqual({ enabled: false, engines: 0, raw: null })
+    expect(r.value).toEqual({ enabled: false, engines: 0, records: [], enginesStatus: 200, raw: null })
   })
 
   it('counts the engines once local search says it exists', async () => {
@@ -303,10 +305,61 @@ describe('getLocalSearch', () => {
     expect((await getLocalSearch()).value).toMatchObject({ enabled: true, engines: 2 })
   })
 
-  it('does not ask for engines on a tenant that has no local search', async () => {
+  it('asks for engines even when local search 404s, because that answer is not a 404', async () => {
+    // THIS TEST USED TO PIN THE OPPOSITE, and the reasoning was wrong rather
+    // than the code. It skipped the engine list on a 404 to avoid "a second row
+    // of noise" — but the engine list does not 404 in that state. Measured
+    // 2026-09-22: it answers 200 with an empty list. So the skipped call was the
+    // only thing that separates "local search is on and nothing is sized" from
+    // "local search is not on this tenant", and skipping it threw that away.
     const calls = stub({ [PATH]: [404, {}] })
     await getLocalSearch()
-    expect(calls.map((c) => c.path)).toEqual([PATH])
+    expect(calls.map((c) => c.path).sort()).toEqual([PATH, `${PATH}/engines`])
+  })
+
+  it('carries the engine records, because a COUNT cannot tell provisioning from ready', async () => {
+    // The defect this widening exists for. On 2026-09-22 a provisioning engine
+    // and a ready one both reported "enabled, 1 engine" — the same two fields,
+    // the same values, two different facts about the workspace.
+    const provisioning = { id: 'e1', status: 'provisioning', effectiveStatus: 'provisioning', datasets: [] }
+    const ready = { id: 'e1', status: 'ready', effectiveStatus: 'ready', datasets: ['main', 'metrics'] }
+
+    stub({ [PATH]: [200, { items: [{}] }], [`${PATH}/engines`]: [200, { items: [provisioning] }] })
+    const mid = (await getLocalSearch()).value!
+    stub({ [PATH]: [200, { items: [{}] }], [`${PATH}/engines`]: [200, { items: [ready] }] })
+    const done = (await getLocalSearch()).value!
+
+    expect(mid.engines, 'the count is the same in both states — that is the bug').toBe(done.engines)
+    expect(engineState(mid.records)).toBe('provisioning')
+    expect(engineState(done.records)).toBe('ready')
+  })
+
+  it('reports whether an engine serves a given dataset, which "1 engine" cannot', async () => {
+    // A Search local engine serves the local_search ingest datasets; a Lakehouse
+    // is what accelerates a Lake dataset. Measured: this engine serves
+    // ['main','metrics'] and a gigamon_ami query still reports cacheStatus
+    // "miss", reason "No Lakehouse Configured".
+    const ready = { id: 'e1', status: 'ready', effectiveStatus: 'ready', datasets: ['main', 'metrics'] }
+    stub({ [PATH]: [200, { items: [{}] }], [`${PATH}/engines`]: [200, { items: [ready] }] })
+    const v = (await getLocalSearch()).value!
+
+    expect(servesDataset(v.records, 'main')).toBe(true)
+    expect(servesDataset(v.records, 'gigamon_ami')).toBe(false)
+  })
+
+  it('separates an unreadable engine list from an empty one', async () => {
+    // engines:null and records:[] is "this app does not know"; engines:0 with
+    // records:[] is "it looked, and there are none". A single count conflates them.
+    stub({ [PATH]: [200, { items: [{}] }], [`${PATH}/engines`]: [403, {}] })
+    const denied = (await getLocalSearch()).value!
+    expect(denied.engines).toBeNull()
+    expect(denied.records).toEqual([])
+    expect(denied.enginesStatus).toBe(403)
+
+    stub({ [PATH]: [200, { items: [{}] }], [`${PATH}/engines`]: [200, { items: [] }] })
+    const empty = (await getLocalSearch()).value!
+    expect(empty.engines).toBe(0)
+    expect(empty.enginesStatus).toBe(200)
   })
 
   it('answers null engines, not zero, when the engine list could not be read', async () => {

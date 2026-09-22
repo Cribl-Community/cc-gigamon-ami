@@ -396,7 +396,60 @@ export interface LocalSearchTier {
    * not know. A sentinel number would have been a count nobody measured.
    */
   engines: number | null
+  /**
+   * The engine records themselves, not just how many.
+   *
+   * A COUNT CANNOT ANSWER THE QUESTIONS THIS ROW IS ASKED. Measured 2026-09-22:
+   * while `Gigamon_LHE` was *provisioning* this tier reported "enabled, 1
+   * engine" — byte-identical to what it reports now the engine is **ready**. An
+   * engine that is still building and one that is serving are different facts
+   * about a workspace, and `engines: 1` is both. The records carry `status`,
+   * `effectiveStatus` and `datasets`, which is what `engineState` and
+   * `servesDataset` below read.
+   *
+   * Empty is not the same as `engines: null`: empty means the list was read and
+   * held nothing, null means it could not be read at all.
+   */
+  records: readonly Readonly<Record<string, unknown>>[]
+  /**
+   * The HTTP status the engine list answered with, so a caller can tell "the
+   * endpoint is there and nothing is configured" (200 + empty) from "the
+   * endpoint is not there at all" (404) — a distinction the count erases.
+   */
+  enginesStatus: number | null
   raw: Readonly<Record<string, unknown>> | null
+}
+
+/**
+ * What an engine is actually doing, from its own record.
+ *
+ * `other` rather than a guess: only `provisioning` and `ready` have been
+ * observed on the wire, and the API publishes seven values for `status`. A
+ * state this app has never seen is reported as unknown rather than mapped onto
+ * the nearest word, because the nearest word is what a reader would act on.
+ */
+export type EngineState = 'none' | 'provisioning' | 'ready' | 'other'
+
+export function engineState(records: readonly Readonly<Record<string, unknown>>[]): EngineState {
+  if (records.length === 0) return 'none'
+  const states = records.map((e) => String(e.effectiveStatus ?? e.status ?? ''))
+  if (states.some((s) => s === 'ready')) return 'ready'
+  if (states.some((s) => s === 'provisioning')) return 'provisioning'
+  return 'other'
+}
+
+/**
+ * Does any engine actually serve this dataset?
+ *
+ * The question the "Acceleration tier" row has to answer and could not. A
+ * Cribl Search local engine serves the `local_search` ingest datasets — measured
+ * `["main","metrics"]` — and a Cribl **Lakehouse** is what accelerates a Lake
+ * dataset. They are different features, so "an engine exists" implies nothing
+ * about `gigamon_ami`: with this engine ready, a `gigamon_ami` query still
+ * reports `cacheStatus "miss", reason "No Lakehouse Configured"`.
+ */
+export function servesDataset(records: readonly Readonly<Record<string, unknown>>[], dataset: string): boolean {
+  return records.some((e) => (Array.isArray(e.datasets) ? e.datasets : []).map(String).includes(dataset))
 }
 
 /**
@@ -405,23 +458,40 @@ export interface LocalSearchTier {
  * 404 IS "NOT PROVISIONED", NOT A FAILURE. The endpoint answers
  * "LocalSearch is not enabled" on a tenant without it, which is the ordinary
  * state of most tenants; every search in this app runs exactly as it always has.
- * The engines list is only asked for once local search says it exists, because a
- * second 404 for the same reason is a second row of noise.
+ *
+ * BOTH CALLS RUN, ALWAYS, AND IN PARALLEL. This used to skip the engine list on
+ * a 404, reasoning that "a second 404 for the same reason is a second row of
+ * noise". Measured 2026-09-22: the engine list does **not** 404 in that state —
+ * it answers `200 {"items":[],"count":0}`. So the skipped call was the one
+ * response that distinguishes "local search exists and nothing is sized for it"
+ * from "local search is not on this tenant at all", and the optimisation was
+ * discarding the only evidence that told them apart. They are issued together
+ * rather than in sequence because neither depends on the other's answer.
  */
 export async function getLocalSearch(init: CapiInit = {}): Promise<ReadResult<LocalSearchTier>> {
   const object = `${SEARCH_ROOT}/local_search`
   try {
-    const r = await capi('GET', `${SEARCH_ROOT}/local_search`, undefined, init)
-    if (r.status === 404) return ok(object, { enabled: false, engines: 0, raw: null }, r.status)
+    const [r, engines] = await Promise.all([
+      capi('GET', `${SEARCH_ROOT}/local_search`, undefined, init),
+      listLocalEngines(init),
+    ])
+    // An unreadable engine list does not unmake the tier: local search IS
+    // enabled, and reporting zero engines because a second call was refused
+    // would be a number this app made up.
+    const readable = engines.outcome === 'ok'
+    const records: readonly Readonly<Record<string, unknown>>[] = readable
+      ? Object.freeze((engines.value ?? []).map((e) => Object.freeze({ ...e })))
+      : Object.freeze([])
+    const counted = readable ? records.length : null
+
+    if (r.status === 404) {
+      return ok(object, { enabled: false, engines: counted, records, enginesStatus: engines.status, raw: null }, r.status)
+    }
     if (r.status !== 200) return failed(object, r)
     const first = items(r.body)[0] ?? {}
-    const engines = await listLocalEngines(init)
     return ok(
       object,
-      // An unreadable engine list does not unmake the tier: local search IS
-      // enabled, and reporting zero engines because a second call was refused
-      // would be a number this app made up.
-      { enabled: true, engines: engines.outcome === 'ok' ? (engines.value?.length ?? 0) : null, raw: Object.freeze({ ...first }) },
+      { enabled: true, engines: counted, records, enginesStatus: engines.status, raw: Object.freeze({ ...first }) },
       r.status,
     )
   } catch (err) {
