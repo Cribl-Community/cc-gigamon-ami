@@ -12,6 +12,13 @@ interface PanelProps {
   info?: string
   /** Cribl Search (KQL) query behind the panel, revealed in the ⓘ popover. */
   query?: string
+  /** A PromQL expression to show as a second block in the ⓘ — cookbook cards
+   *  only. Forwarded for the same reason `computed` is: a call site that builds
+   *  its own <PanelInfo> inside `title` moves `query=` off this element and the
+   *  panel silently leaves src/queries/__frozen__/display.json. */
+  promql?: string
+  /** Where that expression opens, when there is somewhere. @see PanelInfo */
+  promqlHref?: string
   /**
    * Where the figure actually came from — a stored run of a scheduled search, or
    * a live query — and when.
@@ -93,7 +100,7 @@ function RefreshIcon() {
 /** A titled dashboard panel (card). The ⓘ next to the title opens a popover
  *  explaining the panel and revealing the exact Cribl Search query behind it.
  *  An optional refresh button re-runs only this panel's query. */
-export function Panel({ title, note, info, query, computed, infoLabel, infoDialogLabel, onRefresh, refreshing, children, className = '', tourId, anchorRef, snapshot, onRunLive, liveOnly }: PanelProps) {
+export function Panel({ title, note, info, query, promql, promqlHref, computed, infoLabel, infoDialogLabel, onRefresh, refreshing, children, className = '', tourId, anchorRef, snapshot, onRunLive, liveOnly }: PanelProps) {
   // Unconditional: every mounted panel is part of the census denominator, so a
   // tab of six with two snapshots reports `2 of 6` rather than `2 of 2`.
   useSnapshotSlot(snapshot ? { ...snapshot, liveOnly } : undefined)
@@ -117,10 +124,12 @@ export function Panel({ title, note, info, query, computed, infoLabel, infoDialo
           {title && (
             <h3 className="panel-title">
               {title}
-              {(info || query) && (
+              {(info || query || promql) && (
                 <PanelInfo
                   about={info}
                   query={query}
+                  promql={promql}
+                  promqlHref={promqlHref}
                   computed={computed}
                   label={infoLabel}
                   dialogLabel={infoDialogLabel}

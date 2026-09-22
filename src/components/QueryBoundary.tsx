@@ -40,6 +40,20 @@
 // defaults to `'light'` and this app defaults to dark, so the illustration
 // arrives wrong unless the theme is passed. That is the one thing the wrapper
 // was really for, and it is one line at the call site until there are two.
+//
+// ASKED AGAIN 2026-09-22, ANSWERED AGAIN — owner's decision, Phase 6 slice 6.5.
+// It came back with two named first callers, and neither carried it:
+//   • "No permission" is not a SURFACE in this app. Refusal is control-level
+//     everywhere — `<GatedControl unavailable=…>` and `<GateNote>`, rendered
+//     beside the button that was refused. There is nothing whole-tab to convert.
+//   • The on-prem case is real (a 404 on the Lake config is a PANEL-level state,
+//     not a row one) but it is singular, and it lives in a panel that already
+//     has its own treatment for it.
+// Weighing against: `components/TabStub.tsx` is already a whole-surface blank
+// slate with ZERO callers in this repo. Shipping a second unused one is the
+// thirteenth-variant failure CLAUDE.md names, not a step away from it.
+// Revisit only when a state arrives that neither this nor StatusPill can say —
+// and name that state in the request.
 
 import type { ReactNode } from 'react'
 import { IS_INSTALLED } from '../cribl/config'

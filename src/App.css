@@ -590,8 +590,11 @@ body {
   color: token('color.foreground.info.default');
   background: token('color.background.application'); border: 1px solid var(--gm-border);
   border-radius: 8px; padding: var(--gm-sp-10) var(--gm-sp-10); white-space: pre-wrap; word-break: break-word;
-  cursor: pointer;
 }
+/* The pointer belongs to the LINK, not to the code. A PromQL block rendered
+   without a `promqlHref` is text nothing happens on, and a hand cursor over it
+   is the affordance making a promise the block cannot keep. */
+.pinfo-code-link .pinfo-code { cursor: pointer; }
 .pinfo-code-link:hover .pinfo-code { border-color: token('color.background.info.solid.default'); }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gm-sp-18); }

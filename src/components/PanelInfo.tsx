@@ -51,6 +51,32 @@ interface Props {
   dialogLabel?: string
   /** When the figure was produced, and by which run — see `ComputedFrom`. */
   computed?: ComputedFrom
+  /**
+   * A PromQL expression shown beside the KQL, for a cookbook card whose point is
+   * the expression itself rather than a number on this page.
+   *
+   * It is a SECOND block, never a replacement: a card that carries both is
+   * saying "here is the search this app ran, and here is the PromQL you would
+   * write against the metrics". Query behaviour is untouched — nothing here is
+   * submitted, and `query` alone still decides what "Open in Search" opens.
+   *
+   * NOT run through pretty(). That function splits on `|`, which in KQL is a
+   * pipeline separator and in PromQL is alternation inside a label matcher, so
+   * `up{job=~"api|web"}` would render as two broken lines.
+   */
+  promql?: string
+  /**
+   * Where to open that expression, when there is somewhere to open it.
+   *
+   * A PROP rather than something this component builds, and that is deliberate
+   * twice over. There is no promql equivalent of searchUiUrl() — the caller
+   * knows which Cribl page its expression belongs on — and a third
+   * `searchUiUrl(…)` call in this file would change the pass-through count the
+   * display freeze holds (src/queries/__frozen__/display.json records
+   * `searchUiUrl(query, range.earliest)` at exactly 2). Omitted, the block is
+   * plain text with a Copy button and no link.
+   */
+  promqlHref?: string
 }
 
 /**
@@ -256,11 +282,15 @@ function pretty(q: string): string {
  *    query. Nothing dispatches for those, so the popover follows the anchor on
  *    an animation frame instead of waiting to be told.
  */
-export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed }: Props) {
+export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed, promql, promqlHref }: Props) {
   const { range } = useDashboard()
   const [open, setOpen] = useState(false)
   const [place, setPlace] = useState<Placement>({ top: 0, left: 0, side: 'below' })
   const [copied, setCopied] = useState(false)
+  /** The PromQL block's own Copy state. Separate from `copied` because one
+   *  shared flag makes pressing either Copy tick BOTH buttons, which is a claim
+   *  about what is on the clipboard and it would be wrong half the time. */
+  const [pqCopied, setPqCopied] = useState(false)
   const wrapRef = useRef<HTMLSpanElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
@@ -361,6 +391,18 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
     })
   }
 
+  /** Copy the PromQL exactly as displayed — which is exactly as written. The
+   *  KQL handler copies pretty(query) because the KQL block SHOWS the pretty
+   *  form; the rule is "copy what is on screen", and for PromQL what is on
+   *  screen is the untouched string. */
+  const copyPromql = () => {
+    if (!promql) return
+    navigator.clipboard?.writeText(promql).then(() => {
+      setPqCopied(true)
+      window.setTimeout(() => setPqCopied(false), 1500)
+    })
+  }
+
   return (
     <span className="pinfo" ref={wrapRef}>
       <button
@@ -434,6 +476,45 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
               >
                 <pre className="pinfo-code">{pretty(query)}</pre>
               </a>
+            </div>
+          )}
+          {promql && (
+            /* Under the KQL, never above it and never instead of it. Three
+               existing assertions reach the KQL block with querySelector (first
+               match) — PanelInfo.test.tsx's code block, Copy payload and deep
+               link, and FieldExplorer.test.tsx's popover check — so the order
+               here is what keeps them pointed at the query this ⓘ is about.
+               Nothing in this block is submitted anywhere. */
+            <div className="pinfo-block">
+              <div className="pinfo-h-row">
+                <span className="pinfo-h">Cribl Search · PromQL</span>
+                <span className="pinfo-actions">
+                  {promqlHref && (
+                    <a className="pinfo-open" href={promqlHref} target="_blank" rel="noopener noreferrer">
+                      <OpenIcon /> Open in Cribl
+                    </a>
+                  )}
+                  <button type="button" className="pinfo-copy" onClick={copyPromql}>{pqCopied ? 'Copied ✓' : 'Copy'}</button>
+                </span>
+              </div>
+              {promqlHref ? (
+                <a
+                  className="pinfo-code-link"
+                  href={promqlHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  /* Same reason as the KQL block above: without this the link's
+                     accessible name is the whole expression. */
+                  aria-label="Open this PromQL expression in Cribl"
+                  title="Open this PromQL expression in Cribl (new tab)"
+                >
+                  <pre className="pinfo-code">{promql}</pre>
+                </a>
+              ) : (
+                /* Verbatim. pretty() splits on `|`, which is a pipeline in KQL
+                   and alternation in a PromQL label matcher. */
+                <pre className="pinfo-code">{promql}</pre>
+              )}
             </div>
           )}
           {computed && (

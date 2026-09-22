@@ -14,6 +14,11 @@ interface KpiTileProps {
   info?: string
   /** Cribl Search query backing this stat, revealed in the ⓘ popover. */
   query?: string
+  /** A PromQL expression shown as a second ⓘ block — cookbook cards only.
+   *  @see PanelInfo */
+  promql?: string
+  /** Where that expression opens, when there is somewhere. @see PanelInfo */
+  promqlHref?: string
   /**
    * Where this figure came from and when — the same prop `<Panel>` takes.
    *
@@ -29,12 +34,12 @@ interface KpiTileProps {
 
 /** A KPI stat tile with a colored top border, optional status badge, and an
  *  ⓘ popover explaining the stat and revealing the query behind it. */
-export function KpiTile({ label, value, unit, sub, accent = 'neutral', badge, info, query, computed }: KpiTileProps) {
+export function KpiTile({ label, value, unit, sub, accent = 'neutral', badge, info, query, promql, promqlHref, computed }: KpiTileProps) {
   return (
     <div className={`kpi kpi-${accent}`}>
       <div className="kpi-label">
         {label}
-        {(info || query) && <PanelInfo about={info} query={query} computed={computed} />}
+        {(info || query || promql) && <PanelInfo about={info} query={query} promql={promql} promqlHref={promqlHref} computed={computed} />}
       </div>
       <div className="kpi-value">
         {value}
