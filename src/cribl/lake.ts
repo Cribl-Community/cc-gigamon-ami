@@ -16,10 +16,12 @@
 //
 //   * the dataset is not created yet;
 //   * the AI schema summary has never been generated;
-//   * this tenant has no Cribl Search local engines — `local_search` answers 404
+//   * a tenant has no Cribl Search local engines — `local_search` answers 404
 //     with "LocalSearch is not enabled", which is the NORMAL state and not a
 //     misconfiguration. A panel that rendered that as "failed" would send an
-//     admin looking for a fault in a workspace that is working.
+//     admin looking for a fault in a workspace that is working. (This tenant
+//     HAS had an engine since 2026-09-22; the 404 branch is still the state
+//     most tenants installing this app see on day one.)
 //
 // A 401/403 is a fourth thing again: the object exists and this account may not
 // read it. It is reported with the object NAMED, because "unavailable" tells
@@ -386,6 +388,10 @@ export async function listRoutes(group: string, init: CapiInit = {}): Promise<Re
 
 // ── 8. The acceleration tier ────────────────────────────────────────────────
 
+/** One engine, as the API returns it. Read with `engineState` / `servesDataset`
+ *  in `landing.ts` — the derivations are words about values, not transport. */
+export type EngineRecord = Readonly<Record<string, unknown>>
+
 export interface LocalSearchTier {
   /** False when the tenant has no local search at all — the 404 answer. */
   enabled: boolean
@@ -410,7 +416,7 @@ export interface LocalSearchTier {
    * Empty is not the same as `engines: null`: empty means the list was read and
    * held nothing, null means it could not be read at all.
    */
-  records: readonly Readonly<Record<string, unknown>>[]
+  records: readonly EngineRecord[]
   /**
    * The HTTP status the engine list answered with, so a caller can tell "the
    * endpoint is there and nothing is configured" (200 + empty) from "the
@@ -418,38 +424,6 @@ export interface LocalSearchTier {
    */
   enginesStatus: number | null
   raw: Readonly<Record<string, unknown>> | null
-}
-
-/**
- * What an engine is actually doing, from its own record.
- *
- * `other` rather than a guess: only `provisioning` and `ready` have been
- * observed on the wire, and the API publishes seven values for `status`. A
- * state this app has never seen is reported as unknown rather than mapped onto
- * the nearest word, because the nearest word is what a reader would act on.
- */
-export type EngineState = 'none' | 'provisioning' | 'ready' | 'other'
-
-export function engineState(records: readonly Readonly<Record<string, unknown>>[]): EngineState {
-  if (records.length === 0) return 'none'
-  const states = records.map((e) => String(e.effectiveStatus ?? e.status ?? ''))
-  if (states.some((s) => s === 'ready')) return 'ready'
-  if (states.some((s) => s === 'provisioning')) return 'provisioning'
-  return 'other'
-}
-
-/**
- * Does any engine actually serve this dataset?
- *
- * The question the "Acceleration tier" row has to answer and could not. A
- * Cribl Search local engine serves the `local_search` ingest datasets — measured
- * `["main","metrics"]` — and a Cribl **Lakehouse** is what accelerates a Lake
- * dataset. They are different features, so "an engine exists" implies nothing
- * about `gigamon_ami`: with this engine ready, a `gigamon_ami` query still
- * reports `cacheStatus "miss", reason "No Lakehouse Configured"`.
- */
-export function servesDataset(records: readonly Readonly<Record<string, unknown>>[], dataset: string): boolean {
-  return records.some((e) => (Array.isArray(e.datasets) ? e.datasets : []).map(String).includes(dataset))
 }
 
 /**
@@ -479,7 +453,7 @@ export async function getLocalSearch(init: CapiInit = {}): Promise<ReadResult<Lo
     // enabled, and reporting zero engines because a second call was refused
     // would be a number this app made up.
     const readable = engines.outcome === 'ok'
-    const records: readonly Readonly<Record<string, unknown>>[] = readable
+    const records: readonly EngineRecord[] = readable
       ? Object.freeze((engines.value ?? []).map((e) => Object.freeze({ ...e })))
       : Object.freeze([])
     const counted = readable ? records.length : null

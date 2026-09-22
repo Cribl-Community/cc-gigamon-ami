@@ -55,6 +55,12 @@ import {
   spikeGateNote,
   validatePartitions,
   type LandingProfile,
+  engineState,
+  engineDatasets,
+  servesDataset,
+  engineWords,
+  servesWords,
+  LANDING_TERMS,
 } from './landing'
 import { DATASET_SPEC } from './provision'
 import { PARTITION_CANDIDATES } from '../queries/lakeLanding'
@@ -774,3 +780,86 @@ describe('the refusals', () => {
 //     either, and `PARTITION_FILL_FLOOR` and `PARTITION_DISTINCT_CEILING` are
 //     stated judgements rather than measurements — which is why the tests assert
 //     the sentence names the spike rather than asserting the number is right.
+
+
+// ── What a Search engine is, and is not ─────────────────────────────────────
+//
+// These exist because of a defect that SHIPPED. The row was labelled
+// "Acceleration tier" and read "local search enabled · 1 engine" beside a
+// gigamon_ami dashboard, with a tip saying engines "answer some searches
+// without fanning out across the object store". Measured 2026-09-22: the engine
+// serves ['main','metrics'], gigamon_ami is not among them, and a gigamon_ami
+// query still reports cacheStatus "miss", reason "No Lakehouse Configured".
+//
+// The sentence was not false in general — it was false WHERE IT APPEARED, which
+// no gate in this repo could catch, because a tip's prose is not frozen.
+
+const PROVISIONING = { id: 'e1', status: 'provisioning', effectiveStatus: 'provisioning', datasets: [] }
+const READY = { id: 'e1', status: 'ready', effectiveStatus: 'ready', datasets: ['main', 'metrics'] }
+
+describe('engineState', () => {
+  it('separates provisioning from ready — the two a COUNT rendered identically', () => {
+    expect(engineState([])).toBe('none')
+    expect(engineState([PROVISIONING])).toBe('provisioning')
+    expect(engineState([READY])).toBe('ready')
+  })
+
+  it('reports an unseen status as other rather than guessing the nearest word', () => {
+    // The API publishes seven values; two have been observed. A reader acts on
+    // the word, so a wrong word is worse than an honest unknown.
+    expect(engineState([{ id: 'e', status: 'resizing', effectiveStatus: 'resizing' }])).toBe('other')
+    expect(engineState([{ id: 'e' }])).toBe('other')
+  })
+
+  it('prefers effectiveStatus, which is what the API says is in force', () => {
+    expect(engineState([{ status: 'provisioning', effectiveStatus: 'ready' }])).toBe('ready')
+  })
+})
+
+describe('servesDataset', () => {
+  it('is false for the Lake dataset this app reads, however ready the engine is', () => {
+    // THE WHOLE POINT. An engine existing implies nothing about gigamon_ami.
+    expect(servesDataset([READY], 'main')).toBe(true)
+    expect(servesDataset([READY], 'metrics')).toBe(true)
+    expect(servesDataset([READY], 'gigamon_ami')).toBe(false)
+  })
+
+  it('serves nothing while provisioning', () => {
+    expect(engineDatasets([PROVISIONING])).toEqual([])
+    expect(servesDataset([PROVISIONING], 'main')).toBe(false)
+  })
+})
+
+describe('the words the row prints', () => {
+  it('names the state only when there is a state worth naming', () => {
+    expect(engineWords([READY])).toBe(' (ready)')
+    expect(engineWords([PROVISIONING])).toBe(' (provisioning)')
+    expect(engineWords([])).toBe('')
+  })
+
+  it('says what is served AND that the app dataset is not', () => {
+    expect(servesWords([READY], 'gigamon_ami')).toBe('serves main, metrics — not gigamon_ami')
+  })
+
+  it('is honest in the other direction too, so it never needs revisiting', () => {
+    const lakehouse = { id: 'e', effectiveStatus: 'ready', datasets: ['main', 'gigamon_ami'] }
+    expect(servesWords([lakehouse], 'gigamon_ami')).toBe('serves gigamon_ami, main — including gigamon_ami')
+  })
+
+  it('does not claim a dataset is served by an engine still building', () => {
+    expect(servesWords([PROVISIONING], 'gigamon_ami')).toBe('serves no datasets yet — not gigamon_ami')
+  })
+})
+
+describe('the acceleration tip', () => {
+  it('no longer claims an engine accelerates the searches this app runs', () => {
+    // The exact phrase that shipped, and the claim that made it wrong here.
+    expect(LANDING_TERMS.accelerationTier).not.toContain('without fanning out across the object store')
+    expect(LANDING_TERMS.accelerationTier).toContain('Lakehouse')
+    expect(LANDING_TERMS.accelerationTier).toContain('does NOT accelerate a Cribl Lake dataset')
+  })
+
+  it('still says a tenant with no engines is normal, which was always true', () => {
+    expect(LANDING_TERMS.accelerationTier).toContain('not misconfigured')
+  })
+})

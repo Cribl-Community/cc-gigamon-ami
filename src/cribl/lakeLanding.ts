@@ -280,7 +280,12 @@ const ABSENT_NOTES: Readonly<Record<RowKey, string>> = Object.freeze({
   destination: `There is no ${DESTINATION_ID} destination in this worker group.`,
   inputs: 'This worker group has no sources.',
   routes: 'This worker group has no routing table.',
-  localSearch: 'This workspace has no Cribl Search local engines. That is the normal state, and every search in this app runs the way it always has.',
+  // UNREACHABLE TODAY, AND KEPT DELIBERATELY. `getLocalSearch` answers `ok` on a
+  // 404 (not provisioned is a VALUE, not an absence), so this note has no way to
+  // fire from that path — it is here for a genuine `absent` outcome, and it no
+  // longer claims anything about acceleration, which is what made the old
+  // wording wrong the moment an engine existed.
+  localSearch: 'Cribl Search local engines could not be listed for this workspace. A tenant with none is the normal state, and every search in this app runs the way it always has.',
   groups: 'This Leader returned no worker groups.',
 })
 

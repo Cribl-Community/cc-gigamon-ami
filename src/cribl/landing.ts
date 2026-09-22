@@ -1100,11 +1100,76 @@ export const NO_CHANGE_NOTE = 'These settings already match the live destination
  * left edge of a table is a column of punctuation, and the read map on the
  * panel's own title is where "where did this value come from" is answered.
  */
+// ── What a Search engine is, and is not ─────────────────────────────────────
+//
+// These take the raw engine records rather than `LocalSearchTier` so this file
+// keeps its promise not to depend on `lake.ts`: the shape is described
+// structurally, the transport stays next door, and both are testable alone.
+
+/** One engine record, as the API returns it. */
+export type EngineRecordLike = Readonly<Record<string, unknown>>
+
+/**
+ * What an engine is actually doing.
+ *
+ * `other` rather than a guess: only `provisioning` and `ready` have been
+ * observed on the wire and the API publishes seven values for `status`. A state
+ * this app has never seen is reported as unknown rather than mapped onto the
+ * nearest word, because the nearest word is what a reader would act on.
+ */
+export type EngineState = 'none' | 'provisioning' | 'ready' | 'other'
+
+export function engineState(records: readonly EngineRecordLike[]): EngineState {
+  if (records.length === 0) return 'none'
+  const states = records.map((e) => String(e.effectiveStatus ?? e.status ?? ''))
+  if (states.some((s) => s === 'ready')) return 'ready'
+  if (states.some((s) => s === 'provisioning')) return 'provisioning'
+  return 'other'
+}
+
+/** Every dataset any engine serves, de-duplicated and in a stable order. */
+export function engineDatasets(records: readonly EngineRecordLike[]): string[] {
+  return [...new Set(records.flatMap((e) => (Array.isArray(e.datasets) ? e.datasets : []).map(String)))].sort()
+}
+
+/**
+ * Does any engine serve this dataset?
+ *
+ * THE QUESTION THE ROW HAS TO ANSWER AND COULD NOT. A Cribl Search local engine
+ * serves the `local_search` ingest datasets — measured `['main','metrics']` —
+ * and a Cribl **Lakehouse** is what accelerates a Cribl Lake dataset. They are
+ * different features, so "an engine exists" implies nothing about `gigamon_ami`:
+ * with this engine ready, a `gigamon_ami` query still reports
+ * `cacheStatus "miss", reason "No Lakehouse Configured"`.
+ */
+export function servesDataset(records: readonly EngineRecordLike[], dataset: string): boolean {
+  return engineDatasets(records).includes(dataset)
+}
+
+/** ` (ready)` / ` (provisioning)`, or nothing when there is no word worth saying. */
+export function engineWords(records: readonly EngineRecordLike[]): string {
+  const state = engineState(records)
+  return state === 'ready' || state === 'provisioning' ? ` (${state})` : ''
+}
+
+/**
+ * The second line of the row: which datasets the engine serves, and — stated
+ * rather than left to inference — whether this app's dataset is one of them.
+ *
+ * Honest in both directions. If an engine ever does serve the dataset this says
+ * so, so the sentence never has to be revisited if the answer changes.
+ */
+export function servesWords(records: readonly EngineRecordLike[], dataset: string): string {
+  const names = engineDatasets(records)
+  const serves = names.length ? `serves ${names.join(', ')}` : 'serves no datasets yet'
+  return servesDataset(records, dataset) ? `${serves} — including ${dataset}` : `${serves} — not ${dataset}`
+}
+
 export const LANDING_TERMS: Readonly<Record<'landingLag' | 'accelerationTier' | 'searchV2', string>> = Object.freeze({
   landingLag:
     'How far behind the newest record in the dataset is, measured when you press the button: the gap between now and the most recent event timestamp in the last five minutes. It is a single sample at one instant, not an average, which is why it is shown with the time it was taken.',
   accelerationTier:
-    'Whether this workspace has Cribl Search local engines provisioned. Engines answer some searches without fanning out across the object store; a tenant with none is not misconfigured, it is the normal state, and every search in this app runs the same way it always has.',
+    'Whether this workspace has Cribl Search local engines. An engine serves the local_search ingest datasets — measured here as main and metrics — and does NOT accelerate a Cribl Lake dataset. Lake acceleration is a Lakehouse, which is a different feature: with an engine fully ready, a Lake search still reports "No Lakehouse Configured". A tenant with no engines is not misconfigured, it is the normal state, and every search in this app runs the same way it always has.',
   searchV2:
     'Federated Search v2 is the newer Cribl Search reader for Lake datasets. It is what can read a dataset holding both Parquet and JSON objects, which is why the Parquet migration needs it. Switching a dataset between readers changes nothing about the data itself.',
 })

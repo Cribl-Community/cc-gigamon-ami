@@ -35,11 +35,10 @@ import {
   listDatasets,
   listInputs,
   listLocalEngines,
-  engineState,
-  servesDataset,
   listRoutes,
   listStreamGroupsCurrent,
 } from './lake'
+import { engineState, servesDataset } from './landing'
 
 const GROUP = 'default'
 

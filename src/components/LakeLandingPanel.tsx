@@ -112,9 +112,11 @@ import {
   NO_CHANGE_NOTE,
   PREP_PIPELINE_ID,
   destinationSpec,
+  engineWords,
   flushPresetOf,
   partitionStats,
   retentionChange,
+  servesWords,
   spikeGateNote,
   type DiffRow as LandingDiffRow,
   type FlushPresetId,
@@ -943,20 +945,34 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
               extraNote={READER_GATE ? <span>{spikeGateNote(READER_GATE)}</span> : null}
             />
 
+            {/* LABELLED "Search engine", NOT "Acceleration tier". It used to be
+                the latter, which — in a panel about how gigamon_ami lands in
+                Cribl Lake, beside a gigamon_ami dashboard — read as a claim that
+                this workspace's Lake searches were being accelerated. Measured
+                2026-09-22: the engine serves ['main','metrics'], gigamon_ami is
+                not among them, and a gigamon_ami query still answers
+                cacheStatus "miss", reason "No Lakehouse Configured". The second
+                line says which datasets it actually serves so the reader never
+                has to infer it. */}
             <LandingRowView
               rowKey="localSearch"
-              label="Acceleration tier"
+              label="Search engine"
               tip={LANDING_TERMS.accelerationTier}
               row={rows.localSearch}
               onRetry={retryRow}
               value={
-                <>
-                  {localSearch?.enabled
-                    ? localSearch.engines === null
-                      ? 'local search enabled; this account could not read the engine list'
-                      : `local search enabled · ${localSearch.engines} engine${localSearch.engines === 1 ? '' : 's'}`
-                    : 'no local search engines'}
-                </>
+                <span className="ac-serves">
+                  <span className="ac-serves-name">
+                    {localSearch?.enabled
+                      ? localSearch.engines === null
+                        ? 'local search enabled; this account could not read the engine list'
+                        : `local search enabled · ${localSearch.engines} engine${localSearch.engines === 1 ? '' : 's'}${engineWords(localSearch.records)}`
+                      : 'no local search engines'}
+                  </span>
+                  {localSearch?.enabled && localSearch.engines ? (
+                    <span className="ac-serves-id">{servesWords(localSearch.records, DATASET_ID)}</span>
+                  ) : null}
+                </span>
               }
             />
 
