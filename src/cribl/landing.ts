@@ -1174,6 +1174,99 @@ export function servesWords(records: readonly EngineRecordLike[], dataset: strin
   return servesDataset(records, dataset) ? `${serves} — including ${dataset}` : `${serves} — not ${dataset}`
 }
 
+// ── The metrics gate ────────────────────────────────────────────────────────
+//
+// Phase 6 needs ONE answer to "can this workspace hold metrics, and is it ready
+// to?", and every surface that asks must get the same sentence back. This is
+// that answer, and it is here rather than in a `metricsStore.ts` because both
+// halves already existed: `lake.ts` does the reading and this file does the
+// deriving. A third module would have duplicated a call site and re-invented
+// `LandingRow<LocalSearchTier>`.
+//
+// STRUCTURAL INPUT, NOT `LocalSearchTier`. This file does not import `lake.ts` —
+// see the header. `GateInput` is shape-compatible with what `getLocalSearch`
+// returns, so a caller spreads its result in and the type-checker does the rest.
+
+export interface GateInput {
+  /** `ReadResult.outcome`. */
+  outcome: 'ok' | 'absent' | 'not-readable' | 'failed'
+  enabled: boolean
+  /** Null means the engine list could not be read — NOT zero. */
+  engines: number | null
+  records: readonly EngineRecordLike[]
+}
+
+/**
+ * What the metrics surface may say about this workspace.
+ *
+ * Seven, and none of them collapse. The two that look alike are the pair the
+ * old short-circuit destroyed: `not-available` is "local search is not on this
+ * tenant" and `no-engine` is "it is on, and nothing has been sized" — reachable
+ * only because both reads now always run.
+ */
+export type MetricsGate =
+  | 'no-permission'
+  | 'unreadable'
+  | 'not-available'
+  | 'no-engine'
+  | 'engines-unreadable'
+  | 'provisioning'
+  | 'ready'
+  | 'degraded'
+
+export function gateState(input: GateInput): MetricsGate {
+  if (input.outcome === 'not-readable') return 'no-permission'
+  if (input.outcome === 'failed') return 'unreadable'
+  // `absent` cannot occur here — getLocalSearch answers `ok` on a 404 and
+  // carries it as `enabled: false` — but a gate that threw on a fourth outcome
+  // would be a white screen, so it falls through to the enabled check.
+  if (!input.enabled) return 'not-available'
+  if (input.engines === null) return 'engines-unreadable'
+  if (input.records.length === 0) return 'no-engine'
+  const state = engineState(input.records)
+  if (state === 'provisioning') return 'provisioning'
+  if (state === 'ready') return 'ready'
+  return 'degraded'
+}
+
+/** Can this workspace be asked to hold metrics right now? */
+export function gateIsReady(gate: MetricsGate): boolean {
+  return gate === 'ready'
+}
+
+/**
+ * The sentence every surface prints for a gate state.
+ *
+ * ONE function, so two surfaces cannot drift into describing the same workspace
+ * differently. 6.7 requires the Guided Setup panel's status line to be
+ * byte-identical to the tab's; there is no tab yet, and this is what makes that
+ * requirement cheap to keep when there is.
+ *
+ * `ready` deliberately does NOT say "accelerated" or "faster". An engine serves
+ * the local_search ingest datasets; it does not accelerate a Cribl Lake dataset.
+ * That distinction is what the Acceleration-tier row got wrong.
+ */
+export function gateWords(gate: MetricsGate): string {
+  switch (gate) {
+    case 'no-permission':
+      return 'This account may not read the Cribl Search engine list, so the metrics store cannot be checked from here.'
+    case 'unreadable':
+      return 'The Cribl Search engine list could not be read just now. Nothing is wrong with the dashboards; this check simply did not answer.'
+    case 'not-available':
+      return 'Cribl Search local search is not enabled on this tenant. That is the normal state, and every dashboard here runs the way it always has.'
+    case 'no-engine':
+      return 'Cribl Search local search is enabled and no engine has been sized yet. An engine is what a metrics store would be published to.'
+    case 'engines-unreadable':
+      return 'Cribl Search local search is enabled, but this account could not read the engine list, so the number of engines is unknown.'
+    case 'provisioning':
+      return 'An engine is still being built. It cannot hold metrics until it finishes, and nothing needs doing while it does.'
+    case 'ready':
+      return 'An engine is ready. It serves the local_search ingest datasets — it does not accelerate the Cribl Lake dataset these dashboards read.'
+    case 'degraded':
+      return 'An engine exists in a state this app does not recognise. Check it in Cribl Search before relying on the metrics store.'
+  }
+}
+
 export const LANDING_TERMS: Readonly<Record<'landingLag' | 'accelerationTier' | 'searchV2', string>> = Object.freeze({
   landingLag:
     'How far behind the newest record in the dataset is, measured when you press the button: the gap between now and the most recent event timestamp in the last five minutes. It is a single sample at one instant, not an average, which is why it is shown with the time it was taken.',

@@ -61,6 +61,11 @@ import {
   engineWords,
   servesWords,
   LANDING_TERMS,
+  gateState,
+  gateWords,
+  gateIsReady,
+  type MetricsGate,
+  type GateInput,
 } from './landing'
 import { DATASET_SPEC } from './provision'
 import { PARTITION_CANDIDATES } from '../queries/lakeLanding'
@@ -875,5 +880,87 @@ describe('the acceleration tip', () => {
 
   it('still says a tenant with no engines is normal, which was always true', () => {
     expect(LANDING_TERMS.accelerationTier).toContain('not misconfigured')
+  })
+})
+
+
+// ── The metrics gate truth table ────────────────────────────────────────────
+//
+// Every row of it, including the ones that cannot be reached live on this
+// tenant. NO_ENGINE is PERMANENTLY fixture-only here — this app can never delete
+// an engine, so once Gigamon_LHE existed the zero-engine column stopped being
+// reproducible. That is a change in how it is verified, not in whether it ships:
+// it is what every other tenant sees on day one.
+
+const gate = (over: Partial<GateInput> = {}): GateInput =>
+  ({ outcome: 'ok', enabled: true, engines: 1, records: [READY], ...over })
+
+describe('gateState', () => {
+  it.each<[string, GateInput, MetricsGate, string]>([
+    ['R1 403 — the account may not look', gate({ outcome: 'not-readable' }), 'no-permission', 'live'],
+    ['R1 500 — the read failed', gate({ outcome: 'failed' }), 'unreadable', 'live'],
+    ['R1 404 + R2 200 empty', gate({ enabled: false, engines: 0, records: [] }), 'not-available', 'FIXTURE ONLY'],
+    ['R1 200 + R2 200 empty', gate({ engines: 0, records: [] }), 'no-engine', 'FIXTURE ONLY'],
+    ['R1 200 + R2 refused', gate({ engines: null, records: [] }), 'engines-unreadable', 'FIXTURE ONLY'],
+    ['R1 200 + one provisioning', gate({ records: [PROVISIONING] }), 'provisioning', 'observed once'],
+    ['R1 200 + one ready', gate({ records: [READY] }), 'ready', 'live'],
+    ['R1 200 + an unseen status', gate({ records: [{ id: 'e', effectiveStatus: 'resizing' }] }), 'degraded', 'FIXTURE ONLY'],
+  ])('%s -> %s', (_name, input, expected) => {
+    expect(gateState(input)).toBe(expected)
+  })
+
+  it('separates "not on this tenant" from "on, and nothing sized"', () => {
+    // THE PAIR THE OLD SHORT-CIRCUIT DESTROYED. Both have zero engines; they are
+    // different facts, and only reading R2 on the 404 tells them apart.
+    expect(gateState(gate({ enabled: false, engines: 0, records: [] }))).toBe('not-available')
+    expect(gateState(gate({ engines: 0, records: [] }))).toBe('no-engine')
+  })
+
+  it('never reports ready while anything is still building', () => {
+    expect(gateState(gate({ engines: 2, records: [READY, PROVISIONING] }))).toBe('provisioning')
+    expect(gateIsReady(gateState(gate({ engines: 2, records: [READY, PROVISIONING] })))).toBe(false)
+  })
+
+  it('treats an unreadable engine list as its own state, not as zero engines', () => {
+    expect(gateState(gate({ engines: null, records: [] }))).not.toBe('no-engine')
+  })
+
+  it('is ready only in the one state that can actually hold metrics', () => {
+    const all: MetricsGate[] = ['no-permission', 'unreadable', 'not-available', 'no-engine', 'engines-unreadable', 'provisioning', 'ready', 'degraded']
+    expect(all.filter(gateIsReady)).toEqual(['ready'])
+  })
+})
+
+describe('gateWords', () => {
+  const ALL: MetricsGate[] = ['no-permission', 'unreadable', 'not-available', 'no-engine', 'engines-unreadable', 'provisioning', 'ready', 'degraded']
+
+  it('has a real sentence for every state — no state can render blank', () => {
+    for (const g of ALL) {
+      expect(gateWords(g).length, g).toBeGreaterThan(40)
+      expect(gateWords(g).endsWith('.'), g).toBe(true)
+    }
+  })
+
+  it('gives every state a DIFFERENT sentence', () => {
+    // Two states sharing a sentence is two states the reader cannot tell apart,
+    // which is the same as not having both.
+    expect(new Set(ALL.map(gateWords)).size).toBe(ALL.length)
+  })
+
+  it('never claims an engine accelerates the Lake dataset', () => {
+    // The 6.9 lesson, applied forward: this is new copy, written after that
+    // defect, and it must not reintroduce the claim in a new place.
+    // Not "never says the word" — `ready` has to say it in order to DENY it.
+    // The rule is that every mention is a negation.
+    for (const g of ALL) {
+      const s = gateWords(g).toLowerCase()
+      if (s.includes('accelerat')) expect(s, `${g} mentions acceleration without denying it`).toContain('does not accelerate')
+    }
+    expect(gateWords('ready')).toContain('does not accelerate the Cribl Lake dataset')
+  })
+
+  it('reassures rather than alarms on the states that are not faults', () => {
+    expect(gateWords('not-available')).toContain('normal state')
+    expect(gateWords('provisioning')).toContain('nothing needs doing')
   })
 })
