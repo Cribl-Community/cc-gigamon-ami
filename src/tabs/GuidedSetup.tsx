@@ -14,6 +14,7 @@
 // already standing on it — not because it has anything to do with setup.
 
 import { AccelPanel } from '../components/AccelPanel'
+import { MetricsStorePanel } from '../components/MetricsStorePanel'
 import { LakeLandingPanel } from '../components/LakeLandingPanel'
 // The anchor id lives beside the panel's other pure constants, not in the
 // component file — src/components/lakeLandingCopy.ts.
@@ -98,6 +99,20 @@ export function GuidedSetup() {
           than before it. Everything it holds is its own; it takes no props, and
           nothing above reads anything it knows. */}
       <AccelPanel />
+
+      {/* Section 4, and LAST for the same reason <AccelPanel> is third: the
+          panels on this page descend from "what exists" to "what it costs to
+          read" to "what runs on a cron whether or not anybody is here". A
+          metrics store is the furthest along that line — it would publish
+          continuously — so it sits at the bottom.
+
+          It REPORTS ONLY. Nothing publishes metrics yet, and this card exists
+          so an installer can see whether the workspace could hold them without
+          going to look in Cribl Search. It is also the one card on this page
+          that is not about making the dashboards faster: a metrics store serves
+          long-term retention and alerting, and the panels it could serve are
+          already served by the scheduled snapshots above it. */}
+      <MetricsStorePanel />
 
       {/* The toast stack that used to be rendered here now lives at the app root
           and is Capra's — an `aria-live` container that appeared together with

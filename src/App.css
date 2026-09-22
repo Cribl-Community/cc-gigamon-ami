@@ -2211,6 +2211,22 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
    this with it. --gm-fg-subtle on --gm-panel is already measured in
    app/contrast.test.ts, so this needs no row of its own. */
 .ll-stale { color: var(--gm-fg-subtle); }
+
+/* ── The metrics store card (Guided Setup, below the acceleration panel) ─────
+   Five rules, and each carries one thing the markup cannot say for itself. The
+   card is prose rather than a table because it reports ONE fact about the
+   workspace; a table of one row would be a table pretending to be a list. */
+.ms-title { display: inline-flex; align-items: center; gap: var(--gm-sp-8); }
+.ms-body { display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+/* The gate sentence is the card's headline, so it takes the body size rather
+   than the subtle size the two lines under it use. */
+.ms-status { margin: 0; }
+/* What the engine serves. Subtle because it QUALIFIES the line above rather
+   than adding a second claim of equal weight. */
+.ms-serves { margin: 0; color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
+/* The binding sentence. Same ink as .ms-serves on purpose: it is a standing
+   caveat, not news, and news-coloured boilerplate stops being read. */
+.ms-footer { margin: 0; color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
 .ac-noaction { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
 /* The per-row sentence, under the row it is about. `.dtable` sets
    `white-space: nowrap` on every cell, so this row has to put it back or a

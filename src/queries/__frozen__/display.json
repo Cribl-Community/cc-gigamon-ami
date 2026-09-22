@@ -16,7 +16,7 @@
     "searches": 38,
     "links": 23,
     "briefs": 17,
-    "prose": 18,
+    "prose": 19,
     "modules": 157,
     "catalogs": 14,
     "states": 35,
@@ -400,6 +400,17 @@
       "prose": {
         "Panel · How data lands in Cribl Lake": {
           "info": "Every value on this panel and the endpoint it came from. Dataset, retention, description, object format and partitions: GET /products/lake/lakes/default/datasets/gigamon_ami?includeMetrics=true. Datasets in this lake: GET /products/lake/lakes/default/datasets?excludeDeleted=false&includeMetrics=true. Storage location and the partition-field limit: GET /products/lake/lakes/default/config. Search reader: GET /m/default_search/search/datasets/gigamon_ami. Acceleration tier: GET /m/default_search/search/local_search, with its engine count from the same path's /engines. How objects are written, and destination health: GET /m/{gid}/system/outputs/gigamon_lake. Feeds writing through it: GET /m/{gid}/system/inputs and GET /m/{gid}/routes. Worker group and the commit its Workers are running: GET /products/stream/groups. Landing lag and the partition-candidate statistics are NOT reads — each is a Cribl Search job started by its own Measure button, and what you see afterwards comes back from this app's own store, app/settings/lake_landing, with the time it was taken, so reloading the page does not spend the credits again."
+        }
+      }
+    },
+    "src/components/MetricsStorePanel.tsx": {
+      "surfaces": {},
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {
+        "Panel · Metrics — long-term retention and alerting Preview": {
+          "info": "Whether this workspace has a Cribl Search engine that could hold a long-term metrics store. Read once when this page opens and again when you press Refresh — nothing here runs on a timer, and nothing here writes."
         }
       }
     },
