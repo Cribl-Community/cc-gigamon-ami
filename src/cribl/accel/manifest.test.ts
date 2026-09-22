@@ -172,6 +172,25 @@ describe('the bodies', () => {
     }
   })
 
+  /**
+   * Cribl's own name for a `bin()` group key, added alongside the expression.
+   *
+   * `columnsOf` reports what the KQL literally says — `bin(_time,1m)` — but the
+   * column that arrives in a row is `bin_time_1m`, which is what every chart
+   * reads. Without this the un-tailed check below fails on correct manifest
+   * entries, and the tempting "fix" is to change `reads` to the expression,
+   * which would break the panel at runtime while turning the test green. The
+   * naming was established the hard way: a comparator keyed on `_time` once
+   * collapsed 15 rows to 1 and reported IDENTICAL.
+   */
+  const withBinAliases = (cols: string[]): string[] => [
+    ...cols,
+    ...cols.flatMap((c) => {
+      const m = /^bin\(\s*(\w+)\s*,\s*([^)]+?)\s*\)$/.exec(c)
+      return m ? [`bin_${m[1].replace(/^_/, '')}_${m[2]}`] : []
+    }),
+  ]
+
   it('cuts every served panel out of the body with a tail naming only columns the body defines', () => {
     // The failure this catches is silent and is a WRONG NUMBER. A tail
     // projecting an alias the body does not define renders nothing; a tail
@@ -180,9 +199,29 @@ describe('the bodies', () => {
     for (const e of MANIFEST) {
       const body = columnsOf(e.body)
       expect(body.outputs, `${e.id}: this test cannot read what its body emits`).not.toBeNull()
-      const produced = [...(body.outputs as Set<string>)]
+      const produced = withBinAliases([...(body.outputs as Set<string>)])
       for (const panel of e.panels) {
-        if (panel.tail === undefined) continue
+        if (panel.tail === undefined) {
+          // AN UN-TAILED PANEL READS THE BODY DIRECTLY, and until 2026-09-22
+          // this loop skipped it — so nothing checked that the columns it says
+          // it reads are columns the body actually emits.
+          //
+          // That hole is not hypothetical. A proposed merge would have served
+          // Flow Map's latency-domains card un-tailed off `nodesQuery`, which
+          // emits `resets`; the panel reads `d.reset` (FlowMap.tsx:252). An
+          // absent column becomes `undefined`, `toNum` makes it 0, and the card
+          // would have reported zero TCP resets — reversing the diagnosis it
+          // exists to give, with no error anywhere. Caught in review; it should
+          // have been caught here.
+          for (const column of panel.reads) {
+            expect(
+              produced,
+              `${e.id}/${panel.queryId}: the panel reads '${column}', which its body does not emit. ` +
+                `An un-tailed panel reads the body directly, so this renders 0, not an error.`,
+            ).toContain(column)
+          }
+          continue
+        }
         const tail = columnsOf(panel.tail, body.outputs as Set<string>)
         for (const needed of tail.inputs) {
           expect(produced, `${e.id}/${panel.queryId}: the tail reads '${needed}', which the body does not produce`).toContain(needed)
