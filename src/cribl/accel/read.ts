@@ -93,6 +93,7 @@ import { readJobResults, runFieldSummaries, runSearch, summariseRows, type Field
 import type { CostSlot } from '../jobCost'
 import { beginQuery, endQuery } from '../inflight'
 import { accelEntry, isAccelId, type AccelEntry, type AccelId } from './manifest'
+import { evaluateTail, parseTail } from './tail'
 import { cronIntervalMs, listRuns, nearestRun, runAtOrBefore, runMeta, snapshotTimeline, type AccelRun } from './status'
 
 /** The virtual table a stored result is read from. Named in query text only. */
@@ -102,6 +103,21 @@ export const VT_RESULTS = '$vt_results'
  *  (`| limit 5000`), and reading fewer would silently narrow the field census
  *  a chosen moment reports against the one "newest" reports. */
 export const ARTIFACT_LIMIT = 5000
+
+/**
+ * How many rows an artifact read asks for. Every artifact is read whole, once,
+ * and shared (`readArtifact`), because a tail that re-aggregates needs every
+ * row. Not a guess at "big enough": the read's own header says how many rows
+ * the result holds (`totalEventCount`), and a read that got fewer is refused as
+ * incomplete for any re-aggregating tail (`shapeRows`). This only decides how
+ * large a result can be before that refusal sends the panel back to the query
+ * path. The largest measured is 12,153 rows (DNS resolvers, 2026-09-23), so
+ * 20,000 holds it with room and caps what an oversized result can waste — about
+ * 2 MB — before that refusal. Two bodies have no row cap of their own (DNS by
+ * resolver, Shadow AI by app and source), and on a large tenant either can
+ * outgrow it; they then cost the job they cost before this path existed.
+ */
+export const FULL_ARTIFACT_LIMIT = 20_000
 
 /**
  * The three columns `$vt_results` adds to every row, which the scheduled body
@@ -268,9 +284,10 @@ export type AccelOutcome =
    *  live query deliberately did NOT run — see AccelSource's `none`. */
   | 'no-run-at'
   /** A past moment was asked for, a run exists, and this panel's rows have to be
-   *  cut out of a SHARED scan by a tail that only Cribl Search can evaluate. A
-   *  stored artifact cannot have KQL applied to it, so the panel is shown
-   *  nothing rather than the whole scan's rows — see `applyProjection`. */
+   *  cut out of a SHARED scan by a tail that cannot be evaluated here with
+   *  certainty — outside tail.ts's grammar, or re-aggregating over a result
+   *  that was not read whole. The panel is shown nothing rather than the whole
+   *  scan's rows, or a total over part of them. */
   | 'unshaped'
 
 /**
@@ -295,7 +312,7 @@ export const NOTES: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   'no-run-at':
     'This panel has no stored run from the time you picked. Running its query now would answer about the present under a label saying otherwise, so it did not run.',
   unshaped:
-    'This panel shares one scan with others, and its share cannot be cut out of a stored result from an earlier time. Pick the newest snapshot, or switch to Live, to see this number.',
+    'This panel shares one scan with others, and its share could not be cut out of the stored result from that time with certainty. Pick the newest snapshot, or switch to Live, to see this number.',
 })
 
 export interface AccelRead<T> {
@@ -471,53 +488,106 @@ export function accelRunQuery(jobId: string, tail?: string): string {
  * reach further back.
  */
 /**
- * Apply a `| project a, b, alias=source` tail to rows read from an artifact.
- *
- * WHY THIS EXISTS. A chosen snapshot is answered by reading a stored artifact
- * (`$vt_results` cannot address a past run — see `assertAddressableJobId`), and
- * an artifact is rows, not a query: KQL cannot be applied to it. But a panel on
- * a SHARED scan is defined by its tail, so handing it the whole scan's rows
- * gives it columns it never asked for. `useSearch` calls that "the exact shape
- * of a plausible wrong number", and the manifest has a test devoted to it —
- * Capacity calls `sum(total_bytes)` `total` while Findings calls `count()`
- * `total`, so the wrong `total` is a real column with a real value.
- *
- * A PROJECTION IS THE ONE TAIL THAT IS NOT A QUERY. `| project a, b, v=c` picks
- * and renames columns, which is a pure row transform and exactly reproducible
- * here. Thirteen of the manifest's twenty-one tails are projections, built by
- * `projectionOf` from the same fragment the body is.
- *
- * Anything else — `summarize`, `where`, `sort`, `limit`, `extend` — is a
- * computation over the row SET and cannot be reproduced without an interpreter.
- * Those return null, and the caller shows nothing rather than guessing.
- *
- * Returns null rather than throwing: an unrecognised tail is a state, not a
- * fault, and the caller has a sentence for it.
+ * How long one shared artifact read may take. It carries no caller's signal
+ * (below), so it carries its own clock — the same reasoning as the run-history
+ * read's HISTORY_TIMEOUT_MS. Longer, because the largest artifact measured
+ * (the DNS resolver scan, 12,153 rows) is 1.3 MB.
  */
-export function applyProjection(tail: string, rows: readonly Row[]): Row[] | null {
-  const m = /^\s*\|\s*project\s+([^|]+)$/.exec(tail)
-  if (!m) return null
+export const ARTIFACT_TIMEOUT_MS = 20_000
+/** Distinct runs held, least recently used evicted first. Sixteen entries, a
+ *  newest run each, plus room for a viewer scrubbing the snapshot picker. */
+export const ARTIFACT_CACHE_MAX = 40
 
-  const terms = m[1].split(',').map((t) => t.trim()).filter(Boolean)
-  if (terms.length === 0) return null
+type ArtifactRead = { rows: Row[]; totalEventCount: number }
+const artifacts = new Map<string, Promise<ArtifactRead>>()
 
-  const picks: { as: string; from: string }[] = []
-  for (const term of terms) {
-    // `alias=source` or a bare column. Anything with a call, an operator or a
-    // space is an expression, not a rename, and is not reproducible here.
-    const named = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)$/.exec(term)
-    if (named) { picks.push({ as: named[1], from: named[2] }); continue }
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(term)) { picks.push({ as: term, from: term }); continue }
-    return null
+/** Drop every cached artifact. For tests; a run's artifact never changes. */
+export function forgetArtifacts(): void {
+  artifacts.clear()
+}
+
+/**
+ * One run's stored rows, read ONCE however many panels it serves.
+ *
+ * SAFE TO KEEP BECAUSE IT CANNOT CHANGE. A completed run's artifact is
+ * immutable; a newer run is a different id. So the overview run's five panels,
+ * Shadow AI's three and DNS's two (1.3 MB each, measured) cost one GET per run,
+ * and a refresh that finds the same newest run costs none. Keyed by run id alone
+ * and always read whole (FULL_ARTIFACT_LIMIT); a caller's limit is applied after
+ * its tail, in `shapeRows`, which is where Search applies it too.
+ *
+ * NOT CANCELLED BY ONE CALLER. The read is shared, so a panel leaving stops that
+ * panel waiting and nothing else — the run-history read's rule. A failure is
+ * not cached, so the next caller gets a fresh attempt.
+ */
+function readArtifact(runId: string, signal?: AbortSignal): Promise<ArtifactRead> {
+  let p = artifacts.get(runId)
+  if (p !== undefined) {
+    // Re-inserted on a hit so Map order is recency order: eviction below then
+    // drops the least recently USED run, not the oldest one read — scrubbing the
+    // picker must not push out the newest runs every tab is reading.
+    artifacts.delete(runId)
+    artifacts.set(runId, p)
+  } else {
+    const clock = new AbortController()
+    const timer = setTimeout(() => clock.abort(), ARTIFACT_TIMEOUT_MS)
+    p = readJobResults(runId, { limit: FULL_ARTIFACT_LIMIT, signal: clock.signal })
+      .catch((err: unknown) => {
+        // THE CLOCK'S ABORT IS A FAILURE, NOT A DEPARTURE. It arrives as a
+        // DOMException named AbortError, which `aborted()` — rightly, for a
+        // caller's own signal — treats as "the panel left, stop". Left as it is,
+        // a slow download would make every waiting panel stop with an error
+        // instead of falling back. Renamed here, it is an ordinary failure: the
+        // newest-run path falls back, a picked moment says `unreadable`.
+        if (clock.signal.aborted) throw new Error('accel read: the stored result took too long to read')
+        throw err
+      })
+      .finally(() => clearTimeout(timer))
+    artifacts.set(runId, p)
+    p.catch(() => {
+      if (artifacts.get(runId) === p) artifacts.delete(runId)
+    })
+    // Oldest first: a Map iterates in insertion order.
+    while (artifacts.size > ARTIFACT_CACHE_MAX) artifacts.delete(artifacts.keys().next().value as string)
   }
+  return untilAborted(p, signal)
+}
 
-  return rows.map((row) => {
-    const out: Row = {}
-    // A column the body did not emit is LEFT OUT rather than set undefined, so
-    // a caller reading it gets the same nothing it would get from Search.
-    for (const p of picks) if (p.from in row) out[p.as] = row[p.from]
-    return out
+/** `p`, or an AbortError the moment `signal` fires — whichever comes first. */
+function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    p.then(
+      (v) => { signal.removeEventListener('abort', onAbort); resolve(v) },
+      (e) => { signal.removeEventListener('abort', onAbort); reject(e) },
+    )
   })
+}
+
+/**
+ * A panel's rows, cut out of a stored artifact by its tail — or null when that
+ * cannot be done with certainty, and the panel must not be shown a guess.
+ *
+ * COMPLETENESS IS PROVEN, NOT ASSUMED. A re-aggregating tail is evaluated only
+ * when the rows read are every row the result holds, by the results header's
+ * own count. A missing header parses as 0 (`readJobResults`), and an empty read
+ * never reaches here, so a read with no header can never pass as complete.
+ *
+ * The caller's `limit` is applied AFTER the tail, where Search applies it.
+ */
+function shapeRows(
+  tail: string | undefined,
+  read: { rows: Row[]; totalEventCount: number },
+  callerLimit: number | undefined,
+): Row[] | null {
+  const stripped = stripVirtualColumns(read.rows)
+  const complete = read.rows.length === read.totalEventCount
+  const shaped = tail === undefined ? stripped : evaluateTail(tail, stripped, { complete })
+  if (shaped === null) return null
+  return callerLimit === undefined ? shaped : shaped.slice(0, callerLimit)
 }
 
 function assertAddressableJobId(jobId: string): void {
@@ -550,23 +620,22 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   // the off switch — see `asOf`. Nothing below this line can reach the live
   // query with a moment selected.
   if (opts.asOf !== undefined) {
-    // A SHARED SCAN'S PANEL CANNOT BE CUT OUT OF AN ARTIFACT BY KQL. If this
-    // panel has a tail and that tail is not a projection, showing it the whole
-    // scan's rows would hand it another panel's columns under its own label —
-    // so it is shown nothing, with a sentence, instead. See `applyProjection`.
+    // A SHARED SCAN'S PANEL IS CUT OUT OF AN ARTIFACT BY ITS TAIL, evaluated
+    // here (tail.ts) because an artifact cannot run KQL. A tail outside that
+    // grammar would hand the panel the whole scan — another panel's columns
+    // under its own label — so it is shown nothing, with a sentence, instead.
     const tail = opts.tail
-    if (tail !== undefined && applyProjection(tail, []) === null) {
+    if (tail !== undefined && parseTail(tail) === null) {
       return absent(entry, 'unshaped', [], opts, null)
     }
     return atMoment(entry, opts, opts.asOf, [], {
-      fromRun: (jobId) => readJobResults(jobId, { limit: opts.limit, signal: opts.signal }),
+      fromRun: (jobId) => readArtifact(jobId, opts.signal),
       isEmpty: (r) => r.rows.length === 0,
       // `stripVirtualColumns` is a no-op on an artifact, which carries none of
       // them. It stays so that both paths hand a panel the same shape.
       shape: (r) => {
-        const stripped = stripVirtualColumns(r.rows)
-        const shaped = tail === undefined ? stripped : (applyProjection(tail, stripped) ?? stripped)
-        return { data: shaped, named: String(r.rows[0]?.[COL_JOB_NAME] ?? '') }
+        const data = shapeRows(tail, r, opts.limit)
+        return data === null ? null : { data, named: String(r.rows[0]?.[COL_JOB_NAME] ?? '') }
       },
     })
   }
@@ -704,12 +773,12 @@ export async function readAccelFieldSummaries(
  * and bills nothing. The `asOf` path has read this way since 2026-09-21; this
  * extends the same read to the newest run.
  *
- * ONLY FOR PANELS AN ARTIFACT CAN SHAPE. No tail, or a tail that is a pure
- * projection (`applyProjection`). A tail that re-aggregates — `summarize`,
- * `sort | limit` — is KQL over the whole stored set, and doing it here over a
- * `limit`-capped read would return a wrong total or the wrong top N whenever the
- * artifact was truncated. Those panels keep the query path, where Cribl
- * evaluates the tail over every stored row.
+ * ONLY FOR PANELS AN ARTIFACT CAN SHAPE. No tail, or a tail inside tail.ts's
+ * grammar. A tail that re-aggregates — `summarize`, `sort | limit` — is KQL over
+ * the whole stored set, so it is evaluated only over a read the results header
+ * proves complete (`shapeRows`); over a truncated one it would be a wrong total
+ * or the wrong top N. Anything else keeps the query path, where Cribl evaluates
+ * the tail over every stored row.
  *
  * AN OPTIMISATION, NEVER A NEW WAY TO FAIL. Every case this path does not handle
  * — no readable run in the history page (which is capped, so an old daily run
@@ -737,7 +806,7 @@ export async function readAccelFieldSummaries(
  */
 async function newestArtifact(entry: AccelEntry, opts: AccelReadOptions<Row[]>): Promise<AccelRead<Row[]> | null> {
   const tail = opts.tail
-  if (tail !== undefined && applyProjection(tail, []) === null) return null
+  if (tail !== undefined && parseTail(tail) === null) return null
   // One span over the whole read, the history wait included — that wait is the
   // first thing a panel does now, and the spinner has to be on while it happens.
   beginQuery()
@@ -785,13 +854,14 @@ async function artifactRead(
     return null
   }
 
-  let rows: Row[]
+  let read: ArtifactRead
   try {
-    rows = (await readJobResults(run.id, { limit: opts.limit, signal: opts.signal })).rows
+    read = await readArtifact(run.id, opts.signal)
   } catch (err) {
     if (aborted(err, opts.signal)) throw err
     return null
   }
+  const rows = read.rows
   if (rows.length === 0) return null
   // A row that names its own run and names a DIFFERENT one is a contradiction,
   // not a result: dating it by `run` would be the lie the query path's
@@ -799,8 +869,7 @@ async function artifactRead(
   const named = str(rows[0]?.[COL_JOB_ID])
   if (named !== null && named !== run.id) return null
 
-  const stripped = stripVirtualColumns(rows)
-  const data = tail === undefined ? stripped : applyProjection(tail, stripped)
+  const data = shapeRows(tail, read, opts.limit)
   if (data === null) return null
 
   const staleAfterMs = opts.staleAfterMs ?? staleAfterMsFor(entry)
@@ -830,7 +899,9 @@ interface MomentIo<T, R> {
   /** Read one stored run BY ID. Not by query — see `assertAddressableJobId`. */
   fromRun: (jobId: string) => Promise<R>
   isEmpty: (result: R) => boolean
-  shape: (result: R) => { data: T; named: string }
+  /** Null when this panel's share cannot be cut out of the result with
+   *  certainty — see `shapeRows`. The panel is then shown nothing: `unshaped`. */
+  shape: (result: R) => { data: T; named: string } | null
 }
 
 /**
@@ -896,7 +967,9 @@ async function atMoment<T, R>(
   // longer fires. It is KEPT rather than deleted because it costs nothing and
   // would catch a future reader that goes back through the virtual table; the
   // id guard above is what actually protects this path now.
-  const { data, named } = io.shape(result)
+  const shaped = io.shape(result)
+  if (shaped === null) return absent(entry, 'unshaped', empty, opts, run.at)
+  const { data, named } = shaped
   if (named && !namesThisEntry(entry, named)) {
     warn(entry.id, `the run that was picked stored another schedule's rows ('${named}')`, null)
     return absent(entry, 'unreadable', empty, opts, run.at)

@@ -25,5 +25,5 @@
   "include": ["src"],
   /* Tests are type-checked by tsconfig.test.json, which has Node types; keeping
      them out of here is what stops `node:fs` from being reachable in app code. */
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/vitest.setup.ts"]
 }

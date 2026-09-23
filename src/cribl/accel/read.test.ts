@@ -25,6 +25,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HISTORY_TIMEOUT_MS, forgetRunHistory } from './status'
+import { evaluateTail } from './tail'
 
 // The header spinner's counter, observed. `runSearch` counts itself; an
 // artifact read is a plain GET and has to count itself, or the spinner goes
@@ -40,9 +41,12 @@ vi.mock('../inflight', async (importOriginal) => {
 })
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import type { FieldSummary, Row } from '../search'
-import { accelEntry, MANIFEST } from './manifest'
+import { accelEntry } from './manifest'
 import {
   FAST_EARLIEST,
+  FULL_ARTIFACT_LIMIT,
+  ARTIFACT_CACHE_MAX,
+  ARTIFACT_TIMEOUT_MS,
   FAST_LATEST,
   KEY_BINDING_NOTES,
   NOTES,
@@ -54,7 +58,6 @@ import {
   observedKeyBinding,
   readAccelFieldSummaries,
   readAccelRows,
-  applyProjection,
   resetAccelKeyMemo,
   staleAfterMsFor,
   stripVirtualColumns,
@@ -145,6 +148,11 @@ interface Cfg {
    *  completed older run whose artifact is readable while `$vt_results`,
    *  which answers for the newest run, has nothing. */
   runRows?: Record<string, Row[]>
+  /** What an artifact's results header claims the result holds, when it must
+   *  differ from the rows returned — a truncated read. */
+  headerTotal?: number
+  /** Fail every artifact GET with this status. */
+  artifactStatus?: number
 }
 
 interface Submitted {
@@ -201,10 +209,12 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
       // chosen-moment case quietly read the present.
       const storedRun = !u.includes('job-nm') && !u.includes('job-vt') && !u.includes('job-live')
       const runId = /\/search\/jobs\/([^/?]+)\/results/.exec(u)?.[1] ?? ''
+      if (storedRun && cfg.artifactStatus) return res(cfg.artifactStatus, { message: 'no' })
       const rows = storedRun
         ? (cfg.runRows?.[decodeURIComponent(runId)] ?? cfg.vtRows ?? [])
         : u.includes('job-nm') ? (cfg.nameRows ?? []) : u.includes('job-vt') ? (cfg.vtRows ?? []) : (cfg.liveRows ?? [])
-      const ndjson = [JSON.stringify({ totalEventCount: rows.length, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n')
+      const total = storedRun && cfg.headerTotal !== undefined ? cfg.headerTotal : rows.length
+      const ndjson = [JSON.stringify({ totalEventCount: total, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n')
       return res(200, {}, ndjson)
     }
     if (u.includes('/field-summaries')) {
@@ -393,12 +403,43 @@ describe('a healthy read', () => {
     expect(read.run?.id).toBe(SRC)
   })
 
-  it('keeps a re-aggregating tail on the query path', async () => {
-    // Over a limit-capped artifact a `summarize` is a wrong total whenever the
-    // read was truncated. Cribl evaluates it over every stored row instead.
-    const { submits } = stub({ ...healthy, history: [srcRun()] })
+  it('evaluates a re-aggregating tail over a COMPLETE artifact — still no job', async () => {
+    // Phase 7 item 1.3. The header proves every row was read, so the tail's
+    // total is the total.
+    const { submits, urls } = stub({ ...healthy, vtRows: [{ ...STORED }, { ...STORED, total_events: 10 }], history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { now: NOW, tail: '| summarize n=sum(total_events)' })
+    expect(submits).toEqual([])
+    expect(read.data).toEqual([{ n: 18_240_123 }])
+    // Read whole: the caller's limit would cap the INPUT, which is the wrong total.
+    expect(urls.some((u) => u.includes(`/results?limit=${FULL_ARTIFACT_LIMIT}`))).toBe(true)
+  })
+
+  it('keeps a re-aggregating tail on the query path when the artifact was TRUNCATED', async () => {
+    // Two rows read of three held: a sum over them is a wrong total that looks
+    // exactly like a right one. Cribl evaluates it over every stored row instead.
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }, { ...STORED }], headerTotal: 3, history: [srcRun()] })
     await readAccelRows(LAKE, { now: NOW, tail: '| summarize n=sum(total_events)' })
-    expect(vtSubmits(submits), 'a re-aggregating tail was evaluated over an artifact').toHaveLength(1)
+    expect(vtSubmits(submits), 'a truncated artifact was re-aggregated').toHaveLength(1)
+  })
+
+  it('does not take a MISSING results header as proof the read was whole', async () => {
+    // No header parses as a total of 0, which must never equal a non-empty read.
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], headerTotal: 0, history: [srcRun()] })
+    await readAccelRows(LAKE, { now: NOW, tail: '| summarize n=sum(total_events)' })
+    expect(vtSubmits(submits)).toHaveLength(1)
+  })
+
+  it('applies the caller limit AFTER the tail, where Search applies it', async () => {
+    const rows = [5, 9, 7].map((v) => ({ ...STORED, total_events: v }))
+    stub({ ...healthy, vtRows: rows, history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { now: NOW, limit: 2, tail: '| sort by total_events desc | project v=total_events' })
+    expect(read.data).toEqual([{ v: 9 }, { v: 7 }])
+  })
+
+  it('keeps a tail outside the grammar on the query path', async () => {
+    const { submits } = stub({ ...healthy, history: [srcRun()] })
+    await readAccelRows(LAKE, { now: NOW, tail: '| summarize n=avg(total_events)' })
+    expect(vtSubmits(submits)).toHaveLength(1)
   })
 
   it('falls back to the query path when the artifact is empty or unreadable', async () => {
@@ -939,6 +980,137 @@ describe('the sentences this module may say', () => {
 // would be showing this afternoon and this morning with nothing saying so. The
 // `liveSubmit` assertion appears in every case below for that reason.
 
+describe('one run, read once', () => {
+  // A completed run's artifact is immutable, so every panel it serves shares
+  // one GET: the overview run's five, Shadow AI's three, and DNS's two — 1.3 MB
+  // each, measured 2026-09-23.
+  const artifactGets = (urls: readonly string[]) => urls.filter((u) => u.includes(`/search/jobs/${SRC}/results`))
+
+  it('serves several panels of one run from a single GET', async () => {
+    const { urls, submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()] })
+    await Promise.all([
+      readAccelRows(LAKE, { now: NOW, tail: '| project total_events' }),
+      readAccelRows(LAKE, { now: NOW, tail: '| summarize n=sum(total_events)' }),
+      readAccelRows(LAKE, { now: NOW }),
+    ])
+    expect(artifactGets(urls)).toHaveLength(1)
+    expect(submits).toEqual([])
+  })
+
+  it('does not cache a failure — the next panel gets a fresh attempt', async () => {
+    const cfg = { ...healthy, vtRows: [{ ...STORED }], history: [srcRun()], artifactStatus: 500 }
+    const { urls } = stub(cfg)
+    await readAccelRows(LAKE, { now: NOW })
+    const before = artifactGets(urls).length
+    delete (cfg as { artifactStatus?: number }).artifactStatus
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(artifactGets(urls).length).toBeGreaterThan(before)
+    expect(read.run?.id).toBe(SRC)
+  })
+
+  it('lets one panel leave without cancelling the read another is waiting on', async () => {
+    const { urls } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()] })
+    // A real fetch rejects when its signal fires. The leaving panel is the one
+    // that STARTS the download (it asked first), and it leaves while the GET is
+    // in flight — so were its signal on the shared request, the staying panel,
+    // which joined that request, would die with it.
+    const gone = new AbortController()
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      if (String(url).includes(`/search/jobs/${SRC}/results`)) {
+        await new Promise((r) => setTimeout(r, 0))
+        gone.abort()
+        await new Promise((r) => setTimeout(r, 0))
+        if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      }
+      return inner(url, init)
+    })
+    const leaving = readAccelRows(LAKE, { now: NOW, signal: gone.signal })
+    const staying = readAccelRows(LAKE, { now: NOW })
+    await expect(leaving).rejects.toThrow()
+    const read = await staying
+    expect(read.source).toBe('schedule')
+    expect(read.data).toEqual([{ total_events: 18_240_113, total_bytes: 9_412_886_144 }])
+    expect(artifactGets(urls)).toHaveLength(1)
+  })
+
+  it('falls back, rather than failing, when the download times out', async () => {
+    // The shared read's own clock aborts it. That abort must not reach a panel
+    // as "you left" — the panel is still there and deserves its number.
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()] })
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', (url: string, init: RequestInit = {}) => {
+      if (!String(url).includes(`/search/jobs/${SRC}/results`)) return inner(url, init)
+      return new Promise((_, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const p = readAccelRows(LAKE, { now: NOW })
+      await vi.advanceTimersByTimeAsync(ARTIFACT_TIMEOUT_MS + 1)
+      vi.useRealTimers()
+      const read = await p
+      expect(read.source).toBe('schedule')
+      expect(vtSubmits(submits), 'the read did not fall back to the query path').toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says unreadable on a picked moment when the download times out', async () => {
+    const hourly = [srcRun()]
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: hourly })
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', (url: string, init: RequestInit = {}) => {
+      if (!String(url).includes(`/search/jobs/${SRC}/results`)) return inner(url, init)
+      return new Promise((_, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const p = readAccelRows(LAKE, { now: NOW, asOf: NOW })
+      await vi.advanceTimersByTimeAsync(ARTIFACT_TIMEOUT_MS + 1)
+      vi.useRealTimers()
+      const read = await p
+      expect(read.outcome).toBe('unreadable')
+      expect(liveSubmit(submits), 'a picked moment ran the live query').toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('evicts the least recently USED run, not the oldest read', async () => {
+    // Each run id below is read once, except the first, which is re-read before
+    // the cache fills. It must survive; the second-read run must be the one to go.
+    const ids = Array.from({ length: ARTIFACT_CACHE_MAX + 1 }, (_, i) => `${LAKE}.r${i}`)
+    const history = ids.map((id, i) => srcRun({ id, timeCompleted: NOW - (i + 1) * 60_000, timeCreated: NOW - (i + 1) * 60_000 }))
+    const { urls } = stub({ ...healthy, vtRows: [{ ...STORED }], history })
+    const gets = (id: string) => urls.filter((u) => u.includes(`/search/jobs/${id}/results`)).length
+    const at = (id: string) => NOW - (ids.indexOf(id) + 1) * 60_000
+    await readAccelRows(LAKE, { now: NOW, asOf: at(ids[0]) })
+    for (const id of ids.slice(1, ARTIFACT_CACHE_MAX)) await readAccelRows(LAKE, { now: NOW, asOf: at(id) })
+    await readAccelRows(LAKE, { now: NOW, asOf: at(ids[0]) }) // a hit: now the most recent
+    await readAccelRows(LAKE, { now: NOW, asOf: at(ids[ARTIFACT_CACHE_MAX]) }) // the one that overflows
+    await readAccelRows(LAKE, { now: NOW, asOf: at(ids[0]) })
+    expect(gets(ids[0]), 'the run just used was evicted').toBe(1)
+    // Checked before ids[1] is re-read, whose re-insertion would itself evict.
+    await readAccelRows(LAKE, { now: NOW, asOf: at(ids[2]) })
+    expect(gets(ids[2]), 'more than one run was evicted').toBe(1)
+    await readAccelRows(LAKE, { now: NOW, asOf: at(ids[1]) })
+    expect(gets(ids[1]), 'the least recently used run was kept').toBe(2)
+  })
+
+  it('hands every panel its own rows, so one cannot change another’s', async () => {
+    stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()] })
+    const a = await readAccelRows(LAKE, { now: NOW })
+    ;(a.data[0] as Row).total_events = -1
+    const b = await readAccelRows(LAKE, { now: NOW })
+    expect(b.data[0].total_events).toBe(18_240_113)
+  })
+})
+
 describe('reading the state at a chosen moment', () => {
   /** Three hourly runs, newest first, as the job list returns them. */
   const hourlyRuns = [
@@ -954,6 +1126,32 @@ describe('reading the state at a chosen moment', () => {
    *  by URL now, so the URL is what carries the claim. */
   const fetchedRun = (urls: readonly string[], jobId: string): boolean =>
     urls.some((u) => u.includes(`/search/jobs/${encodeURIComponent(jobId)}/results`))
+
+  it('cuts a re-aggregating panel out of a picked run — no longer blank', async () => {
+    // Ten panels showed `unshaped` on every picked snapshot because their tail
+    // re-aggregates and an artifact cannot run KQL. Evaluated here instead.
+    const rows = [storedFrom(R0820), { ...storedFrom(R0820), total_events: 10 }]
+    const { submits } = stub({ history: hourlyRuns, vtRows: rows, liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW, tail: '| summarize n=sum(total_events)' })
+    expect(submits).toEqual([])
+    expect(read.outcome).toBe('fresh')
+    expect(read.data).toEqual([{ n: 18_240_123 }])
+  })
+
+  it('shows nothing, not a guess, when the picked run was truncated', async () => {
+    stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], headerTotal: 2, liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW, tail: '| summarize n=sum(total_events)' })
+    expect(read.outcome).toBe('unshaped')
+    expect(read.data).toEqual([])
+    expect(read.nearestAt, 'the run existed; its time is still worth saying').toBe(NOW - 2 * HOUR)
+  })
+
+  it('shows nothing when the picked panel’s tail is outside the grammar', async () => {
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW, tail: '| summarize n=avg(total_events)' })
+    expect(read.outcome).toBe('unshaped')
+    expect(liveSubmit(submits), 'a picked moment ran the live query').toBeUndefined()
+  })
 
   it('addresses one run by its job id, not the schedule by name', async () => {
     // `jobName=` selects a schedule. With twenty-four retained runs that is
@@ -1140,51 +1338,32 @@ describe('reading the state at a chosen moment', () => {
 // COLUMNS under this panel's label, and the manifest has a test devoted to the
 // hazard because Capacity calls `sum(total_bytes)` `total` while Findings calls
 // `count()` `total`. Both are real columns with real values.
-describe('applyProjection', () => {
+describe('the tail, over an artifact', () => {
+  // Formerly `applyProjection`, which handled projections only. The evaluator
+  // in tail.ts replaced it (Phase 7 item 1.3); these are the same claims about
+  // projections, kept because the column-leak hazard above is theirs.
+  const ALL = { complete: true }
+
   it('picks the named columns and drops the rest', () => {
-    const rows = [{ a: 1, b: 2, c: 3 }]
-    expect(applyProjection('| project a, c', rows)).toEqual([{ a: 1, c: 3 }])
+    expect(evaluateTail('| project a, c', [{ a: 1, b: 2, c: 3 }], ALL)).toEqual([{ a: 1, c: 3 }])
   })
 
   it('renames with alias=source, which is how the manifest builds tails', () => {
-    expect(applyProjection('| project bin_time_1m, v=resets, flows', [{ bin_time_1m: 7, resets: 4, flows: 9 }]))
+    expect(evaluateTail('| project bin_time_1m, v=resets, flows', [{ bin_time_1m: 7, resets: 4, flows: 9 }], ALL))
       .toEqual([{ bin_time_1m: 7, v: 4, flows: 9 }])
   })
 
   it('leaves a missing column OUT rather than setting it undefined', () => {
     // The same nothing Search would hand back, so a caller cannot tell the two
     // apart and `toNum` behaves identically.
-    const out = applyProjection('| project a, missing', [{ a: 1 }])
+    const out = evaluateTail('| project a, missing', [{ a: 1 }], ALL)
     expect(out).toEqual([{ a: 1 }])
     expect(out && 'missing' in out[0]).toBe(false)
   })
 
-  it('REFUSES anything that is not a pure projection', () => {
-    // Each of these is a computation over the row SET. Reproducing them needs a
-    // KQL interpreter, and guessing would produce a plausible wrong number.
-    for (const tail of [
-      '| summarize flows=sum(flows) by app_name',
-      '| where srv_n > 0 | extend n=srv_n | sort by p95 desc | limit 10',
-      '| project a | summarize n=count()',
-      '| sort by x desc',
-      '| project total=sum(bytes)',
-      '| project a, b(c)',
-      '',
-    ]) {
-      expect(applyProjection(tail, [{ a: 1 }]), tail).toBeNull()
-    }
-  })
-
-  it('covers the manifest tails it claims to — every projectionOf tail', () => {
-    // If projectionOf ever emits something this cannot parse, the asOf path
-    // starts refusing panels that used to work, silently and only on a picked
-    // moment. This is the pin that says so at build time instead.
-    const projections = MANIFEST.flatMap((e) => e.panels.map((p) => p.tail)).filter(
-      (t): t is string => typeof t === 'string' && t.trimStart().startsWith('| project'),
-    )
-    expect(projections.length, 'no projection tails found — has projectionOf changed shape?').toBeGreaterThan(8)
-    for (const tail of projections) {
-      expect(applyProjection(tail, []), `${tail} is a projection this cannot apply`).not.toBeNull()
+  it('REFUSES what it cannot reproduce exactly', () => {
+    for (const tail of ['| project total=sum(bytes)', '| project a, b(c)', '', '| sort by x']) {
+      expect(evaluateTail(tail, [{ a: 1 }], ALL), tail).toBeNull()
     }
   })
 })

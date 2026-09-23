@@ -433,7 +433,10 @@ describe('an unaccelerated panel', () => {
 })
 
 describe('a per-panel refresh', () => {
-  it('re-reads the stored result — cheap, and the point of the button', async () => {
+  it('asks again which run is newest, and does not re-download one it already holds', async () => {
+    // A completed run's artifact cannot change, so the refresh's work is the run
+    // list: the same newest run is served from the artifact cache, and no search
+    // is submitted either way.
     stub(healthy)
     await render({ accel: LAKE })
     expect(storedReadCount()).toBe(1)
@@ -441,8 +444,24 @@ describe('a per-panel refresh', () => {
     await act(async () => { seen!.refetch() })
     await settle()
 
-    expect(storedReadCount()).toBe(2)
-    expect(liveSubmits(submits)).toEqual([])
+    expect(historyReads).toBe(2)
+    expect(storedReadCount(), 'an immutable artifact was downloaded twice').toBe(1)
+    expect(submits).toEqual([])
+  })
+
+  it('reads the NEW run when the refresh finds one', async () => {
+    const cfg: Cfg = { ...healthy }
+    stub(cfg)
+    await render({ accel: LAKE })
+    const newer = run({ id: `${LAKE}.run-2`, timeCompleted: NOW - 60_000 })
+    cfg.history = [newer, run()]
+    cfg.stored = [{ ...STORED, jobId: `${LAKE}.run-2`, total_events: 1 }]
+
+    await act(async () => { seen!.refetch() })
+    await settle()
+
+    expect(artifactReads).toEqual([`${LAKE}.run-1`, `${LAKE}.run-2`])
+    expect(seen!.rows[0]).toMatchObject({ total_events: 1 })
   })
 
   it('reads the run history afresh, so a run that just landed is the one it shows', async () => {
@@ -466,7 +485,6 @@ describe('the page refresh control', () => {
     await act(async () => { refreshAll!() })
     await settle()
     expect(historyReads, 'the page refresh was answered from the cached history').toBe(2)
-    expect(artifactReads).toHaveLength(2)
   })
 })
 

@@ -34,6 +34,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { accelEntry } from '../cribl/accel/manifest'
 import { resetAccelKeyMemo } from '../cribl/accel/read'
+import { forgetRunHistory } from '../cribl/accel/status'
 import { resetSelectedSnapshot } from '../cribl/accel/selection'
 import { resetSnapshotCensus } from '../components/snapshotCensus'
 import { FlowMap } from './FlowMap'
@@ -72,8 +73,8 @@ const run = (id: string) => ({
 
 /** Two tagged services, both of them destinations, so both get drawn. */
 const NODE_ROWS = [
-  { dst_aws_flat_tags_name: 'alpha', app: 0.01, app_n: 10, dns: 0.01, dns_n: 10, resets: 0, flows: 100, jobId: 'run-1', jobName: NODES },
-  { dst_aws_flat_tags_name: 'beta', app: 0.01, app_n: 10, dns: 0.01, dns_n: 10, resets: 0, flows: 100, jobId: 'run-1', jobName: NODES },
+  { dst_aws_flat_tags_name: 'alpha', app: 0.01, app_n: 10, dns: 0.01, dns_n: 10, resets: 0, flows: 100, jobId: `${NODES}.run-1`, jobName: NODES },
+  { dst_aws_flat_tags_name: 'beta', app: 0.01, app_n: 10, dns: 0.01, dns_n: 10, resets: 0, flows: 100, jobId: `${NODES}.run-1`, jobName: NODES },
 ]
 
 /**
@@ -90,15 +91,23 @@ const NODE_ROWS = [
  * disappears, and nothing on screen says a thing.
  */
 const GRAPH_ROWS = [
-  { src_aws_flat_tags_name: 'alpha', dst_svc: 'beta', flows: 60, jobId: 'run-1', jobName: EDGES },
-  { src_aws_flat_tags_name: 'alpha', dst_svc: '', flows: 40, jobId: 'run-1', jobName: EDGES },
-  { src_aws_flat_tags_name: 'beta', dst_svc: 'alpha', flows: 10, jobId: 'run-1', jobName: EDGES },
+  { src_aws_flat_tags_name: 'alpha', dst_svc: 'beta', flows: 60, jobId: `${EDGES}.run-1`, jobName: EDGES },
+  { src_aws_flat_tags_name: 'alpha', dst_svc: '', flows: 40, jobId: `${EDGES}.run-1`, jobName: EDGES },
+  { src_aws_flat_tags_name: 'beta', dst_svc: 'alpha', flows: 10, jobId: `${EDGES}.run-1`, jobName: EDGES },
 ]
 
 let submits: Submitted[] = []
+/** Stored results read by run id — a GET, no job. See accel/read.ts's
+ *  `newestArtifact`: since Phase 7 item 1.1 this is how both reads land. */
+let artifactReads: string[] = []
 
-function stub(): void {
+/**
+ * `history: false` is a workspace whose run list cannot be read, which sends
+ * both reads down the `$vt_results` path — the fallback, still tested.
+ */
+function stub({ history = true }: { history?: boolean } = {}): void {
   submits = []
+  artifactReads = []
   const jobs = new Map<string, Array<Record<string, unknown>>>()
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const u = String(url)
@@ -111,15 +120,27 @@ function stub(): void {
     }
     if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
     if (u.includes('/results')) {
-      const id = /\/search\/jobs\/([^/]+)\/results/.exec(u)?.[1] ?? ''
+      const id = decodeURIComponent(/\/search\/jobs\/([^/?]+)\/results/.exec(u)?.[1] ?? '')
+      // A scheduled run's own artifact: its stored rows, by run id.
+      if (id === `${NODES}.run-1` || id === `${EDGES}.run-1`) {
+        artifactReads.push(id)
+        return res(200, {}, ndjson(id.startsWith(NODES) ? NODE_ROWS : GRAPH_ROWS))
+      }
       return res(200, {}, ndjson(jobs.get(id) ?? []))
     }
     if (u.includes('/search/jobs?')) {
-      const which = u.includes(NODES) ? NODES : EDGES
-      return res(200, { items: [run(which)] })
+      // ONE page for every entry — the history read is shared, so it holds both
+      // schedules' runs, as the workspace's real job list does.
+      if (!history) return res(500, { message: 'no' })
+      return res(200, { items: [run(NODES), run(EDGES)] })
     }
     const byId = /\/search\/jobs\/([^/?]+)$/.exec(u)
-    if (byId) return byId[1] === 'run-1' ? res(200, { items: [run(EDGES)] }) : res(404, { message: 'gone' })
+    if (byId) {
+      const id = decodeURIComponent(byId[1])
+      return id === `${NODES}.run-1` ? res(200, { items: [run(NODES)] })
+        : id === `${EDGES}.run-1` ? res(200, { items: [run(EDGES)] })
+        : res(404, { message: 'gone' })
+    }
     return res(404, { message: 'unrouted' })
   })
 }
@@ -130,6 +151,9 @@ let root: Root
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  // The history page is cached module-wide; one test's page must not answer
+  // for the next.
+  forgetRunHistory()
   resetSelectedSnapshot()
   resetSnapshotCensus()
   resetAccelKeyMemo()
@@ -165,23 +189,36 @@ const storedSubmits = () => submits.filter((s) => s.query.includes('$vt_results'
 const titles = () => [...container.querySelectorAll('title')].map((t) => t.textContent ?? '')
 
 describe('the default route, drawn from two reads', () => {
-  it('asks for two stored results, not three', async () => {
-    // This is the whole of Step 0. Three would mean the per-source totals went
-    // back to being their own served panel, and the route the app opens on would
-    // be reading one stored result twice.
+  it('SUBMITS NO JOB AT ALL — both stored results are read as artifacts', async () => {
+    // Phase 7's exit criterion for the route the app opens on. Every job costs
+    // a place in the ~1.6 s admission queue; the two stored results this graph
+    // needs already exist, so reading them should cost two GETs and nothing
+    // else. A submit here means the fast path was skipped and the default route
+    // is queueing again.
     stub()
+    await render()
+
+    expect(submits, 'the default route submitted a search job').toEqual([])
+    expect(artifactReads.sort()).toEqual([`${EDGES}.run-1`, `${NODES}.run-1`])
+  })
+
+  it('asks for two stored results, not three', async () => {
+    // Step 0. Three would mean the per-source totals went back to being their
+    // own served panel, and the route the app opens on would be reading one
+    // stored result twice.
+    stub()
+    await render()
+    expect(artifactReads).toHaveLength(2)
+  })
+
+  it('reads the graph body whole, with no tail — on the fallback path too', async () => {
+    // A tail here is one of two bugs: a second read, or one view reading the
+    // other view's filtered-and-limited rows. Both are silent. The run list is
+    // made unreadable so the query path runs and its text can be read.
+    stub({ history: false })
     await render()
 
     expect(storedSubmits()).toHaveLength(2)
-    expect(storedSubmits().filter((s) => s.query.includes(NODES))).toHaveLength(1)
-    expect(storedSubmits().filter((s) => s.query.includes(EDGES))).toHaveLength(1)
-  })
-
-  it('reads the graph body whole, with no tail', async () => {
-    // A tail here is one of two bugs: a second read, or one view reading the
-    // other view's filtered-and-limited rows. Both are silent.
-    stub()
-    await render()
 
     const graph = storedSubmits().find((s) => s.query.includes(EDGES))!
     // The only prefix search.ts adds is the running-time cap; everything after
