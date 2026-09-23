@@ -120,6 +120,14 @@ export const ARTIFACT_LIMIT = 5000
 export const FULL_ARTIFACT_LIMIT = 20_000
 
 /**
+ * The most fields Cribl's `/field-summaries` answers with — the cap Field
+ * Explorer's In feed panel states beside its list. A summary computed in the
+ * browser from a stored run is cut to it, so the newest run reads the same
+ * whichever path served it.
+ */
+export const FIELD_SUMMARIES_CAP = 200
+
+/**
  * The three columns `$vt_results` adds to every row, which the scheduled body
  * never produced.
  *
@@ -687,10 +695,12 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
 /**
  * Read per-field summaries from a scheduled run's stored rows.
  *
- * The summaries are computed over the fast read's own job — Cribl summarises
- * whatever that job returned, which is the stored sample — so the figures are the
- * ones the scheduled body produced, one hour old at most rather than 754.9 CPU-s
- * ago.
+ * The newest run's artifact is summarised here, in the browser, with no job
+ * submitted (`newestArtifactSummaries`). When that cannot answer, the
+ * summaries are computed over the fast read's own job — Cribl summarises
+ * whatever that job returned, which is the stored sample. Either way the
+ * figures are the ones the scheduled body produced, one hour old at most rather
+ * than 754.9 CPU-s ago.
  */
 export async function readAccelFieldSummaries(
   id: AccelId,
@@ -715,6 +725,12 @@ export async function readAccelFieldSummaries(
     })
   }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
+
+  // THE FAST PATH, as on the rows path: summarise the newest run's artifact,
+  // which submits no job. Null falls through to the job below, unchanged. See
+  // `newestArtifactSummaries`.
+  const artifact = await newestArtifactSummaries(entry, opts)
+  if (artifact !== null) return artifact
 
   let answered
   try {
@@ -807,21 +823,98 @@ export async function readAccelFieldSummaries(
 async function newestArtifact(entry: AccelEntry, opts: AccelReadOptions<Row[]>): Promise<AccelRead<Row[]> | null> {
   const tail = opts.tail
   if (tail !== undefined && parseTail(tail) === null) return null
-  // One span over the whole read, the history wait included — that wait is the
-  // first thing a panel does now, and the spinner has to be on while it happens.
+  return spinning(async () => {
+    const found = await newestRunArtifact(entry, opts)
+    if (found === null) return null
+    const data = shapeRows(tail, found.read, opts.limit)
+    return data === null ? null : servedBy(entry, data, found.run, opts)
+  })
+}
+
+/**
+ * Field Explorer's newest sample, summarised from the run's artifact — NO JOB.
+ *
+ * The same read as `newestArtifact`, and the same summary the picked-moment
+ * path has always computed (`summariseRows`): `/field-summaries` can only be
+ * pointed at a job, so the query path SUBMITS one over `$vt_results` only to be
+ * handed back a summary of rows that already exist. That job was the last
+ * queue position an accelerated panel still took when a tab opened
+ * (src/tabs/tabJobBudget.test.tsx).
+ *
+ * ONE CONDITION THE ROWS PATH DOES NOT HAVE: the read must be WHOLE, whatever
+ * the tail. A summary is an aggregate over every stored row — `sampled`, each
+ * field's count and null count — so a truncated read would be a smaller sample
+ * reported as the sample. The results header proves completeness, as it does
+ * for a re-aggregating tail in `shapeRows`; anything less keeps the job.
+ *
+ * Every other case — no readable run, an unreadable artifact, an empty one —
+ * returns null and the caller carries on down the job path, unchanged. Only an
+ * abort escapes.
+ */
+async function newestArtifactSummaries(
+  entry: AccelEntry,
+  opts: AccelReadOptions<FieldSummariesResult>,
+): Promise<AccelRead<FieldSummariesResult> | null> {
+  const tail = opts.tail
+  if (tail !== undefined && parseTail(tail) === null) return null
+  return spinning(async () => {
+    const found = await newestRunArtifact(entry, opts)
+    if (found === null) return null
+    if (found.read.rows.length !== found.read.totalEventCount) return null
+    const rows = shapeRows(tail, found.read, undefined)
+    if (rows === null || rows.length === 0) return null
+    // `shapeRows` has already dropped any virtual column, so the summary lists
+    // only the body's own fields and `sampled` is the stored sample's size.
+    const summary = summariseRows(rows)
+    // Cut to what the endpoint would have answered: the panel says "top 200
+    // (field-summaries cap)", and a browser-side summary has no cap of its own.
+    // `summariseRows` sorts by fill, so the first 200 ARE the top 200.
+    return servedBy(entry, { ...summary, fields: summary.fields.slice(0, FIELD_SUMMARIES_CAP) }, found.run, opts)
+  })
+}
+
+/** One span of the header spinner over the whole read, the history wait
+ *  included. `runSearch` counts itself; a plain GET does not, and without this
+ *  the spinner would go quiet on the default path while panels were loading. */
+async function spinning<T>(read: () => Promise<T>): Promise<T> {
   beginQuery()
   try {
-    return await artifactRead(entry, tail, opts)
+    return await read()
   } finally {
     endQuery()
   }
 }
 
-async function artifactRead(
+/** A result served from `run`'s artifact, dated by that run. */
+function servedBy<T>(entry: AccelEntry, data: T, run: AccelRun & { at: number }, opts: AccelReadOptions<T>): AccelRead<T> {
+  const staleAfterMs = opts.staleAfterMs ?? staleAfterMsFor(entry)
+  const ageMs = (opts.now ?? Date.now()) - run.at
+  const outcome: AccelOutcome = ageMs > staleAfterMs ? 'stale' : 'fresh'
+  return {
+    data,
+    source: 'schedule',
+    outcome,
+    run,
+    at: run.at,
+    ageMs,
+    staleAfterMs,
+    stale: outcome === 'stale',
+    // A run id answered, which is not evidence about what `jobName=` binds to —
+    // the same reason `atMoment` reports null here.
+    key: null,
+    note: NOTES[outcome],
+    nearestAt: null,
+  }
+}
+
+/**
+ * The newest completed run of this entry and its whole artifact, or null when
+ * that cannot be had with certainty. Shared by both newest-run artifact reads.
+ */
+async function newestRunArtifact(
   entry: AccelEntry,
-  tail: string | undefined,
-  opts: AccelReadOptions<Row[]>,
-): Promise<AccelRead<Row[]> | null> {
+  opts: { signal?: AbortSignal },
+): Promise<{ run: AccelRun & { at: number }; read: ArtifactRead } | null> {
   // The shared history page — one request per page for every entry, so this is
   // usually a cache hit rather than a round trip. UNFILTERED, on purpose: the
   // timeline's view drops failed runs, and the newest run failing is a fact
@@ -871,27 +964,7 @@ async function artifactRead(
   const named = str(rows[0]?.[COL_JOB_ID])
   if (named !== null && named !== run.id) return null
 
-  const data = shapeRows(tail, read, opts.limit)
-  if (data === null) return null
-
-  const staleAfterMs = opts.staleAfterMs ?? staleAfterMsFor(entry)
-  const ageMs = (opts.now ?? Date.now()) - run.at
-  const outcome: AccelOutcome = ageMs > staleAfterMs ? 'stale' : 'fresh'
-  return {
-    data,
-    source: 'schedule',
-    outcome,
-    run,
-    at: run.at,
-    ageMs,
-    staleAfterMs,
-    stale: outcome === 'stale',
-    // A run id answered, which is not evidence about what `jobName=` binds to —
-    // the same reason `atMoment` reports null here.
-    key: null,
-    note: NOTES[outcome],
-    nearestAt: null,
-  }
+  return { run: { ...run, at: run.at }, read }
 }
 
 // ── Reading a chosen past state ─────────────────────────────────────────────

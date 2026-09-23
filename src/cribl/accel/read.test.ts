@@ -44,6 +44,7 @@ import type { FieldSummary, Row } from '../search'
 import { accelEntry } from './manifest'
 import {
   FAST_EARLIEST,
+  FIELD_SUMMARIES_CAP,
   FULL_ARTIFACT_LIMIT,
   ARTIFACT_CACHE_MAX,
   ARTIFACT_TIMEOUT_MS,
@@ -965,6 +966,133 @@ describe('field summaries', () => {
     expect(read.outcome).toBe('no-run')
     expect(read.source).toBe('live')
     expect(read.data.fields.map((f) => f.name)).toEqual(['src_ip'])
+    expect(liveSubmit(submits)).toBeDefined()
+  })
+})
+
+describe('field summaries of the newest run, from its artifact', () => {
+  // The sample run's stored rows, as its artifact holds them: no virtual
+  // columns (an artifact carries none), one row lacking a field.
+  const SAMPLE_ROWS: Row[] = [
+    { src_ip: '10.0.0.1', app_name: 'dns' },
+    { src_ip: '10.0.0.2', app_name: 'dns' },
+    { src_ip: '10.0.0.1' },
+  ]
+  const smpRun = (over: Record<string, unknown> = {}) => srcRun({ id: SMP, ...over })
+  /** What the job path would answer, so a fallback is visible in the result. */
+  const JOB_FIELDS: FieldSummary[] = [
+    { name: 'from_the_job', type: 'string', count: 1, countDistinct: 1, countNull: 0, topValues: [] },
+    { name: 'jobId', type: 'string', count: 1, countDistinct: 1, countNull: 0, topValues: [{ value: SMP, count: 1 }] },
+  ]
+  const artifactCfg = (over: Partial<Cfg> = {}): Cfg => ({
+    runRows: { [SMP]: SAMPLE_ROWS },
+    vtFields: JOB_FIELDS,
+    history: [smpRun()],
+    jobs: { [SMP]: smpRun() },
+    ...over,
+  })
+
+  it('summarises the artifact in the browser — one GET, no job submitted', async () => {
+    const { submits, urls } = stub(artifactCfg())
+    spinner.begun = spinner.ended = 0
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(submits, 'a job was submitted to summarise a stored result').toEqual([])
+    expect(urls.some((u) => u.includes(`/search/jobs/${SMP}/results`))).toBe(true)
+    expect(urls.some((u) => u.includes('/field-summaries'))).toBe(false)
+    expect(spinner.begun, 'the header spinner never saw the read').toBe(1)
+    expect(spinner.ended, 'the header spinner was left spinning').toBe(1)
+    expect(read.source).toBe('schedule')
+    expect(read.outcome).toBe('fresh')
+    expect(read.note).toBe(NOTES.fresh)
+    expect(read.key).toBeNull()
+    // Dated by the run it read, from the history row.
+    expect(read.run?.id).toBe(SMP)
+    expect(read.at).toBe(NOW - HOUR + 9_000)
+    expect(read.data.sampled).toBe(3)
+    const src = read.data.fields.find((f) => f.name === 'src_ip')
+    const app = read.data.fields.find((f) => f.name === 'app_name')
+    expect([src?.count, src?.countDistinct, src?.countNull]).toEqual([3, 2, 0])
+    expect([app?.count, app?.countNull]).toEqual([2, 0])
+    expect(read.data.fields.map((f) => f.name).filter((n) => VIRTUAL_COLUMNS.includes(n))).toEqual([])
+  })
+
+  it('lists at most the endpoint’s 200 fields, the fullest first — the cap the panel states', async () => {
+    // 250 fields; f0 is on every row, the rest on one row each.
+    const wide: Row = Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`f${i}`, 'x']))
+    stub(artifactCfg({ runRows: { [SMP]: [wide, { f0: 'y' }] } }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(read.source).toBe('schedule')
+    expect(read.data.fields).toHaveLength(FIELD_SUMMARIES_CAP)
+    expect(read.data.fields[0].name).toBe('f0')
+    expect(read.data.sampled, 'the sample is every stored row, whatever the cap').toBe(2)
+  })
+
+  it('never lists a virtual column, even when the stored rows carry one', async () => {
+    stub(artifactCfg({ runRows: { [SMP]: SAMPLE_ROWS.map((r) => ({ ...r, jobId: SMP, jobName: SAMPLE, dataset: '$vt_results' })) } }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(read.source).toBe('schedule')
+    expect(read.data.fields.map((f) => f.name).sort()).toEqual(['app_name', 'src_ip'])
+  })
+
+  it('is stale on the hourly cadence, and still served rather than replaced', async () => {
+    const old = smpRun({ timeCompleted: NOW - 3 * HOUR })
+    const { submits } = stub(artifactCfg({ history: [old] }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(submits).toEqual([])
+    expect(read.outcome).toBe('stale')
+    expect(read.stale).toBe(true)
+    expect(read.at).toBe(NOW - 3 * HOUR)
+  })
+
+  it('falls back to the job when the artifact cannot be read', async () => {
+    const { submits } = stub(artifactCfg({ artifactStatus: 500 }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(vtSubmits(submits), 'the job path never ran').toHaveLength(1)
+    expect(read.source).toBe('schedule')
+    expect(read.data.fields.map((f) => f.name)).toEqual(['from_the_job'])
+  })
+
+  it('falls back to the job when the artifact was TRUNCATED — a smaller sample is not the sample', async () => {
+    const { submits } = stub(artifactCfg({ headerTotal: SAMPLE_ROWS.length + 1 }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(vtSubmits(submits)).toHaveLength(1)
+    expect(read.data.fields.map((f) => f.name)).toEqual(['from_the_job'])
+  })
+
+  it('falls back to the job when the history cannot be read', async () => {
+    const { submits } = stub(artifactCfg({ historyStatus: 500 }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(vtSubmits(submits)).toHaveLength(1)
+    expect(read.data.fields.map((f) => f.name)).toEqual(['from_the_job'])
+  })
+
+  it('steps aside when the newest run FAILED, so run-failed is still reported', async () => {
+    const failed = smpRun({ id: `${SAMPLE}.smp-failed`, status: 'failed', timeCompleted: NOW - 60_000 })
+    const { submits } = stub(artifactCfg({ vtFields: [], nameFields: [], history: [failed, smpRun()] }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW })
+    expect(read.outcome).toBe('run-failed')
+    expect(vtSubmits(submits).length, 'the query path never ran').toBeGreaterThan(0)
+  })
+
+  it('stops, rather than falling back, when the panel goes during the artifact read', async () => {
+    const ctl = new AbortController()
+    const { submits } = stub(artifactCfg({ abortOn: `/search/jobs/${SMP}/results`, ctl }))
+    await expect(readAccelFieldSummaries(SAMPLE, { now: NOW, signal: ctl.signal })).rejects.toThrow()
+    expect(submits, 'a job was submitted for a panel that had gone').toEqual([])
+  })
+
+  it('stops, rather than falling back, when the panel goes during the history read', async () => {
+    const ctl = new AbortController()
+    const { submits } = stub(artifactCfg({ abortOn: '/search/jobs?', ctl }))
+    await expect(readAccelFieldSummaries(SAMPLE, { now: NOW, signal: ctl.signal })).rejects.toThrow()
+    expect(submits, 'a job was submitted for a panel that had gone').toEqual([])
+  })
+
+  it('leaves the switched-off read alone: no artifact, straight to live', async () => {
+    const { submits, urls } = stub(artifactCfg({ liveFields: [JOB_FIELDS[0]] }))
+    const read = await readAccelFieldSummaries(SAMPLE, { now: NOW, enabled: false })
+    expect(urls.some((u) => u.includes(`/search/jobs/${SMP}/results`))).toBe(false)
+    expect(read.source).toBe('live')
     expect(liveSubmit(submits)).toBeDefined()
   })
 })

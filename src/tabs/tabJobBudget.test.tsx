@@ -88,7 +88,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { DashboardProvider } from '../app/DashboardContext'
 import { MANIFEST, columnsOf, type AccelEntry, type AccelId } from '../cribl/accel/manifest'
-import { accelReadQuery, resetAccelKeyMemo } from '../cribl/accel/read'
+import { resetAccelKeyMemo } from '../cribl/accel/read'
 import { HEAD_LIMIT, cronIntervalMs } from '../cribl/accel/status'
 import { resetSelectedSnapshot } from '../cribl/accel/selection'
 import { dataMode } from '../cribl/dataMode'
@@ -105,15 +105,14 @@ import { SERVERS_Q, GROUPS_Q } from '../queries/pqcReadiness'
 interface Allowed {
   /** The panel, in the words its heading uses. */
   panel: string
-  /** A live panel: the exact query it runs, as the tab imports it. A stored
-   *  read: the `$vt_results` selector it submits. Matched after search.ts's
-   *  `set …;` execution prefixes are removed. */
+  /** The exact query the panel runs, as the tab imports it (for a stored read
+   *  that submits a job, `accelReadQuery(id)` — none is budgeted today).
+   *  Matched after search.ts's `set …;` execution prefixes are removed. */
   query: string
   why: string
 }
 
 const live = (panel: string, query: string, why: string): Allowed => ({ panel, query, why })
-const storedRead = (panel: string, id: AccelId, why: string): Allowed => ({ panel, query: accelReadQuery(id), why })
 
 const NOT_IN_MANIFEST = 'no scheduled search serves it — the manifest has no entry for this query'
 
@@ -180,15 +179,9 @@ const BUDGET: Readonly<Record<string, TabBudget>> = {
     // captioned panel, Fields, is on the In feed view — see `views`.
     served: 0,
     views: { 'In feed': 1 },
-    jobs: [
-      storedRead(
-        'In the feed (field summaries)',
-        'gno_sample_2m_c1h',
-        'ACCELERATED, AND STILL A JOB. readAccelFieldSummaries has no artifact path for the newest run: it submits a ' +
-          '`$vt_results` job so Cribl’s /field-summaries endpoint can summarise it. The picked-moment path already ' +
-          'summarises an artifact client-side (summariseRows); the newest-run path does not yet',
-      ),
-    ],
+    // Its field summaries are computed from the newest run's artifact in the
+    // browser (readAccelFieldSummaries), so the tab submits nothing.
+    jobs: [],
   },
   // Neither reads a stored run: no panel on them has a schedule.
   '/reference': { served: 0, jobs: [] },
