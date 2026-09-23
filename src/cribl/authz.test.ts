@@ -79,7 +79,7 @@ describe('the ledger', () => {
 
   it('drops the query string, which is not part of what an admin grants', () => {
     const mark = denialMark()
-    noteDenial('GET', '/version?limit=5', 403)
+    noteDenial('GET', '/version?offset=0&limit=5', 403)
     expect(denialSince(mark)?.path).toBe('/version')
   })
 

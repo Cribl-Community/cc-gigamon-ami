@@ -1209,7 +1209,11 @@ async function deployedVersion(group: string): Promise<string | null> {
 
 /** The newest commit in the leader's config repo, or null. */
 async function headCommit(): Promise<string | null> {
-  const r = await capi('GET', '/version?limit=5')
+  // `offset` is not optional, whatever the spec says: `limit` without it is a
+  // 400 on 4.20.1 ("missing 'offset' parameter", measured 2026-09-23). Without
+  // it this always answered null, which silently disabled `undeployedHead`,
+  // `pendingDeploy` and the stranded-commit recovery built on them.
+  const r = await capi('GET', '/version?offset=0&limit=5')
   if (r.status !== 200) return null
   const items = (r.body as { items?: Array<{ hash?: string; refs?: string }> })?.items || []
   // The history comes back newest-first, but a deploy is not something to bet on

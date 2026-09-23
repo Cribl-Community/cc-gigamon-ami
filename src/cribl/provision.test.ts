@@ -180,7 +180,14 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
         ? reply(200, { items: [{ count: changedSince.length, items: changedSince.map((name) => ({ name, state: 'M' })) }] })
         : reply(filesStatus, { message: 'not granted' })
     }
-    if (under('GET', '/version?')) return reply(200, { items: [{ hash: head, refs: 'HEAD -> main' }] })
+    if (under('GET', '/version?')) {
+      // As the live endpoint answers (4.20.1, measured 2026-09-23): `limit`
+      // without `offset` is a 400, "missing 'offset' parameter". The stub used
+      // to accept it, which is how headCommit shipped always returning null.
+      const q = new URLSearchParams(path.split('?')[1] ?? '')
+      if (q.has('limit') && !q.has('offset')) return reply(400, { message: "missing 'offset' parameter" })
+      return reply(200, { items: [{ hash: head, refs: 'HEAD -> main' }] })
+    }
     if (at('GET', '/version/status')) {
       return pendingStatus === 200
         ? reply(200, { items: [{ files: pending.map((p) => ({ path: p })) }] })

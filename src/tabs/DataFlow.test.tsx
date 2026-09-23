@@ -150,7 +150,14 @@ async function render(): Promise<void> {
       </DashboardProvider>,
     )
   })
-  for (let i = 0; i < 14; i++) await act(async () => { await Promise.resolve() })
+  // Microtasks AND macrotasks, a few rounds of each. The Lake card waits for the
+  // Lake API's retention read before its first search (deferred), so its chain
+  // is several steps longer than the others'; a fixed count of microtask ticks
+  // alone passed on an idle machine and failed about one full-suite run in four.
+  for (let round = 0; round < 4; round++) {
+    for (let i = 0; i < 14; i++) await act(async () => { await Promise.resolve() })
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+  }
 }
 
 /** Reads the header's census without rendering the app header. */
