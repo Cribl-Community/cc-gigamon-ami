@@ -466,7 +466,7 @@ function groupFile(group: string, key: ResourceKey): string | null {
   switch (key) {
     case 'destination': return `${root}/outputs.yml`
     case 'source': return `${root}/inputs.yml`
-    case 'route': return `${root}/routes.yml`
+    case 'route': return `${root}/pipelines/route.yml`
     case 'pipeline': return `${root}/pipelines/${SYSLOG_PIPELINE_ID}/conf.yml`
     case 'dataset': return null // Cribl Lake — not a Stream group Git file
     default: return null
@@ -507,14 +507,14 @@ async function pendingFiles(): Promise<string[] | null> {
 
 /**
  * Layout-independent substring identifying a resource's config file. Matches
- * whether the versioning root yields `groups/<gid>/local/cribl/routes.yml` or a
- * group-rooted `local/cribl/routes.yml` — we don't guess the prefix.
+ * whether the versioning root yields `groups/<gid>/local/cribl/pipelines/route.yml` or a
+ * group-rooted `local/cribl/pipelines/route.yml` — we don't guess the prefix.
  */
 function fileMarker(key: ResourceKey): string | null {
   switch (key) {
     case 'destination': return 'local/cribl/outputs.yml'
     case 'source': return 'local/cribl/inputs.yml'
-    case 'route': return 'local/cribl/routes.yml'
+    case 'route': return 'local/cribl/pipelines/route.yml'
     case 'pipeline': return `local/cribl/pipelines/${SYSLOG_PIPELINE_ID}/`
     case 'dataset': return null // Cribl Lake — not a Stream group Git file
     default: return null

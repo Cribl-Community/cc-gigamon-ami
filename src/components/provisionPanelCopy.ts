@@ -24,7 +24,7 @@
 //   groups/<g>/local/cribl/inputs.yml    every Source in the group, INCLUDING
 //                                        the demo DataGen one this sentence
 //                                        promised was untouched
-//   groups/<g>/local/cribl/routes.yml    THE routing table — one ordered array,
+//   groups/<g>/local/cribl/pipelines/route.yml    THE routing table — one ordered array,
 //                                        so another admin's pending work and
 //                                        this app's edit are the same YAML node
 //   groups/<g>/local/cribl/outputs.yml   every Destination in the group

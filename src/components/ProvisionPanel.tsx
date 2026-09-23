@@ -468,7 +468,7 @@ export function ProvisionPanel() {
           source and route entry where they have drifted from this release, and never editing the demo
           DataGen feed. Real flows land in the same dataset, so the existing dashboards light up
           automatically. The <strong>commit</strong> that follows is wider than the write: Git takes
-          whole files, and <code>inputs.yml</code>, <code>routes.yml</code> and <code>outputs.yml</code>{' '}
+          whole files, and <code>inputs.yml</code>, <code>pipelines/route.yml</code> and <code>outputs.yml</code>{' '}
           each hold every object of their kind in the group. The confirmation names them and says what
           Cribl reports already uncommitted in them.
         </p>

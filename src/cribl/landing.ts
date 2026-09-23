@@ -1298,7 +1298,7 @@ export const LANDING_TERMS: Readonly<Record<'landingLag' | 'accelerationTier' | 
  * whole files rather than about `outputs.yml` by name. It used to read "The
  * commit includes every pending change to this group's outputs.yml", which was
  * true and was the only correct statement of the class anywhere in this app —
- * but Guided Setup commits `inputs.yml`, `routes.yml` and a pipeline directory
+ * but Guided Setup commits `inputs.yml`, `pipelines/route.yml` and a pipeline directory
  * as well, and it was telling people the opposite. A dialog names its own paths
  * above; this says what a commit does to whatever is named.
  *

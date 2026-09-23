@@ -29,7 +29,7 @@ import { commitScope, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, type ResourceKey } f
 const GROUP = 'default'
 const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
 const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
-const ROUTES = `groups/${GROUP}/local/cribl/routes.yml`
+const ROUTES = `groups/${GROUP}/local/cribl/pipelines/route.yml`
 const OUTPUTS = `groups/${GROUP}/local/cribl/outputs.yml`
 
 const ctx = (pending: string[] | null, keys: ResourceKey[] = ALL, undeployed: string | null = null) => ({
@@ -43,7 +43,7 @@ const all = (lines: string[]) => lines.join('\n')
 describe('what the deploy confirmation claims about reach', () => {
   it('never says nothing else in the group is touched', () => {
     // The retired sentence, in every state the dialog can be in.
-    for (const pending of [null, [], [INPUTS], ['groups/other/local/cribl/routes.yml']]) {
+    for (const pending of [null, [], [INPUTS], ['groups/other/local/cribl/pipelines/route.yml']]) {
       expect(all(deployConsequences(ctx(pending)))).not.toContain('Nothing else in')
     }
   })

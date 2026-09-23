@@ -317,7 +317,7 @@ describe('ensureRoute', () => {
     const calls = stubLeader({
       routes: [{ id: 'a', name: 'a' }, { ...ROUTE_SPEC }, { id: 'b', name: 'b' }, catchAll],
       table: { comments: [{ text: 'keep me' }] },
-      pending: [`groups/${GROUP}/local/cribl/routes.yml`],
+      pending: [`groups/${GROUP}/local/cribl/pipelines/route.yml`],
     })
     await new Promise<void>((resolve) => { void removeSyslogStack(() => {}, GROUP, undefined, { route: 'present', source: 'absent', pipeline: 'absent' }).then(() => resolve()) })
 
@@ -788,7 +788,7 @@ describe('an undeployed commit', () => {
   const settled = { routes: [{ ...ROUTE_SPEC }, catchAll] }
   const noNetChange = { ...settled, commit: null }
   const nothingOfOurs = { ...settled, pending: ['groups/other_group/local/cribl/outputs.yml'] }
-  const stranded = { configVersion: DEPLOYED, head: HEAD, changedSince: [`groups/${GROUP}/local/cribl/routes.yml`] }
+  const stranded = { configVersion: DEPLOYED, head: HEAD, changedSince: [`groups/${GROUP}/local/cribl/pipelines/route.yml`] }
 
   it('is deployed rather than reported as up to date when the commit is a no-op', async () => {
     weCommitted(HEAD)
@@ -851,7 +851,7 @@ describe('an undeployed commit', () => {
     // somebody committed something somewhere.
     const calls = stubLeader({
       ...nothingOfOurs, configVersion: DEPLOYED, head: HEAD,
-      changedSince: ['groups/other_group/local/cribl/routes.yml'],
+      changedSince: ['groups/other_group/local/cribl/pipelines/route.yml'],
     })
     await run()
     expect(calls.some((c) => c.path === PRODUCTS_DEPLOY)).toBe(false)
@@ -931,7 +931,7 @@ describe('an undeployed commit', () => {
         ok: true, status: 200, statusText: 'OK',
         text: async () => JSON.stringify(value), json: async () => value,
       })
-      if (path.startsWith('/version/files')) return reply({ items: [{ items: [{ name: `groups/${GROUP}/local/cribl/routes.yml` }] }] })
+      if (path.startsWith('/version/files')) return reply({ items: [{ items: [{ name: `groups/${GROUP}/local/cribl/pipelines/route.yml` }] }] })
       if (path.startsWith('/version?')) {
         return reply({ items: [{ hash: 'oldest0000', refs: '' }, { hash: HEAD, refs: 'HEAD -> main' }] })
       }
@@ -949,7 +949,7 @@ describe('pendingConfigPaths', () => {
   // Assume it may be." So on a healthy workspace — the common case, and the one
   // every reader sees most — both confirmations carried a standing warning, and
   // the two states that mean something went down with it.
-  const OURS = `groups/${GROUP}/local/cribl/routes.yml`
+  const OURS = `groups/${GROUP}/local/cribl/pipelines/route.yml`
 
   it('answers an empty list for a clean tree, which is an answer and not a shrug', async () => {
     stubLeader({ pending: [] })
@@ -981,13 +981,32 @@ describe('commitScope', () => {
   const FILES = [
     `groups/${GROUP}/local/cribl/inputs.yml`,
     `groups/${GROUP}/local/cribl/pipelines/${SYSLOG_PIPELINE_ID}/conf.yml`,
-    `groups/${GROUP}/local/cribl/routes.yml`,
+    `groups/${GROUP}/local/cribl/pipelines/route.yml`,
     `groups/${GROUP}/local/cribl/outputs.yml`,
   ]
   const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
 
   it('names every whole file a deploy can commit, including the one holding the demo DataGen source', () => {
     expect(commitScope(GROUP, ALL, []).carries).toEqual(FILES)
+  })
+
+  it('matches the routing table at the path the Leader actually reports', () => {
+    // A SHIPPED DEFECT, FOUND 2026-09-23. Both the constructed path and the
+    // match marker said `local/cribl/pipelines/route.yml`. The Leader's /version/status
+    // lists the routing table as `local/cribl/pipelines/route.yml` (read from
+    // the live workspace that day; every bundled pack keeps its own at
+    // `default/pipelines/route.yml`), and no `routes.yml` exists anywhere. So a
+    // non-empty status never matched the route, the scoped commit left it out,
+    // and the deploy shipped a version without the route this app had just
+    // written — the Syslog source received data that no route sent to Lake.
+    // The literal is written out here on purpose, not derived.
+    const LEADER_ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+    const scope = commitScope(GROUP, ['route'], [LEADER_ROUTE, `groups/${GROUP}/local/cribl/inputs.yml`])
+    expect(scope.carries).toEqual([LEADER_ROUTE])
+    expect(scope.alreadyDirty).toEqual([LEADER_ROUTE])
+    // The pipeline's marker must not swallow the routing table, which lives
+    // in the same directory.
+    expect(commitScope(GROUP, ['pipeline'], [LEADER_ROUTE]).alreadyDirty).toEqual([])
   })
 
   it('names three for a teardown, because the destination is never touched by one', () => {
@@ -999,12 +1018,12 @@ describe('commitScope', () => {
   it('separates somebody else\u2019s work IN those files from work elsewhere', () => {
     const scope = commitScope(GROUP, ALL, [
       `groups/${GROUP}/local/cribl/inputs.yml`,
-      'groups/other/local/cribl/routes.yml',
+      'groups/other/local/cribl/pipelines/route.yml',
     ])
     // In our files: this press commits and deploys it.
     expect(scope.alreadyDirty).toEqual([`groups/${GROUP}/local/cribl/inputs.yml`])
     // Elsewhere: the commit names its own paths, so it is left alone.
-    expect(scope.elsewhere).toEqual(['groups/other/local/cribl/routes.yml'])
+    expect(scope.elsewhere).toEqual(['groups/other/local/cribl/pipelines/route.yml'])
     expect(scope.unknown).toBe(false)
   })
 
