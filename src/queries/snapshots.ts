@@ -50,7 +50,7 @@
 // conditional distinct count nobody has run. Given a scan of its own — the head
 // IS `app_name="dns"` — the distinct count stops being a `dcountif` question:
 // group by resolver and every stored row IS one distinct resolver, so the tile
-// counts rows rather than composing a `dcount`. DNS_RESOLVER_SNAPSHOT_QUERY
+// counts rows rather than composing a `dcount`. The DNS grouping that did this
 // below is that scan, and it serves both of the tab's mount queries.
 //
 // Nothing here may import a .tsx, or anything that reaches one: the freeze
@@ -67,9 +67,6 @@ import {
 import { COUNT_AGGS as SECURITY_COUNT_AGGS } from './security'
 import { FINDING_AGGS } from './findings'
 import { VOLUME_AGGS } from './dataFlow'
-// The DNS reply-code aggregates, imported rather than retyped: the stored body
-// and the ⓘ beside the number have to be the same characters. See dnsHealth.ts.
-import { REPLY_CODE_AGGS } from './dnsHealth'
 // The byte aggregate Capacity's three byte panels are built from, imported for
 // the same reason: one scan rolls it up by (app_name, l4_proto) and all three
 // panels sum the stored rows back along one key. See capacityTopTalkers.ts.
@@ -164,67 +161,6 @@ export const SERVICE_EDGES_SNAPSHOT_QUERY = q(
  * rather than a bug report.
  */
 export const APP_SRC_SNAPSHOT_QUERY = q('| summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip')
-
-/**
- * Every DNS response in the window, grouped by the resolver that answered —
- * including the ones that name no resolver at all.
- *
- * ONE SCAN FOR BOTH OF DNS HEALTH'S MOUNT QUERIES. The tab fires OVERALL and
- * PER_RESOLVER together and waits for both, which is what makes it the app's
- * longest wait on open (~7–12 s). They differ in exactly two ways: PER_RESOLVER
- * adds a `dns_host=*` head and a per-resolver grouping, and OVERALL adds a
- * distinct count of resolvers. Both fall out of this grouping.
- *
- * ── THE EMPTY-GROUP GUARD, WHICH IS THE CORRECTNESS ARGUMENT ────────────────
- * OVERALL's head is `app_name="dns"`; PER_RESOLVER's is `app_name="dns"
- * dns_host=*`. So OVERALL's `total` counts DNS responses that carry no resolver
- * name and PER_RESOLVER's rows do not. Group naively `by dns_host` and whether a
- * null key survives is not something this app has measured — if it does not,
- * OVERALL's total and its SERVFAIL rate come back short by exactly those rows:
- * a smaller number, correctly formatted, in the one direction a viewer cannot
- * detect, on the tile that says how much DNS is failing.
- *
- * So the null becomes a group of its own before the grouping happens, the same
- * trick SERVICE_EDGES_SNAPSHOT_QUERY above uses and for the same reason.
- * `dns_h` is empty for exactly those rows: the resolver table filters them out
- * (which is what its own `dns_host=*` head does) and the error-rate tile sums
- * across them (which is what OVERALL's unfiltered `count()` does). Both are
- * exact by construction rather than by assumption.
- *
- * ── WHY `dcount` LEAVES THE READ PATH ENTIRELY ──────────────────────────────
- * OVERALL's fifth number is `resolvers=dcount(dns_host)`, and a `dcount` does
- * not compose: summing per-group distinct counts counts anything in two groups
- * twice. Nothing is summed here. `summarize … by dns_h` emits ONE ROW PER
- * DISTINCT RESOLVER, so the tile counts rows — `sum(iif(dns_h != "", 1, 0))` —
- * and that is exact by definition rather than by estimate, whether or not the
- * platform's `dcount` is an HLL sketch.
- *
- * It may differ from the live tile BY ONE, and in the right direction: if
- * `dcount(dns_host)` counts the null as a value of its own, the live number
- * includes a "resolver" that is the absence of one. The tile's own words are
- * "unique resolver hosts (dns_host) answering queries", so the stored answer is
- * the one that matches them.
- *
- * ── `limit 500` IS NOT IN HERE, DELIBERATELY ───────────────────────────────
- * PER_RESOLVER carries `| sort by total desc | limit 500` and that belongs to
- * the panel's view, not to the scan: capped in the body, OVERALL's totals would
- * cover the top 500 resolvers rather than all of them. It moves into the
- * resolver table's tail, where it means what it always meant, and the stored row
- * set holds the whole grouping.
- *
- * ── THE ALIAS RULE ─────────────────────────────────────────────────────────
- * `total` is defined once, with PER_RESOLVER's meaning (responses in a group),
- * and OVERALL's `total` is `sum(total)` in its tail — the same number its live
- * `count()` produces, because every response is in exactly one group. `p50` is a
- * percentile and percentiles do not compose either, which is why no panel on
- * this entry re-aggregates one: the resolver table reads it per resolver, which
- * is the grouping it was computed at, and no tile asks for an overall p50.
- */
-export const DNS_RESOLVER_SNAPSHOT_QUERY = q(
-  'app_name="dns" | extend dns_h=iif(isnotnull(dns_host), dns_host, "") | summarize p50=percentile(dns_response_time,50), ' +
-    REPLY_CODE_AGGS +
-    ', total=count() by dns_h',
-)
 
 /**
  * Every HTTP host seen in the window, with its transaction count, its error
@@ -322,7 +258,7 @@ export const WEB_HOST_SNAPSHOT_QUERY = q(
  * ── THE HEAD IS THE PANEL'S OWN, CHARACTER FOR CHARACTER ────────────────────
  * `protocol=6 <src>=* <dst>=*`, the same filter `buildHeatQuery` writes. That is
  * what makes the empty-group question — the one SERVICE_EDGES_SNAPSHOT_QUERY and
- * DNS_RESOLVER_SNAPSHOT_QUERY each needed an `extend`/`iif` sentinel for — not
+ * the former DNS grouping each needed an `extend`/`iif` sentinel for — not
  * arise here: no panel on this entry sums across a group the live query filters
  * out, because the live query filters out exactly the same rows. A sentinel
  * would be a column nothing reads.
@@ -379,7 +315,7 @@ export const TCP_SUBNET16_SNAPSHOT_QUERY = tcpSubnetSnapshot('16')
  * can check.
  *
  * So both nulls become groups of their own before the grouping happens — the
- * same trick SERVICE_EDGES_SNAPSHOT_QUERY and DNS_RESOLVER_SNAPSHOT_QUERY use,
+ * same trick SERVICE_EDGES_SNAPSHOT_QUERY uses (and the former DNS grouping did),
  * on both keys because both keys are nullable. `app` and `l4` are empty for
  * exactly those records: the two mix panels sum across the sentinel (which is
  * what their unfiltered `count`/`sum` does live) and the top-talkers tail

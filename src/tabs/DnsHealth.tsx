@@ -30,15 +30,19 @@ const S_TO_MS = 1000
  * job costs a retained result nobody reads.
  */
 const DNS_ACCEL: AccelId = 'gno_dns_resolver_c1h'
+/** The tiles' own run, split from the resolver table's on 2026-09-23 so the
+ *  table's stored result could shrink from 12,153 rows to the 500 it shows. */
+const DNS_OVERALL_ACCEL: AccelId = 'gno_dns_overall_c1h'
 const DNS_ENTRY = accelEntry(DNS_ACCEL)
 /** The schedule in words, for the ⓘ. DnsHealth.test.tsx holds these against the
  *  manifest's own cron and window, so moving one forces the other. */
 export const DNS_CADENCE = 'once an hour, at 33 minutes past, in UTC'
+export const DNS_OVERALL_CADENCE = 'once an hour, at 34 minutes past, in UTC'
 export const DNS_WINDOW = SNAPSHOT_WINDOW
 
 export function DnsHealth() {
   const { range } = useDashboard()
-  const overall = useSearch(OVERALL, { accel: DNS_ACCEL, accelPanel: 'dns-overall' })
+  const overall = useSearch(OVERALL, { accel: DNS_OVERALL_ACCEL, accelPanel: 'dns-overall' })
   const resolvers = useSearch(PER_RESOLVER, { accel: DNS_ACCEL, accelPanel: 'dns-resolver-table' })
   const [filter, setFilter] = useState('')
   // Default to failing-only: the point of this page is finding broken resolvers,
@@ -68,7 +72,7 @@ export function DnsHealth() {
   // dating exists to prevent.
   const overallComputed: ComputedFrom = {
     source: overall.source, at: overall.at, stale: overall.stale,
-    cadence: DNS_CADENCE, window: DNS_WINDOW, fallback: overall.note,
+    cadence: DNS_OVERALL_CADENCE, window: DNS_WINDOW, fallback: overall.note,
   }
   const resolverComputed: ComputedFrom = {
     source: resolvers.source, at: resolvers.at, stale: resolvers.stale,

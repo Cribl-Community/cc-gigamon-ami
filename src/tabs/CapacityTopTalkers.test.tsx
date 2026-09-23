@@ -9,10 +9,11 @@
 //     stored run can hold an answer for it. A panel that kept reading the
 //     schedule after somebody typed four characters would show unfiltered
 //     numbers under a filtered heading — plausible, correctly formatted, and
-//     nothing on screen to say so. Same for the bar list's other two pivots:
-//     this scan groups by app_name and l4_proto, and `src_ip` is not a key it
-//     carries, so serving that state would mean a different top-12 from the one
-//     the live query returns.
+//     nothing on screen to say so. Same for a pivot no stored run can express:
+//     the rollup groups by app_name and l4_proto, and the tab's default src_ip
+//     view has its OWN run (gno_talkers_src_c1h, 2026-09-23) storing exactly
+//     that query — but the AWS-service pivot has neither, and serving it from
+//     either would mean a different top-12 from the one the live query returns.
 //   * THE SENTINEL GROUP IS DROPPED. The body coalesces a null `app_name` and a
 //     null `l4_proto` into `""` before grouping, so that the panel summing along
 //     the OTHER key still counts those bytes. Lose it and the L4 split comes
@@ -36,6 +37,7 @@ import type { Row } from '../cribl/search'
 import { CapacityTopTalkers, MIX_CADENCE, MIX_WINDOW } from './CapacityTopTalkers'
 
 const MIX = 'gno_app_l4_c1h'
+const TALKERS_SRC = 'gno_talkers_src_c1h'
 const OVERVIEW = 'gno_overview_c1h'
 const HOUR = 3_600_000
 const NOW = Date.now()
@@ -60,6 +62,11 @@ const TALKER_ROWS: Row[] = [
  * fixture of two named applications would pass just as happily against a body
  * that dropped them.
  */
+/** The default view's own run: top talkers by source IP, its query exactly. */
+const SRC_ROWS: Row[] = [
+  { src_ip: '10.0.0.168', bytes: 7e8, ...virt(TALKERS_SRC) },
+  { src_ip: '10.0.0.9', bytes: 2e8, ...virt(TALKERS_SRC) },
+]
 const APPMIX_ROWS: Row[] = [
   { app_name: 'https', bytes: 9e8, ...virt(MIX) },
   { app_name: '', bytes: 1e8, ...virt(MIX) },
@@ -117,6 +124,8 @@ function stub(cfg: { rows?: boolean; history?: unknown[] } = {}): void {
         ? 'job-live'
         : q.includes(`jobName="${OVERVIEW}"`)
           ? 'job-kpi'
+          : q.includes(`jobName="${TALKERS_SRC}"`)
+            ? 'job-src'
           : q.includes('where app != ""')
             ? 'job-talkers'
             : q.includes('by l4')
@@ -130,6 +139,8 @@ function stub(cfg: { rows?: boolean; history?: unknown[] } = {}): void {
         ? []
         : u.includes('job-kpi')
           ? KPI_ROWS
+          : u.includes('job-src')
+            ? SRC_ROWS
           : u.includes('job-talkers')
             ? TALKER_ROWS
             : u.includes('job-l4')
@@ -202,18 +213,17 @@ function type(selector: string, value: string): void {
 }
 
 describe('the default view', () => {
-  it('scans the Lake for the bar list alone, because that pivot is not a key this scan holds', async () => {
-    // Three of the four hooks are served on arrival: the KPI strip from the
-    // overview scan, the mix donut and the L4 split from this entry. The bar
-    // list opens on the src_ip pivot, which `by app_name, l4_proto` cannot
-    // answer — so it stays live rather than returning a different top-12 under
-    // a stored date. A partial is the honest scope for this tab.
+  it('serves every panel of the default view from a run — the source-IP bar list included', async () => {
+    // Before 2026-09-23 the bar list opened on a pivot no run stored, so every
+    // open of this tab waited on a live scan for it (2.4-3.0 s in the browser
+    // trace, the slowest thing on the tab). It has its own run now.
     stub()
     await render()
 
-    expect(storedReads()).toHaveLength(3)
-    expect(liveScans()).toHaveLength(1)
-    expect(liveScans()[0].query, 'the live scan was not the bar list').toContain('src_ip=*')
+    expect(liveScans(), 'the default view scanned the Lake').toEqual([])
+    expect(storedReads()).toHaveLength(4)
+    expect(storedReads().filter((s) => s.query.includes(`jobName="${TALKERS_SRC}"`)), 'the bar list did not read its own run').toHaveLength(1)
+    expect(container.textContent).toContain('10.0.0.168')
   })
 
   it('sends each panel its own tail, so one scan answers three different questions', async () => {
@@ -289,11 +299,10 @@ describe('the states this entry must not serve', () => {
     expect(after.filter((s) => s.query.includes('src_ip="*openai*"')), 'the filter did not reach all four panels').toHaveLength(4)
   })
 
-  it('serves the bar list only on the pivot this scan holds a key for', async () => {
-    // src_ip on arrival is live (asserted above). Switching to App is the one
-    // pivot `by app_name, l4_proto` can answer, and it is answered from the
-    // stored rows with the sentinel group filtered out — which is precisely
-    // what the live query's own `app_name=*` head does.
+  it('serves the App pivot from the rollup', async () => {
+    // `by app_name, l4_proto` can answer the App pivot, from the stored rows
+    // with the sentinel group filtered out — which is precisely what the live
+    // query's own `app_name=*` head does.
     stub()
     await render()
     const before = submits.length
@@ -304,6 +313,24 @@ describe('the states this entry must not serve', () => {
     const after = submits.slice(before)
     expect(after.filter((s) => s.query.includes('gigamon_ami') && !s.query.includes('$vt_results')), 'switching pivot scanned the Lake').toEqual([])
     expect(after.some((s) => s.query.includes('where app != ""')), 'the bar list did not read the schedule on the App pivot').toBe(true)
+  })
+
+  it('keeps the AWS-service pivot live — no stored run can express it', async () => {
+    stub()
+    await render()
+    const before = submits.length
+
+    act(() => button('AWS service').click())
+    await settle()
+
+    const after = submits.slice(before)
+    // The mix donut and L4 split re-run on a pivot change and read their rollup
+    // by right; what must not happen is the BAR LIST reading either stored run.
+    const barFromRun = after.filter(
+      (s) => s.query.includes('$vt_results') && (s.query.includes(`jobName="${TALKERS_SRC}"`) || s.query.includes('where app != ""')),
+    )
+    expect(barFromRun, 'a stored run answered a pivot it cannot express').toEqual([])
+    expect(after.some((s) => s.query.includes('dst_aws_flat_tags_name=*')), 'the AWS-service bar list did not run live').toBe(true)
   })
 })
 

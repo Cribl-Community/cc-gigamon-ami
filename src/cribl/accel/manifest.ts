@@ -96,7 +96,7 @@ import { FINDING_AGGS, FINDINGS_QUERY } from '../../queries/findings'
 import { nodesQuery } from '../../queries/flowMap'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
-import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY, WEB_HOST_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { APP_SRC_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY, WEB_HOST_SNAPSHOT_QUERY } from '../../queries/snapshots'
 // TCP health's subnet heatmap: the four metric sums the scheduled bodies carry,
 // and the panel's own query builder, so the four `display` strings below are the
 // four strings that panel actually shows rather than copies of them.
@@ -133,6 +133,7 @@ export type AccelId =
   | 'gno_presence_c1h'
   | 'gno_app_src_c1h'
   | 'gno_dns_resolver_c1h'
+  | 'gno_dns_overall_c1h'
   | 'gno_pipeline_c1h'
   | 'gno_web_host_c1h'
   | 'gno_web_code_c1h'
@@ -141,6 +142,7 @@ export type AccelId =
   | 'gno_app_l4_c1h'
   | 'gno_tcp_subnet24_c1h'
   | 'gno_tcp_subnet16_c1h'
+  | 'gno_talkers_src_c1h'
 
 /**
  * The shape ids take, and the ONLY thing that tells this app's scheduled
@@ -780,37 +782,17 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         queryId: 'dns-resolver-table',
         what: 'DNS health — the resolver table and the slowest-resolver tile',
         display: DNS_PER_RESOLVER_QUERY,
-        // The head this replaces is `dns_host=*`. In the stored rows those rows
-        // are the empty-string sentinel the body's `extend` created, so the
-        // filter moves here and means exactly what it meant live. `dns_host` is
-        // restored by name because that is what the row renderer reads — the
-        // body could not group on it without losing the sentinel.
-        //
-        // AND THIS IS WHERE `limit 500` LIVES NOW. It is the panel's view of the
-        // grouping, not a property of the scan: left in the body it would cap
-        // the tiles above at the top 500 resolvers' worth of DNS as well.
-        tail: '| where dns_h != "" | extend dns_host=dns_h | sort by total desc | limit 500',
+        // No tail: the body IS the panel's query, `limit 500` included. It used
+        // to be a grouping of EVERY resolver that served both this table and the
+        // tiles, and on this workspace that was 12,153 rows and 1.3 MB to
+        // download on every open of the tab (measured 2026-09-23) — enough to
+        // cancel what serving it from a run saved. The tiles have their own
+        // entry now (gno_dns_overall_c1h), so this one stores what this panel
+        // shows and nothing else.
         reads: ['dns_host', 'p50', 'noerr', 'sf', 'nx', 'total'],
       },
-      {
-        queryId: 'dns-overall',
-        what: 'DNS health — the SERVFAIL / error-rate and distinct-resolver tiles',
-        display: DNS_OVERALL_QUERY,
-        // Summed across every group INCLUDING the sentinel, which is what
-        // `app_name="dns" | summarize count()` does live. This is the panel the
-        // body's `extend` exists for: drop the responses that name no resolver
-        // and both this total and the failure rate over it come back short.
-        //
-        // `resolvers` is a COUNT OF ROWS, not a composed `dcount`. The body
-        // emits one row per distinct resolver, so counting the non-sentinel ones
-        // is the distinct count by definition — see src/queries/snapshots.ts for
-        // why that is the honest way to serve this tile and why a summed
-        // per-group `dcount` would not be.
-        tail: '| summarize total=sum(total), noerr=sum(noerr), sf=sum(sf), nx=sum(nx), resolvers=sum(iif(dns_h != "", 1, 0))',
-        reads: ['total', 'sf', 'nx', 'resolvers'],
-      },
     ],
-    body: DNS_RESOLVER_SNAPSHOT_QUERY,
+    body: DNS_PER_RESOLVER_QUERY,
     // The house window, for the house reasons: fifteen minutes is what the app's
     // default range shows, so the stored answer means the same thing as the live
     // one, and the run ends three minutes back to clear the 120 s file flush the
@@ -825,7 +807,36 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     tz: 'UTC',
     keepLastN: 24,
     why:
-      "DNS health is the longest wait in the app on open: two whole-window scans fire together and the reader waits for both, roughly 7-12 seconds. One grouping by resolver carries both — the resolver table and the three tiles above it — and each reads its own view out of the stored rows. The bigger prize is not the seconds. A percentile over a high-cardinality grouping is this app's most hang-prone shape, and the jobs that hang are the ones a viewer is sitting in front of; on a schedule a slow run costs a retained result rather than a blank tab. It also gives the tab a past: twenty-four retained runs mean somebody investigating a resolver that started failing can ask what it looked like at 04:33.",
+      "DNS health is the longest wait in the app on open: two whole-window scans fire together and the reader waits for both, roughly 7-12 seconds. This one stores the resolver table exactly as the panel asks for it — the 500 busiest resolvers — so the stored result is small enough to read in a moment; the tiles above it have their own run. The bigger prize is not the seconds. A percentile over a high-cardinality grouping is this app's most hang-prone shape, and the jobs that hang are the ones a viewer is sitting in front of; on a schedule a slow run costs a retained result rather than a blank tab. It also gives the tab a past: twenty-four retained runs mean somebody investigating a resolver that started failing can ask what it looked like at 04:33.",
+  }),
+
+  entry({
+    id: 'gno_dns_overall_c1h',
+    name: 'GNO DNS totals',
+    panels: [
+      {
+        queryId: 'dns-overall',
+        what: 'DNS health — the SERVFAIL / error-rate and distinct-resolver tiles',
+        display: DNS_OVERALL_QUERY,
+        // No tail: the body IS the panel's query, one row. That makes the
+        // stored `resolvers` Cribl's own dcount — the same estimate the live
+        // query shows — where the shared grouping this replaced counted rows
+        // exactly, so snapshot and live could disagree by the estimate's error
+        // (about 0.5 % at this workspace's ~12,000 resolvers, measured
+        // 2026-09-23). Now they cannot.
+        reads: ['total', 'sf', 'nx', 'resolvers'],
+      },
+    ],
+    body: DNS_OVERALL_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    // :34, the minute after the resolver table's, so the two DNS runs describe
+    // the same fifteen minutes one minute apart rather than queueing together.
+    cron: '34 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "The three tiles at the top of DNS health — total responses, the SERVFAIL and NXDOMAIN rate over them, and how many resolvers answered — are one small whole-window scan. They used to be read out of the per-resolver grouping, which made that stored result 12,153 rows long; stored on their own they are one row, so the resolver table's run can store only what the table shows. Twenty-four retained runs give the tiles the same past as the table.",
   }),
 
   entry({
@@ -1182,6 +1193,29 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     keepLastN: 24,
     why:
       "Capacity & top talkers fires four whole-window scans in its default view and only the KPI row was served, so the tab still waited on three. One rollup by application and transport protocol carries three of them — the mix donut, the L4 split, and the top-apps bar list — because each is the same sum(total_bytes) grouped by one of those two keys, and summing an additive two-key rollup along one key is the same number rather than an approximation of it. What it deliberately does not serve is anything with the tab's filter box in use: that text goes into the query head, no stored run holds an answer for it, and every hook here drops back to live the moment somebody applies one. It also gives the tab a past — twenty-four retained runs mean somebody investigating a traffic spike can ask which applications were moving the bytes at 04:47.",
+  }),
+
+  entry({
+    id: 'gno_talkers_src_c1h',
+    name: 'GNO Top talkers by source',
+    panels: [
+      {
+        queryId: 'capacity-talkers-src',
+        what: 'Capacity & top talkers — the top-talkers bar list, by source IP (the tab’s default view)',
+        display: buildTalkersQuery('src_ip', ''),
+        // No tail: the body IS the panel's query, `limit 12` included.
+        reads: ['src_ip', 'bytes'],
+      },
+    ],
+    body: buildTalkersQuery('src_ip', ''),
+    earliest: '-18m',
+    latest: '-3m',
+    // :49, clear of the app/L4 rollup at :47 and the web entries at :48 and :51.
+    cron: '49 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "The Capacity tab opens on its top talkers by SOURCE IP, and that view was the one panel in the tab's default screen with no stored run: the app/L4 rollup groups by application and protocol and cannot express a source address. So every open of the tab waited on a live scan for it — 2.4 to 3.0 seconds in the browser trace, the slowest thing on the tab. This stores exactly that view. Like every other Capacity hook it is served only unfiltered; typing a filter still runs live, because no stored run holds an answer for text nobody had typed.",
   }),
 ])
 

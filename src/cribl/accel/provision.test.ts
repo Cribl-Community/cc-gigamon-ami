@@ -791,6 +791,7 @@ describe('what a confirmation is given to say', () => {
       'GNO Field presence 15 minutes (gno_presence_c1h) — create, running 23 * * * * UTC',
       'GNO App by source 15 minutes (gno_app_src_c1h) — create, running 36 * * * * UTC',
       'GNO DNS resolvers (gno_dns_resolver_c1h) — create, running 33 * * * * UTC',
+      'GNO DNS totals (gno_dns_overall_c1h) — create, running 34 * * * * UTC',
       'GNO Pipeline telemetry (gno_pipeline_c1h) — create, running 24 * * * * UTC',
       'GNO Web hosts (gno_web_host_c1h) — create, running 45 * * * * UTC',
       'GNO Web status codes (gno_web_code_c1h) — create, running 48 * * * * UTC',
@@ -799,6 +800,7 @@ describe('what a confirmation is given to say', () => {
       'GNO TCP subnet pairs 24 (gno_tcp_subnet24_c1h) — create, running 40 * * * * UTC',
       'GNO TCP subnet pairs 16 (gno_tcp_subnet16_c1h) — create, running 41 * * * * UTC',
       'GNO App and L4 bytes (gno_app_l4_c1h) — create, running 47 * * * * UTC',
+      'GNO Top talkers by source (gno_talkers_src_c1h) — create, running 49 * * * * UTC',
     ])
     expect(plan.willDelete).toEqual([])
   })

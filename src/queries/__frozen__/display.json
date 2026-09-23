@@ -17,7 +17,7 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 168,
+    "modules": 167,
     "catalogs": 14,
     "states": 35,
     "passthrough": 3,
@@ -313,7 +313,6 @@
     "src/queries/snapshots.ts": {
       "APP_L4_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | extend app=iif(isnotnull(app_name), app_name, \"\"), l4=iif(isnotnull(l4_proto), l4_proto, \"\") | summarize bytes=sum(total_bytes) by app, l4",
       "APP_SRC_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
-      "DNS_RESOLVER_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" app_name=\"dns\" | extend dns_h=iif(isnotnull(dns_host), dns_host, \"\") | summarize p50=percentile(dns_response_time,50), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), total=count() by dns_h",
       "OVERVIEW_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "SERVICE_EDGES_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
       "TCP_SUBNET16_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" protocol=6 src_subnet16=* dst_subnet16=* | summarize dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), flows=count() by src_subnet16, dst_subnet16 | sort by flows desc | limit 120",
@@ -585,11 +584,11 @@
           "ref": "talkersQuery",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" src_ip=* | summarize bytes=sum(total_bytes) by src_ip | sort by bytes desc | limit 12",
-          "options": "{ deps: [pivot, applied], accel: MIX_ACCEL, accelPanel: 'capacity-talkers-app', accelEnabled: unfiltered && pivot === 'app_name', }",
+          "options": "{ deps: [pivot, applied], ...talkersServed, accelEnabled: unfiltered && (pivot === 'app_name' || pivot === 'src_ip'), }",
           "optionsValue": {
-            "accel": "gno_app_l4_c1h",
-            "accelPanel": "capacity-talkers-app",
-            "accelEnabled": false
+            "accel": "gno_talkers_src_c1h",
+            "accelPanel": "capacity-talkers-src",
+            "accelEnabled": true
           }
         },
         "appmix": {
@@ -776,9 +775,9 @@
           "ref": "OVERALL",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" app_name=\"dns\" | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), resolvers=dcount(dns_host)",
-          "options": "{ accel: DNS_ACCEL, accelPanel: 'dns-overall' }",
+          "options": "{ accel: DNS_OVERALL_ACCEL, accelPanel: 'dns-overall' }",
           "optionsValue": {
-            "accel": "gno_dns_resolver_c1h",
+            "accel": "gno_dns_overall_c1h",
             "accelPanel": "dns-overall"
           }
         },

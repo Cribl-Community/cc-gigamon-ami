@@ -1,17 +1,21 @@
-// DNS health, once both of its mount queries come from one scheduled run.
+// DNS health, with each of its mount queries served by its own scheduled run.
 //
 // This tab was the longest wait in the app: two whole-window scans fire on
-// mount and the reader waits for both. `gno_dns_resolver_c1h` replaces them
-// with a single hourly grouping by resolver, and the two things that can go
-// wrong are not "the tab is slow":
+// mount and the reader waits for both. They were first served from ONE hourly
+// grouping by resolver, cut into two panels by tails — and on this workspace
+// that grouping stored 12,153 rows, 1.3 MB to download on every open, which
+// cancelled what serving it saved (browser trace, 2026-09-23). Now each panel
+// has a run storing exactly its own query:
 //
-//   * THE TILES UNDER-REPORT. The table's live query has a `dns_host=*` head
-//     and the tiles' does not, so DNS responses that name no resolver are in
-//     one and not the other. Group naively `by dns_host` and those rows vanish
-//     from the tiles' total and from the failure rate computed over it —
-//     smaller, plausible, and in the one direction a viewer cannot check. The
-//     body's `extend`/`iif` sentinel is what stops that, and it is asserted
-//     here as a mechanism, because removing it would leave both tails parsing.
+//   gno_dns_resolver_c1h  PER_RESOLVER — the 500 busiest resolvers
+//   gno_dns_overall_c1h   OVERALL      — one row of totals
+//
+// What can still go wrong is not "the tab is slow":
+//
+//   * THE TILES UNDER-REPORT. The table's query has a `dns_host=*` head and the
+//     tiles' does not, so responses that name no resolver are in one and not
+//     the other. With the tiles on their own body that is simply OVERALL's own
+//     count, and it is asserted by number below.
 //   * A STORED FIGURE APPEARS WITH NO DATE ON IT. Every number on this tab used
 //     to answer for the range picker. Now it answers for whenever the schedule
 //     last fired, and a schedule that has stopped leaves a plausible number on
@@ -27,20 +31,21 @@ import { accelEntry } from '../cribl/accel/manifest'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
 import { resetSnapshotCensus } from '../components/snapshotCensus'
 import type { Row } from '../cribl/search'
-import { DnsHealth, DNS_CADENCE, DNS_WINDOW } from './DnsHealth'
+import { OVERALL, PER_RESOLVER } from '../queries/dnsHealth'
+import { DnsHealth, DNS_CADENCE, DNS_OVERALL_CADENCE, DNS_WINDOW } from './DnsHealth'
 
 const DNS = 'gno_dns_resolver_c1h'
+const DNS_TOTALS = 'gno_dns_overall_c1h'
 const HOUR = 3_600_000
 const NOW = Date.now()
 
 const entry = accelEntry(DNS)
-const table = entry.panels.find((p) => p.queryId === 'dns-resolver-table')!
-const tiles = entry.panels.find((p) => p.queryId === 'dns-overall')!
+const totals = accelEntry(DNS_TOTALS)
 
 /** The virtual columns `$vt_results` stamps on every stored row. */
 const virt = { jobId: 'run-1', jobName: DNS, dataset: '$vt_results' }
 
-/** One resolver, as the table's tail projects it. */
+/** Two resolvers, as the table's own query returns them. */
 const TABLE_ROWS: Row[] = [
   { dns_host: '10.0.0.53', p50: 0.012, noerr: 900, sf: 2, nx: 1, total: 903, ...virt },
   { dns_host: '10.0.0.54', p50: 0.004, noerr: 80, sf: 0, nx: 0, total: 80, ...virt },
@@ -48,11 +53,13 @@ const TABLE_ROWS: Row[] = [
 /**
  * The tiles' row, and the numbers matter: `total` is 1,000 while the two
  * resolvers above add up to 983. The missing 17 are DNS responses that name no
- * resolver — the sentinel group — and the whole point of the body's `extend` is
- * that they are still in this total. A test whose totals reconciled would pass
- * just as happily against the broken version.
+ * resolver, which OVERALL counts and the table's `dns_host=*` head does not. A
+ * test whose totals reconciled would pass just as happily if the tiles were
+ * wired to the table's run.
  */
-const TILE_ROWS: Row[] = [{ total: 1000, noerr: 980, sf: 12, nx: 8, resolvers: 2, ...virt }]
+// Stamped with the TILES' own run: the read path refuses rows naming another
+// schedule, which is what would catch the tiles being wired to the table's run.
+const TILE_ROWS: Row[] = [{ total: 1000, noerr: 980, sf: 12, nx: 8, resolvers: 2, ...virt, jobName: DNS_TOTALS }]
 
 const run = (over: Record<string, unknown> = {}) => ({
   id: 'run-1',
@@ -82,12 +89,9 @@ function res(status: number, body: unknown, asText?: string) {
 let submits: Submitted[] = []
 
 /**
- * Two stored reads, told apart by their TAIL.
- *
- * Both panels read the same schedule, so `jobName=` cannot distinguish them and
- * a stub that answered both with the same rows would pass whichever way the
- * tails were wired. The job id is chosen from the tail the app actually sent,
- * which is the thing being asserted.
+ * Two stored reads, told apart by the RUN they name. Each panel has its own
+ * schedule now, so the stub answers by `jobName=` — and a panel wired to the
+ * other's run would get the other's rows, which the numbers below catch.
  */
 function stub(cfg: { rows?: boolean; history?: unknown[] } = {}): void {
   submits = []
@@ -99,7 +103,7 @@ function stub(cfg: { rows?: boolean; history?: unknown[] } = {}): void {
       submits.push(body)
       const id = !body.query.includes('$vt_results')
         ? 'job-live'
-        : body.query.includes('summarize total=sum(total)')
+        : body.query.includes(`jobName="${DNS_TOTALS}"`)
           ? 'job-tiles'
           : 'job-table'
       return res(200, { items: [{ id }] })
@@ -152,7 +156,7 @@ async function render(): Promise<void> {
   for (let i = 0; i < 14; i++) await act(async () => { await Promise.resolve() })
 }
 
-describe('the tab, served from one scheduled run', () => {
+describe('the tab, served from its two scheduled runs', () => {
   it('answers both mount queries from the schedule and scans nothing', async () => {
     stub()
     await render()
@@ -161,14 +165,16 @@ describe('the tab, served from one scheduled run', () => {
     expect(storedReads()).toHaveLength(2)
   })
 
-  it('sends each panel its own tail, so one scan answers two different questions', async () => {
+  it('reads each panel from its own run', async () => {
     stub()
     await render()
 
     const queries = storedReads().map((s) => s.query)
-    expect(queries.every((q) => q.includes(`jobName="${DNS}"`))).toBe(true)
-    expect(queries.some((q) => q.includes('where dns_h != ""')), 'the table did not filter the sentinel group out').toBe(true)
-    expect(queries.some((q) => q.includes('resolvers=sum(iif(')), 'the tiles did not count resolver groups').toBe(true)
+    expect(queries.filter((q) => q.includes(`jobName="${DNS}"`)), 'the table did not read its run').toHaveLength(1)
+    expect(queries.filter((q) => q.includes(`jobName="${DNS_TOTALS}"`)), 'the tiles did not read their run').toHaveLength(1)
+    // No tails: each body IS its panel's query, so nothing is cut out of a
+    // shared result any more.
+    expect(queries.every((q) => /jobName="[^"]+"$/.test(q)), 'a tail was sent').toBe(true)
   })
 
   it('shows the stored numbers, including the responses that name no resolver', async () => {
@@ -222,33 +228,29 @@ describe('the tab, served from one scheduled run', () => {
   })
 })
 
-describe('the entry this tab reads', () => {
-  it('keeps the responses that name no resolver as a group of their own', () => {
-    // The mechanism, not the number: both tails still parse without the
-    // `extend`, and the tiles simply come back short. Flow map's edges body
-    // does this for the same reason and the same way.
-    expect(entry.body).toContain('extend dns_h=iif(isnotnull(dns_host)')
-    expect(tiles.tail, 'the tiles must sum across every group, sentinel included').toContain('total=sum(total)')
-    expect(tiles.tail, 'filtering the sentinel out of the tiles is the bug this entry exists to avoid').not.toContain('where dns_h')
-    expect(table.tail, 'the table must exclude the sentinel, which is what its `dns_host=*` head did').toContain('where dns_h != ""')
+describe('the entries this tab reads', () => {
+  it('stores each panel’s query exactly, by identity — no tails, no sentinel', () => {
+    // A retyped copy agrees on the day it is written and drifts the first time
+    // somebody edits one of them — silently, because both still render a number.
+    expect(entry.body).toBe(PER_RESOLVER)
+    expect(totals.body).toBe(OVERALL)
+    for (const e of [entry, totals]) {
+      expect(e.panels).toHaveLength(1)
+      expect(e.panels[0].tail, `${e.id} carries a tail`).toBeUndefined()
+    }
   })
 
-  it('counts resolver groups rather than composing a dcount', () => {
-    // `dcount` does not compose: summing per-group distinct counts counts
-    // anything in two groups twice. Nothing is summed here — the body emits one
-    // row per distinct resolver, so counting the non-sentinel rows IS the
-    // distinct count, exactly, whether or not the platform's dcount is a sketch.
-    expect(tiles.tail).toContain('resolvers=sum(iif(dns_h != "", 1, 0))')
-    expect(tiles.tail, 'a dcount reached the read path').not.toContain('dcount(')
-    expect(entry.body, 'a dcount reached the scheduled body').not.toContain('dcount(')
+  it('keeps the table’s run to the 500 resolvers it shows', () => {
+    // The whole point of the split: the shared grouping stored all 12,153.
+    expect(entry.body).toContain('limit 500')
   })
 
-  it('caps the list in the tail and not in the scan', () => {
-    // `limit 500` is the panel's view of the grouping. Left in the body it
-    // would cap the tiles at the top 500 resolvers' worth of DNS as well, which
-    // is a different number from the one their ⓘ claims.
-    expect(table.tail).toContain('limit 500')
-    expect(entry.body).not.toContain('limit')
+  it('counts resolvers the way the live tile does', () => {
+    // The shared grouping counted resolver ROWS exactly, while the live tile's
+    // OVERALL uses dcount — an estimate (about 0.5 % off at this workspace's
+    // cardinality, measured 2026-09-23). Storing OVERALL itself makes snapshot
+    // and live the same computation.
+    expect(totals.body).toContain('resolvers=dcount(dns_host)')
   })
 })
 
@@ -262,17 +264,18 @@ describe('the words about the schedule agree with the manifest', () => {
     expect(entry.earliest).toBe('-18m')
     expect(entry.latest).toBe('-3m')
     expect(DNS_WINDOW).toBe(SNAPSHOT_WINDOW)
+    // The tiles' run, one minute later over the same fifteen minutes.
+    expect(totals.cron).toBe('34 * * * *')
+    expect(totals.tz).toBe('UTC')
+    expect(DNS_OVERALL_CADENCE).toContain('34 minutes past')
+    expect([totals.earliest, totals.latest]).toEqual([entry.earliest, entry.latest])
   })
 })
 
 // ── What this file does NOT establish ───────────────────────────────────────
 //
-//   * That the platform's `summarize … by` really drops a null group key. That
-//     is the assumption the sentinel makes unnecessary; nobody has measured it,
-//     and the entry is written so that the answer does not matter.
-//   * That the stored p50 equals the live p50. Percentiles do not compose, which
-//     is why no panel on this entry re-aggregates one — the table reads it at
-//     the grouping it was computed at. Nothing here checks the platform's
-//     percentile against itself.
+//   * That the stored p50 equals the live p50 beyond this: the stored run IS the
+//     live query over a settled fifteen minutes. Nothing here checks the
+//     platform's percentile against itself.
 //   * That the tab is faster. happy-dom has no network and no clock worth
 //     reading; what is asserted is that the AMI scans did not run.

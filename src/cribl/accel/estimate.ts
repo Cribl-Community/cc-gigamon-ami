@@ -343,14 +343,11 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
   },
 
   gno_dns_resolver_c1h: {
-    // Two whole-window scans on mount: 39 for the five-aggregate single row
-    // (OVERALL), 55.8 for the per-resolver grouping (PER_RESOLVER), which is the
-    // same 2.6 x 15 x 1.43 the flow-map node query carries and for the same
-    // reason — a percentile over a grouping returns many rows, not one. Both
-    // MODELLED; nobody put a stopwatch on this tab. What was observed is the
-    // wall time, 7-12 seconds, and that is mostly the ~1.6 s admission stagger
-    // plus this workspace's ~5 s floor rather than either job being expensive.
-    liveRunCpuSeconds: 94.8,
+    // The per-resolver grouping (PER_RESOLVER) alone now: 55.8, the same
+    // 2.6 x 15 x 1.43 the flow-map node query carries and for the same reason —
+    // a percentile over a grouping returns many rows. MODELLED; the tiles' 39
+    // moved to gno_dns_overall_c1h when the two were split (2026-09-23).
+    liveRunCpuSeconds: 55.8,
     liveCostModelled: true,
     // NOT MEASURED. DNS health is an operational tab somebody opens when DNS is
     // suspected, not the route the app lands on. The same assumption Field
@@ -359,12 +356,25 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     assumedRunsPerDay: 4,
     // Modelled. Fifteen data-minutes is inside A-SP0's fitted domain.
     scheduledRunCpuSeconds: null,
-    // WIDE: one row per distinct resolver, and this feed's resolver cardinality
-    // is the thing about this entry nobody has measured. 1.43 is the widest
-    // shape this plan has evidence for, so it is the pessimistic end.
+    // WIDE: one row per resolver, up to the 500 the body keeps.
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
-    what: 'DNS health — the resolver table and the three tiles above it',
+    what: 'DNS health — the resolver table',
   },
+
+  gno_dns_overall_c1h: {
+    // The five-aggregate single row (OVERALL): 39, MODELLED, as it was when it
+    // was one half of the DNS entry.
+    liveRunCpuSeconds: 39,
+    liveCostModelled: true,
+    // The same tab, opened the same number of times, as the resolver table.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: null,
+    // NARROW: one row.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'DNS health — the three tiles above the resolver table',
+  },
+
 
   gno_pipeline_c1h: {
     // ── THE FIGURE BELOW IS THE MODEL'S, AND THE MODEL WAS NOT FIT ON THIS
@@ -509,6 +519,22 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     what: 'TCP health — the wire-error heatmap at /16, all four metrics',
   },
 
+
+  gno_talkers_src_c1h: {
+    // One narrow whole-window scan ending in `limit 12`: the 39 CPU-s the
+    // model gives every such scan on this tab. MODELLED, like the rest of
+    // Capacity. What WAS measured is its wall time in the browser trace,
+    // 2.4-3.0 s, which is why it is scheduled.
+    liveRunCpuSeconds: 39,
+    liveCostModelled: true,
+    // The overview entry's assumption for how often this tab is opened, for the
+    // reason gno_app_l4_c1h gives: one tab, one answer.
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 12,
+    scheduledRunCpuSeconds: null,
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'Capacity & top talkers — the top talkers by source IP',
+  },
 
   gno_app_l4_c1h: {
     // Three whole-window scans on mount in the tab's default view at the

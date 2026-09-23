@@ -25,7 +25,8 @@ import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY } from '../../queries/fieldExplorer'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
-import { APP_SRC_SNAPSHOT_QUERY, DNS_RESOLVER_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { APP_SRC_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { buildTalkersQuery } from '../../queries/capacityTopTalkers'
 import { APP_VERSION } from '../config'
 import { APP_SRC_CADENCE, APP_SRC_WINDOW, OVERVIEW_CADENCE, OVERVIEW_WINDOW } from './words'
 import {
@@ -78,6 +79,7 @@ describe('the manifest', () => {
       'gno_presence_c1h',
       'gno_app_src_c1h',
       'gno_dns_resolver_c1h',
+      'gno_dns_overall_c1h',
       'gno_pipeline_c1h',
       'gno_web_host_c1h',
       'gno_web_code_c1h',
@@ -86,6 +88,7 @@ describe('the manifest', () => {
       'gno_tcp_subnet24_c1h',
       'gno_tcp_subnet16_c1h',
       'gno_app_l4_c1h',
+      'gno_talkers_src_c1h',
     ])
   })
 
@@ -295,22 +298,28 @@ describe('the bodies', () => {
     expect(appSrc.panels.find((p) => p.queryId === 'shadow-ai-users')?.display).toBe(aiUsersQuery)
   })
 
-  it('serves both of DNS health from one grouping, each ⓘ still its own query', () => {
-    // THE GAP THIS CLOSES. DnsHealth.test.tsx pins this entry thoroughly — the
-    // sentinel guard, the tails, the cron, the words — but every one of those
-    // is about what RUNS. Nothing anywhere asserted that the two `display`
-    // strings are the modules the panels' ⓘ actually renders from, and the
-    // generic rule above cannot reach them: it covers only single-panel,
-    // tail-less entries, and this one is two panels with a tail each.
-    //
-    // By identity, not by text. A retyped copy agrees on the day it is written
-    // and drifts the first time somebody edits one of them — silently, because
-    // both still render a number.
-    expect(dns.panels.map((p) => p.queryId)).toEqual(['dns-resolver-table', 'dns-overall'])
-    expect(dns.panels.find((p) => p.queryId === 'dns-resolver-table')?.display).toBe(DNS_PER_RESOLVER_QUERY)
-    expect(dns.panels.find((p) => p.queryId === 'dns-overall')?.display).toBe(DNS_OVERALL_QUERY)
-    expect(dns.body).toBe(DNS_RESOLVER_SNAPSHOT_QUERY)
+  it('stores each DNS panel exactly as it asks — two small runs, not one 12,153-row grouping', () => {
+    // Split 2026-09-23: the shared grouping stored every resolver (1.3 MB on
+    // this workspace) to serve a table of 500 and three tiles, and the download
+    // cancelled what serving it saved. Each body is now the panel's own query,
+    // by identity, so each ⓘ is the query that ran with no tail in between.
+    expect(dns.panels.map((p) => p.queryId)).toEqual(['dns-resolver-table'])
+    expect(dns.body).toBe(DNS_PER_RESOLVER_QUERY)
+    expect(dns.panels[0].display).toBe(DNS_PER_RESOLVER_QUERY)
+    expect(dns.panels[0].tail).toBeUndefined()
+    const overall = accelEntry('gno_dns_overall_c1h')
+    expect(overall.panels.map((p) => p.queryId)).toEqual(['dns-overall'])
+    expect(overall.body).toBe(DNS_OVERALL_QUERY)
+    expect(overall.panels[0].tail).toBeUndefined()
   })
+
+  it('stores the Capacity tab’s default view — top talkers by source IP — exactly as it asks', () => {
+    const talkers = accelEntry('gno_talkers_src_c1h')
+    expect(talkers.body).toBe(buildTalkersQuery('src_ip', ''))
+    expect(talkers.panels[0].display).toBe(talkers.body)
+    expect(talkers.panels[0].tail).toBeUndefined()
+  })
+
 
   it('groups Shadow AI by application AND source, because summing per-app dcounts double-counts', () => {
     // THE CORRECTNESS OF THE ENTRY IN ONE TEST. A body grouped by app_name alone
@@ -389,7 +398,7 @@ describe('the bodies', () => {
     expect(sample.earliest).toBe('-5m')
     expect(sample.latest).toBe('-3m')
     // Every hourly snapshot, not the three that existed when this was written.
-    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(14)
+    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(16)
     for (const e of HOURLY_SNAPSHOTS) {
       expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
       expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')

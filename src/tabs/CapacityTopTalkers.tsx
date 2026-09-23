@@ -30,6 +30,8 @@ const MIX_COLORS = ['#4dabf7', '#38d9a9', '#ffa94d', '#b197fc', '#ff6b9d', '#63e
  * than approximate — see src/queries/snapshots.ts.
  */
 const MIX_ACCEL: AccelId = 'gno_app_l4_c1h'
+/** The default view's own run: top talkers by source IP. */
+const TALKERS_SRC_ACCEL: AccelId = 'gno_talkers_src_c1h'
 /** The schedule in words, for the ⓘ. CapacityTopTalkers.test.tsx holds these
  *  against the manifest's own cron and window, so moving one forces the other. */
 export const MIX_CADENCE = 'once an hour, at 47 minutes past, in UTC'
@@ -87,16 +89,17 @@ export function CapacityTopTalkers() {
   const unfiltered = applied === ''
 
   const talkersQuery = buildTalkersQuery(pivot, applied)
-  // ONE OF THE THREE PIVOT STATES, AND ONLY ONE. The scan groups by app_name
-  // and l4_proto; `src_ip` and `dst_aws_flat_tags_name` are not keys it carries,
-  // so those two states stay live rather than being answered from a grouping
-  // that cannot express them. A partial is honest; a tail returning a different
-  // top-12 from the live query would not be.
+  // TWO OF THE THREE PIVOT STATES. `app_name` is read out of the app/L4
+  // rollup; `src_ip` — the tab's DEFAULT view, and so the one every open waits
+  // on — has its own run storing exactly that query (gno_talkers_src_c1h,
+  // 2026-09-23). `dst_aws_flat_tags_name` stays live: neither scan can express
+  // it, and a tail returning a different top-12 from the live query would not
+  // be honest.
+  const talkersServed = pivot === 'app_name' ? { accel: MIX_ACCEL, accelPanel: 'capacity-talkers-app' } : { accel: TALKERS_SRC_ACCEL, accelPanel: 'capacity-talkers-src' }
   const talkers = useSearch(talkersQuery, {
     deps: [pivot, applied],
-    accel: MIX_ACCEL,
-    accelPanel: 'capacity-talkers-app',
-    accelEnabled: unfiltered && pivot === 'app_name',
+    ...talkersServed,
+    accelEnabled: unfiltered && (pivot === 'app_name' || pivot === 'src_ip'),
   })
   // The KPI row and the talkers table are what this tab is opened for; the two
   // mix charts sit under them and can wait for the scroll. Deferral and
