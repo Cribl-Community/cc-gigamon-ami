@@ -26,7 +26,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import type { FieldSummary, Row } from '../search'
-import { accelEntry } from './manifest'
+import { accelEntry, MANIFEST } from './manifest'
 import {
   FAST_EARLIEST,
   FAST_LATEST,
@@ -40,6 +40,7 @@ import {
   observedKeyBinding,
   readAccelFieldSummaries,
   readAccelRows,
+  applyProjection,
   resetAccelKeyMemo,
   staleAfterMsFor,
   stripVirtualColumns,
@@ -962,3 +963,63 @@ describe('reading the state at a chosen moment', () => {
 //   * Anything about what a panel does with `stale`. This module returns the flag
 //     and the timestamp; rendering "as of HH:MM" is the panel's obligation, and
 //     no test here can hold it to that.
+
+// ── The tail a stored artifact cannot run ───────────────────────────────────
+//
+// A chosen snapshot is answered by reading an ARTIFACT — `$vt_results` cannot
+// address a past run. An artifact is rows, not a query, so a panel's tail
+// cannot be evaluated against it by Cribl Search.
+//
+// Until 2026-09-22 the `asOf` branch silently dropped the tail and handed the
+// panel the whole shared scan. That is not "less data" — it is ANOTHER PANEL'S
+// COLUMNS under this panel's label, and the manifest has a test devoted to the
+// hazard because Capacity calls `sum(total_bytes)` `total` while Findings calls
+// `count()` `total`. Both are real columns with real values.
+describe('applyProjection', () => {
+  it('picks the named columns and drops the rest', () => {
+    const rows = [{ a: 1, b: 2, c: 3 }]
+    expect(applyProjection('| project a, c', rows)).toEqual([{ a: 1, c: 3 }])
+  })
+
+  it('renames with alias=source, which is how the manifest builds tails', () => {
+    expect(applyProjection('| project bin_time_1m, v=resets, flows', [{ bin_time_1m: 7, resets: 4, flows: 9 }]))
+      .toEqual([{ bin_time_1m: 7, v: 4, flows: 9 }])
+  })
+
+  it('leaves a missing column OUT rather than setting it undefined', () => {
+    // The same nothing Search would hand back, so a caller cannot tell the two
+    // apart and `toNum` behaves identically.
+    const out = applyProjection('| project a, missing', [{ a: 1 }])
+    expect(out).toEqual([{ a: 1 }])
+    expect(out && 'missing' in out[0]).toBe(false)
+  })
+
+  it('REFUSES anything that is not a pure projection', () => {
+    // Each of these is a computation over the row SET. Reproducing them needs a
+    // KQL interpreter, and guessing would produce a plausible wrong number.
+    for (const tail of [
+      '| summarize flows=sum(flows) by app_name',
+      '| where srv_n > 0 | extend n=srv_n | sort by p95 desc | limit 10',
+      '| project a | summarize n=count()',
+      '| sort by x desc',
+      '| project total=sum(bytes)',
+      '| project a, b(c)',
+      '',
+    ]) {
+      expect(applyProjection(tail, [{ a: 1 }]), tail).toBeNull()
+    }
+  })
+
+  it('covers the manifest tails it claims to — every projectionOf tail', () => {
+    // If projectionOf ever emits something this cannot parse, the asOf path
+    // starts refusing panels that used to work, silently and only on a picked
+    // moment. This is the pin that says so at build time instead.
+    const projections = MANIFEST.flatMap((e) => e.panels.map((p) => p.tail)).filter(
+      (t): t is string => typeof t === 'string' && t.trimStart().startsWith('| project'),
+    )
+    expect(projections.length, 'no projection tails found — has projectionOf changed shape?').toBeGreaterThan(8)
+    for (const tail of projections) {
+      expect(applyProjection(tail, []), `${tail} is a projection this cannot apply`).not.toBeNull()
+    }
+  })
+})

@@ -105,6 +105,9 @@ const LIVE_WORDS: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   // Never reached through LIVE_WORDS — `no-run-at` is answered above, where the
   // words can say which times DO exist. Present because the record is total, so
   // a new outcome is a build error rather than a blank caption.
+  // Like `no-run-at`, this one never reaches a live note either: the panel is
+  // shown nothing rather than a live number under a past label.
+  unshaped: 'no snapshot for this panel at that time',
   'no-run-at': 'nothing stored from that time',
 })
 

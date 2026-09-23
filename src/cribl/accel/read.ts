@@ -266,6 +266,11 @@ export type AccelOutcome =
   /** A past moment was asked for and this entry has no run at or before it. The
    *  live query deliberately did NOT run — see AccelSource's `none`. */
   | 'no-run-at'
+  /** A past moment was asked for, a run exists, and this panel's rows have to be
+   *  cut out of a SHARED scan by a tail that only Cribl Search can evaluate. A
+   *  stored artifact cannot have KQL applied to it, so the panel is shown
+   *  nothing rather than the whole scan's rows — see `applyProjection`. */
+  | 'unshaped'
 
 /**
  * One sentence per outcome, for a caller to render.
@@ -288,6 +293,8 @@ export const NOTES: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   off: 'Acceleration is off for this panel, so the live query ran.',
   'no-run-at':
     'This panel has no stored run from the time you picked. Running its query now would answer about the present under a label saying otherwise, so it did not run.',
+  unshaped:
+    'This panel shares one scan with others, and its share cannot be cut out of a stored result from an earlier time. Pick the newest snapshot, or switch to Live, to see this number.',
 })
 
 export interface AccelRead<T> {
@@ -462,6 +469,56 @@ export function accelRunQuery(jobId: string, tail?: string): string {
  * nothing — cheaper than the `$vt_results` read it replaces, not just able to
  * reach further back.
  */
+/**
+ * Apply a `| project a, b, alias=source` tail to rows read from an artifact.
+ *
+ * WHY THIS EXISTS. A chosen snapshot is answered by reading a stored artifact
+ * (`$vt_results` cannot address a past run — see `assertAddressableJobId`), and
+ * an artifact is rows, not a query: KQL cannot be applied to it. But a panel on
+ * a SHARED scan is defined by its tail, so handing it the whole scan's rows
+ * gives it columns it never asked for. `useSearch` calls that "the exact shape
+ * of a plausible wrong number", and the manifest has a test devoted to it —
+ * Capacity calls `sum(total_bytes)` `total` while Findings calls `count()`
+ * `total`, so the wrong `total` is a real column with a real value.
+ *
+ * A PROJECTION IS THE ONE TAIL THAT IS NOT A QUERY. `| project a, b, v=c` picks
+ * and renames columns, which is a pure row transform and exactly reproducible
+ * here. Thirteen of the manifest's twenty-one tails are projections, built by
+ * `projectionOf` from the same fragment the body is.
+ *
+ * Anything else — `summarize`, `where`, `sort`, `limit`, `extend` — is a
+ * computation over the row SET and cannot be reproduced without an interpreter.
+ * Those return null, and the caller shows nothing rather than guessing.
+ *
+ * Returns null rather than throwing: an unrecognised tail is a state, not a
+ * fault, and the caller has a sentence for it.
+ */
+export function applyProjection(tail: string, rows: readonly Row[]): Row[] | null {
+  const m = /^\s*\|\s*project\s+([^|]+)$/.exec(tail)
+  if (!m) return null
+
+  const terms = m[1].split(',').map((t) => t.trim()).filter(Boolean)
+  if (terms.length === 0) return null
+
+  const picks: { as: string; from: string }[] = []
+  for (const term of terms) {
+    // `alias=source` or a bare column. Anything with a call, an operator or a
+    // space is an expression, not a rename, and is not reproducible here.
+    const named = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)$/.exec(term)
+    if (named) { picks.push({ as: named[1], from: named[2] }); continue }
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(term)) { picks.push({ as: term, from: term }); continue }
+    return null
+  }
+
+  return rows.map((row) => {
+    const out: Row = {}
+    // A column the body did not emit is LEFT OUT rather than set undefined, so
+    // a caller reading it gets the same nothing it would get from Search.
+    for (const p of picks) if (p.from in row) out[p.as] = row[p.from]
+    return out
+  })
+}
+
 function assertAddressableJobId(jobId: string): void {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(jobId)) throw new Error('accel read: that is not a job id this app can address')
 }
@@ -492,12 +549,24 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   // the off switch — see `asOf`. Nothing below this line can reach the live
   // query with a moment selected.
   if (opts.asOf !== undefined) {
+    // A SHARED SCAN'S PANEL CANNOT BE CUT OUT OF AN ARTIFACT BY KQL. If this
+    // panel has a tail and that tail is not a projection, showing it the whole
+    // scan's rows would hand it another panel's columns under its own label —
+    // so it is shown nothing, with a sentence, instead. See `applyProjection`.
+    const tail = opts.tail
+    if (tail !== undefined && applyProjection(tail, []) === null) {
+      return absent(entry, 'unshaped', [], opts, null)
+    }
     return atMoment(entry, opts, opts.asOf, [], {
       fromRun: (jobId) => readJobResults(jobId, { limit: opts.limit, signal: opts.signal }),
       isEmpty: (r) => r.rows.length === 0,
       // `stripVirtualColumns` is a no-op on an artifact, which carries none of
       // them. It stays so that both paths hand a panel the same shape.
-      shape: (r) => ({ data: stripVirtualColumns(r.rows), named: String(r.rows[0]?.[COL_JOB_NAME] ?? '') }),
+      shape: (r) => {
+        const stripped = stripVirtualColumns(r.rows)
+        const shaped = tail === undefined ? stripped : (applyProjection(tail, stripped) ?? stripped)
+        return { data: shaped, named: String(r.rows[0]?.[COL_JOB_NAME] ?? '') }
+      },
     })
   }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
