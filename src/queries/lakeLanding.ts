@@ -38,8 +38,12 @@
 // claim, and would double up with the one search.ts already adds.
 
 import { q } from '../cribl/search'
+import { KPI_AGGS as CAPACITY_KPI_AGGS } from './capacityTopTalkers'
+import { OVERALL as DNS_OVERALL } from './dnsHealth'
 import { FINDINGS_QUERY } from './findings'
 import { COUNTS } from './security'
+import { LATENCY_AGGS } from './tcpHealth'
+import { CODES_HEAD, HOSTS_HEAD, KPI as WEB_KPI } from './webApiHealth'
 
 // ── 1. Landing lag ──────────────────────────────────────────────────────────
 
@@ -167,3 +171,68 @@ export const PARITY_SECURITY_QUERY = COUNTS
 
 /** The Findings tab's detection counts (Q32), for the same reason. */
 export const PARITY_FINDINGS_QUERY = FINDINGS_QUERY
+
+// ── 4. What the triple cannot see ───────────────────────────────────────────
+//
+// Automatic-schema Parquet reads an ABSENT field back as `""` or `0`, and that
+// changes the meaning of five kinds of aggregate, not two:
+//
+//   A  isnotnull(f)                 true on every row          (Security, Q29)
+//   B  count(f)                     counts every row           (Findings, Q32)
+//   C  dcount(f)                    one extra distinct value, the ""
+//   D  f=* presence filter          may stop filtering at all
+//   E  percentile / avg / min(f)    dragged toward 0 by rows that had no value
+//
+// The triple above exercises A and B and nothing else, so on its own it would
+// report green on a migration that zeroed every latency figure in the app. The
+// queries below close C, D and E, and they follow the rule the triple states:
+// each is a query a panel actually runs, or that panel's own fragment summarised
+// over the parity window — imported, never transcribed. The comparison, the
+// class each result column belongs to and the dashboard number it protects are
+// in cribl/parity.ts; the window is still not part of any of these strings.
+//
+// C and D were NOT measured when this was written (2026-09-23); these queries
+// are how they get measured. ≈100 billable CPU-s each on the demo feed, so the
+// five below add ≈500 per side to a full parity run.
+
+/**
+ * Class C, and the reply-code counts beside it: the DNS tab's tile query, whose
+ * `resolvers=dcount(dns_host)` is the "Distinct resolvers" tile. A DNS row with
+ * no `dns_host` becomes a resolver called "" under Parquet.
+ */
+export const PARITY_DNS_QUERY = DNS_OVERALL
+
+/**
+ * Class E (`server_p95`) and class B (`txns`, `h2`): the Web & API tab's tile
+ * query, as the tab runs it.
+ */
+export const PARITY_WEB_KPI_QUERY = WEB_KPI
+
+/**
+ * Class E (`rtt=avg(tcp_rtt)`, the "Avg RTT" tile): the Capacity tab's tile
+ * query with no filter typed — character for character what
+ * `buildKpiQuery(pivot, '')` builds, which cribl/parity.test.ts pins.
+ */
+export const PARITY_CAPACITY_KPI_QUERY = q('| summarize ' + CAPACITY_KPI_AGGS)
+
+/**
+ * Class E at its most exposed: the TCP tab's latency aggregates — percentile,
+ * min and max — over the whole parity window instead of per minute. One row is
+ * what makes it comparable; the per-minute panel is a series of these.
+ */
+export const PARITY_LATENCY_QUERY = q('| summarize ' + LATENCY_AGGS)
+
+/**
+ * Class D on a string field: the rows the "Top endpoints by requests" panel's
+ * own `http_host=*` head admits. If `""` satisfies `=*`, this becomes the row
+ * count of the whole window.
+ */
+export const PARITY_HOST_PRESENCE_QUERY = q(HOSTS_HEAD + ' | summarize n=count()')
+
+/**
+ * Class D on a numeric field: the rows the "Status codes" and "Requests and
+ * errors over time" panels' `http_code=*` head admits. Kept separate from the
+ * host filter because a conjunction of the two could only fail when BOTH
+ * stopped filtering.
+ */
+export const PARITY_CODE_PRESENCE_QUERY = q(CODES_HEAD + ' | summarize n=count()')
