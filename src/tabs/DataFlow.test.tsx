@@ -21,10 +21,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
+import { resetDataMode, setDataMode } from '../cribl/dataMode'
 import { accelEntry } from '../cribl/accel/manifest'
 import type { Row } from '../cribl/search'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
+import { LAKE_TOTAL_QUERY } from '../queries/dataFlow'
 import { DataFlow, LAKE_CADENCE, PIPELINE_CADENCE, PIPELINE_WINDOW, lakeComputed, lakeHeldLabel } from './DataFlow'
 
 const LAKE = 'gno_lake_30d_c1d'
@@ -90,7 +92,11 @@ function stub(cfg: { stored?: Row[]; history?: unknown[] } = {}): void {
 }
 
 /** The 30-day total as a live job — the query this phase exists to stop running. */
-const lakeLiveSubmits = () => submits.filter((s) => s.query.includes('total_bytes=sum(') && !s.query.includes('$vt_results'))
+// The Lake total, matched on its own full text. `total_bytes=sum(` alone also
+// matches the record-volume query, and the output filter the stage counters —
+// both of which run live in Live mode by right.
+const lakeLiveSubmits = () =>
+  submits.filter((s) => s.query.includes(LAKE_TOTAL_QUERY) && !s.query.includes('$vt_results'))
 const storedSubmits = () => submits.filter((s) => s.query.includes('$vt_results'))
 // The Lake tile's own stored read. This tab now has two accelerated hooks — the
 // volume figures read the hourly overview scan — so "a stored read happened" is
@@ -149,6 +155,22 @@ describe('the Cribl Lake card', () => {
     expect(dated).toMatch(/events held · as of \d{2}:\d{2}/)
     expect(lakeLiveSubmits(), 'the 9,297.7 CPU-s query ran anyway').toEqual([])
     expect(lakeStoredSubmits()).toHaveLength(1)
+  })
+
+  it('reads the daily run in LIVE mode too — no 30-day scan on a Live page', async () => {
+    // Measured 2026-09-23: live, this card re-scanned thirty days on every
+    // Refresh (33.5 s) after every other number had rendered, to move a
+    // monthly total by minutes of data.
+    stub()
+    act(() => setDataMode('live'))
+    try {
+      await render()
+      expect(lakeLiveSubmits(), 'the 30-day scan ran in Live mode').toEqual([])
+      expect(cardLabels().find((l) => l.includes('as of')), 'the Live card was not dated').toBeDefined()
+      expect(container.textContent).toContain('from a scheduled daily run')
+    } finally {
+      resetDataMode()
+    }
   })
 
   it('says on the page that the card is not reading the range picker', async () => {

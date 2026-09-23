@@ -356,8 +356,12 @@ export function DataFlow() {
   // Lake total is deliberately pinned to the retention period, NOT the page
   // range, and loads independently so its ~17s scan never blocks the diagram.
   // It is served by a daily scheduled run of this same string where there is one
-  // (LAKE_ACCEL) and runs live where there is not — see the header.
-  const lakeTotal = useSearch(LAKE_TOTAL_QUERY, { earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, accelEnabled })
+  // (LAKE_ACCEL) and runs live where there is not — see the header. In LIVE
+  // mode too (`snapshotInLive`): a 30-day total does not move between the daily
+  // run and now by anything worth a 33 s scan on every Refresh. NOT given
+  // `accelEnabled`: that is `mode === 'snapshot'` (accel/mode.ts), so passing it
+  // would switch the card to live in exactly the mode this opts out of.
+  const lakeTotal = useSearch(LAKE_TOTAL_QUERY, { earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, snapshotInLive: true })
   // THE CENSUS, ON A TAB THAT RENDERS NO <Panel>. Registration normally happens
   // inside <Panel>, because that is the customer's unit — one card, one title,
   // one ⓘ. This tab draws a diagram and a stage-detail card instead, so nothing

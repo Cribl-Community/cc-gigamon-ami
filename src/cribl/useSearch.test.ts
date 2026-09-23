@@ -35,6 +35,8 @@ import { DashboardProvider, TIME_RANGES, useDashboard, type TimeRange } from '..
 import type { Row } from './search'
 import { NOTES } from './accel/read'
 import { useSearch, type UseSearchState } from './useSearch'
+import { resetDataMode, setDataMode } from './dataMode'
+import { useMountedLiveCost } from './jobCost'
 
 const LAKE = 'gno_lake_30d_c1d'
 const HOUR = 3_600_000
@@ -196,16 +198,20 @@ afterEach(() => {
 
 const QUERY = 'dataset="cribl_metrics" | summarize total_events=count()'
 
-function Probe({ accel, accelEnabled }: { accel?: 'gno_lake_30d_c1d'; accelEnabled?: boolean }): ReactNode {
+interface ProbeProps { accel?: 'gno_lake_30d_c1d'; accelEnabled?: boolean; snapshotInLive?: boolean }
+let livePrice: ReturnType<typeof useMountedLiveCost> | null = null
+
+function Probe({ accel, accelEnabled, snapshotInLive }: ProbeProps): ReactNode {
   const dash = useDashboard()
   setRange = dash.setRange
   refreshAll = dash.refresh
-  seen = useSearch(QUERY, { earliest: accel ? '-30d' : undefined, accel, accelEnabled })
+  seen = useSearch(QUERY, { earliest: accel ? '-30d' : undefined, accel, accelEnabled, snapshotInLive })
+  livePrice = useMountedLiveCost()
   return null
 }
 
 /** Render the probe and let every promise the read chain makes settle. */
-async function render(props: { accel?: 'gno_lake_30d_c1d'; accelEnabled?: boolean } = {}): Promise<void> {
+async function render(props: ProbeProps = {}): Promise<void> {
   await act(async () => {
     root.render(createElement(DashboardProvider, null, createElement(Probe, props)))
   })
@@ -501,3 +507,40 @@ describe('the page refresh control', () => {
 //     direction is safe: no rows → 'no-run' → the live query, loudly.
 //   * Anything about layout. happy-dom has no layout, so "the panel renders its
 //     date" is asserted in the tab tests by reading text, never by seeing it.
+
+describe('a panel that reads its snapshot in Live mode too', () => {
+  // The Lake card's 30-day total: live, it re-scanned thirty days on every
+  // Refresh (measured 33.5 s) to move a monthly figure by minutes of data.
+  afterEach(() => resetDataMode())
+
+  it('reads the stored run in Live mode, and submits no job', async () => {
+    stub(healthy)
+    act(() => setDataMode('live'))
+    await render({ accel: LAKE, snapshotInLive: true })
+    expect(seen!.source).toBe('schedule')
+    expect(submits, 'the 30-day scan ran in Live mode').toEqual([])
+    expect(seen!.rows[0]).toMatchObject({ total_events: 18_240_113 })
+  })
+
+  it('is left out of the Live price, because pressing Live does not run it', async () => {
+    stub(healthy)
+    act(() => setDataMode('live'))
+    await render({ accel: LAKE, snapshotInLive: true })
+    expect(livePrice!.panels + livePrice!.unpriced, 'the Live price still counts the Lake scan').toBe(0)
+  })
+
+  it('without the opt-in, a panel in Live mode runs its own query — the rule, unchanged', async () => {
+    stub(healthy)
+    act(() => setDataMode('live'))
+    await render({ accel: LAKE })
+    expect(seen!.source).toBe('live')
+    expect(liveSubmits(submits)).toHaveLength(1)
+  })
+
+  it('still runs live when the viewer turned acceleration off', async () => {
+    stub(healthy)
+    act(() => setDataMode('live'))
+    await render({ accel: LAKE, snapshotInLive: true, accelEnabled: false })
+    expect(liveSubmits(submits)).toHaveLength(1)
+  })
+})

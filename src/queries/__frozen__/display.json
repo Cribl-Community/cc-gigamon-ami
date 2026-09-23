@@ -628,10 +628,11 @@
           "ref": "LAKE_TOTAL_QUERY",
           "shape": "query",
           "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0))",
-          "options": "{ earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, accelEnabled }",
+          "options": "{ earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, snapshotInLive: true }",
           "optionsValue": {
             "earliest": "-30d",
-            "accel": "gno_lake_30d_c1d"
+            "accel": "gno_lake_30d_c1d",
+            "snapshotInLive": true
           }
         }
       },

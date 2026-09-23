@@ -162,6 +162,20 @@ export interface UseSearchOptions {
    */
   accelEnabled?: boolean
   /**
+   * Serve this panel from its schedule in LIVE mode too.
+   *
+   * THE ONE EXCEPTION TO "LIVE READS NO SNAPSHOT", and only for a figure whose
+   * value cannot meaningfully move between the schedule's run and now. The
+   * Lake card's 30-day retention total is that figure: live, it re-scanned
+   * thirty days on every explicit Refresh — measured 33.5 s, the app's most
+   * expensive query, while every other number on the tab had long rendered —
+   * to move a monthly total by minutes of data. Served from the daily run it
+   * answers in well under a second, and the card says when that run finished.
+   * The per-viewer acceleration switch (`accelEnabled`) still overrides it, and
+   * a missing or broken schedule still falls back to the live query.
+   */
+  snapshotInLive?: boolean
+  /**
    * Which of that entry's served panels this hook is — the `queryId` in the
    * manifest.
    *
@@ -203,7 +217,7 @@ interface PanelRead {
  * changing.
  */
 export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {}): UseSearchState {
-  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel } = opts
+  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel, snapshotInLive = false } = opts
   const text = typeof query === 'string' ? query : query.query
   const accel = (typeof query === 'string' ? undefined : query.accel) ?? opts.accel ?? null
   const { range, refreshNonce, manualRefreshNonce, autoSeconds } = useDashboard()
@@ -237,7 +251,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   const addressable = accel === null || servedPanel !== undefined
   const tail = servedPanel?.tail
 
-  const snapshotServed = accel !== null && accelEnabled && addressable && mode === 'snapshot'
+  const snapshotServed = accel !== null && accelEnabled && addressable && (mode === 'snapshot' || snapshotInLive)
   // A MOMENT OVERRIDES THE PER-PANEL LIVE SWITCH, and read.ts says why in full:
   // there is no live answer to a question about 04:20, so "run this one now"
   // has nothing to mean. `snapshotServed` deliberately stays false in that case,
@@ -278,7 +292,12 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   const active = enabled && !deferred && !waitingForMode
   const costSlot = useCostSlot({
     autoRefresh: enabled && !pinned,
-    willRun: enabled,
+    // A panel that stays on its schedule in Live (`snapshotInLive`) costs
+    // nothing when Live is pressed, so it is left out of the Live price. Left
+    // in, the button would quote the Lake total's 9,297.7 CPU-s for a press
+    // that no longer runs it. If its schedule has no readable run the panel
+    // does fall back to live, and says so in its own caption.
+    willRun: enabled && !(snapshotInLive && accel !== null && accelEnabled && addressable),
     // What this panel's own query costs run live, for the session in which it
     // has only ever been served from its schedule and so has measured nothing
     // itself. Measured runs, not the regressor — see accel/estimate.ts.
