@@ -11,6 +11,7 @@ import { BASE_PATH } from './cribl/config'
 import { DashboardProvider } from './app/DashboardContext'
 import { applyTheme, readStoredTheme } from './app/theme'
 import { loadSearchCaps } from './cribl/searchCaps'
+import { prefetchRunHistory } from './cribl/accel/status'
 import { installTrace } from './cribl/devTrace'
 
 // The dev-only page trace (cribl/devTrace.ts). `import.meta.env.DEV` is a
@@ -33,6 +34,12 @@ applyTheme(readStoredTheme())
 // only ever reads — a corrupt or absent value leaves the defaults in force and
 // is not repaired, because a repair would be a write on load (AGENTS.md).
 void loadSearchCaps()
+
+// The newest run of every schedule, which every accelerated panel needs before
+// its stored result can be downloaded (cribl/accel/status.ts, HEAD_LIMIT).
+// Started here so it overlaps module loading and first render rather than
+// starting when the first panel mounts. A GET that bills and writes nothing.
+prefetchRunHistory()
 
 const Strict = TRACE ? Fragment : StrictMode
 

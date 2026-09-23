@@ -45,7 +45,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { capi, errText } from '../capi'
-import { MANIFEST, accelEntry, type AccelId } from './manifest'
+import { MANIFEST, accelEntry, isAccelId, type AccelId } from './manifest'
 
 /**
  * The job list, as a policy object.
@@ -77,8 +77,11 @@ export const JOBS_PATH = '/m/default_search/search/jobs'
  * entry's newest 14 of 24, and the snapshot picker offered fourteen hours while
  * claiming a day. Derived from the manifest so a new entry moves it, plus room
  * for runs still going, runs kept under an older retention after a re-apply,
- * and scheduled searches on the workspace that are not this app's — the filter
- * is `type=='scheduled'`, and nothing narrower exists.
+ * and scheduled searches on the workspace that are not this app's. This page
+ * is deliberately NOT filtered by entry: one request serves every entry's
+ * timeline. A per-entry server filter does exist (`filterExp`
+ * `id.startsWith('<entry>.')`, measured 2026-09-23) and the small entry pages
+ * use it — see ENTRY_LIMIT.
  *
  * It is one request either way — this endpoint bills nothing. ~0.57 kB a row
  * measured, so the page is ~230 kB, read at most once per 15 s (PAGE_TTL_MS).
@@ -233,6 +236,13 @@ function toRun(raw: ShortJob | undefined): AccelRun | null {
 
 export interface StatusOptions {
   signal?: AbortSignal
+  /**
+   * The caller needs only this entry's NEWEST runs — its newest, and the newest
+   * one that completed — not its history. Answered from the small head page
+   * when that page can answer it, which is the read the default path waits on.
+   * See `HEAD_LIMIT`.
+   */
+  newest?: boolean
 }
 
 /**
@@ -331,14 +341,24 @@ export interface AccelStatus {
  * The failure is in the safe direction every time, which is exactly why it
  * survives: nothing is wrong on screen except the bill.
  */
-function historyQuery(): string {
+function historyQuery(limit: number = HISTORY_LIMIT, onlyEntry?: AccelId): string {
+  // One entry's runs, filtered BY THE SERVER. `filterExp` is evaluated per job
+  // as a JS-like expression — `id.startsWith('<entry>.')` returned exactly one
+  // schedule's runs, measured 2026-09-23. The id is interpolated into an
+  // expression, so it is checked against the manifest first: only the fixed
+  // `gno_…` ids of this app ever reach it.
+  if (onlyEntry !== undefined && !(isAccelId(onlyEntry) && /^[a-z0-9_]+$/.test(onlyEntry))) {
+    throw new Error('status: not an entry id this app can filter on')
+  }
+  const filterExp =
+    onlyEntry === undefined ? "type=='scheduled'" : `type=='scheduled' && id.startsWith('${onlyEntry}.')`
   return new URLSearchParams({
     // Both, and neither is optional: `output=short` keeps the body small, and
     // `filterExp` is the filter that survives it. `type=scheduled` does NOT —
     // the short projection ignores it.
     output: 'short',
-    filterExp: "type=='scheduled'",
-    limit: String(HISTORY_LIMIT),
+    filterExp,
+    limit: String(limit),
     offset: '0',
     sortExp: 'timeCreated',
     sortDir: 'desc',
@@ -439,16 +459,17 @@ interface ListedRuns {
  * succeeded as denied.
  */
 /**
- * The one history page, shared by every caller that needs it.
+ * The history pages, each shared by every caller that needs it.
  *
  * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
- * `historyQuery()` takes no argument: every read of the run history is the
- * BYTE-IDENTICAL request, and which entry a row belongs to is decided here by
- * `isRunOf`. So the sixteen-entry fan-out in `snapshotTimeline` was sixteen
- * copies of one answer — measured at ~113 kB each, repeated on every refresh
- * tick, plus one per accelerated panel from `atMoment` and two more from
- * Guided Setup. The comment that used to justify the fan-out cited a
- * `correlationId` this module had already removed.
+ * One cached page per DISTINCT request, keyed `head` (HEAD_LIMIT rows), `full`
+ * (HISTORY_LIMIT rows) or `entry:<id>` (ENTRY_LIMIT rows, filtered by the
+ * server). Within a slot every read is the byte-identical request, and which
+ * entry a row belongs to is decided here by `isRunOf`. That is the point: the
+ * sixteen-entry fan-out in `snapshotTimeline` used to be sixteen copies of one
+ * answer — measured at ~113 kB each, repeated on every refresh tick, plus one
+ * per accelerated panel from `atMoment` and two more from Guided Setup. Each
+ * slot keeps its own page and in-flight read; `forgetRunHistory` clears all.
  *
  * ── THE ABORT HAZARD, WHICH IS WHY THE SIGNAL IS NOT PASSED ON ──────────────
  * A shared promise must not carry any one caller's `AbortSignal`. Sixteen
@@ -467,7 +488,7 @@ const PAGE_TTL_MS = 15_000
  * How long the shared read may take before it is given up on.
  *
  * It carries no caller's signal, so without its own bound a stalled request
- * would leave `inFlight` pending forever and every later caller — since Phase 7
+ * would leave a slot's in-flight read pending forever and every later caller — since Phase 7
  * item 1.1, every accelerated panel on its default path — would join it and
  * never settle. Timed out, it settles as an ordinary unreadable page, which is
  * not cached, and each caller carries on down its fallback. Normally sub-second;
@@ -485,10 +506,52 @@ interface ListedRunsRaw {
   items: ShortJob[]
   denied: boolean
   error: string | null
+  /** The read hit HISTORY_TIMEOUT_MS. Kept apart from other failures because
+   *  it is the one that says a second read would stall too — see `ownPage`. */
+  timedOut?: boolean
 }
 
-let page: HistoryPage | null = null
-let inFlight: Promise<ListedRunsRaw> | null = null
+/**
+ * The rows the HEAD page asks for: the newest few across every schedule.
+ *
+ * WHY A SECOND, SMALLER PAGE. The browser trace (2026-09-23) put the full page
+ * on every Snapshot load's critical path — ~0.58 s and ~297 kB, serial before
+ * any artifact could start — while the default path needs one thing from it:
+ * each entry's newest run. The page is sorted newest first (`sortDir=desc`,
+ * verified live), so a run of an entry that appears in the head page is that
+ * entry's newest run BY CONSTRUCTION; nothing outside the page can be newer.
+ * An entry the head page does not reach (the daily run, typically) is answered
+ * from the full page, exactly as before. See `listRuns`.
+ *
+ * The full page is still read for everything that needs history — the snapshot
+ * picker, the status table, a picked moment — just not waited on by a panel.
+ */
+export const HEAD_LIMIT = 48
+
+/**
+ * The rows one entry's own page asks for, when the head page does not reach it.
+ *
+ * The daily entry is the case: fifteen hourly schedules fill the newest rows,
+ * and its newest run sat at row 171 of 341 when measured. Its own filtered page
+ * is ~0.8 kB and ~90 ms, where the full page is ~300 kB. A few rows, not one,
+ * so a newest run still going leaves its completed predecessor on the page.
+ */
+export const ENTRY_LIMIT = 4
+
+interface PageSlot {
+  page: HistoryPage | null
+  inFlight: Promise<ListedRunsRaw> | null
+}
+/** `head`, `full`, or `entry:<id>` — one cached page per distinct request. */
+const slots = new Map<string, PageSlot>()
+const slotFor = (key: string): PageSlot => {
+  let slot = slots.get(key)
+  if (!slot) {
+    slot = { page: null, inFlight: null }
+    slots.set(key, slot)
+  }
+  return slot
+}
 
 /**
  * Drop the cached page so the next read goes to the network.
@@ -498,11 +561,45 @@ let inFlight: Promise<ListedRunsRaw> | null = null
  * cache, which is the one case where the staleness is visible and unwelcome.
  */
 export function forgetRunHistory(): void {
-  page = null
-  inFlight = null
+  for (const slot of slots.values()) {
+    slot.page = null
+    slot.inFlight = null
+  }
 }
 
-async function fetchHistoryPage(): Promise<ListedRunsRaw> {
+/**
+ * Start the head page now, before any panel asks for it.
+ *
+ * Called once from main.tsx at boot, alongside the other unawaited reads, so
+ * the request overlaps module loading and first render instead of starting when
+ * the first accelerated hook mounts. A config-plane GET: it bills nothing and
+ * writes nothing, and in Live mode — where no panel reads it — it is one small
+ * wasted request.
+ */
+export function prefetchRunHistory(): void {
+  void historyPage('head')
+  // An entry the head page cannot reach is asked for alone, in parallel, now:
+  // waiting for the head page to discover it missing put a second round trip
+  // in series in front of Data Flow's Lake card (measured 2026-09-23).
+  for (const e of MANIFEST) if (beyondHead(e.id)) void historyPage(e.id)
+}
+
+/**
+ * Entries whose newest run the head page cannot be expected to hold.
+ *
+ * The head page holds about HEAD_LIMIT / (entries firing hourly) hours of runs
+ * — three, today. An entry that fires less often than hourly (the daily Lake
+ * total) is almost never in it, so asking the head page first only adds a
+ * round trip. Derived from the manifest's own cron, so a new entry is placed
+ * by its schedule, not by a list kept here.
+ */
+function beyondHead(id: AccelId): boolean {
+  if (!isAccelId(id)) return false
+  const every = cronIntervalMs(accelEntry(id).cron)
+  return every === null || every > HOUR_MS
+}
+
+async function fetchHistoryPage(limit: number, onlyEntry?: AccelId): Promise<ListedRunsRaw> {
   let r
   // A plain timer rather than `AbortSignal.timeout`, whose clock no test can
   // advance — and this bound is the one thing standing between a stalled proxy
@@ -512,12 +609,12 @@ async function fetchHistoryPage(): Promise<ListedRunsRaw> {
   try {
     // NO CALLER'S SIGNAL — see the block above. This request outlives any one
     // caller, so it is bounded by its own clock instead (HISTORY_TIMEOUT_MS).
-    r = await capi('GET', `${JOBS_PATH}?${historyQuery()}`, undefined, {
+    r = await capi('GET', `${JOBS_PATH}?${historyQuery(limit, onlyEntry)}`, undefined, {
       background: true,
       signal: clock.signal,
     })
   } catch (err) {
-    if (clock.signal.aborted) return { items: [], denied: false, error: 'The run history took too long to read.' }
+    if (clock.signal.aborted) return { items: [], denied: false, error: 'The run history took too long to read.', timedOut: true }
     return { items: [], denied: false, error: err instanceof Error ? err.message : 'The run history could not be read.' }
   } finally {
     clearTimeout(timer)
@@ -537,40 +634,31 @@ async function fetchHistoryPage(): Promise<ListedRunsRaw> {
   return { items: items as ShortJob[], denied: false, error: null }
 }
 
-/** The page, from cache, from a read already in flight, or from the network. */
-async function historyPage(now: number = Date.now()): Promise<ListedRunsRaw> {
-  if (page !== null && now - page.at < PAGE_TTL_MS) return page.result
-  if (inFlight !== null) return inFlight
+/** A page, from cache, from a read already in flight, or from the network. */
+function historyPage(kind: 'head' | 'full' | AccelId, now: number = Date.now()): Promise<ListedRunsRaw> {
+  const entry = kind === 'head' || kind === 'full' ? undefined : kind
+  const slot = slotFor(entry === undefined ? kind : `entry:${entry}`)
+  if (slot.page !== null && now - slot.page.at < PAGE_TTL_MS) return Promise.resolve(slot.page.result)
+  if (slot.inFlight !== null) return slot.inFlight
   // A FAILURE IS NOT CACHED. A refusal or a broken read must not be handed to
   // fifteen more callers for the next fifteen seconds, and the next caller
   // deserves a fresh attempt rather than a stored error.
-  const p = fetchHistoryPage().then((result) => {
-    if (result.error === null) page = { at: Date.now(), result }
-    inFlight = null
+  const limit = kind === 'head' ? HEAD_LIMIT : kind === 'full' ? HISTORY_LIMIT : ENTRY_LIMIT
+  const p = fetchHistoryPage(limit, entry).then((result) => {
+    // Only if this read is still the slot's: `forgetRunHistory` during the
+    // read must not have the stale answer written back behind it.
+    if (slot.inFlight === p) {
+      if (result.error === null) slot.page = { at: Date.now(), result }
+      slot.inFlight = null
+    }
     return result
   })
-  inFlight = p
+  slot.inFlight = p
   return p
 }
 
-export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<ListedRuns> {
-  const raw = await historyPage()
-  // The caller's own signal, checked here rather than passed to the shared
-  // request. Aborting stops this caller waiting; it does not cancel the read
-  // the other callers are sharing.
-  if (opts.signal?.aborted) {
-    return { runs: [], denied: false, error: 'The run history read was cancelled.' }
-  }
-  if (raw.denied) return { runs: [], denied: true, error: raw.error }
-  if (raw.error !== null) return { runs: [], denied: false, error: raw.error }
-  const items = raw.items
-  // Filtered HERE rather than by the request, because no server-side parameter
-  // selects a saved search's runs — see isRunOf. HISTORY_LIMIT rows of the
-  // workspace's whole job history are read and most are discarded; on a busy
-  // workspace that window may not reach back far enough to see every run a
-  // schedule's keepLastN still holds, so a timeline can be shorter than the
-  // stored results actually are. It is never WRONG, only short, and it is the
-  // honest cost of the platform having no such filter.
+/** This entry's runs from one page, newest first. */
+function runsOf(id: AccelId, items: readonly ShortJob[]): AccelRun[] {
   const runs = items
     .map((raw) => toRun(raw as ShortJob))
     .filter((run): run is AccelRun => run !== null && isRunOf(id, run.id))
@@ -579,7 +667,91 @@ export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<L
   // everything downstream reads `runs[0]` as "the newest": a dropped parameter
   // would silently date a panel by the oldest run in the page.
   runs.sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
-  return { runs, denied: false, error: null }
+  return runs
+}
+
+/**
+ * Can the head page answer a `newest` caller for this entry on its own?
+ *
+ * Yes when it holds a completed, dated run of the entry — the newest such run
+ * is then that entry's newest completed run — or when the entry's newest run
+ * failed or was cancelled, which is the answer itself. Anything else (no run of
+ * the entry at all, or only a run still going whose predecessor is off the
+ * page) needs the full page.
+ */
+function headAnswers(runs: readonly AccelRun[]): boolean {
+  const first = runs[0]
+  if (!first) return false
+  if (!first.running && (first.outcome === 'failed' || first.outcome === 'canceled')) return true
+  return runs.some((r) => !r.running && r.outcome === 'completed' && r.at !== null)
+}
+
+const CANCELLED: ListedRuns = { runs: [], denied: false, error: 'The run history read was cancelled.' }
+
+/**
+ * An entry's own server-filtered page, or null when the full page must decide.
+ *
+ * WHY A FAILURE HERE IS SPLIT IN TWO. This is the only read that sends a filter
+ * expression, and the server rejects a bad one with an HTTP error (measured: a
+ * syntax error is a 500) while still answering the unfiltered full page. So an
+ * HTTP error falls through to the full page — the panel still gets its run on a
+ * tenant that evaluates the filter differently. A TIMEOUT does not: whatever
+ * stalled this small read stalls the large one, and falling through would make
+ * a panel wait out two timeouts before its own fallback.
+ *
+ * AN EMPTY PAGE PROVES NOTHING either. The endpoint answers 200 with no rows
+ * for a filter it cannot evaluate (measured: an unknown function), so "no runs"
+ * from here is not trusted; the full page decides, as before this page existed.
+ */
+async function ownPage(id: AccelId, opts: StatusOptions): Promise<ListedRuns | null> {
+  const own = await historyPage(id)
+  if (opts.signal?.aborted) return CANCELLED
+  if (own.denied) return { runs: [], denied: true, error: own.error }
+  if (own.timedOut) return { runs: [], denied: false, error: own.error }
+  if (own.error !== null) return null
+  const runs = runsOf(id, own.items)
+  return headAnswers(runs) ? { runs, denied: false, error: null } : null
+}
+
+export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<ListedRuns> {
+  if (opts.newest && beyondHead(id)) {
+    // Less often than hourly: the head page will not hold it, so it is asked
+    // for alone straight away (prefetched at boot, alongside the head page).
+    const own = await ownPage(id, opts)
+    if (own !== null) return own
+  } else if (opts.newest) {
+    const head = await historyPage('head')
+    if (opts.signal?.aborted) return CANCELLED
+    if (head.denied) return { runs: [], denied: true, error: head.error }
+    // A head read that FAILED is answered as a failure, not retried as the full
+    // page. The head and full pages are the same request but for its size, so
+    // whatever failed one — a stall, a 5xx — fails the other, and a panel
+    // would wait out two timeouts before its own fallback.
+    if (head.error !== null) return { runs: [], denied: false, error: head.error }
+    const runs = runsOf(id, head.items)
+    if (headAnswers(runs)) return { runs, denied: false, error: null }
+    // Read fine, but it does not reach this entry: ask for the entry alone.
+    const own = await ownPage(id, opts)
+    if (own !== null) return own
+  }
+  const raw = await historyPage('full')
+  // The caller's own signal, checked here rather than passed to the shared
+  // request. Aborting stops this caller waiting; it does not cancel the read
+  // the other callers are sharing.
+  if (opts.signal?.aborted) {
+    return { runs: [], denied: false, error: 'The run history read was cancelled.' }
+  }
+  if (raw.denied) return { runs: [], denied: true, error: raw.error }
+  if (raw.error !== null) return { runs: [], denied: false, error: raw.error }
+  // Filtered HERE rather than by the request, because this one read serves
+  // every entry — see isRunOf. HISTORY_LIMIT rows of the workspace's scheduled
+  // jobs are read and each caller keeps its own; on a busy workspace that
+  // window may not reach back far enough to see every run a schedule's
+  // keepLastN still holds, so a timeline can be shorter than the stored results
+  // actually are. It is never WRONG, only short. That is the cost of sharing one
+  // page, not a platform limit: per-entry server-filtered pages exist (see
+  // `ownPage`) and are the alternative if the window ever matters.
+  return { runs: runsOf(id, raw.items), denied: false, error: null }
 }
 
 /**

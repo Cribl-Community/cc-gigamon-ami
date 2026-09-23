@@ -24,7 +24,7 @@
 //     telemetry.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HISTORY_TIMEOUT_MS, forgetRunHistory } from './status'
+import { ENTRY_LIMIT, HISTORY_LIMIT, HISTORY_TIMEOUT_MS, forgetRunHistory } from './status'
 import { evaluateTail } from './tail'
 
 // The header spinner's counter, observed. `runSearch` counts itself; an
@@ -379,6 +379,12 @@ describe('a healthy read', () => {
     spinner.begun = spinner.ended = 0
     const read = await readAccelRows(LAKE, { now: NOW })
     expect(submits, 'a job was submitted to read a stored result').toEqual([])
+    // Off the critical path: the small head page, not the full history.
+    const pages = urls.filter((u) => u.includes('/search/jobs?')).map((u) => new URL(u, 'http://x').searchParams.get('limit'))
+    // LAKE is the daily entry, which the head page never reaches, so it is asked
+    // for alone (ENTRY_LIMIT). An hourly entry would use HEAD_LIMIT; either way,
+    // never the full page.
+    expect(pages, 'the newest read waited on the full history page').toEqual([String(ENTRY_LIMIT)])
     expect(spinner.begun, 'the header spinner never saw the read').toBe(1)
     expect(spinner.ended, 'the header spinner was left spinning').toBe(1)
     expect(urls.some((u) => u.includes(`/search/jobs/${SRC}/results`))).toBe(true)
@@ -598,10 +604,15 @@ describe('nothing to read', () => {
     // deliberately not read: a partial sum is a smaller Lake, and a partial
     // sample says fields are missing that are not.
     for (const status of ['failed', 'canceled']) {
-      stub({ vtRows: [], liveRows: [LIVE], history: [srcRun({ status })] })
+      forgetRunHistory()
+      const { urls } = stub({ vtRows: [], liveRows: [LIVE], history: [srcRun({ status })] })
       const read = await readAccelRows(LAKE, { now: NOW })
       expect(read.outcome, status).toBe('run-failed')
       expect(read.source).toBe('live')
+      // Diagnosed from the entry's own small page, never the full history: the
+      // newest run's outcome is all `diagnose` needs.
+      const pages = urls.filter((u) => u.includes('/search/jobs?')).map((u) => new URL(u, 'http://x').searchParams.get('limit'))
+      expect(pages, 'diagnose waited on the full history page').not.toContain(String(HISTORY_LIMIT))
       vi.unstubAllGlobals()
     }
   })
@@ -1151,6 +1162,15 @@ describe('reading the state at a chosen moment', () => {
     const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW, tail: '| summarize n=avg(total_events)' })
     expect(read.outcome).toBe('unshaped')
     expect(liveSubmit(submits), 'a picked moment ran the live query').toBeUndefined()
+  })
+
+  it('lists a picked moment from the FULL history — the small pages hold only the newest runs', async () => {
+    // A run a few hours back is not on the 48-row head page, and the daily
+    // entry's own page holds four. A picked moment needs the whole retained set.
+    const { urls } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, now: NOW })
+    const pages = urls.filter((u) => u.includes('/search/jobs?')).map((u) => new URL(u, 'http://x').searchParams.get('limit'))
+    expect(pages).toEqual([String(HISTORY_LIMIT)])
   })
 
   it('addresses one run by its job id, not the schedule by name', async () => {

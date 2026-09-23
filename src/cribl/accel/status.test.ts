@@ -25,7 +25,11 @@ import { SEARCH_GROUP } from '../config'
 import { JOBS_PATH as WATCHDOG_JOBS_PATH } from '../jobWatchdog'
 import { MANIFEST, accelEntry } from './manifest'
 import {
+  ENTRY_LIMIT,
+  HISTORY_TIMEOUT_MS,
+  HEAD_LIMIT,
   HISTORY_LIMIT,
+  prefetchRunHistory,
   JOBS_PATH,
   accelStatus,
   allAccelStatus,
@@ -616,5 +620,239 @@ describe('the shared history page', () => {
     expect(aborted.runs, 'the aborted caller should stop waiting').toHaveLength(0)
     expect(healthy.runs, 'the other caller was poisoned by the first one aborting').toHaveLength(1)
     expect(healthy.error).toBeNull()
+  })
+})
+
+describe('the head page — the newest runs, off the critical path', () => {
+  // An HOURLY entry: the daily one skips the head page (see below).
+  const HOURLY = 'gno_overview_c1h' as const  // The browser trace (2026-09-23) put the full page — ~0.58 s, ~297 kB — in
+  // front of every accelerated panel's download. A `newest` caller needs only
+  // each entry's newest runs, and the page is sorted newest first, so a run of
+  // an entry that appears in a SMALL head page is its newest by construction.
+  const limitOf = (s: Sent) => new URL(s.url, 'http://x').searchParams.get('limit')
+  const pages = (sent: Sent[]) => sent.filter((s) => s.url.includes('/search/jobs?')).map(limitOf)
+
+  it('answers a newest caller from the small page alone when that page reaches it', async () => {
+    const sent = stub([history([run({ id: `${HOURLY}.${T0}.aaa` })])])
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${HOURLY}.${T0}.aaa`])
+    expect(pages(sent), 'the full page was waited on').toEqual([String(HEAD_LIMIT)])
+  })
+
+  it('asks for the entry ALONE when the head page does not reach it — not the full page', async () => {
+    // The daily run, typically: fifteen hourly schedules fill the newest rows.
+    // Its own server-filtered page is ~0.8 kB where the full one is ~300 kB.
+    const sent = stub([
+      { match: `limit=${HEAD_LIMIT}&`, body: { items: [run({ id: `${SAMPLE}.${T0}.s` })] } },
+      { match: `limit=${ENTRY_LIMIT}&`, body: { items: [run({ id: `${HOURLY}.${T0 - DAY}.old` })] } },
+      history([run({ id: `${SAMPLE}.${T0}.s` }), run({ id: `${HOURLY}.${T0 - DAY}.old` })]),
+    ])
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${HOURLY}.${T0 - DAY}.old`])
+    expect(pages(sent)).toEqual([String(HEAD_LIMIT), String(ENTRY_LIMIT)])
+    const own = new URL(sent[1].url, 'http://x').searchParams.get('filterExp')
+    expect(own).toBe(`type=='scheduled' && id.startsWith('${HOURLY}.')`)
+  })
+
+  it('asks for a less-than-hourly entry ALONE, straight away — no head page first', async () => {
+    // The daily entry is never in the head page (fifteen hourly schedules fill
+    // it), so asking the head first was a round trip in series for nothing.
+    expect(cronIntervalMs(accelEntry(LAKE).cron), 'this test needs LAKE to be the daily entry').toBeGreaterThan(HOUR)
+    const sent = stub([{ match: `limit=${ENTRY_LIMIT}&`, body: { items: [run({ id: `${LAKE}.${T0}.d` })] } }, history([])])
+    const listed = await listRuns(LAKE, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${LAKE}.${T0}.d`])
+    expect(pages(sent)).toEqual([String(ENTRY_LIMIT)])
+  })
+
+  it('prefetches the head page and every less-than-hourly entry at boot, in parallel', async () => {
+    const sent = stub([history([])])
+    prefetchRunHistory()
+    const daily = MANIFEST.filter((e) => (cronIntervalMs(e.cron) ?? Infinity) > HOUR).length
+    expect(daily).toBeGreaterThan(0)
+    expect(pages(sent).sort()).toEqual([String(HEAD_LIMIT), ...Array(daily).fill(String(ENTRY_LIMIT))].sort())
+  })
+
+  it('falls through to the full page when the entry’s own read gets an HTTP error', async () => {
+    // Only the own page sends a filter expression, and the server rejects a bad
+    // one with a 500 while still answering the unfiltered full page.
+    const sent = stub([
+      { match: `limit=${ENTRY_LIMIT}&`, status: 500, body: { message: "Unexpected token ')'" } },
+      history([run({ id: `${LAKE}.${T0 - DAY}.d` })]),
+    ])
+    const listed = await listRuns(LAKE, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${LAKE}.${T0 - DAY}.d`])
+    expect(pages(sent)).toEqual([String(ENTRY_LIMIT), String(HISTORY_LIMIT)])
+  })
+
+  it('answers a TIMED-OUT own read as a failure — no second, larger read to wait out', async () => {
+    const sent: string[] = []
+    vi.stubGlobal('fetch', (url: string, init: RequestInit = {}) => {
+      sent.push(String(url))
+      return new Promise((_, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      })
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const p = listRuns(LAKE, { newest: true })
+      await vi.advanceTimersByTimeAsync(HISTORY_TIMEOUT_MS + 1)
+      const listed = await p
+      expect(listed.error).not.toBeNull()
+      expect(sent.map((u) => new URL(u, 'http://x').searchParams.get('limit'))).toEqual([String(ENTRY_LIMIT)])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not trust an EMPTY own page for the daily entry either', async () => {
+    const sent = stub([
+      { match: `limit=${ENTRY_LIMIT}&`, body: { items: [] } },
+      history([run({ id: `${LAKE}.${T0 - DAY}.d` })]),
+    ])
+    const listed = await listRuns(LAKE, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${LAKE}.${T0 - DAY}.d`])
+    expect(pages(sent)).toEqual([String(ENTRY_LIMIT), String(HISTORY_LIMIT)])
+  })
+
+  it('gives each entry its own page — one entry’s rows never answer another’s', async () => {
+    // A shared slot would hand the hourly entry the daily entry's cached rows,
+    // filtered to nothing, and send it to the full page on the critical path.
+    const sent: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      const u = String(url)
+      sent.push(u)
+      const q = new URL(u, 'http://x').searchParams
+      const f = q.get('filterExp') ?? ''
+      const items = q.get('limit') === String(HEAD_LIMIT) ? [run({ id: `${SAMPLE}.${T0}.s` })]
+        : f.includes(`'${LAKE}.'`) ? [run({ id: `${LAKE}.${T0}.d` })]
+        : f.includes(`'${HOURLY}.'`) ? [run({ id: `${HOURLY}.${T0 - HOUR}.h` })]
+        : []
+      return { status: 200, text: async () => JSON.stringify({ items }) }
+    })
+    prefetchRunHistory()
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${HOURLY}.${T0 - HOUR}.h`])
+    const limits = sent.map((u) => new URL(u, 'http://x').searchParams.get('limit'))
+    expect(limits, 'the full page was read on the critical path').not.toContain(String(HISTORY_LIMIT))
+  })
+
+  it('stops, and reads nothing further, when the panel leaves during the head read', async () => {
+    let release: (v: unknown) => void = () => {}
+    const sent: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      sent.push(String(url))
+      return new Promise((r) => { release = r })
+    })
+    const ac = new AbortController()
+    const p = listRuns(HOURLY, { newest: true, signal: ac.signal })
+    ac.abort()
+    release({ status: 200, text: async () => JSON.stringify({ items: [] }) })
+    const listed = await p
+    expect(listed.error).toContain('cancelled')
+    expect(sent.map((u) => new URL(u, 'http://x').searchParams.get('limit'))).toEqual([String(HEAD_LIMIT)])
+  })
+
+  it('stops, and reads nothing further, when the panel leaves during an own-page read', async () => {
+    let release: (v: unknown) => void = () => {}
+    const sent: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      sent.push(String(url))
+      return new Promise((r) => { release = r })
+    })
+    const ac = new AbortController()
+    const p = listRuns(LAKE, { newest: true, signal: ac.signal })
+    ac.abort()
+    release({ status: 200, text: async () => JSON.stringify({ items: [] }) })
+    const listed = await p
+    expect(listed.error).toContain('cancelled')
+    expect(sent.map((u) => new URL(u, 'http://x').searchParams.get('limit'))).toEqual([String(ENTRY_LIMIT)])
+  })
+
+  it('does not trust an EMPTY filtered page — the full page decides', async () => {
+    // Measured: a filter the server cannot evaluate answers 200 with no rows,
+    // so "no runs" from the entry page could be a broken filter, not a fact.
+    const sent = stub([
+      { match: `limit=${HEAD_LIMIT}&`, body: { items: [run({ id: `${SAMPLE}.${T0}.s` })] } },
+      { match: `limit=${ENTRY_LIMIT}&`, body: { items: [] } },
+      history([run({ id: `${HOURLY}.${T0 - DAY}.old` })]),
+    ])
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.runs.map((r) => r.id)).toEqual([`${HOURLY}.${T0 - DAY}.old`])
+    expect(pages(sent)).toEqual([String(HEAD_LIMIT), String(ENTRY_LIMIT), String(HISTORY_LIMIT)])
+  })
+
+  it('never interpolates an id that is not one of this app’s into a filter expression', async () => {
+    const sent = stub([{ match: `limit=${HEAD_LIMIT}&`, body: { items: [] } }, history([])])
+    const listed = await listRuns("x') || true || ('" as never, { newest: true })
+    // Refused before a request is built: nothing carrying it left the browser.
+    const filters = sent.map((s) => new URL(s.url, 'http://x').searchParams.get('filterExp') ?? '')
+    expect(filters.some((f) => f.includes('|| true')), 'the injected id reached a filter').toBe(false)
+    expect(listed.runs).toEqual([])
+  })
+
+  it('reads the full page when the head holds only a run still going', async () => {
+    // Its predecessor — the newest COMPLETED run — is off the head page.
+    const going = run({ id: `${HOURLY}.${T0}.run`, status: 'running', timeCompleted: undefined })
+    const sent = stub([
+      { match: `limit=${HEAD_LIMIT}&`, body: { items: [going] } },
+      history([going, run({ id: `${HOURLY}.${T0 - HOUR}.done` })]),
+    ])
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.runs).toHaveLength(2)
+    expect(pages(sent)).toHaveLength(2)
+  })
+
+  it('answers from the head when the newest run FAILED — that is the answer', async () => {
+    const sent = stub([history([run({ id: `${HOURLY}.${T0}.bad`, status: 'failed' })])])
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.runs[0].outcome).toBe('failed')
+    expect(pages(sent)).toEqual([String(HEAD_LIMIT)])
+  })
+
+  it('does not wait out a second timeout when the head read itself failed', async () => {
+    // Whatever stalled the small read stalls the large one.
+    const sent = stub([{ match: '/search/jobs?', status: 503, body: { message: 'no' } }])
+    const listed = await listRuns(HOURLY, { newest: true })
+    expect(listed.error).not.toBeNull()
+    expect(pages(sent)).toEqual([String(HEAD_LIMIT)])
+  })
+
+  it('leaves history callers on the full page', async () => {
+    const sent = stub([history([run()])])
+    await snapshotTimeline([HOURLY])
+    expect(pages(sent)).toEqual([String(HISTORY_LIMIT)])
+  })
+
+  it('is started at boot by prefetchRunHistory, and shared with the first panel', async () => {
+    const sent = stub([history([run({ id: `${HOURLY}.${T0}.aaa` })])])
+    prefetchRunHistory()
+    await listRuns(HOURLY, { newest: true })
+    expect(pages(sent).filter((l) => l === String(HEAD_LIMIT)), 'the prefetch was not the read the panel used').toHaveLength(1)
+  })
+
+  it('is forgotten with the full page, so a human refresh reaches the network', async () => {
+    const sent = stub([history([run({ id: `${HOURLY}.${T0}.aaa` })])])
+    await listRuns(HOURLY, { newest: true })
+    forgetRunHistory()
+    await listRuns(HOURLY, { newest: true })
+    expect(pages(sent)).toEqual([String(HEAD_LIMIT), String(HEAD_LIMIT)])
+  })
+
+  it('does not let a read started before a refresh overwrite what came after it', async () => {
+    let release: (v: unknown) => void = () => {}
+    const sent: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      sent.push(String(url))
+      if (sent.length === 1) return new Promise((r) => { release = r })
+      return Promise.resolve({ status: 200, text: async () => JSON.stringify({ items: [run({ id: `${HOURLY}.${T0}.new` })] }) })
+    })
+    const stale = listRuns(HOURLY, { newest: true })
+    forgetRunHistory()
+    const fresh = await listRuns(HOURLY, { newest: true })
+    release({ status: 200, text: async () => JSON.stringify({ items: [run({ id: `${HOURLY}.${T0 - HOUR}.old` })] }) })
+    await stale
+    const again = await listRuns(HOURLY, { newest: true })
+    expect(fresh.runs[0].id).toBe(`${HOURLY}.${T0}.new`)
+    expect(again.runs[0].id, 'the pre-refresh read was cached over the fresh one').toBe(`${HOURLY}.${T0}.new`)
   })
 })

@@ -826,7 +826,9 @@ async function artifactRead(
   // usually a cache hit rather than a round trip. UNFILTERED, on purpose: the
   // timeline's view drops failed runs, and the newest run failing is a fact
   // this path must not hide.
-  const listed = await listRuns(entry.id, { signal: opts.signal })
+  // `newest`: the small head page when it can answer — the read every
+  // accelerated panel waits on before its download can start.
+  const listed = await listRuns(entry.id, { signal: opts.signal, newest: true })
   if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   if (listed.error !== null) return null
 
@@ -1140,7 +1142,7 @@ async function dateRun(id: AccelId, sourceJobId: string | null, opts: { signal?:
  * front of the admin who can fix it instead of "something went wrong".
  */
 async function diagnose(id: AccelId, opts: { signal?: AbortSignal }): Promise<AccelOutcome> {
-  const listed = await listRuns(id, { signal: opts.signal })
+  const listed = await listRuns(id, { signal: opts.signal, newest: true })
   if (listed.error !== null) {
     warn(id, 'the run history could not be read', listed.error)
     return 'no-run'
