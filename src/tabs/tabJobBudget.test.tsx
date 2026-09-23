@@ -377,12 +377,17 @@ function entryNamedBy(query: string): AccelEntry | undefined {
 let submits: string[] = []
 /** The entry each server-filtered history page asked for. */
 let ownPages: string[] = []
+/** Which history pages ANSWERED with each entry's newest run: `head` (the
+ *  HEAD_LIMIT page), `own` (that entry's server-filtered page) or `full`. A
+ *  page that was asked for and came back empty answers nothing. */
+let answeredBy = new Map<string, Set<'head' | 'own' | 'full'>>()
 /** The entry of each artifact read — each stored read that submitted no job. */
 let artifactReads: string[] = []
 
 function stub(): void {
   submits = []
   ownPages = []
+  answeredBy = new Map()
   artifactReads = []
   const jobs = new Map<string, AccelEntry | null>()
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -421,6 +426,11 @@ function stub(): void {
       const only = /startsWith\('([a-z0-9_]+)\.'\)/.exec(new URL(u, 'http://stub').searchParams.get('filterExp') ?? '')?.[1]
       if (only) ownPages.push(only)
       const page = historyPage(u)
+      const kind = only ? 'own' : Number(new URL(u, 'http://stub').searchParams.get('limit')) === HEAD_LIMIT ? 'head' : 'full'
+      for (const j of page.items) {
+        const e = RUN_ENTRY.get(j.id)
+        if (e && j.id === runIdOf(e)) answeredBy.set(e.id, (answeredBy.get(e.id) ?? new Set()).add(kind))
+      }
       return page.status === 200 ? res(200, { items: page.items }) : res(page.status, { message: 'bad filter' })
     }
     const byId = /\/search\/jobs\/([^/?]+)$/.exec(u)
@@ -579,14 +589,23 @@ describe('jobs each tab submits in Snapshot mode, opened and scrolled', () => {
       }
 
       // WHICH HISTORY PAGE ANSWERED. Every hourly entry this tab read as an
-      // artifact was found on the page the stub put it on: the head page for a
-      // leader (no page of its own asked for), its own filtered page for a
-      // laggard. A stub that ignored `limit` would hand every entry to the head.
+      // artifact had its newest run IN THE RESPONSE of the page the stub put it
+      // on: the head page for a leader (and no page of its own asked for), its
+      // own filtered page for a laggard. Asking is not answering: a filtered
+      // page that lost its `type=='scheduled'` clause is still requested, comes
+      // back empty (the endpoint hides scheduled runs), and status.ts falls
+      // through to the full page — so the run is still found, the panel still
+      // served, and only this check sees that the small page never worked. A
+      // stub that ignored `limit` would hand every entry to the head.
       const read = new Set(artifactReads)
       for (const e of HOURLY) {
         if (!read.has(e.id)) continue
-        expect(ownPages.includes(e.id), `${e.id}: ${LAGGARDS.has(e.id) ? 'laggard read without its own page' : 'leader missed on the head page'}`)
-          .toBe(LAGGARDS.has(e.id))
+        const want = LAGGARDS.has(e.id) ? 'own' : 'head'
+        expect(
+          answeredBy.get(e.id)?.has(want) ?? false,
+          `${e.id}: newest run not answered by ${want === 'own' ? 'its own filtered page' : 'the head page'} (answered by: ${[...(answeredBy.get(e.id) ?? [])].join(', ') || 'nothing'})`,
+        ).toBe(true)
+        if (want === 'head') expect(ownPages.includes(e.id), `${e.id}: a leader asked for its own page`).toBe(false)
       }
     })
   }
