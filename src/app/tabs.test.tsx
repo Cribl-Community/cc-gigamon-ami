@@ -15,7 +15,7 @@ import { Suspense, act, type ComponentType } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LANDING_ROUTE, TABS } from './tabs'
-import { ChunkLoadError, lazyTab } from './lazyTab'
+import { ChunkLoadError, lazyTab, type LazyTab } from './lazyTab'
 import { TabLoading } from '../components/TabLoading'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { FlowMap } from '../tabs/FlowMap'
@@ -69,6 +69,16 @@ describe('the tab list', () => {
   it('splits every other tab', () => {
     for (const t of TABS.filter((x) => x.to !== LANDING_ROUTE)) {
       expect(isLazy(t.el.type), `${t.label} is in the initial chunk`).toBe(true)
+    }
+  })
+
+  it('gives every lazy tab the preload of its OWN component, and the eager one none', () => {
+    for (const t of TABS) {
+      if (t.to === LANDING_ROUTE) {
+        expect(t.preload).toBeUndefined()
+        continue
+      }
+      expect(t.preload, `${t.label} has no preload`).toBe((t.el.type as LazyTab).preload)
     }
   })
 })
@@ -128,5 +138,50 @@ describe('lazyTab', () => {
     const caught = logged.mock.calls.map((c) => c[1]).find((e) => e instanceof ChunkLoadError)
     expect(caught).toBeInstanceOf(ChunkLoadError)
     expect((caught as ChunkLoadError).cause).toBe(cause)
+  })
+
+  // A rejected import is not always a download failure: a module that throws
+  // while it evaluates rejects the same promise, and no reload fixes it. The
+  // message must not claim a cause it cannot know, and must show the real one.
+  for (const [kind, cause] of [
+    ['a network failure', new TypeError('Failed to fetch dynamically imported module: /assets/Probe-abc.js')],
+    ['a module that threw while it evaluated', new ReferenceError("Cannot access 'FINDINGS' before initialization")],
+  ] as const) {
+    it(`shows the underlying cause beneath the message for ${kind}`, async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const load = deferred<{ Probe: ComponentType }>()
+      mount(lazyTab(() => load.promise, 'Probe'))
+      await act(async () => { load.reject(cause) })
+      const alert = container.querySelector('[role="alert"]')!
+      expect(alert.textContent).toContain('This tab could not be loaded')
+      expect(alert.textContent).not.toMatch(/did not download/i)
+      expect(alert.querySelector('details code')?.textContent).toBe(`${cause.name}: ${cause.message}`)
+      expect([...alert.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Reload'])
+    })
+  }
+
+  it('preload starts the same import the tab then renders from — one load, not two', async () => {
+    let calls = 0
+    const load = deferred<{ Probe: ComponentType }>()
+    const Tab = lazyTab(() => { calls++; return load.promise }, 'Probe')
+    void Tab.preload()
+    void Tab.preload()
+    expect(calls).toBe(1)
+    mount(Tab)
+    await act(async () => { load.resolve({ Probe: () => <p id="probe">probe tab</p> }) })
+    expect(calls).toBe(1)
+    expect(container.querySelector('#probe')?.textContent).toBe('probe tab')
+  })
+
+  it('a failed preload never rejects, and is not cached: the render gets its own attempt', async () => {
+    let calls = 0
+    const Tab = lazyTab(() => {
+      calls++
+      return calls === 1 ? Promise.reject(new TypeError('blip')) : Promise.resolve({ Probe: () => <p id="probe">probe tab</p> })
+    }, 'Probe')
+    await expect(Tab.preload()).resolves.toBeUndefined()
+    await act(async () => { mount(Tab) })
+    expect(calls).toBe(2)
+    expect(container.querySelector('#probe')?.textContent).toBe('probe tab')
   })
 })

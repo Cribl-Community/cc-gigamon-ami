@@ -275,14 +275,56 @@ function Header({ tabName }: { tabName: string }) {
   )
 }
 
+/**
+ * THE PENDING TAB, AND WHY THE TAB BAR TRACKS IT ITSELF.
+ *
+ * `BrowserRouter` runs every navigation inside `startTransition`. On a first
+ * click to a lazy tab that means React keeps the old tab on screen and never
+ * shows `<TabLoading>` — correct for a fast chunk, and for a slow one nothing
+ * on screen changes until it arrives, which reads as a dead click.
+ * `useNavigation()` would answer this, but only under a data router; this app
+ * uses `BrowserRouter`. So the click itself records which tab it asked for, in
+ * an URGENT state update (the handler runs outside the router's transition),
+ * and the record is cleared the moment the router's location commits —
+ * whichever tab that turns out to be, so a superseded click can never leave a
+ * spinner behind.
+ *
+ * Preloading is the other half: hovering or focusing a link starts its chunk,
+ * so by the click it is usually in flight or done and the pending state lasts
+ * a frame.
+ */
 function TabBar() {
+  const { pathname } = useLocation()
+  const [pendingTo, setPendingTo] = useState<string | null>(null)
+  // Cleared by the commit of ANY location, not only the one asked for.
+  useEffect(() => {
+    setPendingTo(null)
+  }, [pathname])
+  const pendingLabel = TABS.find((t) => t.to === pendingTo)?.label
   return (
     <nav className="tab-bar">
-      {TABS.map((t) => (
-        <NavLink key={t.to} to={t.to} className={({ isActive }) => `tab ${isActive ? 'tab-active' : ''}`}>
-          {t.label}
-        </NavLink>
-      ))}
+      {TABS.map((t) => {
+        const pending = t.to === pendingTo
+        return (
+          <NavLink
+            key={t.to}
+            to={t.to}
+            className={({ isActive }) => `tab ${isActive ? 'tab-active' : ''} ${pending ? 'tab-pending' : ''}`}
+            aria-busy={pending || undefined}
+            onPointerEnter={t.preload}
+            onFocus={t.preload}
+            onClick={(e) => {
+              // A modified click opens a new browser tab; this page does not navigate.
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+              if (!pathname.startsWith(t.to)) setPendingTo(t.to)
+            }}
+          >
+            {t.label}
+            {pending && <span className="spinner spinner-sm" aria-hidden />}
+          </NavLink>
+        )
+      })}
+      <span className="sr-only" role="status">{pendingLabel ? `Loading ${pendingLabel}…` : ''}</span>
     </nav>
   )
 }
@@ -302,7 +344,7 @@ export default function App() {
         <main className="app-main">
           <ErrorBoundary resetKey={location.pathname}>
             {/* Inside the boundary, so a tab whose chunk fails to download
-                lands on the boundary's Reload message (app/lazyTab.tsx) rather
+                lands on the boundary's Reload message (app/lazyTab.ts) rather
                 than taking the header and tab bar down with it. */}
             <Suspense fallback={<TabLoading />}>
             <Routes>

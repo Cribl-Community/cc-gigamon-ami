@@ -2265,3 +2265,8 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .ac-left-rows { margin: 0; padding: 0 0 0 var(--gm-sp-16); display: flex; flex-direction: column; gap: var(--gm-sp-4); }
 .ac-left-rows li { font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.45; max-width: 82ch; }
 .ac-left-rows code { font-family: var(--gm-mono); color: var(--gm-fg); }
+
+/* A tab-bar link whose tab is still loading (TabBar in src/App.tsx): the label
+   plus a small spinner, because a navigation inside a transition leaves the old
+   tab on screen and the link is the only place the wait can be shown. */
+.tab-bar .tab-pending { display: inline-flex; align-items: center; gap: var(--gm-sp-6); cursor: progress; }

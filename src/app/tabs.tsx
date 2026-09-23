@@ -33,21 +33,24 @@ export interface TabDef {
   to: string
   label: string
   el: ReactElement
+  /** Starts fetching this tab's chunk (hover/focus on its link, src/App.tsx).
+   *  Absent on the eager landing tab: its code is already in the page. */
+  preload?: () => Promise<void>
 }
 
 export const TABS: readonly TabDef[] = [
-  { to: '/findings', label: 'Findings', el: <Findings /> },
-  { to: '/security', label: 'Security', el: <Security /> },
+  { to: '/findings', label: 'Findings', el: <Findings />, preload: Findings.preload },
+  { to: '/security', label: 'Security', el: <Security />, preload: Security.preload },
   { to: LANDING_ROUTE, label: 'Flow Map', el: <FlowMap /> },
-  { to: '/capacity', label: 'Capacity & Top Talkers', el: <CapacityTopTalkers /> },
-  { to: '/tcp-health', label: 'TCP Health', el: <TcpHealth /> },
-  { to: '/dns-health', label: 'DNS Health', el: <DnsHealth /> },
-  { to: '/web-api', label: 'Web & API', el: <WebApiHealth /> },
-  { to: '/tls-posture', label: 'TLS Posture', el: <TlsPosture /> },
-  { to: '/pqc', label: 'PQC Readiness', el: <PqcReadiness /> },
-  { to: '/ai-saas', label: 'Shadow AI', el: <ShadowAi /> },
-  { to: '/data-flow', label: 'Data Flow', el: <DataFlow /> },
-  { to: '/fields', label: 'Field Explorer', el: <FieldExplorer /> },
-  { to: '/reference', label: 'AMI Reference', el: <AmiReference /> },
-  { to: '/setup', label: 'Guided Setup', el: <GuidedSetup /> },
+  { to: '/capacity', label: 'Capacity & Top Talkers', el: <CapacityTopTalkers />, preload: CapacityTopTalkers.preload },
+  { to: '/tcp-health', label: 'TCP Health', el: <TcpHealth />, preload: TcpHealth.preload },
+  { to: '/dns-health', label: 'DNS Health', el: <DnsHealth />, preload: DnsHealth.preload },
+  { to: '/web-api', label: 'Web & API', el: <WebApiHealth />, preload: WebApiHealth.preload },
+  { to: '/tls-posture', label: 'TLS Posture', el: <TlsPosture />, preload: TlsPosture.preload },
+  { to: '/pqc', label: 'PQC Readiness', el: <PqcReadiness />, preload: PqcReadiness.preload },
+  { to: '/ai-saas', label: 'Shadow AI', el: <ShadowAi />, preload: ShadowAi.preload },
+  { to: '/data-flow', label: 'Data Flow', el: <DataFlow />, preload: DataFlow.preload },
+  { to: '/fields', label: 'Field Explorer', el: <FieldExplorer />, preload: FieldExplorer.preload },
+  { to: '/reference', label: 'AMI Reference', el: <AmiReference />, preload: AmiReference.preload },
+  { to: '/setup', label: 'Guided Setup', el: <GuidedSetup />, preload: GuidedSetup.preload },
 ]
