@@ -130,7 +130,11 @@ const plural = (n: number, one: string, many: string) => `${n.toLocaleString('en
  *    pinned hook on `manualRefreshNonce`, and `useCostSlot(enabled && !pinned)`
  *    keeps it out of the tick cost entirely. Counting the hooks that still
  *    re-run on a tick, Data Flow is now 2 — the second-cheapest tab in the app.
- *    Web & API is the worst at 6, Flow Map 5, Capacity and TCP Health 4.
+ *    Web & API is the worst at 6, Capacity, Flow Map and TCP Health 4.
+ *    (Flow Map read 5 here until 2026-09-22; it has four `useSearch` hooks, two
+ *    of which only mount once a service is selected. These are TICK counts —
+ *    every mounted hook re-runs — so they are deliberately larger than the
+ *    on-MOUNT counts in components/nearViewport.ts, which are 3 / 2 / 1.)
  *
  * 2. THERE IS NO LONGER A THRESHOLD TO CROSS. A-D29 removed 15 s and 30 s from
  *    the menu, so AUTO_REFRESH is `Off` and `1m` and nothing else. "The

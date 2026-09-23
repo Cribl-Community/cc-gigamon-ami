@@ -2,12 +2,19 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MEASUREMENT THIS EXISTS FOR. Concurrent search jobs from one user are
-// admitted about 1.6 s apart. Web & API fires six queries the moment it mounts,
-// Flow Map five, TCP Health four — so Web & API's last query does not BEGIN
-// until roughly eight seconds in, and nothing about how fast a query runs
+// admitted about 1.6 s apart. Web & API USED TO FIRE six queries the moment it
+// mounted, Flow Map four, TCP Health four — so Web & API's last query did not
+// BEGIN until roughly eight seconds in, and nothing about how fast a query runs
 // touches that. The only lever is firing fewer at once, and the cheapest way to
 // fire fewer is to notice that half of them are drawing charts below the fold
 // that the reader has not scrolled to.
+//
+// COUNTED AGAIN 2026-09-22, and the past tense above is the point: on mount it
+// is now Web & API 3, Flow Map 2, TCP Health 1. This file is why. The sentence
+// stood in the present tense long after it stopped being true, which is the
+// drift this repo runs a freeze test to prevent elsewhere — a number in prose
+// beside behaviour that changes will always eventually lie. Web & API still
+// reaches six SCROLLED, which is where the eight seconds is still real.
 //
 // So a deferred panel keeps its place in the layout, keeps its title and its ⓘ,
 // and shows a spinner (`useSearch({ deferred })` reports `loading`, not "No
