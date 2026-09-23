@@ -19,7 +19,7 @@
 // The fixtures are the `output=short` shape cribl/jobWatchdog.ts already parses
 // against this workspace, trimmed to the fields this module reads.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
 import { JOBS_PATH as WATCHDOG_JOBS_PATH } from '../jobWatchdog'
@@ -37,7 +37,16 @@ import {
   runMeta,
   snapshotTimeline,
   timelineHorizon,
+  forgetRunHistory,
 } from './status'
+
+beforeEach(() => {
+  // The run-history page is cached module-wide so sixteen callers share one
+  // request. A cache that outlived a test would hand the next one the previous
+  // test's stubbed history, so it is dropped here — the same discipline as
+  // resetAccelKeyMemo and resetSnapshotCensus.
+  forgetRunHistory()
+})
 
 const LAKE = 'gno_lake_30d_c1d'
 const SAMPLE = 'gno_sample_2m_c1h'
@@ -530,3 +539,78 @@ describe('the readable past', () => {
 //     is there precisely because that cannot be asserted from here.
 //   * Anything about whether Cribl accepts the metrics path for a scheduled job
 //     rather than an interactive one.
+
+// ── One request, however many entries ask for it ────────────────────────────
+//
+// `historyQuery()` takes no argument, so every read of the run history is the
+// BYTE-IDENTICAL request and which entry a row belongs to is decided in
+// `isRunOf`. Before 2026-09-22 `snapshotTimeline` fanned that out once per
+// manifest entry — sixteen copies of one answer, ~113 kB each, repeated on every
+// refresh tick, plus one per accelerated panel from `atMoment` and two more from
+// Guided Setup.
+//
+// These are REQUEST-COUNT assertions, which is the only kind that can hold this.
+// Nothing about the response shape changed, so every existing test here passed
+// throughout the regression and would pass through its return.
+describe('the shared history page', () => {
+  const historyGets = (sent: Sent[]) => sent.filter((s) => s.url.includes('/search/jobs?')).length
+
+  it('reads the history ONCE for the whole manifest, not once per entry', async () => {
+    const sent = stub([{ match: '/search/jobs?', body: { items: [run()] } }])
+    await snapshotTimeline(MANIFEST.map((e) => e.id))
+    expect(MANIFEST.length, 'this test is only meaningful with several entries').toBeGreaterThan(8)
+    expect(historyGets(sent), 'the fan-out is back').toBe(1)
+  })
+
+  it('still gives each entry exactly its own runs', async () => {
+    // The dedupe must not become "everybody gets everything". The filter is
+    // unchanged; this asserts it still runs per caller.
+    stub([{ match: '/search/jobs?', body: { items: [run({ id: `${LAKE}.${T0}.aaa` }), run({ id: `${SAMPLE}.${T0}.bbb` })] } }])
+    const timeline = await snapshotTimeline([LAKE, SAMPLE])
+    const lake = timeline.entries.find((e) => e.id === LAKE)!
+    const sample = timeline.entries.find((e) => e.id === SAMPLE)!
+    expect(lake.runs).toHaveLength(1)
+    expect(sample.runs).toHaveLength(1)
+    expect(lake.runs[0].id).toContain(LAKE)
+    expect(sample.runs[0].id).toContain(SAMPLE)
+  })
+
+  it('shares one in-flight read between callers that arrive together', async () => {
+    const sent = stub([{ match: '/search/jobs?', body: { items: [run()] } }])
+    await Promise.all([listRuns(LAKE), listRuns(SAMPLE), listRuns(LAKE)])
+    expect(historyGets(sent)).toBe(1)
+  })
+
+  it('goes back to the network once the page is forgotten', async () => {
+    const sent = stub([{ match: '/search/jobs?', body: { items: [run()] } }])
+    await listRuns(LAKE)
+    forgetRunHistory()
+    await listRuns(LAKE)
+    expect(historyGets(sent), 'a human pressing refresh must not be answered from cache').toBe(2)
+  })
+
+  it('does NOT cache a failure — the next caller gets a fresh attempt', async () => {
+    // A refusal handed to fifteen more callers for fifteen seconds turns one
+    // bad moment into a page of identical errors, and hides recovery.
+    const sent = stub([{ match: '/search/jobs?', status: 503, body: { message: 'nope' } }])
+    const first = await listRuns(LAKE)
+    expect(first.error).not.toBeNull()
+    await listRuns(LAKE)
+    expect(historyGets(sent)).toBe(2)
+  })
+
+  it('one caller aborting does not poison the read the others share', async () => {
+    // THE HAZARD THIS DESIGN EXISTS TO AVOID. Sixteen callers each hold their
+    // own AbortSignal; if the shared request carried one of them, the first to
+    // abort would reject the promise the other fifteen are waiting on and turn
+    // one navigation away into fifteen "could not be read" rows. So the shared
+    // fetch carries NO signal and each caller checks its own afterwards.
+    stub([{ match: '/search/jobs?', body: { items: [run({ id: `${LAKE}.${T0}.aaa` })] } }])
+    const ac = new AbortController()
+    ac.abort()
+    const [aborted, healthy] = await Promise.all([listRuns(LAKE, { signal: ac.signal }), listRuns(LAKE)])
+    expect(aborted.runs, 'the aborted caller should stop waiting').toHaveLength(0)
+    expect(healthy.runs, 'the other caller was poisoned by the first one aborting').toHaveLength(1)
+    expect(healthy.error).toBeNull()
+  })
+})

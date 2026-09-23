@@ -24,6 +24,7 @@
 //     telemetry.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { forgetRunHistory } from './status'
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import type { FieldSummary, Row } from '../search'
 import { accelEntry, MANIFEST } from './manifest'
@@ -211,6 +212,11 @@ const vtSubmits = (s: Submitted[]) => s.filter((x) => x.query.includes('$vt_resu
 const vtKeys = (s: Submitted[]) => vtSubmits(s).map((x) => keyOf(x.query))
 
 beforeEach(() => {
+  // The run-history page is cached module-wide so sixteen callers share one
+  // request. A cache that outlived a test would hand the next one the previous
+  // test's stubbed history, so it is dropped here — the same discipline as
+  // resetAccelKeyMemo and resetSnapshotCensus.
+  forgetRunHistory()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   // The name-binding notice, which fires once per entry per session precisely
   // because the memo below is what stops it repeating.

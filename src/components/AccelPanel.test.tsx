@@ -43,6 +43,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { forgetRunHistory } from '../cribl/accel/status'
 import { resetDenials } from '../cribl/authz'
 import { accelEntry, accelSavedSearch, MANIFEST } from '../cribl/accel/manifest'
 import { applyPlan, readAccelState, removalPlan, type AccelRow } from '../cribl/accel/provision'
@@ -256,6 +257,11 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  // The run-history page is cached module-wide so sixteen callers share one
+  // request. A cache that outlived a test would hand the next one the previous
+  // test's stubbed history, so it is dropped here — the same discipline as
+  // resetAccelKeyMemo and resetSnapshotCensus.
+  forgetRunHistory()
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   // user.ts memoises the platform lookup for the life of the module, so the
   // signed-in identity is one value for this whole file; fixtures pick a side

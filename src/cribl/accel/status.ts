@@ -429,28 +429,109 @@ interface ListedRuns {
  * once already, where a watchdog poll's 403 marked a provisioning POST that had
  * succeeded as denied.
  */
-export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<ListedRuns> {
+/**
+ * The one history page, shared by every caller that needs it.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ * `historyQuery()` takes no argument: every read of the run history is the
+ * BYTE-IDENTICAL request, and which entry a row belongs to is decided here by
+ * `isRunOf`. So the sixteen-entry fan-out in `snapshotTimeline` was sixteen
+ * copies of one answer — measured at ~113 kB each, repeated on every refresh
+ * tick, plus one per accelerated panel from `atMoment` and two more from
+ * Guided Setup. The comment that used to justify the fan-out cited a
+ * `correlationId` this module had already removed.
+ *
+ * ── THE ABORT HAZARD, WHICH IS WHY THE SIGNAL IS NOT PASSED ON ──────────────
+ * A shared promise must not carry any one caller's `AbortSignal`. Sixteen
+ * callers each hold their own, and the first to abort would reject the promise
+ * the other fifteen are waiting on — turning one caller navigating away into
+ * fifteen spurious "could not be read" rows. So the shared fetch runs with NO
+ * signal, and each caller checks its own afterwards: an aborted caller stops
+ * waiting, and everybody else still gets the answer.
+ *
+ * This is a config-plane GET that bills nothing, so letting one finish
+ * unattended costs a request nobody reads, which is strictly cheaper than the
+ * fifteen it replaces.
+ */
+const PAGE_TTL_MS = 15_000
+
+interface HistoryPage {
+  at: number
+  result: ListedRunsRaw
+}
+
+/** The page before it is filtered to one entry. */
+interface ListedRunsRaw {
+  items: ShortJob[]
+  denied: boolean
+  error: string | null
+}
+
+let page: HistoryPage | null = null
+let inFlight: Promise<ListedRunsRaw> | null = null
+
+/**
+ * Drop the cached page so the next read goes to the network.
+ *
+ * Called when a HUMAN asks for fresh data — the refresh control and Guided
+ * Setup's Re-check. A TTL alone would let a deliberate refresh answer from
+ * cache, which is the one case where the staleness is visible and unwelcome.
+ */
+export function forgetRunHistory(): void {
+  page = null
+  inFlight = null
+}
+
+async function fetchHistoryPage(): Promise<ListedRunsRaw> {
   let r
   try {
-    r = await capi('GET', `${JOBS_PATH}?${historyQuery()}`, undefined, {
-      signal: opts.signal,
-      background: true,
-    })
+    // NO SIGNAL — see the block above. This request outlives any one caller.
+    r = await capi('GET', `${JOBS_PATH}?${historyQuery()}`, undefined, { background: true })
   } catch (err) {
-    return { runs: [], denied: false, error: err instanceof Error ? err.message : 'The run history could not be read.' }
+    return { items: [], denied: false, error: err instanceof Error ? err.message : 'The run history could not be read.' }
   }
   if (r.status === 401 || r.status === 403) {
     return {
-      runs: [],
+      items: [],
       denied: true,
       error: 'This account cannot list Cribl Search jobs, so this schedule’s runs cannot be checked.',
     }
   }
-  if (r.status !== 200) return { runs: [], denied: false, error: `Cribl answered ${r.status} — ${errText(r)}` }
+  if (r.status !== 200) return { items: [], denied: false, error: `Cribl answered ${r.status} — ${errText(r)}` }
   const items = (r.body as { items?: unknown } | null)?.items
   if (!Array.isArray(items)) {
-    return { runs: [], denied: false, error: 'Cribl returned a run list this app could not read.' }
+    return { items: [], denied: false, error: 'Cribl returned a run list this app could not read.' }
   }
+  return { items: items as ShortJob[], denied: false, error: null }
+}
+
+/** The page, from cache, from a read already in flight, or from the network. */
+async function historyPage(now: number = Date.now()): Promise<ListedRunsRaw> {
+  if (page !== null && now - page.at < PAGE_TTL_MS) return page.result
+  if (inFlight !== null) return inFlight
+  // A FAILURE IS NOT CACHED. A refusal or a broken read must not be handed to
+  // fifteen more callers for the next fifteen seconds, and the next caller
+  // deserves a fresh attempt rather than a stored error.
+  const p = fetchHistoryPage().then((result) => {
+    if (result.error === null) page = { at: Date.now(), result }
+    inFlight = null
+    return result
+  })
+  inFlight = p
+  return p
+}
+
+export async function listRuns(id: AccelId, opts: StatusOptions = {}): Promise<ListedRuns> {
+  const raw = await historyPage()
+  // The caller's own signal, checked here rather than passed to the shared
+  // request. Aborting stops this caller waiting; it does not cancel the read
+  // the other callers are sharing.
+  if (opts.signal?.aborted) {
+    return { runs: [], denied: false, error: 'The run history read was cancelled.' }
+  }
+  if (raw.denied) return { runs: [], denied: true, error: raw.error }
+  if (raw.error !== null) return { runs: [], denied: false, error: raw.error }
+  const items = raw.items
   // Filtered HERE rather than by the request, because no server-side parameter
   // selects a saved search's runs — see isRunOf. HISTORY_LIMIT rows of the
   // workspace's whole job history are read and most are discarded; on a busy

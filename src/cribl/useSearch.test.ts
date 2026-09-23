@@ -30,6 +30,7 @@
 import { act, createElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { forgetRunHistory } from './accel/status'
 import { DashboardProvider, TIME_RANGES, useDashboard, type TimeRange } from '../app/DashboardContext'
 import type { Row } from './search'
 import { NOTES } from './accel/read'
@@ -138,6 +139,11 @@ let seen: UseSearchState | null = null
 let setRange: ((r: TimeRange) => void) | null = null
 
 beforeEach(() => {
+  // The run-history page is cached module-wide so sixteen callers share one
+  // request. A cache that outlived a test would hand the next one the previous
+  // test's stubbed history, so it is dropped here — the same discipline as
+  // resetAccelKeyMemo and resetSnapshotCensus.
+  forgetRunHistory()
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   seen = null
