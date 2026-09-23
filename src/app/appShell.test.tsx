@@ -71,6 +71,8 @@ vi.mock('./tabs', async () => {
       probe('Pending'),
       probe('Hover'),
       probe('Focus'),
+      probe('Superseded'),
+      probe('ClickFail'),
     ],
   }
 })
@@ -111,7 +113,7 @@ const link = (label: string) =>
 const main = () => container.querySelector('main.app-main')!
 const shellIntact = () => {
   expect(container.querySelector('header.app-header h1')?.textContent).toContain('Gigamon Network Observability')
-  expect(container.querySelectorAll('nav.tab-bar a').length).toBe(6)
+  expect(container.querySelectorAll('nav.tab-bar a').length).toBe(8)
 }
 
 describe('the App shell around a lazy tab', () => {
@@ -177,5 +179,35 @@ describe('the tab bar', () => {
     expect(link('Pending').getAttribute('aria-busy')).toBeNull()
     expect(link('Pending').querySelector('.spinner')).toBeNull()
     expect(container.querySelector('nav.tab-bar [role="status"]')?.textContent).toBe('')
+  })
+
+  it('clears the indicator when the click is superseded by a click on the tab already open', async () => {
+    // The second navigation lands on the SAME pathname, so a clear keyed on
+    // the pathname never ran: the first tab kept its spinner, aria-busy and
+    // "Loading…" status indefinitely — even after its chunk arrived, since
+    // nothing navigates to it any more. Reproduced by review, 2026-09-23.
+    mountAt('/home')
+    await act(async () => { link('Superseded').click() })
+    expect(link('Superseded').getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => { link('Home').click() })
+    expect(link('Superseded').getAttribute('aria-busy')).toBeNull()
+    expect(container.querySelector('nav.tab-bar [role="status"]')?.textContent).toBe('')
+
+    await act(async () => { h.get('Superseded').resolve({ Superseded: () => <p id="superseded">x</p> }) })
+    expect(link('Superseded').getAttribute('aria-busy')).toBeNull()
+    expect(main().querySelector('#home')).not.toBeNull()
+  })
+
+  it('clears the indicator and shows the error when a clicked tab’s chunk fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    mountAt('/home')
+    await act(async () => { link('ClickFail').click() })
+    expect(link('ClickFail').getAttribute('aria-busy')).toBe('true')
+
+    await act(async () => { h.get('ClickFail').reject(new TypeError('Failed to fetch dynamically imported module')) })
+    expect(link('ClickFail').getAttribute('aria-busy')).toBeNull()
+    expect(main().querySelector('[role="alert"]')?.textContent).toContain('This tab could not be loaded')
+    shellIntact()
   })
 })

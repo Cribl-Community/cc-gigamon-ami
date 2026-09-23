@@ -285,21 +285,24 @@ function Header({ tabName }: { tabName: string }) {
  * `useNavigation()` would answer this, but only under a data router; this app
  * uses `BrowserRouter`. So the click itself records which tab it asked for, in
  * an URGENT state update (the handler runs outside the router's transition),
- * and the record is cleared the moment the router's location commits —
+ * and the record is cleared the moment the router commits a NEW LOCATION —
  * whichever tab that turns out to be, so a superseded click can never leave a
- * spinner behind.
+ * spinner behind. Keyed on `location.key`, not the pathname: a click on the
+ * tab already open supersedes the pending one without changing the pathname,
+ * and a pathname-keyed clear left the first tab's spinner up for good.
  *
  * Preloading is the other half: hovering or focusing a link starts its chunk,
  * so by the click it is usually in flight or done and the pending state lasts
  * a frame.
  */
 function TabBar() {
-  const { pathname } = useLocation()
+  const { pathname, key } = useLocation()
   const [pendingTo, setPendingTo] = useState<string | null>(null)
-  // Cleared by the commit of ANY location, not only the one asked for.
+  // Cleared by the commit of ANY navigation, not only the one asked for —
+  // including one back to the same pathname, which gets a new key.
   useEffect(() => {
     setPendingTo(null)
-  }, [pathname])
+  }, [key])
   const pendingLabel = TABS.find((t) => t.to === pendingTo)?.label
   return (
     <nav className="tab-bar">
@@ -343,9 +346,12 @@ export default function App() {
         <AppBanners />
         <main className="app-main">
           <ErrorBoundary resetKey={location.pathname}>
-            {/* Inside the boundary, so a tab whose chunk fails to download
-                lands on the boundary's Reload message (app/lazyTab.ts) rather
-                than taking the header and tab bar down with it. */}
+            {/* Both inside <main>, so a tab whose chunk fails to load lands
+                on the boundary's Reload message (app/lazyTab.ts) with the
+                header and tab bar still standing — that is what
+                appShell.test.tsx holds. Their order relative to each other
+                changes nothing observable: a rejected lazy import throws
+                past Suspense to the nearest boundary either way. */}
             <Suspense fallback={<TabLoading />}>
             <Routes>
               <Route path="/" element={<Navigate to={LANDING_ROUTE} replace />} />
