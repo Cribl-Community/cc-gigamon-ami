@@ -21,9 +21,9 @@ import {
   STORE_WORDS,
   WARMUP_RUNS,
   compare,
-  costSentence,
-  estimateCost,
   estimateDurationMs,
+  runCount,
+  runSentence,
   planRuns,
   summarise,
   type BenchTarget,
@@ -36,13 +36,12 @@ const target = (over: Partial<BenchTarget> = {}): BenchTarget => ({
   dataset: 'gigamon_ami',
   label: STORE_WORDS['lake-json'],
   available: true,
-  billing: 'per-query',
   ...over,
 })
 
 const JSON_T = target()
 const PQ_T = target({ id: 'pq', kind: 'lake-parquet', dataset: 'gigamon_ami_pq', label: STORE_WORDS['lake-parquet'] })
-const LH_T = target({ id: 'lh', kind: 'lakehouse', dataset: 'main', label: STORE_WORDS.lakehouse, billing: 'sunk' })
+const LH_T = target({ id: 'lh', kind: 'lakehouse', dataset: 'main', label: STORE_WORDS.lakehouse })
 
 const run = (over: Partial<RunResult> & { targetId: string }): RunResult => ({
   warmup: false,
@@ -183,36 +182,55 @@ describe('the verdict, and the three times it refuses to give one', () => {
   })
 })
 
-describe('what it costs, said rather than gated', () => {
-  it('bills the Lake runs and not the engine runs', () => {
-    const e = estimateCost([JSON_T, LH_T], 127)
+describe('what the button says it will do', () => {
+  it('counts the runs, warm-ups included, one store or three', () => {
     const per = WARMUP_RUNS + MEASURED_RUNS
-    expect(e.runs).toBe(2 * per)
-    expect(e.meteredRuns).toBe(per)
-    expect(e.sunkRuns).toBe(per)
-    expect(e.cpuSeconds).toBe(per * 127)
+    expect(runCount([JSON_T])).toBe(per)
+    expect(runCount([JSON_T, PQ_T, LH_T])).toBe(3 * per)
+    expect(runCount([target({ available: false })])).toBe(0)
   })
 
-  it('charges nothing at all for an engine-only benchmark', () => {
-    const e = estimateCost([LH_T], 127)
-    expect(e.cpuSeconds).toBe(0)
-    expect(costSentence([LH_T], 127)).toContain('cost nothing beyond the tier')
+  it('describes the work, and quotes no cost at all', () => {
+    // Cost is not a design constraint here — the owner's call, 2026-09-22 — so
+    // the button says what it will DO. A credit figure in front of a
+    // measurement is asking the reader to weigh something they have already
+    // decided not to weigh, and a benchmark nobody runs measures nothing.
+    const s = runSentence([JSON_T, LH_T])
+    expect(s).toContain('warm-up')
+    expect(s).toContain('one at a time')
+    for (const word of ['credit', 'CPU-second', 'bill', 'cost', 'paid']) {
+      expect(s.toLowerCase(), `the run sentence mentions ${word}`).not.toContain(word.toLowerCase())
+    }
   })
 
-  it('says which lane is metered when both are present', () => {
-    const s = costSentence([JSON_T, LH_T], 127)
-    expect(s).toContain('bill about')
-    expect(s).toContain('already paid for')
-  })
-
-  it('says there is nothing to run rather than quoting zero credits', () => {
-    expect(costSentence([target({ available: false })], 127)).toBe('No store is configured, so there is nothing to run.')
+  it('says there is nothing to run rather than describing zero searches', () => {
+    expect(runSentence([target({ available: false })])).toBe('No store is configured, so there is nothing to run.')
   })
 
   it('budgets an admission gap between sequential runs', () => {
     // Runs are sequential precisely to avoid the ~1.6 s stagger, so the wall
     // time is runs x (query + gap) rather than the longest single query.
-    const ms = estimateDurationMs([JSON_T], 1000)
-    expect(ms).toBe((WARMUP_RUNS + MEASURED_RUNS) * (1000 + ADMISSION_STAGGER_MS))
+    expect(estimateDurationMs([JSON_T], 1000)).toBe((WARMUP_RUNS + MEASURED_RUNS) * (1000 + ADMISSION_STAGGER_MS))
+  })
+})
+
+describe('CPU-seconds as WORK, not as a bill', () => {
+  it('is still measured and still summarised', () => {
+    // 127 CPU-s against 0.2 for the same answer is 635x less work. That is an
+    // efficiency fact whoever pays for it, and it is the second axis of this
+    // comparison: a store can win on wall-clock while doing far more work to
+    // get there, and that gap predicts behaviour under load.
+    const s = summarise(JSON_T, [
+      run({ targetId: 'json', cpuSeconds: 120 }),
+      run({ targetId: 'json', cpuSeconds: 127 }),
+      run({ targetId: 'json', cpuSeconds: 134 }),
+    ])
+    expect(s.cpuSeconds).toBe(127)
+  })
+
+  it('answers null rather than zero when the meter could not be read', () => {
+    // Zero work is a claim. "We could not tell" is a different one, and a
+    // benchmark that reported the first for the second would flatter a store.
+    expect(summarise(JSON_T, [run({ targetId: 'json', cpuSeconds: null })]).cpuSeconds).toBeNull()
   })
 })

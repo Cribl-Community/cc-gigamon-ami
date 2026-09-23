@@ -59,20 +59,6 @@ export interface BenchTarget {
   available: boolean
   /** Why it is unavailable, when it is. Never invented; the caller supplies it. */
   absentNote?: string
-  /**
-   * Whether running a query here costs anything at the margin.
-   *
-   * NOT DECORATION — it changes how the whole comparison should be read. A
-   * Lakehouse engine is provisioned at a tier size and runs continuously, so its
-   * queries are SUNK: the thousandth costs what the first did, which is nothing
-   * extra. A Cribl Lake query bills billable CPU-seconds through Search every
-   * time; one live 15-minute scan has measured 127 on this workspace.
-   *
-   * So a three-way benchmark compares one store that is free at the margin
-   * against two that are not, and "which was fastest" is only half the answer.
-   * The panel shows both columns rather than collapsing them into a score.
-   */
-  billing: 'per-query' | 'sunk'
 }
 
 export const STORE_WORDS: Readonly<Record<StoreKind, string>> = Object.freeze({
@@ -126,7 +112,12 @@ export interface RunResult {
   serverMs: number | null
   /** Submit to rendered, measured in the browser. Includes this app's overhead. */
   clientMs: number
-  /** Billable CPU-seconds, from the job's metrics. Null when not readable. */
+  /**
+   * The work the store did, from the job's own metrics — Cribl calls the field
+   * `billableCPUSeconds`, which is where the name comes from, but it is read
+   * here as WORK rather than as money. Null when the meter could not be read,
+   * which is not the same as zero and must not be rendered as it.
+   */
   cpuSeconds: number | null
   /** Rows returned. The correctness signal — see `compare`. */
   rows: number | null
@@ -230,64 +221,39 @@ export function compare(summaries: readonly TargetSummary[]): Comparison {
   return { summaries, fastest, noWinnerBecause, disagree, speedup }
 }
 
-// ── What it costs, said plainly rather than gated ──────────────────────────
+// ── How long it takes ────────────────────────────────────────────
 //
-// There is NO confirmation in front of this. The owner's call, 2026-09-22: the
-// engine tier is a sunk cost the user has already chosen, so the number of
-// queries against it does not matter, and a benchmark nobody can run without
-// clicking through a dialog is a benchmark nobody runs.
+// NO COST ESTIMATE, NO CREDIT FIGURE, NO CONFIRMATION. The owner's call,
+// 2026-09-22: cost is not a design constraint here. A benchmark that made
+// somebody read a credit figure before pressing a button would be asking them
+// to weigh something they have already decided not to weigh, and a benchmark
+// nobody runs measures nothing.
 //
-// The cost line stays, because two of the three stores DO bill per query and a
-// panel that showed a three-way race without saying which lane is metered would
-// be quietly misleading. It informs; it does not block.
+// CPU-SECONDS STAY, RE-FRAMED FROM BILL TO WORK. They are still measured per
+// run and still reported beside the timings, because 127 CPU-seconds against
+// 0.2 for the same answer is 635x less WORK, and that is an efficiency fact
+// whoever happens to pay for it. It is the second axis of this comparison: a
+// store can win on wall-clock while doing far more work to get there, and that
+// gap predicts how it behaves under load in a way one timing cannot.
 
-export const CPU_SECONDS_PER_CREDIT = 3600
-
-export interface CostEstimate {
-  runs: number
-  /** Runs against stores that bill per query. */
-  meteredRuns: number
-  /** Runs against a store whose compute is already paid for. */
-  sunkRuns: number
-  cpuSeconds: number
-  credits: number
-}
-
-export function estimateCost(targets: readonly BenchTarget[], cpuSecondsPerRun: number): CostEstimate {
-  const live = targets.filter((t) => t.available)
-  const per = WARMUP_RUNS + MEASURED_RUNS
-  const metered = live.filter((t) => t.billing === 'per-query').length
-  const sunk = live.length - metered
-  const cpuSeconds = metered * per * cpuSecondsPerRun
-  return {
-    runs: live.length * per,
-    meteredRuns: metered * per,
-    sunkRuns: sunk * per,
-    cpuSeconds,
-    credits: Number((cpuSeconds / CPU_SECONDS_PER_CREDIT).toFixed(2)),
-  }
-}
-
-/** The line the panel prints under the button. Never a bare number. */
-export function costSentence(targets: readonly BenchTarget[], cpuSecondsPerRun: number): string {
-  const { runs, meteredRuns, sunkRuns, cpuSeconds, credits } = estimateCost(targets, cpuSecondsPerRun)
-  if (runs === 0) return 'No store is configured, so there is nothing to run.'
-
-  const shape = `${runs} searches — ${WARMUP_RUNS} warm-up and ${MEASURED_RUNS} measured per store, run one at a time.`
-  if (meteredRuns === 0) {
-    return `${shape} All of them run on an engine you have already provisioned, so they cost nothing beyond the tier you are paying for.`
-  }
-  const metered =
-    `${meteredRuns} of them read Cribl Lake through Search and bill about ${Math.round(cpuSeconds)} ` +
-    `billable CPU-seconds, roughly ${credits} credits, estimated from ${cpuSecondsPerRun} a run measured here.`
-  if (sunkRuns === 0) return `${shape} ${metered}`
-  return `${shape} ${metered} The other ${sunkRuns} run on an engine whose compute is already paid for.`
+/** How many searches a full benchmark submits. */
+export function runCount(targets: readonly BenchTarget[]): number {
+  return targets.filter((t) => t.available).length * (WARMUP_RUNS + MEASURED_RUNS)
 }
 
 /** Roughly how long the whole thing takes, so the button can say so. */
 export function estimateDurationMs(targets: readonly BenchTarget[], msPerRun: number): number {
-  const { runs } = estimateCost(targets, 0)
   // Sequential, plus one admission gap between runs. No reuse gap: every run is
   // submitted with reuse off, so none of them waits one out.
-  return runs * (msPerRun + ADMISSION_STAGGER_MS)
+  return runCount(targets) * (msPerRun + ADMISSION_STAGGER_MS)
+}
+
+/** The line under the button: what it will DO, not what it will cost. */
+export function runSentence(targets: readonly BenchTarget[]): string {
+  const live = targets.filter((t) => t.available).length
+  if (live === 0) return 'No store is configured, so there is nothing to run.'
+  return (
+    `${runCount(targets)} searches — ${WARMUP_RUNS} warm-up and ${MEASURED_RUNS} measured against ` +
+    `${live === 1 ? 'one store' : `${live} stores`}, run one at a time so they cannot queue behind each other.`
+  )
 }
