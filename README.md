@@ -235,6 +235,29 @@ git tag -d v1.0.17
 git push origin :refs/tags/v1.0.17
 ```
 
+### Pack releases (the onboarding pack, not the app)
+
+Guided Setup will install a Cribl Stream pack, `cc-network-gigamon-ami`, whose source is text under
+[`packs/cc-network-gigamon-ami/`](./packs/cc-network-gigamon-ami/). Its version is in that
+directory's `package.json` and is independent of the app's. No `.crbl` is ever committed.
+
+- A **`gigamon-pack-v<X.Y.Z>`** tag runs
+  [`.github/workflows/pack-release.yml`](./.github/workflows/pack-release.yml). It validates and
+  builds the `.crbl`, then attaches it to a GitHub release **that is never marked Latest**, so
+  `releases/latest` above still means the app.
+- A pack release never packages the app, never touches a `v*` tag or `latest`, and never reaches
+  the Packs Dispensary.
+- **Never start a pack tag with `v`**: `release.yml` would publish it as the app.
+- A published pack asset is never replaced. A fix is a new pack version.
+- The app installs the version pinned by `PACK_VERSION` in `src/cribl/pack.ts`. Bumping that
+  constant, in a normal PR, is how the app ships a pack update.
+
+```bash
+npm run pack:samples   # regenerate the synthetic samples and default/samples.yml
+npm run pack:check     # the samples reproduce, and the pack validates (CI runs this)
+npm run pack:build     # write build/packs/cc-network-gigamon-ami-<version>.crbl
+```
+
 ## Authors
 
 - **[jpederson@cribl.io](mailto:jpederson@cribl.io)** — original author and creator of the Gigamon AMI
