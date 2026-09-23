@@ -164,6 +164,7 @@ import {
 import { DEFAULT_STREAM_GROUP } from '../cribl/provision'
 import { loadSetupGroup } from '../cribl/setupMemory'
 import { getDoc, listKeys, type LoggedEntry } from '../cribl/kv'
+import { forgetLakeFacts } from '../cribl/lakeWindowRead'
 
 // ── Identity of the things this panel talks about ───────────────────────────
 
@@ -467,6 +468,11 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
         dataset,
         confirm: askFor<RetentionConfirmContext>((ctx) => ({ kind: 'retention', ctx })),
       })
+      // The retention IS the Lake card's window and decides its counting method
+      // (src/queries/lakeWindow.ts), so the cached read of it goes with the write:
+      // the card and Guided Setup's acceleration status must see the new value,
+      // and the status then shows the scheduled search's window as drifted.
+      forgetLakeFacts()
       await afterWrite('Retention', result)
     } finally {
       if (alive.current) setRunning(null)

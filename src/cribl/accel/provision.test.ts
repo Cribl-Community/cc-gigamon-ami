@@ -37,6 +37,7 @@
 // NOTHING HERE CREATES A REAL SAVED SEARCH. The first real Apply is a human's
 // click in Preview.
 
+import { LAKE_HELD_QUERY } from '../../queries/dataFlow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
@@ -111,6 +112,10 @@ interface WorkspaceOpts {
   /** DELETE answers 200 and the object stays — a Leader that agreed and did not
    *  do it, which is exactly what the re-read exists to catch. */
   deleteIsALie?: boolean
+  /** The Lake API's dataset list — the retention the Lake total's window is
+   *  resolved against. Absent means the list answers 404, which leaves the
+   *  manifest's default. */
+  lake?: unknown
 }
 
 function response(status: number, body: unknown) {
@@ -156,6 +161,10 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
       if (method === 'DELETE') return response(kv.delete(key) ? 200 : 404, '')
       const held = kv.get(key)
       return held === undefined ? response(404, '') : response(200, held)
+    }
+
+    if (path.endsWith('/lakes/default/datasets') && method === 'GET') {
+      return opts.lake ? response(200, opts.lake) : response(404, { message: 'no lake' })
     }
 
     if (path === SAVED) {
@@ -832,3 +841,40 @@ describe('what a confirmation is given to say', () => {
 //  • That the buttons a customer presses are the gated ones. src/cribl/authz.ts
 //    and src/components/gatedWrites.test.ts own that chain, and the controls for
 //    these writes are not in this file's reach.
+
+describe('the Lake total follows the dataset’s retention', () => {
+  // Owner's rule, 2026-09-23: the card reports what the dataset holds, so the
+  // scheduled search's window is the dataset's retention, and past what
+  // cribl_metrics keeps it counts the dataset directly.
+  const lakeList = (gigamonDays: number, metricsDays: number) => ({
+    items: [
+      { id: 'gigamon_ami', retentionPeriodInDays: gigamonDays },
+      { id: 'cribl_metrics', retentionPeriodInDays: metricsDays },
+    ],
+  })
+
+  it('reports an applied 30-day schedule as drifted once the retention is 365 days', async () => {
+    stubWorkspace({ saved: { [LAKE]: await correct(LAKE) }, lake: lakeList(365, 30) })
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('differs')
+    expect(row.differences).toContain('the window it reads')
+    expect(row.differences).toContain('the query it runs')
+  })
+
+  it('writes the 365-day window and the direct count on Apply', async () => {
+    const { calls } = stubWorkspace({ lake: lakeList(365, 30) })
+    await applyAcceleration()
+    const post = savedCalls(calls).find((c) => c.method === 'POST' && c.body?.id === LAKE)
+    const body = bodyOf(post)
+    expect(body.earliest).toBe('-365d')
+    expect(body.query).toBe(LAKE_HELD_QUERY)
+    expect(body.name).toBe('GNO Lake total 365 days')
+  })
+
+  it('sees no drift on a 30-day tenant whose schedule matches the default', async () => {
+    stubWorkspace({ saved: { [LAKE]: await correct(LAKE) }, lake: lakeList(30, 30) })
+    const state = await readAccelState()
+    expect(state.rows.find((r) => r.id === LAKE)!.state).toBe('enabled')
+  })
+})

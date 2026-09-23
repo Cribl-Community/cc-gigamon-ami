@@ -77,8 +77,10 @@ import { isDenial } from '../authz'
 import { capi, errText, type ApiResp } from '../capi'
 import { APP_VERSION } from '../config'
 import { currentUserId } from '../user'
+import { readLakeWindow } from '../lakeWindowRead'
 import {
   MANIFEST,
+  resolvedManifest,
   accelEntry,
   accelPostBody,
   accelSavedSearch,
@@ -371,9 +373,14 @@ async function readSaved(
 
 /** Every row `unreadable`, for the two cases where nothing about the workspace
  *  is known: a refused list, and a list this app could not parse. */
-function blindState(intended: AccelSavedSearch[], denied: boolean, error: string): AccelState {
+function blindState(
+  entries: readonly AccelEntry[],
+  intended: AccelSavedSearch[],
+  denied: boolean,
+  error: string,
+): AccelState {
   return {
-    rows: MANIFEST.map((entry, i) => ({
+    rows: entries.map((entry, i) => ({
       id: entry.id,
       entry,
       state: 'unreadable' as const,
@@ -402,21 +409,28 @@ function blindState(intended: AccelSavedSearch[], denied: boolean, error: string
  */
 export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
   const background = opts.background ?? true
+  // THE MANIFEST AS THIS TENANT NEEDS IT WRITTEN. The Lake total's window is
+  // the dataset's retention and its query the method that covers it
+  // (src/queries/lakeWindow.ts), so what is intended — and so what counts as drift,
+  // and what Apply writes — is resolved against the tenant, not the constant.
+  // An unreadable retention leaves the manifest's default: nothing is written
+  // on a window nobody chose.
+  const entries = resolvedManifest(await readLakeWindow())
   const [intended, recorded] = await Promise.all([
-    Promise.all(MANIFEST.map((e) => accelSavedSearch(e))),
+    Promise.all(entries.map((e) => accelSavedSearch(e))),
     loadAccelState(),
   ])
 
   const list = await capi('GET', `${SAVED_PATH}?${listQuery()}`, undefined, { background, signal: opts.signal })
   if (isDenial(list.status)) {
-    return blindState(intended, true, 'This account cannot list Cribl Search saved searches, so the scheduled searches this app owns cannot be checked.')
+    return blindState(entries, intended, true, 'This account cannot list Cribl Search saved searches, so the scheduled searches this app owns cannot be checked.')
   }
   if (!accepted(list)) {
-    return blindState(intended, false, `Cribl answered ${list.status} — ${errText(list)}`)
+    return blindState(entries, intended, false, `Cribl answered ${list.status} — ${errText(list)}`)
   }
   const items = itemsOf(list.body)
   if (!items) {
-    return blindState(intended, false, 'Cribl returned a saved-search list this app could not read.')
+    return blindState(entries, intended, false, 'Cribl returned a saved-search list this app could not read.')
   }
 
   const total = num((list.body as { totalCount?: unknown }).totalCount)
@@ -430,8 +444,8 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
   const rows: AccelRow[] = []
   let denied = false
 
-  for (let i = 0; i < MANIFEST.length; i++) {
-    const entry = MANIFEST[i]
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]
     const want = intended[i]
     let raw = byId.get(entry.id) ?? null
     let unreadable = false

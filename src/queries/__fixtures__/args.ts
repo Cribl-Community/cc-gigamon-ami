@@ -79,6 +79,12 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
     // so without this the whole tab froze no customer-facing words at all.
     // Read from STAGES itself, so editing a stage's purpose moves the snapshot.
     s: { $each: 'STAGES.map((x) => ({ label: x.id, value: x }))' } satisfies EachFixture,
+    // The Lake card's window and counting method come from the tenant's
+    // retention (src/queries/lakeWindow.ts), read at runtime. The surface is
+    // frozen on the default window; the builder itself is frozen over both of
+    // its methods through VARIANTS below, which is where each query it can
+    // return is pinned.
+    lake: { $expr: '({ window: LAKE_DEFAULT_WINDOW, storedBytes: null, storedAsOf: null, error: null })' } satisfies ExprFixture,
   },
 
   'src/tabs/FieldExplorer.tsx': {
@@ -171,6 +177,21 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
   'src/queries/findings.ts': {
     // All seventeen detections: each `filter` is what "Flows ↗" opens.
     findingFlowsQuery: { over: ['FINDINGS'] },
+  },
+
+  'src/queries/lakeWindow.ts': {
+    // Every branch of the rule, each case named for what it decides: the cheap
+    // write counters inside cribl_metrics' retention, the direct count past it,
+    // the direct count when cribl_metrics' retention is unknown, and no window
+    // at all when the dataset's own retention is unknown.
+    lakeWindow: {
+      cases:
+        "[{ label: 'retention fits cribl_metrics — write counters', args: [30, 30] }," +
+        " { label: 'retention past cribl_metrics — direct count', args: [365, 30] }," +
+        " { label: 'cribl_metrics retention unknown — direct count', args: [30, null] }," +
+        " { label: 'dataset retention unknown — no window', args: [null, 30] }]",
+    },
+    windowDays: { over: ["['-30d', '-365d', '-18m', null]"] },
   },
 
   'src/queries/pqcReadiness.ts': {

@@ -79,6 +79,7 @@
 
 import { APP_VERSION } from '../config'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY, VOLUME_AGGS, VOLUME_QUERY } from '../../queries/dataFlow'
+import { LAKE_DEFAULT_WINDOW, type LakeWindow } from '../../queries/lakeWindow'
 import { FEED_SAMPLE_QUERY, PRESENCE_QUERY } from '../../queries/fieldExplorer'
 import { KPI_AGGS as CAPACITY_KPI_AGGS, buildAppmixQuery, buildKpiQuery, buildL4Query, buildTalkersQuery } from '../../queries/capacityTopTalkers'
 import {
@@ -468,11 +469,18 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         queryId: 'data-flow-lake-total',
         what: 'Data Flow — Lake total (1 tile)',
         display: LAKE_TOTAL_QUERY,
-        reads: ['total_events', 'total_bytes'],
+        // Events only: the card's size is the Lake API's stored size, not the
+        // bytes Stream wrote (1.01 TB written against 110.5 GB stored, measured
+        // 2026-09-23). And both counting methods emit `total_events`.
+        reads: ['total_events'],
       },
     ],
-    body: LAKE_TOTAL_QUERY,
-    earliest: '-30d',
+    // THE DEFAULT, for a tenant whose retention cannot be read. Where it can,
+    // `resolveEntry` replaces the body and the window with the ones the
+    // dataset's own retention calls for (src/queries/lakeWindow.ts), and everything
+    // that writes or compares this saved search works from the resolved entry.
+    body: LAKE_DEFAULT_WINDOW.query,
+    earliest: LAKE_DEFAULT_WINDOW.earliest,
     latest: 'now',
     // 00:10 UTC rather than 00:00: the minute-of-hour at submit is what the cost
     // model is a function of (A-SP0), and the top of the hour is also when every
@@ -1184,6 +1192,41 @@ export function accelEntry(id: AccelId): AccelEntry {
   const found = MANIFEST.find((e) => e.id === id)
   if (!found) throw new Error(`accel manifest has no entry '${id}'`)
   return found
+}
+
+/** The one entry whose query and window follow the tenant rather than a constant. */
+export const LAKE_ENTRY_ID: AccelId = 'gno_lake_30d_c1d'
+
+/**
+ * An entry as this tenant needs it written.
+ *
+ * Only the Lake total moves: its window is the dataset's retention and its
+ * query is whichever method covers that window (src/queries/lakeWindow.ts). The id
+ * does not move — renaming it would orphan the stored runs and this app's own
+ * record of what it wrote — so `gno_lake_30d_c1d` keeps its name on a
+ * 365-day tenant, and the NAME an operator reads in Cribl's list says the
+ * truth instead.
+ *
+ * Everything that writes or compares a saved search takes the resolved entry,
+ * so a retention change surfaces as ordinary drift — "the window it reads",
+ * "the query it runs" — and Re-apply writes the new window. Null leaves the
+ * manifest's default: the window could not be read, and a guess would be a
+ * write of a window nobody chose.
+ */
+export function resolveEntry(entry: AccelEntry, lake: LakeWindow | null): AccelEntry {
+  if (entry.id !== LAKE_ENTRY_ID || lake === null) return entry
+  return Object.freeze({
+    ...entry,
+    name: `GNO Lake total ${lake.retentionDays} days`,
+    body: lake.query,
+    earliest: lake.earliest,
+    panels: Object.freeze(entry.panels.map((p) => Object.freeze({ ...p, display: lake.query }))),
+  })
+}
+
+/** The whole manifest, resolved. */
+export function resolvedManifest(lake: LakeWindow | null): readonly AccelEntry[] {
+  return MANIFEST.map((e) => resolveEntry(e, lake))
 }
 
 // ── The description an operator reads in Cribl's own UI ─────────────────────

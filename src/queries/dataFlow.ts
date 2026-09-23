@@ -45,6 +45,19 @@ export const METRICS_QUERY =
  * (18.24M vs 18.30M). They match only because nothing has aged out yet; once
  * data exceeds 30 days this becomes "written", not "retained".
  */
+/**
+ * What the Lake dataset holds, counted from the dataset itself.
+ *
+ * The write-counter sum above is exact only while the window it covers is one
+ * `cribl_metrics` still holds: that dataset has its own retention (30 days,
+ * measured 2026-09-23), so a `gigamon_ami` kept for 365 days cannot be totalled
+ * from it. When the dataset's retention is the longer of the two this is the
+ * query, over the whole retention period. It is the expensive one — measured at
+ * 525 s for 30 days on 2026-09-23 — which is why it runs in the daily schedule
+ * and only where the write counters cannot answer (src/queries/lakeWindow.ts).
+ */
+export const LAKE_HELD_QUERY = q('| summarize total_events=count()')
+
 export const LAKE_TOTAL_QUERY =
   'dataset="cribl_metrics" | summarize ' +
   'total_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +

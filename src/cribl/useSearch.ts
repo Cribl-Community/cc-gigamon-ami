@@ -123,6 +123,10 @@ export interface UseSearchState {
    *  to carry a field about a feature they are not exercising; `useSearch`
    *  itself always answers with it. */
   nearestAt?: number | null
+  /** The window the stored run that answered read, as that job records it
+   *  (`-30d`), or null when the rows came from a live query or no run. Optional
+   *  for hand-built fixtures, as `nearestAt` is. */
+  runWindow?: string | null
 }
 
 export interface UseSearchOptions {
@@ -204,6 +208,7 @@ interface PanelRead {
   stale: boolean
   note: string | null
   nearestAt: number | null
+  runWindow?: string | null
 }
 
 /**
@@ -390,7 +395,9 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // states and must not be renderable as the same words.
     const read: Promise<PanelRead> =
       accel !== null
-        ? readAccelRows(accel, { live, enabled: snapshotServed, asOf, tail, limit, signal: controller.signal, costSlot })
+        ? readAccelRows(accel, { live, enabled: snapshotServed, asOf, tail, limit, signal: controller.signal, costSlot }).then(
+            (r) => ({ ...r, runWindow: r.source === 'schedule' ? (r.run?.earliest ?? null) : null }),
+          )
         : live().then((rows) => ({ data: rows, source: 'live' as const, outcome: null, at: null, stale: false, note: null, nearestAt: null }))
 
     read
@@ -410,6 +417,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
           stale: res.stale,
           note: res.note,
           nearestAt: res.nearestAt,
+          runWindow: res.runWindow ?? null,
         })
       })
       .catch((err: unknown) => {

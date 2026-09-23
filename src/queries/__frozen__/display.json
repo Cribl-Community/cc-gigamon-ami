@@ -17,7 +17,7 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 157,
+    "modules": 168,
     "catalogs": 14,
     "states": 35,
     "passthrough": 3,
@@ -25,9 +25,13 @@
   },
   "fixtures": {
     "src/tabs/DataFlow.tsx": {
+      "lake": {
+        "from": "({ window: LAKE_DEFAULT_WINDOW, storedBytes: null, storedAsOf: null, error: null })",
+        "value": "4 keys · sha256 97e5b398a6971b4e"
+      },
       "s": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "7 entries · sha256 d8023170ee8096ec"
+        "value": "7 entries · sha256 f2d256ec636e5bb0"
       }
     },
     "src/tabs/DnsHealth.tsx": {
@@ -195,6 +199,7 @@
       "pivotFor(\"src_ip\")": "{\"key\":\"src_ip\",\"field\":\"src_ip\",\"label\":\"Source IP\",\"ph\":\"e.g. 10.0.0.168\",\"noun\":\"talkers\"}"
     },
     "src/queries/dataFlow.ts": {
+      "LAKE_HELD_QUERY": "dataset=\"gigamon_ami\" | summarize total_events=count()",
       "LAKE_TOTAL_QUERY": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0))",
       "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"pipe.in_events\" and namespace==\"data_insights\" and from_input==\"datagen:in_gigamon_datagen\", value, 0)), pipe_events=sum(iif(metric==\"pipe.out_events\" and namespace==\"data_insights\" and id==\"gigamon_ami\", value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
       "VOLUME_AGGS": "events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
@@ -268,6 +273,18 @@
       "PARTITION_CANDIDATES": "7 entries · sha256 b41d74fd9c7e5ca9",
       "PARTITION_CANDIDATES_QUERY": "dataset=\"gigamon_ami\" | summarize total=count(), n_protocol=count(protocol), d_protocol=dcount(protocol), n_l4_proto=count(l4_proto), d_l4_proto=dcount(l4_proto), n_app_name=count(app_name), d_app_name=dcount(app_name), n_ip_version=count(ip_version), d_ip_version=dcount(ip_version), n_dst_tag=count(dst_aws_flat_tags_name), d_dst_tag=dcount(dst_aws_flat_tags_name), n_src_tag=count(src_aws_flat_tags_name), d_src_tag=dcount(src_aws_flat_tags_name), n_platform=count(src_workload_platform), d_platform=dcount(src_workload_platform)",
       "PARTITION_CPU_SECONDS": "number · sha256 ad57366865126e55"
+    },
+    "src/queries/lakeWindow.ts": {
+      "LAKE_DEFAULT_DAYS": "number · sha256 624b60c58c9d8bfb",
+      "LAKE_DEFAULT_WINDOW": "5 keys · sha256 d118bf7c092648fc",
+      "lakeWindow(cribl_metrics retention unknown — direct count)": "{\"retentionDays\":30,\"metricsRetentionDays\":null,\"method\":\"count\",\"query\":\"dataset=\\\"gigamon_ami\\\" | summarize total_events=count()\",\"earliest\":\"-30d\"}",
+      "lakeWindow(dataset retention unknown — no window)": "null",
+      "lakeWindow(retention fits cribl_metrics — write counters)": "{\"retentionDays\":30,\"metricsRetentionDays\":30,\"method\":\"write-counters\",\"query\":\"dataset=\\\"cribl_metrics\\\" | summarize total_events=sum(iif(metric==\\\"total.out_events\\\" and namespace==\\\"data_insights\\\" and output==\\\"cribl_lake:gigamon_lake\\\", value, 0)), total_bytes=sum(iif(metric==\\\"total.out_bytes\\\" and namespace==\\\"data_insights\\\" and output==\\\"cribl_lake:gigamon_lake\\\", value, 0))\",\"earliest\":\"-30d\"}",
+      "lakeWindow(retention past cribl_metrics — direct count)": "{\"retentionDays\":365,\"metricsRetentionDays\":30,\"method\":\"count\",\"query\":\"dataset=\\\"gigamon_ami\\\" | summarize total_events=count()\",\"earliest\":\"-365d\"}",
+      "windowDays(\"-18m\")": "null",
+      "windowDays(\"-30d\")": "30",
+      "windowDays(\"-365d\")": "365",
+      "windowDays(null)": "null"
     },
     "src/queries/pqcReadiness.ts": {
       "GROUPS_Q": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type=* | summarize sessions=count(), servers=dcount(ssl_server_name) by ssl_ext_ec_supported_groups_type | sort by sessions desc | limit 40",
@@ -625,14 +642,15 @@
           }
         },
         "lakeTotal": {
-          "ref": "LAKE_TOTAL_QUERY",
+          "ref": "lakeRead.query",
           "shape": "query",
           "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0))",
-          "options": "{ earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, snapshotInLive: true }",
+          "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, }",
           "optionsValue": {
             "earliest": "-30d",
             "accel": "gno_lake_30d_c1d",
-            "snapshotInLive": true
+            "snapshotInLive": true,
+            "deferred": false
           }
         }
       },
@@ -673,7 +691,7 @@
         },
         "PanelInfo · s.purpose · lake": {
           "ref": "s.purpose",
-          "about": "Durable, queryable storage. The gigamon_lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping 30 days of history. The diagram splits the two halves: the Destinations plate reports what the selected window wrote, the Cribl Lake card reports what the dataset HOLDS (summed writes over the retention period, independent of the range picker). Those coincide today because no data has aged out yet — once the feed passes 30 days, the held figure becomes \"written\" rather than \"held\".",
+          "about": "Durable, queryable storage. The gigamon_lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping history for the dataset’s retention period. The diagram splits the two halves: the Destinations plate reports what the selected window wrote; the Cribl Lake card reports what the dataset HOLDS over its whole retention period, independent of the range picker — the events counted over that period, and the size Cribl Lake reports the dataset occupies on disk.",
           "aboutHeading": "What this stage does",
           "links": [
             "Lake destination → /stream/m/default/outputs/cribl_lake/gigamon_lake",

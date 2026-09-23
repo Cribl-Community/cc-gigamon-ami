@@ -26,7 +26,7 @@ import { accelEntry } from '../cribl/accel/manifest'
 import type { Row } from '../cribl/search'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
-import { LAKE_TOTAL_QUERY } from '../queries/dataFlow'
+import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY } from '../queries/dataFlow'
 import { DataFlow, LAKE_CADENCE, PIPELINE_CADENCE, PIPELINE_WINDOW, lakeComputed, lakeHeldLabel } from './DataFlow'
 
 const LAKE = 'gno_lake_30d_c1d'
@@ -46,6 +46,8 @@ const LIVE: Row = { total_events: 18_301_990, total_bytes: 9_444_001_280 }
 const run = (over: Record<string, unknown> = {}) => ({
   id: 'run-1',
   status: 'completed',
+  // The window the job read, as every real run row carries it.
+  earliest: '-30d',
   timeCreated: NOW - HOUR,
   timeStarted: NOW - HOUR,
   timeCompleted: NOW - HOUR,
@@ -70,7 +72,15 @@ function res(status: number, body: unknown, asText?: string) {
 
 let submits: Submitted[] = []
 
-function stub(cfg: { stored?: Row[]; history?: unknown[] } = {}): void {
+/** The Lake API's dataset list: each dataset's retention, and the stored size. */
+const lakeList = (gigamonDays: number, metricsDays: number) => ({
+  items: [
+    { id: 'gigamon_ami', retentionPeriodInDays: gigamonDays, metrics: { currentSizeBytes: 110_519_717_848, metricsDate: '2026-09-22' } },
+    { id: 'cribl_metrics', retentionPeriodInDays: metricsDays, metrics: {} },
+  ],
+})
+
+function stub(cfg: { stored?: Row[]; history?: unknown[]; lake?: unknown; lakeSlow?: boolean } = {}): void {
   submits = []
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const u = String(url)
@@ -78,6 +88,12 @@ function stub(cfg: { stored?: Row[]; history?: unknown[] } = {}): void {
       const body = JSON.parse(String(init.body)) as Submitted
       submits.push(body)
       return res(200, { items: [{ id: body.query.includes('$vt_results') ? 'job-stored' : 'job-live' }] })
+    }
+    if (u.includes('/lakes/default/datasets')) {
+      // A slow Lake API: answers after the searches would already have gone
+      // out, which is the race `deferred` exists to close.
+      if (cfg.lakeSlow) await new Promise((r) => setTimeout(r, 30))
+      return cfg.lake ? res(200, cfg.lake) : res(404, { message: 'no lake stub' })
     }
     if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
     if (u.includes('/results')) {
@@ -152,7 +168,7 @@ describe('the Cribl Lake card', () => {
 
     const dated = cardLabels().find((l) => l.includes('as of'))
     expect(dated, `the card showed a stored figure with no date on it: ${cardLabels().join(' | ')}`).toBeDefined()
-    expect(dated).toMatch(/events held · as of \d{2}:\d{2}/)
+    expect(dated).toMatch(/events · 30d · as of \d{2}:\d{2}/)
     expect(lakeLiveSubmits(), 'the 9,297.7 CPU-s query ran anyway').toEqual([])
     expect(lakeStoredSubmits()).toHaveLength(1)
   })
@@ -188,7 +204,55 @@ describe('the Cribl Lake card', () => {
     expect(lakeLiveSubmits()).toHaveLength(1)
     expect(lakeLiveSubmits()[0].earliest).toBe('-30d')
     expect(cardLabels().some((l) => l.includes('as of')), 'a live figure was dated as if it came from a run').toBe(false)
-    expect(cardLabels().some((l) => l.includes('30d retention'))).toBe(true)
+    expect(cardLabels().some((l) => l.includes('30d'))).toBe(true)
+  })
+
+  it('counts over a 365-day retention — directly, because cribl_metrics keeps only 30', async () => {
+    // The owner's rule, 2026-09-23: the window is the dataset's actual
+    // retention. Past cribl_metrics' own retention the write counters would
+    // cover only part of it, so the dataset itself is counted.
+    stub({ stored: [], history: [], lake: lakeList(365, 30) })
+    await render()
+    const held = submits.filter((s) => s.query.includes(LAKE_HELD_QUERY) && !s.query.includes('$vt_results'))
+    expect(held, 'the direct count did not run').toHaveLength(1)
+    expect(held[0].earliest).toBe('-365d')
+    expect(lakeLiveSubmits(), 'the write counters ran for a window they cannot cover').toEqual([])
+    expect(cardLabels().some((l) => l.includes('365d'))).toBe(true)
+  })
+
+  it('waits for the retention before its first run — a slow Lake API never gets the 30-day default', async () => {
+    stub({ stored: [], history: [], lake: lakeList(365, 30), lakeSlow: true })
+    await render()
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)) })
+    for (let i = 0; i < 14; i++) await act(async () => { await Promise.resolve() })
+    expect(lakeLiveSubmits(), 'the default 30-day query ran before the retention was known').toEqual([])
+    const held = submits.filter((s) => s.query.includes(LAKE_HELD_QUERY) && !s.query.includes('$vt_results'))
+    expect(held.map((s) => s.earliest)).toEqual(['-365d'])
+  })
+
+  it('labels a stored run by ITS window, and says so when the retention has since moved', async () => {
+    // The schedule still reads 30 days (not yet re-applied); the dataset is now
+    // kept for 365. The figure is a 30-day count and must not be labelled a year.
+    stub({ lake: lakeList(365, 30) })
+    await render()
+    const label = cardLabels().find((l) => l.includes('as of'))
+    expect(label, cardLabels().join(' | ')).toContain('30d')
+    expect(label).toContain('retention now 365d')
+  })
+
+  it('keeps the cheap write counters while the retention fits inside cribl_metrics’', async () => {
+    stub({ stored: [], history: [], lake: lakeList(14, 30) })
+    await render()
+    expect(lakeLiveSubmits()).toHaveLength(1)
+    expect(lakeLiveSubmits()[0].earliest).toBe('-14d')
+  })
+
+  it('shows the size Cribl Lake says the dataset occupies, dated, not the bytes written', async () => {
+    stub({ lake: lakeList(30, 30) })
+    await render()
+    expect(container.textContent).toContain('stored as of 2026-09-22')
+    // 110,519,717,848 bytes, in the app's 1024-based units (lib/format.ts).
+    expect(container.textContent).toContain('102.9 GB')
   })
 
   it('explains in its ⓘ how the figure was computed, without changing the query', async () => {
@@ -247,16 +311,40 @@ describe('what the header says about this tab', () => {
 })
 
 describe('lakeHeldLabel', () => {
-  const held = { lakeTotalEvents: 18_240_113, lakeTotalAt: NOW - HOUR, lakeTotalStale: false }
+  const held = {
+    lakeTotalEvents: 18_240_113,
+    lakeTotalAt: NOW - HOUR,
+    lakeTotalStale: false,
+    lakeWindowDays: 30,
+    lakeRetentionDays: 30,
+  }
 
-  it('keeps the retention line when the figure was computed live', () => {
-    expect(lakeHeldLabel({ ...held, lakeTotalAt: null }, NOW)).toBe('18.2M events held · 30d retention')
+  it('states the window the count covers when the figure was computed live', () => {
+    expect(lakeHeldLabel({ ...held, lakeTotalAt: null }, NOW)).toBe('18.2M events · 30d')
   })
 
-  it('trades that line for the date when the figure came from a run', () => {
+  it('states a 365-day window as 365 days, not as a constant', () => {
+    // The owner's point, 2026-09-23: the card reports the dataset's actual
+    // retention, and a year-long dataset is not described as a month.
+    expect(lakeHeldLabel({ ...held, lakeWindowDays: 365, lakeRetentionDays: 365 }, NOW)).toMatch(/^18\.2M events · 365d · as of/)
+  })
+
+  it('dates a figure that came from a run, on one line', () => {
     // One line only: the card's label band is 12px per line and the provenance
     // chip sits directly under it, so a second line lands on top of the chip.
-    expect(lakeHeldLabel(held, NOW)).toMatch(/^18\.2M events held · as of \d{2}:\d{2}$/)
+    expect(lakeHeldLabel(held, NOW)).toMatch(/^18\.2M events · 30d · as of \d{2}:\d{2}$/)
+  })
+
+  it('says so when the retention has moved since the run it is showing', () => {
+    // A 30-day count under a dataset now kept for 365 days: the figure is still
+    // what that run counted, and the card must not relabel it as a year.
+    const label = lakeHeldLabel({ ...held, lakeWindowDays: 30, lakeRetentionDays: 365 }, NOW)
+    expect(label).toContain('30d')
+    expect(label).toContain('retention now 365d')
+  })
+
+  it('claims no window it cannot read', () => {
+    expect(lakeHeldLabel({ ...held, lakeTotalAt: null, lakeWindowDays: null, lakeRetentionDays: null }, NOW)).toBe('18.2M events held')
   })
 
   it('marks an overdue schedule on the card, not only in the ⓘ', () => {
@@ -267,15 +355,21 @@ describe('lakeHeldLabel', () => {
 describe('lakeComputed', () => {
   const state = { source: 'schedule' as const, at: NOW - HOUR, stale: false, note: 'From the scheduled run.' }
 
+  it('names the window the figure covers', () => {
+    expect(lakeComputed(state, 30).window).toBe('the last 30 days')
+    expect(lakeComputed(state, 365).window).toBe('the last 365 days')
+    expect(lakeComputed(state, null).window).toBe('the retention period')
+  })
+
   it('carries the cap in seconds for the window this query actually reads', () => {
-    // -30d lands in the widest cap tier; block 4 turns it into words.
-    expect(lakeComputed(state).capSeconds).toBe(900)
+    // Any window past a day lands in the widest cap tier; block 4 turns it into words.
+    expect(lakeComputed(state, 30).capSeconds).toBe(900)
   })
 
   it('points at Cribl Search rather than offering the live run as a click', () => {
-    // A live run of this query bills 9,297.7 CPU-s. Offering it as a button
-    // beside the card would hand every viewer the cost this phase removes.
-    expect(lakeComputed(state).live).toContain('Open in Search')
+    // A live run of this query is the app's most expensive. Offering it as a
+    // button beside the card would hand every viewer that cost.
+    expect(lakeComputed(state, 30).live).toContain('Open in Search')
   })
 })
 

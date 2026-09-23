@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { useAccelEnabled, useSearch, type UseSearchState } from '../cribl/useSearch'
-import { VOLUME_QUERY, METRICS_QUERY, LAKE_TOTAL_QUERY } from '../queries/dataFlow'
+import { VOLUME_QUERY, METRICS_QUERY } from '../queries/dataFlow'
 import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
 import { capSecondsFor } from '../cribl/search'
 import { accelEntry, type AccelId } from '../cribl/accel/manifest'
+import { LAKE_DEFAULT_WINDOW, windowDays } from '../queries/lakeWindow'
+import { useLakeFacts } from '../cribl/lakeWindowRead'
 import { windowMinutes } from '../cribl/accel/estimate'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
@@ -23,9 +25,11 @@ import { toNum, fmtCount, fmtBytes, windowSeconds } from '../lib/format'
  * scheduled yet, and the card behaves exactly as it did before.
  */
 const LAKE_ACCEL: AccelId = 'gno_lake_30d_c1d'
-/** Pinned, and NOT the page's range: this card reports what the dataset holds
- *  over its retention period. The scheduled run reads the same window. */
-const LAKE_EARLIEST = '-30d'
+/** The window when the dataset's retention could not be read — the manifest's
+ *  own default. Where it can be read, the window IS the retention
+ *  (src/queries/lakeWindow.ts), and the card states whichever window its figure
+ *  actually covers. Never the page's range. */
+const LAKE_DEFAULT_EARLIEST = LAKE_DEFAULT_WINDOW.earliest
 /** The schedule in words, for the card's ⓘ. DataFlow.test.tsx holds this against
  *  the manifest's own cron, so changing one forces the other. */
 export const LAKE_CADENCE = 'once a day, at 00:10 UTC'
@@ -91,6 +95,14 @@ interface Volume {
   lakeTotalAt: number | null
   /** That run is older than its schedule promises. */
   lakeTotalStale: boolean
+  /** Days the event count covers — the run's own window, or the live query's.
+   *  Null when neither can be read. */
+  lakeWindowDays: number | null
+  /** The dataset's retention today, from the Lake API. */
+  lakeRetentionDays: number | null
+  /** What Cribl Lake says the dataset occupies on disk, and the day it said so. */
+  lakeStoredBytes: number | null
+  lakeStoredAsOf: string | null
 }
 
 interface StageLink {
@@ -156,10 +168,10 @@ const STAGES: Stage[] = [
   {
     id: 'lake', name: `Cribl Lake · ${LAKE_DATASET}`, kind: 'cribl', short: 'destination + dataset',
     purpose:
-      'Durable, queryable storage. The gigamon_lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping 30 days of history. The diagram splits the two halves: the Destinations plate reports what the selected window wrote, the Cribl Lake card reports what the dataset HOLDS (summed writes over the retention period, independent of the range picker). Those coincide today because no data has aged out yet — once the feed passes 30 days, the held figure becomes "written" rather than "held".',
+      'Durable, queryable storage. The gigamon_lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping history for the dataset’s retention period. The diagram splits the two halves: the Destinations plate reports what the selected window wrote; the Cribl Lake card reports what the dataset HOLDS over its whole retention period, independent of the range picker — the events counted over that period, and the size Cribl Lake reports the dataset occupies on disk.',
     detail: [
       'Destination gigamon_lake (type cribl_lake) writes JSON to the gigamon_ami Lake dataset.',
-      '30-day retention; flushes every ~60s for near-live queries.',
+      'Retention as set on the dataset (the Cribl Lake card states it); flushes every ~60s for near-live queries.',
     ],
     links: [
       { href: criblUiUrl(`/stream/m/${G}/outputs/cribl_lake/gigamon_lake`), label: 'Lake destination' },
@@ -199,13 +211,20 @@ const STAGES: Stage[] = [
  * about THIS number that appears nowhere else.
  */
 export function lakeHeldLabel(
-  v: Pick<Volume, 'lakeTotalEvents' | 'lakeTotalAt' | 'lakeTotalStale'>,
+  v: Pick<Volume, 'lakeTotalEvents' | 'lakeTotalAt' | 'lakeTotalStale' | 'lakeWindowDays' | 'lakeRetentionDays'>,
   now?: number,
 ): string {
-  const held = `${fmtCount(v.lakeTotalEvents)} events held`
+  // The window the FIGURE covers — the run's own, or the live query's — not the
+  // retention the dataset has today. They differ after a retention change until
+  // the schedule is re-applied, and then the card says so rather than putting a
+  // month's count under a year's label.
+  const w = v.lakeWindowDays
+  const over = w === null ? 'events held' : `events · ${w}d`
+  const held = `${fmtCount(v.lakeTotalEvents)} ${over}`
+  const moved = w !== null && v.lakeRetentionDays !== null && v.lakeRetentionDays !== w ? ` · retention now ${v.lakeRetentionDays}d` : ''
   const when = asOf(v.lakeTotalAt, now)
-  if (!when) return `${held} · 30d retention`
-  return `${held} · as of ${when}${v.lakeTotalStale ? ' (overdue)' : ''}`
+  if (!when) return `${held}${moved}`
+  return `${held} · as of ${when}${v.lakeTotalStale ? ' (overdue)' : ''}${moved}`
 }
 
 /**
@@ -217,16 +236,20 @@ export function lakeHeldLabel(
  * cost this phase exists to remove, and Cribl Search is where a person who
  * really wants it can see what it is doing and stop it.
  */
-export function lakeComputed(lakeTotal: Pick<UseSearchState, 'source' | 'at' | 'stale' | 'note'>): ComputedFrom {
+export function lakeComputed(
+  lakeTotal: Pick<UseSearchState, 'source' | 'at' | 'stale' | 'note'>,
+  windowDays: number | null,
+): ComputedFrom {
+  const span = windowDays === null ? 'the retention period' : `the last ${windowDays} days`
   return {
     source: lakeTotal.source,
     at: lakeTotal.at,
     stale: lakeTotal.stale,
     cadence: LAKE_CADENCE,
-    window: 'the last 30 days',
+    window: span,
     fallback: lakeTotal.note,
-    live: 'use “Open in Search” above — a live 30-day total is this app’s most expensive query, so it runs in Cribl Search where you can watch it and stop it',
-    capSeconds: capSecondsFor(LAKE_EARLIEST),
+    live: `use “Open in Search” above — a live total over ${span} is this app’s most expensive query, so it runs in Cribl Search where you can watch it and stop it`,
+    capSeconds: capSecondsFor(windowDays === null ? LAKE_DEFAULT_EARLIEST : `-${windowDays}d`),
   }
 }
 
@@ -263,13 +286,17 @@ function buildNodes(v: Volume): Record<SlotId, DopNode> {
     },
     lake: {
       id: 'lake', title: ['Cribl Lake'], tier: 'cribl', icon: 'lake',
-      sub: [`${LAKE_DATASET} dataset`],
-      value: v.lakeTotalLoading ? '…' : v.lakeTotalKnown ? fmtBytes(v.lakeTotalBytes) : '—',
+      // The size is Cribl Lake's own daily metric — what the dataset occupies
+      // on disk — dated by the day it was computed. It used to be the bytes
+      // Stream WROTE, which is uncompressed: 1.01 TB against 110.5 GB stored,
+      // measured 2026-09-23.
+      sub: [v.lakeStoredAsOf ? `${LAKE_DATASET} · stored as of ${v.lakeStoredAsOf}` : `${LAKE_DATASET} dataset`],
+      value: v.lakeStoredBytes !== null ? fmtBytes(v.lakeStoredBytes) : '—',
       label: v.lakeTotalLoading
-        ? ['totalling dataset… · 30d retention']
+        ? [v.lakeRetentionDays !== null ? `counting ${v.lakeRetentionDays}d retention…` : 'counting the retention period…']
         : v.lakeTotalKnown
           ? [lakeHeldLabel(v)]
-          : ['retention total unavailable'],
+          : ['event count unavailable'],
       from: 'cribl',
     },
     search: {
@@ -353,15 +380,28 @@ export function DataFlow() {
   // the tab, and the reason the diagram reported LIVE with the two figures
   // either side of it already coming from stored runs.
   const met = useSearch(METRICS_QUERY, { accel: PIPELINE_ACCEL, accelEnabled })
-  // Lake total is deliberately pinned to the retention period, NOT the page
-  // range, and loads independently so its ~17s scan never blocks the diagram.
-  // It is served by a daily scheduled run of this same string where there is one
-  // (LAKE_ACCEL) and runs live where there is not — see the header. In LIVE
-  // mode too (`snapshotInLive`): a 30-day total does not move between the daily
-  // run and now by anything worth a 33 s scan on every Refresh. NOT given
-  // `accelEnabled`: that is `mode === 'snapshot'` (accel/mode.ts), so passing it
-  // would switch the card to live in exactly the mode this opts out of.
-  const lakeTotal = useSearch(LAKE_TOTAL_QUERY, { earliest: LAKE_EARLIEST, accel: LAKE_ACCEL, snapshotInLive: true })
+  // Lake total is pinned to the DATASET'S RETENTION, NOT the page range, and
+  // loads independently so its scan never blocks the diagram. The window and
+  // the counting method come from the tenant (src/queries/lakeWindow.ts): the write
+  // counters while the retention fits inside cribl_metrics' own, a direct count
+  // of gigamon_ami beyond it. It waits for that read before its first run, so a
+  // tenant on 365 days never briefly runs the 30-day default. It is served by a
+  // daily scheduled run where there is one (LAKE_ACCEL) and runs live where
+  // there is not — see the header. In LIVE mode too (`snapshotInLive`): a
+  // retention total does not move between the daily run and now by anything
+  // worth its scan on every Refresh. NOT given `accelEnabled`: that is
+  // `mode === 'snapshot'` (accel/mode.ts), so passing it would switch the card
+  // to live in exactly the mode this opts out of.
+  const lake = useLakeFacts()
+  const lakeWin = lake?.window ?? null
+  const lakeRead = lakeWin ?? LAKE_DEFAULT_WINDOW
+  const lakeEarliest = lakeRead.earliest
+  const lakeTotal = useSearch(lakeRead.query, {
+    earliest: lakeEarliest,
+    accel: LAKE_ACCEL,
+    snapshotInLive: true,
+    deferred: lake === undefined,
+  })
   // THE CENSUS, ON A TAB THAT RENDERS NO <Panel>. Registration normally happens
   // inside <Panel>, because that is the customer's unit — one card, one title,
   // one ⓘ. This tab draws a diagram and a stage-detail card instead, so nothing
@@ -427,6 +467,12 @@ export function DataFlow() {
     lakeTotalKnown: !!lrow,
     lakeTotalAt: lakeTotal.at,
     lakeTotalStale: lakeTotal.stale,
+    // The window the count covers: the stored run's own, or — on a live read —
+    // the one this page asked for.
+    lakeWindowDays: windowDays(lakeTotal.source === 'schedule' ? (lakeTotal.runWindow ?? null) : lakeEarliest),
+    lakeRetentionDays: lakeWin?.retentionDays ?? null,
+    lakeStoredBytes: lake?.storedBytes ?? null,
+    lakeStoredAsOf: lake?.storedAsOf ?? null,
   }
   const loading = agg.loading || met.loading
   /** Where the three cribl_metrics plates got their counters, for block 4 of
@@ -485,9 +531,9 @@ export function DataFlow() {
               minutes from an hourly run, so the stages still compare — each plate&apos;s <strong>ⓘ</strong> says
               which run it read. The range above applies to whatever is still running live.</>
             : <> Every figure is scoped to the range above.</>} The <em>Cribl Lake</em> card is separate either way: it
-          reports the full 30-day retention{lakeTotal.source === 'schedule'
+          reports the dataset’s full {lakeWin ? `${lakeWin.retentionDays}-day ` : ''}retention{lakeTotal.source === 'schedule'
             ? <> from a scheduled daily run — the card says when that run finished, and its <strong>ⓘ</strong> says why</>
-            : <> by totalling thirty days now</>}.
+            : <> by counting it now</>}.
         </span>
       </div>
 
@@ -501,7 +547,7 @@ export function DataFlow() {
         selected={sel}
         onSelect={setSel}
         loading={loading}
-        info={stageInfo(lakeComputed(lakeTotal), metComputed)}
+        info={stageInfo(lakeComputed(lakeTotal, vol.lakeWindowDays), metComputed)}
       />
 
       <section className="panel">

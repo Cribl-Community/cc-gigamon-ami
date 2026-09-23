@@ -176,6 +176,13 @@ export interface AccelRun {
    * "as of HH:MM".
    */
   at: number | null
+  /**
+   * The window this run read, as the job itself records it (`-30d`). A stored
+   * figure covers THIS window, whatever the saved search says today — so a
+   * panel that states a window states this one. Optional so hand-built test
+   * runs need not carry it; `toRun` always sets it.
+   */
+  earliest?: string | null
 }
 
 /** A row of the `output=short` job list. Everything optional: this is somebody
@@ -184,6 +191,7 @@ export interface AccelRun {
 interface ShortJob {
   id?: unknown
   status?: unknown
+  earliest?: unknown
   timeCreated?: unknown
   timeStarted?: unknown
   timeCompleted?: unknown
@@ -229,6 +237,7 @@ function toRun(raw: ShortJob | undefined): AccelRun | null {
     startedAt,
     completedAt,
     at: completedAt ?? startedAt ?? createdAt,
+    earliest: str(raw.earliest),
   }
 }
 

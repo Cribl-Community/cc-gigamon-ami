@@ -12,10 +12,12 @@
 import { beforeEach } from 'vitest'
 
 beforeEach(async () => {
-  const [{ forgetRunHistory }, { forgetArtifacts }] = await Promise.all([
+  const [{ forgetRunHistory }, { forgetArtifacts }, { forgetLakeFacts }] = await Promise.all([
     import('./cribl/accel/status'),
     import('./cribl/accel/read'),
+    import('./cribl/lakeWindowRead'),
   ])
   forgetRunHistory()
   forgetArtifacts()
+  forgetLakeFacts()
 })
