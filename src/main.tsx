@@ -1,4 +1,4 @@
-import { StrictMode } from 'react'
+import { Fragment, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import '@capra/theme/base.css'
@@ -11,6 +11,14 @@ import { BASE_PATH } from './cribl/config'
 import { DashboardProvider } from './app/DashboardContext'
 import { applyTheme, readStoredTheme } from './app/theme'
 import { loadSearchCaps } from './cribl/searchCaps'
+import { installTrace } from './cribl/devTrace'
+
+// The dev-only page trace (cribl/devTrace.ts). `import.meta.env.DEV` is a
+// build-time constant, so a production bundle drops this branch entirely.
+// StrictMode is off while tracing: it mounts every effect twice in dev, which
+// submits, cancels and resubmits jobs production never does.
+const TRACE = import.meta.env.DEV && new URLSearchParams(window.location.search).has('trace')
+if (TRACE) installTrace()
 
 // Applied before React mounts so there's no flash of the wrong theme. Defaults
 // to dark (the reference dashboards are dark) unless the user or OS says light.
@@ -26,8 +34,10 @@ applyTheme(readStoredTheme())
 // is not repaired, because a repair would be a write on load (AGENTS.md).
 void loadSearchCaps()
 
+const Strict = TRACE ? Fragment : StrictMode
+
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+  <Strict>
     <BrowserRouter basename={BASE_PATH}>
       <DashboardProvider>
         <App />
@@ -40,5 +50,5 @@ createRoot(document.getElementById('root')!).render(
         <ToastProvider />
       </DashboardProvider>
     </BrowserRouter>
-  </StrictMode>,
+  </Strict>,
 )

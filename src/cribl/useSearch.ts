@@ -73,6 +73,7 @@ import { readAccelRows, type AccelOutcome, type AccelSource } from './accel/read
 import { useAccelModeHydrated } from './accel/mode'
 import { useSelectedSnapshot } from './accel/selection'
 import { forgetRunHistory } from './accel/status'
+import { markData, markStart } from './devTrace'
 import { useDataMode } from './dataMode'
 
 // `useAccelEnabled` was this module's export for the whole of Phase 2 and the
@@ -346,6 +347,9 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     const myReq = ++reqId.current
     setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     const t0 = performance.now()
+    // Dev-only page trace (cribl/devTrace.ts); a no-op unless `?trace`.
+    const traceKey = accelPanel ?? servedPanel?.queryId ?? text.slice(0, 80)
+    markStart(traceKey)
 
     // The live query, written once so the accelerated path's fallback is the
     // same request, over the same window, billed to the same cost slot, as the
@@ -373,6 +377,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     read
       .then((res) => {
         if (myReq !== reqId.current) return
+        markData(traceKey, res.source)
         setState({
           rows: res.data,
           totalEventCount: liveTotal ?? res.data.length,
