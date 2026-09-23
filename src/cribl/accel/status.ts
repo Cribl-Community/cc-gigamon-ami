@@ -71,11 +71,20 @@ export const JOBS_PATH = '/m/default_search/search/jobs'
  * hidden the oldest four, leaving a timeline that claims to be a day and is not,
  * with nothing on screen to say which end was cut.
  *
- * Thirty-two: the largest `keepLastN` in the manifest, with room for a schedule
- * that has been re-applied and has runs under an older retention still listed.
- * It is one request either way — this endpoint bills nothing.
+ * ONE PAGE NOW SERVES EVERY ENTRY (the shared read below), so it has to hold the
+ * SUM of every entry's retained runs, not the largest. At 200 it did not: on
+ * 2026-09-23 the workspace listed 342 scheduled runs, the page held each hourly
+ * entry's newest 14 of 24, and the snapshot picker offered fourteen hours while
+ * claiming a day. Derived from the manifest so a new entry moves it, plus room
+ * for runs still going, runs kept under an older retention after a re-apply,
+ * and scheduled searches on the workspace that are not this app's — the filter
+ * is `type=='scheduled'`, and nothing narrower exists.
+ *
+ * It is one request either way — this endpoint bills nothing. ~0.57 kB a row
+ * measured, so the page is ~230 kB, read at most once per 15 s (PAGE_TTL_MS).
  */
-export const HISTORY_LIMIT = 200
+export const HISTORY_HEADROOM = 64
+export const HISTORY_LIMIT = MANIFEST.reduce((n, e) => n + e.keepLastN, 0) + HISTORY_HEADROOM
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS

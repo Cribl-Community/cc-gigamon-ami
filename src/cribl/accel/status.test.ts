@@ -520,7 +520,11 @@ describe('the readable past', () => {
     const sent = stub([history([])])
     await snapshotTimeline([LAKE])
     const url = sent[0].url
-    expect(HISTORY_LIMIT).toBeGreaterThanOrEqual(Math.max(...MANIFEST.map((e) => e.keepLastN)))
+    // One page serves every entry, so it must hold every entry's retained runs
+    // at once. The largest single keepLastN was the rule when each entry had its
+    // own request; held to that, the page showed 14 of 24 hourly runs (measured
+    // 2026-09-23, 342 scheduled runs listed).
+    expect(HISTORY_LIMIT).toBeGreaterThanOrEqual(MANIFEST.reduce((n, e) => n + e.keepLastN, 0))
     expect(url).toContain(`limit=${HISTORY_LIMIT}`)
   })
 })
