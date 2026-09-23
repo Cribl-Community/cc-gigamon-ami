@@ -72,6 +72,7 @@ import { MEASURED } from './accel/estimate'
 import { readAccelRows, type AccelOutcome, type AccelSource } from './accel/read'
 import { useAccelModeHydrated } from './accel/mode'
 import { useSelectedSnapshot } from './accel/selection'
+import { forgetRunHistory } from './accel/status'
 import { useDataMode } from './dataMode'
 
 // `useAccelEnabled` was this module's export for the whole of Phase 2 and the
@@ -284,7 +285,11 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   })
   // Local nonce for per-panel refresh — bumping it re-runs only this hook.
   const [localNonce, setLocalNonce] = useState(0)
-  const refetch = useCallback(() => setLocalNonce((n) => n + 1), [])
+  // A per-panel refresh is a human asking too — see DashboardContext.refresh.
+  const refetch = useCallback(() => {
+    forgetRunHistory()
+    setLocalNonce((n) => n + 1)
+  }, [])
   const [state, setState] = useState<Omit<UseSearchState, 'refetch'>>({
     rows: [],
     totalEventCount: 0,

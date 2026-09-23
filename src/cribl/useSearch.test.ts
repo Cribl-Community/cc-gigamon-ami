@@ -48,7 +48,7 @@ const NOW = Date.now()
 const STORED: Row = {
   total_events: 18_240_113,
   total_bytes: 9_412_886_144,
-  jobId: 'run-1',
+  jobId: `${LAKE}.run-1`,
   jobName: LAKE,
   dataset: '$vt_results',
 }
@@ -98,9 +98,20 @@ function res(status: number, body: unknown, asText?: string) {
 
 /** Every job body this render submitted, in order. */
 let submits: Submitted[] = []
+/**
+ * Stored results read by RUN ID — a plain GET on an artifact, with no job
+ * submitted. Since Phase 7 item 1.1 this is how the newest run is read for any
+ * panel an artifact can shape; the `$vt_results` POST is the fallback.
+ */
+let artifactReads: string[] = []
+/** Run-history page GETs. Cached for 15 s, so a count above one inside a test
+ *  means something dropped the cache — which a human refresh must do. */
+let historyReads = 0
 
 function stub(cfg: Cfg): void {
   submits = []
+  artifactReads = []
+  historyReads = 0
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const u = String(url)
     const method = init.method ?? 'GET'
@@ -112,11 +123,29 @@ function stub(cfg: Cfg): void {
       return res(200, { items: [{ id: isStored ? 'job-stored' : 'job-live' }] })
     }
     if (u.includes('/status')) return res(200, { items: [{ status: 'completed' }] })
+    // AN ARTIFACT READ: `/search/jobs/<run id>/results`, where the id is a
+    // scheduled run's (`gno_…`). It returns that run's STORED rows — which is
+    // what a real run's artifact is, and what the asOf path has relied on since
+    // the snapshot-picker fix. Before this branch existed the stub answered any
+    // non-`job-stored` id with the LIVE rows, which made an artifact read look
+    // like it had returned the wrong data.
+    const artifact = /\/search\/jobs\/(gno_[^/?]+)\/results/.exec(u)
+    if (artifact) {
+      artifactReads.push(decodeURIComponent(artifact[1]))
+      // `storedFail` means "the stored result cannot be read", whichever way
+      // this app asks for it.
+      if (cfg.storedFail) return res(cfg.storedFail.status, cfg.storedFail.body)
+      const rows = cfg.stored ?? []
+      return res(200, {}, [JSON.stringify({ totalEventCount: rows.length, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n'))
+    }
     if (u.includes('/results')) {
       const rows = u.includes('job-stored') ? (cfg.stored ?? []) : (cfg.live ?? [])
       return res(200, {}, [JSON.stringify({ totalEventCount: rows.length, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n'))
     }
-    if (u.includes('/search/jobs?')) return res(200, { items: cfg.history ?? [] })
+    if (u.includes('/search/jobs?')) {
+      historyReads++
+      return res(200, { items: cfg.history ?? [] })
+    }
     const byId = /\/search\/jobs\/([^/?]+)$/.exec(u)
     if (byId) {
       const job = cfg.jobs?.[byId[1]]
@@ -128,15 +157,20 @@ function stub(cfg: Cfg): void {
 
 const stored = (s: Submitted[]) => s.filter((x) => x.query.includes('$vt_results'))
 const liveSubmits = (s: Submitted[]) => s.filter((x) => !x.query.includes('$vt_results'))
+/** Every read of a stored result, by EITHER path — the job-submitting
+ *  `$vt_results` read or the artifact GET. What the tests below mean by "the
+ *  stored result was read"; which mechanism answered is asserted separately. */
+const storedReadCount = () => stored(submits).length + artifactReads.length
 
 /** A healthy schedule: one recent completed run, and rows to read from it. */
-const healthy: Cfg = { stored: [STORED], live: [LIVE], history: [run()], jobs: { 'run-1': run() } }
+const healthy: Cfg = { stored: [STORED], live: [LIVE], history: [run()], jobs: { [`${LAKE}.run-1`]: run() } }
 
 let container: HTMLDivElement
 let root: Root
 /** The last state the probe rendered, and the page's range setter. */
 let seen: UseSearchState | null = null
 let setRange: ((r: TimeRange) => void) | null = null
+let refreshAll: (() => void) | null = null
 
 beforeEach(() => {
   // The run-history page is cached module-wide so sixteen callers share one
@@ -165,6 +199,7 @@ const QUERY = 'dataset="cribl_metrics" | summarize total_events=count()'
 function Probe({ accel, accelEnabled }: { accel?: 'gno_lake_30d_c1d'; accelEnabled?: boolean }): ReactNode {
   const dash = useDashboard()
   setRange = dash.setRange
+  refreshAll = dash.refresh
   seen = useSearch(QUERY, { earliest: accel ? '-30d' : undefined, accel, accelEnabled })
   return null
 }
@@ -192,7 +227,11 @@ describe('an accelerated panel', () => {
     expect(seen!.outcome).toBe('fresh')
     expect(seen!.rows).toEqual([{ total_events: 18_240_113, total_bytes: 9_412_886_144 }])
     expect(liveSubmits(submits), 'the 9,297.7 CPU-s query ran anyway').toEqual([])
-    expect(stored(submits)).toHaveLength(1)
+    // THE WIN, pinned. The newest run is read as an artifact — one GET, no job,
+    // no place in the ~1.6 s admission queue. A `$vt_results` POST here means the
+    // fast path was skipped and the panel is queueing behind its neighbours again.
+    expect(stored(submits), 'a job was submitted to read a stored result').toEqual([])
+    expect(artifactReads).toEqual([`${LAKE}.run-1`])
   })
 
   it('dates every figure it takes from a stored run', async () => {
@@ -256,7 +295,7 @@ describe('a stale scheduled run', () => {
     // expensive query at the moment the schedule breaks — invisibly, on every
     // paint. The loud part belongs in the status table, not in the bill.
     const old = { ...run(), timeCompleted: NOW - 5 * DAY }
-    stub({ ...healthy, history: [old], jobs: { 'run-1': old } })
+    stub({ ...healthy, history: [old], jobs: { [`${LAKE}.run-1`]: old } })
     await render({ accel: LAKE })
 
     expect(seen!.source).toBe('schedule')
@@ -322,12 +361,12 @@ describe('the range picker', () => {
     // what the live FALLBACK means.
     stub(healthy)
     await render({ accel: LAKE })
-    expect(stored(submits)).toHaveLength(1)
+    expect(storedReadCount()).toBe(1)
 
     await act(async () => { setRange!(TIME_RANGES[5]) })
     await settle()
 
-    expect(stored(submits), 'the stored result was read again for a range that cannot affect it').toHaveLength(1)
+    expect(storedReadCount(), 'the stored result was read again for a range that cannot affect it').toBe(1)
     expect(liveSubmits(submits)).toEqual([])
   })
 
@@ -367,7 +406,7 @@ describe('turning acceleration off for this viewer', () => {
     await settle()
 
     expect(seen!.source).toBe('schedule')
-    expect(stored(submits)).toHaveLength(1)
+    expect(storedReadCount()).toBe(1)
   })
 })
 
@@ -397,13 +436,37 @@ describe('a per-panel refresh', () => {
   it('re-reads the stored result — cheap, and the point of the button', async () => {
     stub(healthy)
     await render({ accel: LAKE })
-    expect(stored(submits)).toHaveLength(1)
+    expect(storedReadCount()).toBe(1)
 
     await act(async () => { seen!.refetch() })
     await settle()
 
-    expect(stored(submits)).toHaveLength(2)
+    expect(storedReadCount()).toBe(2)
     expect(liveSubmits(submits)).toEqual([])
+  })
+
+  it('reads the run history afresh, so a run that just landed is the one it shows', async () => {
+    // The history page is cached for 15 s. The newest run is picked from it, so
+    // a refresh answered from cache would show the previous run to the very
+    // click meant to reveal the new one.
+    stub(healthy)
+    await render({ accel: LAKE })
+    expect(historyReads).toBe(1)
+    await act(async () => { seen!.refetch() })
+    await settle()
+    expect(historyReads, 'the per-panel refresh was answered from the cached history').toBe(2)
+  })
+})
+
+describe('the page refresh control', () => {
+  it('reads the run history afresh too', async () => {
+    stub(healthy)
+    await render({ accel: LAKE })
+    expect(historyReads).toBe(1)
+    await act(async () => { refreshAll!() })
+    await settle()
+    expect(historyReads, 'the page refresh was answered from the cached history').toBe(2)
+    expect(artifactReads).toHaveLength(2)
   })
 })
 

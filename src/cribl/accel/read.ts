@@ -91,6 +91,7 @@
 
 import { readJobResults, runFieldSummaries, runSearch, summariseRows, type FieldSummariesResult, type Row } from '../search'
 import type { CostSlot } from '../jobCost'
+import { beginQuery, endQuery } from '../inflight'
 import { accelEntry, isAccelId, type AccelEntry, type AccelId } from './manifest'
 import { cronIntervalMs, listRuns, nearestRun, runAtOrBefore, runMeta, snapshotTimeline, type AccelRun } from './status'
 
@@ -571,6 +572,12 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
 
+  // THE FAST PATH: read the newest run's artifact by id, which submits no job.
+  // Null means "not this way" — every such case falls through to the
+  // `$vt_results` read below, unchanged. See `newestArtifact`.
+  const artifact = await newestArtifact(entry, opts)
+  if (artifact !== null) return artifact
+
   let answered
   try {
     answered = await onAnsweringKey(
@@ -680,6 +687,140 @@ export async function readAccelFieldSummaries(
     sampled: result.sampled,
   }
   return dated(entry, data, sourceJobId, key, live, opts)
+}
+
+// ── The newest run, read as an artifact ─────────────────────────────────────
+
+/**
+ * The newest stored result, read by run id — NO JOB SUBMITTED.
+ *
+ * WHY THIS IS THE LARGEST LATENCY WIN IN THE APP. The `$vt_results` read below
+ * it is a submitted search job: a POST, a poll ladder, a results GET — and a
+ * place in the per-user admission queue, where concurrent jobs are admitted
+ * ~1.6 s apart. Acceleration cut that read to 0.2 billable CPU-s and removed no
+ * queue position at all, which is why an accelerated tab still waited
+ * (N-1) x 1.6 s before its last panel began. An artifact read is ONE plain GET
+ * on a result that already exists. It takes no admission slot, polls nothing,
+ * and bills nothing. The `asOf` path has read this way since 2026-09-21; this
+ * extends the same read to the newest run.
+ *
+ * ONLY FOR PANELS AN ARTIFACT CAN SHAPE. No tail, or a tail that is a pure
+ * projection (`applyProjection`). A tail that re-aggregates — `summarize`,
+ * `sort | limit` — is KQL over the whole stored set, and doing it here over a
+ * `limit`-capped read would return a wrong total or the wrong top N whenever the
+ * artifact was truncated. Those panels keep the query path, where Cribl
+ * evaluates the tail over every stored row.
+ *
+ * AN OPTIMISATION, NEVER A NEW WAY TO FAIL. Every case this path does not handle
+ * — no readable run in the history page (which is capped, so an old daily run
+ * may not appear), the list unreadable, a run id that does not belong to this
+ * entry, an empty artifact, a read error — returns null, and the caller carries
+ * on down the `$vt_results` path exactly as it did before. Only an abort
+ * escapes, because a departed panel should stop, not fall back.
+ *
+ * DATED BY THE RUN IT READ. The history row carries the run's own completion
+ * time, so there is no `runMeta` round trip: the run that dates the result is
+ * the run the result came from, by construction rather than by a second lookup.
+ *
+ * COUNTED IN THE HEADER SPINNER. `runSearch` increments the in-flight counter
+ * itself; a plain GET does not, and without `beginQuery` here the spinner would
+ * go quiet on the default path while panels were still loading.
+ *
+ * NEVER HIDES A FAILED RUN. When the newest run failed or was cancelled this
+ * path steps aside, so the query path reports `run-failed` exactly as before.
+ * When the newest is still running it serves the run before it — dated by that
+ * run, so the label says how old it is.
+ *
+ * FRESH ON A HUMAN REFRESH. The history page is cached for 15 s; the refresh
+ * control, a panel's own refresh and Re-check drop it (`forgetRunHistory`), so
+ * the newest run is the newest one at the moment somebody asked.
+ */
+async function newestArtifact(entry: AccelEntry, opts: AccelReadOptions<Row[]>): Promise<AccelRead<Row[]> | null> {
+  const tail = opts.tail
+  if (tail !== undefined && applyProjection(tail, []) === null) return null
+  // One span over the whole read, the history wait included — that wait is the
+  // first thing a panel does now, and the spinner has to be on while it happens.
+  beginQuery()
+  try {
+    return await artifactRead(entry, tail, opts)
+  } finally {
+    endQuery()
+  }
+}
+
+async function artifactRead(
+  entry: AccelEntry,
+  tail: string | undefined,
+  opts: AccelReadOptions<Row[]>,
+): Promise<AccelRead<Row[]> | null> {
+  // The shared history page — one request per page for every entry, so this is
+  // usually a cache hit rather than a round trip. UNFILTERED, on purpose: the
+  // timeline's view drops failed runs, and the newest run failing is a fact
+  // this path must not hide.
+  const listed = await listRuns(entry.id, { signal: opts.signal })
+  if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  if (listed.error !== null) return null
+
+  // THE NEWEST RUN FAILED OR WAS CANCELLED: step aside. Serving the run before
+  // it, labelled "From the scheduled run.", would bury the one outcome an
+  // admin needs to see; the query path and `diagnose` report it as run-failed.
+  // A newest run still GOING is different: the run before it is the latest
+  // finished answer, dated as such, and serving it beats the live query the
+  // query path would fall back to for the minutes the run takes.
+  const newest = listed.runs[0]
+  if (newest && !newest.running && (newest.outcome === 'failed' || newest.outcome === 'canceled')) return null
+  const run = listed.runs.find((r) => !r.running && r.outcome === 'completed' && r.at !== null)
+  if (!run || run.at === null) return null
+
+  // The id is the address, so it is checked before it is used — the same two
+  // guards `atMoment` applies. `isRunOf` has already filtered by this entry;
+  // the prefix check is the second, independent signal.
+  try {
+    assertAddressableJobId(run.id)
+  } catch {
+    return null
+  }
+  if (!run.id.startsWith(`${entry.id}.`)) {
+    warn(entry.id, `the run history offered a run belonging to another schedule ('${run.id}')`, null)
+    return null
+  }
+
+  let rows: Row[]
+  try {
+    rows = (await readJobResults(run.id, { limit: opts.limit, signal: opts.signal })).rows
+  } catch (err) {
+    if (aborted(err, opts.signal)) throw err
+    return null
+  }
+  if (rows.length === 0) return null
+  // A row that names its own run and names a DIFFERENT one is a contradiction,
+  // not a result: dating it by `run` would be the lie the query path's
+  // `dated()` exists to prevent. Refuse it and let that path date by the rows.
+  const named = str(rows[0]?.[COL_JOB_ID])
+  if (named !== null && named !== run.id) return null
+
+  const stripped = stripVirtualColumns(rows)
+  const data = tail === undefined ? stripped : applyProjection(tail, stripped)
+  if (data === null) return null
+
+  const staleAfterMs = opts.staleAfterMs ?? staleAfterMsFor(entry)
+  const ageMs = (opts.now ?? Date.now()) - run.at
+  const outcome: AccelOutcome = ageMs > staleAfterMs ? 'stale' : 'fresh'
+  return {
+    data,
+    source: 'schedule',
+    outcome,
+    run,
+    at: run.at,
+    ageMs,
+    staleAfterMs,
+    stale: outcome === 'stale',
+    // A run id answered, which is not evidence about what `jobName=` binds to —
+    // the same reason `atMoment` reports null here.
+    key: null,
+    note: NOTES[outcome],
+    nearestAt: null,
+  }
 }
 
 // ── Reading a chosen past state ─────────────────────────────────────────────

@@ -454,6 +454,17 @@ interface ListedRuns {
  * fifteen it replaces.
  */
 const PAGE_TTL_MS = 15_000
+/**
+ * How long the shared read may take before it is given up on.
+ *
+ * It carries no caller's signal, so without its own bound a stalled request
+ * would leave `inFlight` pending forever and every later caller — since Phase 7
+ * item 1.1, every accelerated panel on its default path — would join it and
+ * never settle. Timed out, it settles as an ordinary unreadable page, which is
+ * not cached, and each caller carries on down its fallback. Normally sub-second;
+ * the bound is for a proxy that stops answering, not for a slow one.
+ */
+export const HISTORY_TIMEOUT_MS = 8_000
 
 interface HistoryPage {
   at: number
@@ -484,11 +495,23 @@ export function forgetRunHistory(): void {
 
 async function fetchHistoryPage(): Promise<ListedRunsRaw> {
   let r
+  // A plain timer rather than `AbortSignal.timeout`, whose clock no test can
+  // advance — and this bound is the one thing standing between a stalled proxy
+  // and every accelerated panel hanging with it.
+  const clock = new AbortController()
+  const timer = setTimeout(() => clock.abort(), HISTORY_TIMEOUT_MS)
   try {
-    // NO SIGNAL — see the block above. This request outlives any one caller.
-    r = await capi('GET', `${JOBS_PATH}?${historyQuery()}`, undefined, { background: true })
+    // NO CALLER'S SIGNAL — see the block above. This request outlives any one
+    // caller, so it is bounded by its own clock instead (HISTORY_TIMEOUT_MS).
+    r = await capi('GET', `${JOBS_PATH}?${historyQuery()}`, undefined, {
+      background: true,
+      signal: clock.signal,
+    })
   } catch (err) {
+    if (clock.signal.aborted) return { items: [], denied: false, error: 'The run history took too long to read.' }
     return { items: [], denied: false, error: err instanceof Error ? err.message : 'The run history could not be read.' }
+  } finally {
+    clearTimeout(timer)
   }
   if (r.status === 401 || r.status === 403) {
     return {

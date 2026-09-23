@@ -134,7 +134,7 @@ import {
   type AccelStep,
   type RemoveResult,
 } from '../cribl/accel/provision'
-import { allAccelStatus, type AccelStatus } from '../cribl/accel/status'
+import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/accel/status'
 import { estimateWorkspaceSaving } from '../cribl/accel/estimate'
 
 // ── The screen ──────────────────────────────────────────────────────────────
@@ -527,7 +527,12 @@ export function AccelPanel() {
         <button
           type="button"
           className="btn btn-ghost"
-          onClick={() => void refresh()}
+          onClick={() => {
+            // Re-check is a human asking for the current state; the cached run
+            // history must not answer it.
+            forgetRunHistory()
+            void refresh()
+          }}
           disabled={loading || running !== null}
         >
           {loading ? 'Checking…' : 'Re-check'}

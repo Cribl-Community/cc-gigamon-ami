@@ -24,7 +24,20 @@
 //     telemetry.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { forgetRunHistory } from './status'
+import { HISTORY_TIMEOUT_MS, forgetRunHistory } from './status'
+
+// The header spinner's counter, observed. `runSearch` counts itself; an
+// artifact read is a plain GET and has to count itself, or the spinner goes
+// quiet on the default path while panels are still loading.
+const spinner = vi.hoisted(() => ({ begun: 0, ended: 0 }))
+vi.mock('../inflight', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../inflight')>()
+  return {
+    ...real,
+    beginQuery: () => { spinner.begun++; real.beginQuery() },
+    endQuery: () => { spinner.ended++; real.endQuery() },
+  }
+})
 import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import type { FieldSummary, Row } from '../search'
 import { accelEntry, MANIFEST } from './manifest'
@@ -123,6 +136,15 @@ interface Cfg {
   jobs?: Record<string, Record<string, unknown>>
   /** Throw an abort from every request. */
   abort?: boolean
+  /** Abort `ctl` when a request's url contains this — the panel leaving
+   *  mid-read, rather than before it. The abort is THROWN only for requests
+   *  that carry the caller's signal; the shared history read carries none. */
+  abortOn?: string
+  ctl?: AbortController
+  /** One run's artifact, by run id, when it must differ from `vtRows` — a
+   *  completed older run whose artifact is readable while `$vt_results`,
+   *  which answers for the newest run, has nothing. */
+  runRows?: Record<string, Row[]>
 }
 
 interface Submitted {
@@ -149,6 +171,10 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
     const u = String(url)
     urls.push(u)
     if (cfg.abort) throw new DOMException('Aborted', 'AbortError')
+    if (cfg.abortOn && cfg.ctl && u.includes(cfg.abortOn)) {
+      cfg.ctl.abort()
+      if (init.signal === cfg.ctl.signal) throw new DOMException('Aborted', 'AbortError')
+    }
     const method = init.method ?? 'GET'
 
     if (method === 'POST' && u.endsWith('/search/jobs')) {
@@ -174,8 +200,9 @@ function stub(cfg: Cfg): { submits: Submitted[]; urls: string[] } {
       // synthetic id, so without this they fell through to `liveRows` and every
       // chosen-moment case quietly read the present.
       const storedRun = !u.includes('job-nm') && !u.includes('job-vt') && !u.includes('job-live')
+      const runId = /\/search\/jobs\/([^/?]+)\/results/.exec(u)?.[1] ?? ''
       const rows = storedRun
-        ? (cfg.vtRows ?? [])
+        ? (cfg.runRows?.[decodeURIComponent(runId)] ?? cfg.vtRows ?? [])
         : u.includes('job-nm') ? (cfg.nameRows ?? []) : u.includes('job-vt') ? (cfg.vtRows ?? []) : (cfg.liveRows ?? [])
       const ndjson = [JSON.stringify({ totalEventCount: rows.length, job: 'j' }), ...rows.map((r) => JSON.stringify(r))].join('\n')
       return res(200, {}, ndjson)
@@ -332,6 +359,135 @@ describe('a healthy read', () => {
     const read = await readAccelRows(LAKE, { now: NOW })
     expect(read.run?.id).toBe(SRC)
     expect(urls.some((u) => u.endsWith(`/search/jobs/${SRC}`))).toBe(true)
+  })
+
+  it('reads the newest run as an artifact — one GET, no job submitted', async () => {
+    // Phase 7 item 1.1. A `$vt_results` read is a submitted job and waits its
+    // turn in the ~1.6 s admission queue; the run's own artifact is a plain GET.
+    // A submit here means every accelerated panel is queueing again.
+    const { submits, urls } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()] })
+    spinner.begun = spinner.ended = 0
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(submits, 'a job was submitted to read a stored result').toEqual([])
+    expect(spinner.begun, 'the header spinner never saw the read').toBe(1)
+    expect(spinner.ended, 'the header spinner was left spinning').toBe(1)
+    expect(urls.some((u) => u.includes(`/search/jobs/${SRC}/results`))).toBe(true)
+    expect(read.source).toBe('schedule')
+    expect(read.outcome).toBe('fresh')
+    // Dated by the run it read, from the history row — no second lookup.
+    expect(read.run?.id).toBe(SRC)
+    expect(read.at).toBe(NOW - HOUR + 9_000)
+    expect(read.data).toEqual([{ total_events: 18_240_113, total_bytes: 9_412_886_144 }])
+  })
+
+  it('refuses rows that name a different run than the one it read', async () => {
+    // The artifact of NEWER answering with rows stamped SRC is a contradiction.
+    // Dating them by NEWER would be the lie; the query path dates by the rows.
+    const { submits } = stub({
+      ...healthy,
+      history: [srcRun({ id: NEWER, timeCompleted: NOW - 60_000 })],
+      jobs: { [SRC]: srcRun() },
+    })
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(vtSubmits(submits)).toHaveLength(1)
+    expect(read.run?.id).toBe(SRC)
+  })
+
+  it('keeps a re-aggregating tail on the query path', async () => {
+    // Over a limit-capped artifact a `summarize` is a wrong total whenever the
+    // read was truncated. Cribl evaluates it over every stored row instead.
+    const { submits } = stub({ ...healthy, history: [srcRun()] })
+    await readAccelRows(LAKE, { now: NOW, tail: '| summarize n=sum(total_events)' })
+    expect(vtSubmits(submits), 'a re-aggregating tail was evaluated over an artifact').toHaveLength(1)
+  })
+
+  it('falls back to the query path when the artifact is empty or unreadable', async () => {
+    const empty = stub({ ...healthy, history: [srcRun()], vtRows: [] })
+    const a = await readAccelRows(LAKE, { now: NOW })
+    expect(vtSubmits(empty.submits)).toHaveLength(2)
+    expect(a.source).toBe('live')
+  })
+
+  it('does not hang when the shared history read hangs', async () => {
+    // The shared read carries no caller's signal, so it must carry its own
+    // clock: every accelerated panel waits on it first now. A request that
+    // never answers settles when that clock fires, and the read carries on
+    // down the $vt_results path instead of hanging with it.
+    const base = { ...healthy, history: [srcRun()] }
+    const { submits } = stub(base)
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', (url: string, init: RequestInit = {}) => {
+      if (!String(url).includes('/search/jobs?')) return inner(url, init)
+      return new Promise((_, reject) => {
+        if (!init.signal) return // no clock: hangs forever, and so does the test
+        init.signal.addEventListener('abort', () => reject(init.signal!.reason))
+      })
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const p = readAccelRows(LAKE, { now: NOW })
+      await vi.advanceTimersByTimeAsync(HISTORY_TIMEOUT_MS + 1)
+      vi.useRealTimers()
+      const read = await p
+      expect(read.source).toBe('schedule')
+      expect(vtSubmits(submits), 'the read did not fall back to the query path').toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('passes a projection tail through to the artifact rows', async () => {
+    // The panel's own columns and nothing else — the column-leak class that
+    // 5f9013c fixed on the picked-snapshot path, pinned on this one.
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { now: NOW, tail: '| project a=total_events' })
+    expect(vtSubmits(submits)).toEqual([])
+    expect(read.data).toEqual([{ a: 18_240_113 }])
+  })
+
+  it('steps aside when the newest run FAILED, so run-failed is still reported', async () => {
+    // The timeline drops failed runs. Serving the one before it as "From the
+    // scheduled run." would bury the only signal an admin gets that the schedule
+    // broke. A failed run's $vt_results read is empty (it needs
+    // allow_incomplete_results, which this app never sends).
+    const failed = srcRun({ id: NEWER, status: 'failed', timeCompleted: NOW - 60_000 })
+    const { submits } = stub({
+      ...healthy,
+      vtRows: [],
+      nameRows: [],
+      // The older run's artifact is perfectly readable — which is exactly what
+      // makes serving it tempting, and wrong.
+      runRows: { [SRC]: [{ ...STORED }] },
+      history: [failed, srcRun()],
+    })
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(read.outcome).toBe('run-failed')
+    expect(vtSubmits(submits).length, 'the query path never ran').toBeGreaterThan(0)
+  })
+
+  it('serves the run before a newest run that is still GOING, dated by that run', async () => {
+    const going = srcRun({ id: NEWER, status: 'running', timeCompleted: undefined, timeStarted: NOW - 60_000 })
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [going, srcRun()] })
+    const read = await readAccelRows(LAKE, { now: NOW })
+    expect(submits).toEqual([])
+    expect(read.run?.id).toBe(SRC)
+    expect(read.at).toBe(NOW - HOUR + 9_000)
+  })
+
+  it('stops, rather than falling back, when the panel goes during the artifact read', async () => {
+    // Aborted mid-read, not before it: a fallback here would submit a job for a
+    // panel nobody is looking at.
+    const ctl = new AbortController()
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()], abortOn: `/search/jobs/${SRC}/results`, ctl })
+    await expect(readAccelRows(LAKE, { now: NOW, signal: ctl.signal })).rejects.toThrow()
+    expect(submits, 'a job was submitted for a panel that had gone').toEqual([])
+  })
+
+  it('stops, rather than falling back, when the panel goes during the history read', async () => {
+    const ctl = new AbortController()
+    const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], history: [srcRun()], abortOn: '/search/jobs?', ctl })
+    await expect(readAccelRows(LAKE, { now: NOW, signal: ctl.signal })).rejects.toThrow()
+    expect(submits, 'a job was submitted for a panel that had gone').toEqual([])
   })
 
   it('falls back to the newest run when the rows name no job', async () => {
@@ -509,6 +665,9 @@ describe('which identifier $vt_results answers to (V-23)', () => {
     stub(nameBinding)
     await readAccelRows(LAKE, { now: NOW })
     vi.unstubAllGlobals()
+    // The history page is cached for its TTL; a second stub is a second
+    // workspace, so the first one's page must not answer for it.
+    forgetRunHistory()
 
     const { submits } = stub({
       vtFields: [{ name: 'src_ip', type: 'string', count: 5000, countDistinct: 40, countNull: 0, topValues: [] }],

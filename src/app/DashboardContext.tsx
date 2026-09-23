@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { forgetRunHistory } from '../cribl/accel/status'
 
 export interface TimeRange {
   label: string
@@ -53,6 +54,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [autoSeconds, setAutoSeconds] = useState(0)
 
   const refresh = useCallback(() => {
+    // A HUMAN asked for fresh data, so the shared run-history page must not
+    // answer from its 15 s cache: accelerated panels pick their newest run from
+    // it, and a run that landed seconds ago would otherwise be invisible to the
+    // very click meant to show it. Auto-refresh ticks do not clear it; the TTL
+    // is already shorter than the shortest interval.
+    forgetRunHistory()
     setRefreshNonce((n) => n + 1)
     setManualRefreshNonce((n) => n + 1)
     setLastRefresh(Date.now())
