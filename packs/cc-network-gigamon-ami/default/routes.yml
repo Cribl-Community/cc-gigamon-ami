@@ -1,0 +1,33 @@
+# Routes of the cc-network-gigamon-ami pack.
+#
+# Two routes and no catch-all: only this pack's two sources feed it.
+#   syslog -> gno_syslog (parse + normalize) -> out_gno_lake        (gigamon_ami)
+#   sample -> gno_sample (cast + derive)     -> out_gno_sample_lake (gigamon_ami_sample)
+#
+# UNMEASURED: the value of __inputId for an input inside a pack. The filters
+# below assume it is `<type>:<id>`, as it is for a global input. The proof
+# install has to confirm it; a wrong filter drops the data silently.
+id: default
+groups: {}
+comments: []
+routes:
+  - id: gno_syslog
+    name: gno_syslog
+    final: true
+    disabled: false
+    filter: __inputId=='syslog:in_gno_syslog'
+    pipeline: gno_syslog
+    output: out_gno_lake
+    description: Gigamon AMI syslog → parse → Cribl Lake (gigamon_ami)
+    clones: []
+    enableOutputExpression: false
+  - id: gno_sample
+    name: gno_sample
+    final: true
+    disabled: false
+    filter: __inputId=='datagen:in_gno_sample'
+    pipeline: gno_sample
+    output: out_gno_sample_lake
+    description: Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)
+    clones: []
+    enableOutputExpression: false

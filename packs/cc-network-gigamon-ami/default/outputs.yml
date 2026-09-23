@@ -1,0 +1,30 @@
+# Destinations of the cc-network-gigamon-ami pack.
+#
+# Both are Cribl Lake destinations with the settings of landing.ts's
+# DEFAULT_PROFILE, exactly as provision.ts's destinationSpecFor(DEFAULT_PROFILE)
+# builds them; only the id and the dataset differ. src/cribl/pack.test.ts fails
+# if they drift. Neither dataset is in the pack: Cribl has no pack-scoped
+# dataset, so the app creates them, and removing the pack never deletes one.
+#
+# No `pipeline` key: DEFAULT_PROFILE has dropRaw false, which unbinds it.
+outputs:
+  out_gno_lake:
+    type: cribl_lake
+    destPath: gigamon_ami
+    format: json
+    storageLocationId: cribl_lake
+    maxFileSizeMB: 5
+    maxFileOpenTimeSec: 60
+    maxFileIdleTimeSec: 15
+    onBackpressure: block
+    compress: gzip
+  out_gno_sample_lake:
+    type: cribl_lake
+    destPath: gigamon_ami_sample
+    format: json
+    storageLocationId: cribl_lake
+    maxFileSizeMB: 5
+    maxFileOpenTimeSec: 60
+    maxFileIdleTimeSec: 15
+    onBackpressure: block
+    compress: gzip
