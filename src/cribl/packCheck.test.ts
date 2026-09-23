@@ -96,13 +96,62 @@ describe('pack.mjs check', () => {
       /tcpPort 5514 is outside 20000-20010/,
     ],
     [
+      'a syslog input that ships enabled',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/(type: syslog\n\s+disabled: )true/, '$1false')),
+      /in_gno_syslog: a syslog input must ship disabled: true/,
+    ],
+    [
+      'a syslog input with no disabled key at all (Cribl reads that as enabled)',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/(type: syslog\n)\s+disabled: true\n/, '$1')),
+      /in_gno_syslog: a syslog input must ship disabled: true/,
+    ],
+    // Leak path A: QuickConnect. The DataGen skips the routes and writes
+    // straight to the customer's destination.
+    [
+      'a DataGen wired by QuickConnect to the customer\'s destination',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/(type: datagen\n\s+disabled: true\n\s+)sendToRoutes: true/, '$1sendToRoutes: false\n    connections:\n      - output: out_gno_lake')),
+      /in_gno_sample: connections \(QuickConnect\) bypass the pack's routes/,
+    ],
+    [
+      'a DataGen that does not send to routes',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/(type: datagen\n\s+disabled: true\n\s+)sendToRoutes: true/, '$1sendToRoutes: false')),
+      /in_gno_sample: sendToRoutes must be true/,
+    ],
+    [
+      'a syslog input with QuickConnect connections',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/(type: syslog\n)/, '$1    connections:\n      - output: out_gno_sample_lake\n')),
+      /in_gno_syslog: connections \(QuickConnect\) bypass the pack's routes/,
+    ],
+    // Leak path B: an output expression. The route names the sample
+    // destination, and the expression sends the events somewhere else.
+    [
+      'a route whose output expression overrides its output',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace(/(output: out_gno_sample_lake[\s\S]*?)enableOutputExpression: false/, `$1enableOutputExpression: true\n    outputExpression: "'out_gno_lake'"`)),
+      /gno_sample: enableOutputExpression must be false/,
+    ],
+    [
+      'a route carrying an outputExpression, even with the switch off',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace(/(output: out_gno_sample_lake[\s\S]*?enableOutputExpression: false)/, `$1\n    outputExpression: "'out_gno_lake'"`)),
+      /gno_sample: outputExpression is not allowed/,
+    ],
+    [
+      'a routes file at default/routes.yml, where Cribl never reads it',
+      (d) => cpSync(join(d, 'default', 'pipelines', 'route.yml'), join(d, 'default', 'routes.yml')),
+      /default\/routes\.yml: a pack's routes live at default\/pipelines\/route\.yml/,
+    ],
+    [
+      'a pack with no default/pipelines/route.yml',
+      (d) => rmSync(join(d, 'default', 'pipelines', 'route.yml')),
+      /default\/pipelines\/route\.yml: missing/,
+    ],
+    [
       'a route to an output the pack does not define',
-      (d) => edit(d, 'default/routes.yml', (s) => s.replace('output: out_gno_lake', 'output: out_gno_nowhere')),
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace('output: out_gno_lake', 'output: out_gno_nowhere')),
       /output "out_gno_nowhere" is not in default\/outputs\.yml/,
     ],
     [
       'a route to a pipeline the pack does not define',
-      (d) => edit(d, 'default/routes.yml', (s) => s.replace('pipeline: gno_syslog', 'pipeline: gno_nowhere')),
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace('pipeline: gno_syslog', 'pipeline: gno_nowhere')),
       /pipeline "gno_nowhere" has no default\/pipelines\/gno_nowhere\/conf\.yml/,
     ],
     [

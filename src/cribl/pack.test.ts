@@ -11,7 +11,7 @@
 // nothing collides with the live global objects; src/cribl/pack.ts records
 // them, and this file checks the YAML uses exactly those.
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
@@ -23,7 +23,8 @@ import {
   PACK_SYSLOG_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_SYSLOG_PIPELINE_ID, PACK_SAMPLE_PIPELINE_ID,
   PACK_SYSLOG_ROUTE_ID, PACK_SAMPLE_ROUTE_ID, PACK_LAKE_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID,
   PACK_LAKE_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SYSLOG_PLACEHOLDER_PORT, CLOUD_SYSLOG_PORT_RANGE,
-  SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, GLOBAL_TO_PACK,
+  SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
+  PACK_SHA256, PACK_PUBLISHED, PACK_ROUTES_FILE,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -35,8 +36,21 @@ const without = (o: Obj, ...keys: string[]): Obj => Object.fromEntries(Object.en
 
 const inputs = yml('default/inputs.yml').inputs as Record<string, Obj>
 const outputs = yml('default/outputs.yml').outputs as Record<string, Obj>
-const routes = yml('default/routes.yml').routes as Obj[]
+const routes = yml(PACK_ROUTES_FILE).routes as Obj[]
 const pipeline = (id: string) => yml(`default/pipelines/${id}/conf.yml`) as { functions: unknown[] }
+/** The pipeline directories: `default/pipelines/` also holds the pack's route.yml. */
+const pipelineDirs = () => readdirSync(join(PACK_DIR, 'default', 'pipelines'), { withFileTypes: true })
+  .filter((e) => e.isDirectory()).map((e) => e.name)
+
+describe('the pack routes file is where Cribl reads a pack\'s routes', () => {
+  it('is default/pipelines/route.yml, and default/routes.yml does not exist', () => {
+    // Measured on a Leader: every bundled pack keeps <pack>/default/pipelines/route.yml,
+    // and no file named routes.yml exists anywhere. A routes file anywhere else
+    // is not read, so the pack would install with no routes at all.
+    expect(PACK_ROUTES_FILE).toBe('default/pipelines/route.yml')
+    expect(existsSync(join(PACK_DIR, 'default', 'routes.yml'))).toBe(false)
+  })
+})
 
 describe('the pack pipelines are provision.ts\'s PIPELINE_SPEC', () => {
   it('gno_syslog carries all four functions, value for value', () => {
@@ -52,15 +66,23 @@ describe('the pack pipelines are provision.ts\'s PIPELINE_SPEC', () => {
   })
 
   it('ships exactly those two pipelines', () => {
-    expect(readdirSync(join(PACK_DIR, 'default', 'pipelines')).sort()).toEqual([PACK_SAMPLE_PIPELINE_ID, PACK_SYSLOG_PIPELINE_ID].sort())
+    expect(pipelineDirs().sort()).toEqual([PACK_SAMPLE_PIPELINE_ID, PACK_SYSLOG_PIPELINE_ID].sort())
   })
 })
 
 describe('the pack syslog source is provision.ts\'s SOURCE_SPEC', () => {
   const src = inputs[PACK_SYSLOG_INPUT_ID]
 
-  it('matches every field but the id and the port', () => {
-    expect(without(src, 'tcpPort', 'udpPort')).toEqual(without(SOURCE_SPEC, 'id', 'tcpPort', 'udpPort'))
+  it('matches every field but the id, the port and `disabled`', () => {
+    expect(without(src, 'tcpPort', 'udpPort', 'disabled')).toEqual(without(SOURCE_SPEC, 'id', 'tcpPort', 'udpPort', 'disabled'))
+  })
+
+  it('ships disabled, unlike the global source', () => {
+    // A Cloud port in 20000-20010 is reachable from the internet and takes
+    // unauthenticated syslog. The input is enabled only after the user confirms
+    // a port in Guided Setup; until then nothing listens.
+    expect(src.disabled).toBe(true)
+    expect(SOURCE_SPEC.disabled).toBe(false)
   })
 
   it('ships a placeholder port a Cribl-managed group exposes, the same for TCP and UDP', () => {
@@ -79,6 +101,10 @@ describe('the sample DataGen', () => {
   it('ships disabled, and tags every event as sample data', () => {
     expect(gen.type).toBe('datagen')
     expect(gen.disabled).toBe(true)
+    // Through the routes, and only the routes: a QuickConnect `connections`
+    // list with sendToRoutes false would bypass the sample route entirely.
+    expect(gen.sendToRoutes).toBe(true)
+    expect(gen).not.toHaveProperty('connections')
     // `metadata` values are JS expressions, so the literal carries its own quotes.
     expect(gen.metadata).toEqual([{ name: SAMPLE_ORIGIN_FIELD, value: `'${SAMPLE_ORIGIN_VALUE}'` }])
   })
@@ -108,10 +134,12 @@ describe('the pack Lake destinations are destinationSpecFor(DEFAULT_PROFILE)', (
 })
 
 describe('the pack routes', () => {
-  it('the syslog route is ROUTE_SPEC with the pack\'s ids', () => {
-    const route = routes.find((r) => r.id === PACK_SYSLOG_ROUTE_ID)!
-    expect(without(route, 'id', 'name', 'filter', 'pipeline', 'output')).toEqual(without(ROUTE_SPEC, 'id', 'name', 'filter', 'pipeline', 'output'))
-    expect(route).toMatchObject({
+  // Whole-object equality, never toMatchObject: a key added to a route (an
+  // `outputExpression`, say) would otherwise pass unseen.
+  it('the syslog route is ROUTE_SPEC with the pack\'s ids, and nothing else', () => {
+    expect(routes.find((r) => r.id === PACK_SYSLOG_ROUTE_ID)).toEqual({
+      ...ROUTE_SPEC,
+      id: PACK_SYSLOG_ROUTE_ID,
       name: PACK_SYSLOG_ROUTE_ID,
       filter: `__inputId=='syslog:${PACK_SYSLOG_INPUT_ID}'`,
       pipeline: PACK_SYSLOG_PIPELINE_ID,
@@ -119,14 +147,18 @@ describe('the pack routes', () => {
     })
   })
 
-  it('the sample route sends the DataGen to the sample destination', () => {
-    expect(routes.find((r) => r.id === PACK_SAMPLE_ROUTE_ID)).toMatchObject({
+  it('the sample route sends the DataGen to the sample destination, and nothing else', () => {
+    expect(routes.find((r) => r.id === PACK_SAMPLE_ROUTE_ID)).toEqual({
+      id: PACK_SAMPLE_ROUTE_ID,
       name: PACK_SAMPLE_ROUTE_ID,
       final: true,
       disabled: false,
       filter: `__inputId=='datagen:${PACK_SAMPLE_INPUT_ID}'`,
       pipeline: PACK_SAMPLE_PIPELINE_ID,
       output: PACK_SAMPLE_OUTPUT_ID,
+      description: 'Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)',
+      clones: [],
+      enableOutputExpression: false,
     })
     expect(routes).toHaveLength(2)
   })
@@ -135,11 +167,13 @@ describe('the pack routes', () => {
 describe('pack ids never collide with the live global objects', () => {
   const packIds = [
     ...Object.keys(inputs), ...Object.keys(outputs), ...routes.map((r) => r.id as string),
-    ...readdirSync(join(PACK_DIR, 'default', 'pipelines')),
+    ...pipelineDirs(),
   ]
+  const replaced = Object.keys(REPLACED_BY_PACK)
+  const kept = Object.keys(KEPT_BESIDE_PACK)
 
   it('no pack object reuses a global id', () => {
-    const globals = new Set(Object.keys(GLOBAL_TO_PACK))
+    const globals = new Set([...replaced, ...kept])
     expect(packIds.filter((id) => globals.has(id))).toEqual([])
     // Nor the ids provision.ts creates today.
     for (const id of [SOURCE_SPEC.id, PIPELINE_SPEC.id, ROUTE_SPEC.id, destinationSpecFor(DEFAULT_PROFILE).id]) {
@@ -147,12 +181,25 @@ describe('pack ids never collide with the live global objects', () => {
     }
   })
 
-  it('every id in the mapping names an object the pack actually defines', () => {
-    for (const id of Object.values(GLOBAL_TO_PACK)) expect(packIds).toContain(id)
+  it('every replacement names an object the pack actually defines, and every entry a reason', () => {
+    for (const { by, why } of Object.values(REPLACED_BY_PACK)) {
+      expect(packIds).toContain(by)
+      expect(why.trim()).not.toBe('')
+    }
+    for (const why of Object.values(KEPT_BESIDE_PACK)) expect(why.trim()).not.toBe('')
   })
 
-  it('the mapping\'s keys are the global stack\'s ids', () => {
-    expect(Object.keys(GLOBAL_TO_PACK)).toEqual(expect.arrayContaining([SOURCE_SPEC.id, PIPELINE_SPEC.id, ROUTE_SPEC.id, destinationSpecFor(DEFAULT_PROFILE).id]))
+  it('the migration removes exactly the syslog source, its pipeline and its route that provision.ts creates', () => {
+    expect([...replaced].sort()).toEqual([SOURCE_SPEC.id, PIPELINE_SPEC.id, ROUTE_SPEC.id].sort())
+  })
+
+  it('keeps the demo DataGen, the global gigamon_ami pipeline and the global Lake destination', () => {
+    expect(destinationSpecFor(DEFAULT_PROFILE).id).toBe('gigamon_lake')
+    expect([...kept].sort()).toEqual(['gigamon_ami', 'gigamon_lake', 'in_gigamon_datagen'])
+  })
+
+  it('no global id is both replaced and kept', () => {
+    expect(replaced.filter((id) => kept.includes(id))).toEqual([])
   })
 })
 
@@ -184,6 +231,14 @@ describe('the pinned pack', () => {
     expect(packAssetName(PACK_VERSION)).toBe(`${manifest.name}-${PACK_VERSION}.crbl`)
   })
 
+  it('has a sha256 pin exactly when its release is recorded as published', () => {
+    // No release of PACK_VERSION exists yet, so there are no bytes to pin. The
+    // two constants move together: a pin without a release, or a release
+    // without a pin, fails here.
+    expect(PACK_SHA256 === null).toBe(!PACK_PUBLISHED)
+    if (PACK_SHA256 !== null) expect(PACK_SHA256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
   it('uses a tag the app\'s marketplace release can never match', () => {
     // release.yml publishes the APP on any tag matching `v*`.
     expect(packTag(PACK_VERSION).startsWith('v')).toBe(false)
@@ -212,5 +267,32 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
     expect(code).not.toMatch(/--clobber|gh release upload|make_latest|softprops/)
     expect(code).toMatch(/browser_download_url/)
     expect(code).toMatch(/pack\.mjs build --expect-version/)
+  })
+
+  it('creates the release as a draft, verifies the asset, and only then publishes it', () => {
+    expect(code).toMatch(/gh release create[^\n]*\\\n(\s+--[^\n]*\\\n)*\s+--draft \\\n/)
+    const create = code.indexOf('gh release create')
+    const download = code.indexOf('gh release download "$GITHUB_REF_NAME"')
+    const compare = code.indexOf('if [ "$WANT" != "$GOT" ]')
+    const publish = code.indexOf('gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false')
+    expect(create).toBeGreaterThan(-1)
+    expect(download).toBeGreaterThan(create)
+    expect(compare).toBeGreaterThan(download)
+    expect(publish).toBeGreaterThan(compare)
+    // A mismatch deletes the draft (never the tag) and stops: nothing is published.
+    const mismatch = code.slice(compare, publish)
+    expect(mismatch).toMatch(/gh release delete "\$GITHUB_REF_NAME" --yes/)
+    expect(mismatch).not.toMatch(/--cleanup-tag/)
+    expect(mismatch).toMatch(/exit 1/)
+  })
+
+  it('refuses a tag whose commit is not on main, before building anything', () => {
+    const fetch = code.indexOf('git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main')
+    const guard = code.indexOf('git merge-base --is-ancestor "$GITHUB_SHA" origin/main')
+    expect(fetch).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(fetch)
+    expect(guard).toBeLessThan(code.indexOf('pack.mjs build'))
+    // A depth-1 checkout has no history for merge-base to walk.
+    expect(code).toMatch(/fetch-depth: 0/)
   })
 })

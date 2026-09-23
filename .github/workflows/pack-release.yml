@@ -5,8 +5,9 @@
 # GitHub release, and never committed. Guided Setup installs it on a Leader
 # from that release's download URL.
 #
-# FIVE RULES, because each one would otherwise publish, hijack or break the
-# APP's release (release.yml, which fires on `v*` tags):
+# SEVEN RULES. The first five exist because each would otherwise publish,
+# hijack or break the APP's release (release.yml, which fires on `v*` tags);
+# the last two because the app pins the exact bytes at the release URL:
 #   1. Trigger only on `gigamon-pack-v*`. A pack tag never starts with `v`, so
 #      it can never match release.yml's `v*` filter.
 #   2. Never run `npm run package`, never write the root package.json, never
@@ -19,6 +20,13 @@
 #      them a .crbl instead.
 #   5. Never replace a published asset (no --clobber). The app pins the exact
 #      URL, so the bytes under it must never change; a fix is a new version.
+#   6. Build only a commit that is on main. A tag pushed on a branch commit
+#      would publish content no review approved; the tagged commit must be an
+#      ancestor of origin/main, checked before anything is built.
+#   7. Verify before publishing. The release is created as a DRAFT, its asset
+#      is downloaded and its sha256 compared with the build, and only then is
+#      it published (--draft=false --latest=false). On a mismatch the draft is
+#      deleted (the tag is kept) and nothing was ever public.
 name: Pack release
 
 on:
@@ -40,6 +48,18 @@ jobs:
       PACK: cc-network-gigamon-ami
     steps:
       - uses: actions/checkout@v4
+        with:
+          # merge-base below walks history; a depth-1 checkout has none.
+          fetch-depth: 0
+
+      - name: Guard - the tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; tag a merged commit"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -72,29 +92,42 @@ jobs:
       - name: Guard - nothing app-side changed
         run: git diff --exit-code -- package.json package-lock.json
 
-      - name: Publish (never Latest, never clobber) and read the URL back
+      - name: Draft, verify, then publish (never Latest, never clobber)
         run: |
           set -euo pipefail
           F="build/packs/$PACK-${{ steps.v.outputs.version }}.crbl"
           NAME="$(basename "$F")"
+          WANT="$(sha256sum "$F" | cut -d' ' -f1)"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "::error::release $GITHUB_REF_NAME already exists; a published pack is never replaced - bump the pack version"
             exit 1
           fi
+          # A draft first: nobody can download it, and nothing links to it yet.
           gh release create "$GITHUB_REF_NAME" "$F" \
             --verify-tag \
+            --draft \
             --latest=false \
             --title "Gigamon AMI onboarding pack ${{ steps.v.outputs.version }}" \
             --notes "The Cribl Stream pack Guided Setup installs. This is not the app; the app is released from v* tags."
+          # Read the uploaded asset back and compare it with the build.
+          mkdir -p /tmp/draft
+          gh release download "$GITHUB_REF_NAME" --pattern "$NAME" --dir /tmp/draft
+          GOT="$(sha256sum "/tmp/draft/$NAME" | cut -d' ' -f1)"
+          if [ "$WANT" != "$GOT" ]; then
+            echo "::error::the uploaded asset's sha256 ($GOT) differs from the build ($WANT); deleting the draft"
+            gh release delete "$GITHUB_REF_NAME" --yes
+            exit 1
+          fi
+          # Verified: publish it, still never Latest.
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false
           # The asset NAME forms the download URL, not a label: read it back
-          # from the API rather than composing it.
+          # from the API rather than composing it, and check the public bytes.
           URL="$(gh api "repos/${{ github.repository }}/releases/tags/$GITHUB_REF_NAME" \
             --jq ".assets[] | select(.name == \"$NAME\") | .browser_download_url")"
-          if [ -z "$URL" ]; then echo "::error::asset $NAME not found on the release after upload"; exit 1; fi
+          if [ -z "$URL" ]; then echo "::error::asset $NAME not found on the published release"; exit 1; fi
           curl -fsSL "$URL" -o /tmp/downloaded.crbl
-          WANT="$(sha256sum "$F" | cut -d' ' -f1)"
-          GOT="$(sha256sum /tmp/downloaded.crbl | cut -d' ' -f1)"
-          if [ "$WANT" != "$GOT" ]; then echo "::error::the downloaded asset's bytes differ from the build"; exit 1; fi
+          PUBLIC="$(sha256sum /tmp/downloaded.crbl | cut -d' ' -f1)"
+          if [ "$WANT" != "$PUBLIC" ]; then echo "::error::the public asset's bytes differ from the build"; exit 1; fi
           echo "browser_download_url: $URL"
           {
             echo "### Pack ${{ steps.v.outputs.version }} published"
@@ -103,5 +136,5 @@ jobs:
             echo "- browser_download_url: $URL"
             echo "- sha256: \`$WANT\`"
             echo ""
-            echo "To ship it with the app, set PACK_VERSION in src/cribl/pack.ts in a normal PR."
+            echo "To ship it with the app, set PACK_VERSION, PACK_SHA256 and PACK_PUBLISHED in src/cribl/pack.ts in a normal PR."
           } >> "$GITHUB_STEP_SUMMARY"

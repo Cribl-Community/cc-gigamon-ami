@@ -1,12 +1,20 @@
 # Sources of the cc-network-gigamon-ami pack.
 #
 # in_gno_syslog: where a Gigamon AMX exporter sends AMI records.
+#   SHIPS DISABLED. A Cloud port in 20000-20010 is reachable from the internet
+#   and syslog carries no authentication, so nothing listens until the user
+#   confirms a port in Guided Setup (a later slice), which sets the port and
+#   `disabled: false` in one whole-body PATCH of this input. `npm run pack:check`
+#   refuses a syslog input that ships enabled.
 #   THE PORT IS A PLACEHOLDER. 20005 sits inside 20000-20010, the range a
-#   Cribl-managed (Cloud) worker group exposes, so the input never binds a port
-#   an exporter cannot reach between install and setup. Guided Setup sets the
-#   real port at install (a later slice), with a whole-body PATCH of this input.
-#   Every other field is provision.ts's SOURCE_SPEC, value for value;
-#   src/cribl/pack.test.ts fails if the two drift.
+#   Cribl-managed (Cloud) worker group exposes.
+#   Every other field is provision.ts's SOURCE_SPEC, value for value (the
+#   global source ships enabled; `disabled` is the one other field that
+#   differs); src/cribl/pack.test.ts fails if the two drift.
+#
+# NO `connections` ON ANY INPUT. Both inputs reach their destinations through
+# the routes only (sendToRoutes: true). A QuickConnect `connections` list would
+# skip the routes, which is how sample events could reach gigamon_ami.
 #
 # in_gno_sample: synthetic AMI flows for a tenant with no exporter yet.
 #   SHIPS DISABLED. Starting it is a confirmed write in Guided Setup.
@@ -18,7 +26,7 @@
 inputs:
   in_gno_syslog:
     type: syslog
-    disabled: false
+    disabled: true
     host: 0.0.0.0
     tcpPort: 20005
     udpPort: 20005

@@ -747,6 +747,11 @@ function renderSamplesYml(files) {
     '# `npm run pack:check` fails the build when they do not.',
   ]
   for (const f of files) {
+    // NOT VERIFIED, a proof-slice item, unknown (f): does a sample replay with
+    // _time as now? Every live DataGen sample observed on a Leader has
+    // `isTemplate: true`; these ship `false`. Left as it is on purpose until an
+    // install on a real Leader shows which value stamps the current time on
+    // replay. Do not flip it on a guess (src/cribl/pack.ts says the same).
     lines.push(
       `${f.id}:`,
       `  sampleName: ${f.id}.json`,

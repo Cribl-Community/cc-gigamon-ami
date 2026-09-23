@@ -1,8 +1,19 @@
 # Routes of the cc-network-gigamon-ami pack.
 #
+# THIS PATH IS THE CONTRACT: a pack's routes live at default/pipelines/route.yml
+# (measured: every bundled pack on a Leader lists <pack>/default/pipelines/route.yml,
+# and no routes.yml exists anywhere). A default/routes.yml is never read, and
+# `npm run pack:check` refuses one.
+#
 # Two routes and no catch-all: only this pack's two sources feed it.
 #   syslog -> gno_syslog (parse + normalize) -> out_gno_lake        (gigamon_ami)
 #   sample -> gno_sample (cast + derive)     -> out_gno_sample_lake (gigamon_ami_sample)
+#
+# NO OUTPUT EXPRESSIONS. A route's `output` is the only place its events go:
+# `enableOutputExpression: true` with an `outputExpression` would let the sample
+# route write into gigamon_ami while still naming the sample destination, and
+# Lake has no row delete. `npm run pack:check` refuses either key, and
+# src/cribl/pack.test.ts compares each route here whole.
 #
 # UNMEASURED: the value of __inputId for an input inside a pack. The filters
 # below assume it is `<type>:<id>`, as it is for a global input. The proof

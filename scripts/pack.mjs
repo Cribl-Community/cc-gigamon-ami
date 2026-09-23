@@ -18,7 +18,14 @@
 //   - every sample id a DataGen names must exist.
 //   - every pipeline and output a route names must exist, and every YAML file
 //     must parse.
-//   - the syslog input's port must be one a Cribl-managed group exposes.
+//   - the syslog input's port must be one a Cribl-managed group exposes, and
+//     the input must ship disabled: that port is internet-reachable and syslog
+//     is unauthenticated, so nothing listens until Guided Setup confirms it.
+//   - the routes file must be default/pipelines/route.yml, where every pack
+//     on a Leader keeps it; a default/routes.yml is refused, not ignored.
+//   - sample data must have no way into gigamon_ami that the route checks do
+//     not see: no input may carry QuickConnect `connections`, every input must
+//     send to routes, and no route may carry an output expression.
 //
 // WHY THIS WRITES ITS OWN TAR. Three things measured in the delivery spike:
 //   - Cribl's extractor does not create missing parent directories, so the
@@ -112,9 +119,20 @@ function walk(dir, errors) {
   return { files, dirs }
 }
 
+/**
+ * Where a pack's routes live. Measured on a Leader: every bundled pack lists
+ * <pack>/default/pipelines/route.yml, and no file named routes.yml exists
+ * anywhere. A routes file elsewhere is not read, so the pack would install with
+ * no routes and its sources would feed nothing.
+ */
+const ROUTES_FILE = 'default/pipelines/route.yml'
+/** The wrong name this pack once used; refused outright so it cannot come back. */
+const WRONG_ROUTES_FILE = 'default/routes.yml'
+
 /** Only these reach the archive: the manifest, a README, default/ and data/samples/. */
 function allowed(rel) {
-  return rel === 'package.json' || rel === 'README.md' ||
+  if (rel === WRONG_ROUTES_FILE) return false
+  return rel === 'package.json' || rel === 'README.md' || rel === ROUTES_FILE ||
     /^default\/[a-z0-9_.-]+\.yml$/.test(rel) ||
     /^default\/pipelines\/[a-z0-9_-]+\/conf\.yml$/.test(rel) ||
     /^data\/samples\/[a-z0-9_-]+\.json$/.test(rel)
@@ -201,7 +219,10 @@ export function checkPack(dir, { expectVersion = null } = {}) {
   const errors = []
   if (!existsSync(dir)) return { errors: [`${dir}: no such directory`] }
   const { files, dirs } = walk(dir, errors)
-  for (const f of files) if (!allowed(f)) errors.push(`${f}: not a file the pack may contain`)
+  for (const f of files) {
+    if (f === WRONG_ROUTES_FILE) errors.push(`${f}: a pack's routes live at ${ROUTES_FILE}; Cribl never reads ${WRONG_ROUTES_FILE}`)
+    else if (!allowed(f)) errors.push(`${f}: not a file the pack may contain`)
+  }
 
   // 1. The pack manifest.
   let manifest = {}
@@ -289,6 +310,12 @@ export function checkPack(dir, { expectVersion = null } = {}) {
       errors.push(`${where}: must have a type`)
       continue
     }
+    // Every input reaches a destination through the pack's routes and nothing
+    // else. A QuickConnect `connections` list (with sendToRoutes false) skips
+    // the routes, which is how the DataGen could write into gigamon_ami while
+    // every route check still passed.
+    if (input.connections !== undefined) errors.push(`${where}: connections (QuickConnect) bypass the pack's routes; send to routes instead`)
+    if (input.sendToRoutes !== true) errors.push(`${where}: sendToRoutes must be true; the routes are the only path out of this pack`)
     if (input.type === 'datagen') {
       if (input.disabled !== true) errors.push(`${where}: a DataGen must ship disabled: true`)
       const list = Array.isArray(input.samples) ? input.samples : []
@@ -307,6 +334,10 @@ export function checkPack(dir, { expectVersion = null } = {}) {
       }
     }
     if (input.type === 'syslog') {
+      // A Cloud port in 20000-20010 is reachable from the internet and syslog
+      // is unauthenticated: nothing listens until Guided Setup confirms a port.
+      // An absent key is refused too, because Cribl reads it as enabled.
+      if (input.disabled !== true) errors.push(`${where}: a syslog input must ship disabled: true; Guided Setup enables it once the user confirms a port`)
       for (const k of ['tcpPort', 'udpPort']) {
         const p = input[k]
         if (!(Number.isInteger(p) && p >= PORT_MIN && p <= PORT_MAX)) {
@@ -322,12 +353,17 @@ export function checkPack(dir, { expectVersion = null } = {}) {
   for (const [id, o] of Object.entries(outputs)) {
     if (!isPlainObject(o) || typeof o.type !== 'string') errors.push(`default/outputs.yml: ${id}: must have a type`)
   }
-  const routesDoc = yml['default/routes.yml']
-  if (!files.includes('default/routes.yml')) errors.push('default/routes.yml: missing')
+  const routesDoc = yml[ROUTES_FILE]
+  if (!files.includes(ROUTES_FILE)) errors.push(`${ROUTES_FILE}: missing`)
   const routes = Array.isArray(routesDoc?.routes) ? routesDoc.routes : []
-  if (files.includes('default/routes.yml') && routes.length === 0) errors.push('default/routes.yml: has no routes')
+  if (files.includes(ROUTES_FILE) && routes.length === 0) errors.push(`${ROUTES_FILE}: has no routes`)
   for (const route of routes) {
-    const where = `default/routes.yml: ${route?.id}`
+    const where = `${ROUTES_FILE}: ${route?.id}`
+    // A route's `output` must be the only place its events go. An output
+    // expression overrides it at runtime, so a route could name the sample
+    // destination and still write into gigamon_ami.
+    if (isPlainObject(route) && 'outputExpression' in route) errors.push(`${where}: outputExpression is not allowed; a route's output must be the only place its events go`)
+    if (route?.enableOutputExpression !== undefined && route.enableOutputExpression !== false) errors.push(`${where}: enableOutputExpression must be false`)
     if (!files.includes(`default/pipelines/${route?.pipeline}/conf.yml`)) errors.push(`${where}: pipeline "${route?.pipeline}" has no default/pipelines/${route?.pipeline}/conf.yml`)
     if (!(route?.output in outputs)) errors.push(`${where}: output "${route?.output}" is not in default/outputs.yml`)
     const m = /^__inputId=='([a-z_]+):([A-Za-z0-9_-]+)'$/.exec(String(route?.filter))
