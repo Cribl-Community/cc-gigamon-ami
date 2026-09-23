@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AUTO_REFRESH, TIME_RANGES, WITHHELD_REFRESH_SECONDS, useDashboard } from './app/DashboardContext'
 import { APP_VERSION, IS_INSTALLED } from './cribl/config'
@@ -16,37 +16,8 @@ import { ModeToggle } from './components/ModeToggle'
 import { SnapshotPicker } from './components/SnapshotPicker'
 import { useDataMode } from './cribl/dataMode'
 import { JobWatchdogIndicator } from './components/JobWatchdog'
-import { Findings } from './tabs/Findings'
-import { Security } from './tabs/Security'
-import { WebApiHealth } from './tabs/WebApiHealth'
-import { FlowMap } from './tabs/FlowMap'
-import { CapacityTopTalkers } from './tabs/CapacityTopTalkers'
-import { TcpHealth } from './tabs/TcpHealth'
-import { DnsHealth } from './tabs/DnsHealth'
-import { TlsPosture } from './tabs/TlsPosture'
-import { PqcReadiness } from './tabs/PqcReadiness'
-import { ShadowAi } from './tabs/ShadowAi'
-import { DataFlow } from './tabs/DataFlow'
-import { FieldExplorer } from './tabs/FieldExplorer'
-import { AmiReference } from './tabs/AmiReference'
-import { GuidedSetup } from './tabs/GuidedSetup'
-
-const TABS = [
-  { to: '/findings', label: 'Findings', el: <Findings /> },
-  { to: '/security', label: 'Security', el: <Security /> },
-  { to: '/flow-map', label: 'Flow Map', el: <FlowMap /> },
-  { to: '/capacity', label: 'Capacity & Top Talkers', el: <CapacityTopTalkers /> },
-  { to: '/tcp-health', label: 'TCP Health', el: <TcpHealth /> },
-  { to: '/dns-health', label: 'DNS Health', el: <DnsHealth /> },
-  { to: '/web-api', label: 'Web & API', el: <WebApiHealth /> },
-  { to: '/tls-posture', label: 'TLS Posture', el: <TlsPosture /> },
-  { to: '/pqc', label: 'PQC Readiness', el: <PqcReadiness /> },
-  { to: '/ai-saas', label: 'Shadow AI', el: <ShadowAi /> },
-  { to: '/data-flow', label: 'Data Flow', el: <DataFlow /> },
-  { to: '/fields', label: 'Field Explorer', el: <FieldExplorer /> },
-  { to: '/reference', label: 'AMI Reference', el: <AmiReference /> },
-  { to: '/setup', label: 'Guided Setup', el: <GuidedSetup /> },
-]
+import { LANDING_ROUTE, TABS } from './app/tabs'
+import { TabLoading } from './components/TabLoading'
 
 function RefreshIcon() {
   return (
@@ -330,8 +301,12 @@ export default function App() {
         <AppBanners />
         <main className="app-main">
           <ErrorBoundary resetKey={location.pathname}>
+            {/* Inside the boundary, so a tab whose chunk fails to download
+                lands on the boundary's Reload message (app/lazyTab.tsx) rather
+                than taking the header and tab bar down with it. */}
+            <Suspense fallback={<TabLoading />}>
             <Routes>
-              <Route path="/" element={<Navigate to="/flow-map" replace />} />
+              <Route path="/" element={<Navigate to={LANDING_ROUTE} replace />} />
               {/* The Flow Map was called the Service Map until 2026-09-21, and
                   /service-map was the DEFAULT route — so it is what every
                   bookmark, every guided-tour anchor and every link anybody has
@@ -340,12 +315,13 @@ export default function App() {
                   the default route ever moves, an old Service Map link would
                   silently land on whatever became the default instead of on the
                   tab it names. This says where it goes, and why. */}
-              <Route path="/service-map" element={<Navigate to="/flow-map" replace />} />
+              <Route path="/service-map" element={<Navigate to={LANDING_ROUTE} replace />} />
               {TABS.map((t) => (
                 <Route key={t.to} path={t.to} element={t.el} />
               ))}
-              <Route path="*" element={<Navigate to="/flow-map" replace />} />
+              <Route path="*" element={<Navigate to={LANDING_ROUTE} replace />} />
             </Routes>
+            </Suspense>
           </ErrorBoundary>
         </main>
         <TourPicker />
