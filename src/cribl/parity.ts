@@ -28,6 +28,35 @@
 // beside it, so a column cannot be filed under the wrong class and a new
 // aggregate cannot join a check without being classified.
 //
+// A figure NO class applies to (a bare count, `sum(iif(f==x,…))`, `max`) is
+// still compared, and still counts: the classes say where the mechanism is
+// expected to bite, not where a changed tile is allowed. A run in which the
+// SERVFAIL count went to 0 is a failed run whether or not a class predicted it.
+//
+// ── THREE STATES THAT ARE NOT A RESULT ──────────────────────────────────────
+// * NOT RUN — a side returned no row for a check. A scalar summarize answers
+//   one row even over no events, so a missing row is a job that failed, was
+//   cancelled or was never submitted. It is never read as "nothing in this
+//   window", and never as a difference Parquet caused.
+// * NOT EXERCISED — both sides answered, and the figure was empty or zero on
+//   both. The window had nothing for this aggregate to be wrong about.
+// * INCOMPARABLE — the control count disagreed (or did not run, or the window
+//   was empty), so the two sides did not hold the same records.
+//
+// ── THE COUNT SLACK ─────────────────────────────────────────────────────────
+// The control is allowed to disagree by up to ±1 %; that is up to 1,000 of
+// 100,000 records present on one side and not the other. A rare count of 18
+// then cannot be held to ±1 % (0.18 of a record): the records the control says
+// are missing hit it in proportion, 18 × drift of them on average, and a count
+// moves in whole records. So a count figure is allowed
+//     max(tolerance × expected, ceil(expected × drift))
+// where drift is the control's own relative disagreement. With drift 0 that is
+// exactly the tolerance; with ANY drift it is at least one record, so a
+// one-record window-edge difference is not reported as the class A failure.
+// 18 → 40,280 is still thousands of records outside it. The same slack means a
+// +1 distinct value (class C) cannot be seen on a run whose control drifted,
+// and the class C sentence says so rather than calling that a pass.
+//
 // ── WHAT THIS CANNOT ESTABLISH ──────────────────────────────────────────────
 // * The tolerances are chosen, not measured. The only measured agreement is the
 //   bare count, within 0.2 % over "comparable" six-minute windows of two
@@ -38,6 +67,15 @@
 // * `dcount()` is approximate (≈ ±0.5 % at ~10k distinct values, exact at a few
 //   hundred — measured 2026-09-23), which is part of why C is not compared
 //   exactly.
+// * Class C's only tile figure, `resolvers=dcount(dns_host)`, reads only
+//   `app_name="dns"` rows. If every DNS row carries `dns_host`, Parquet has no
+//   absent value there to turn into "", and its agreement shows nothing about
+//   the mechanism. The pass sentence says so; a direct probe
+//   (`dcount(f)` against `dcount(iif(f=="",null,f))` on the Parquet side) is
+//   what would settle it, and it is not a query a dashboard runs.
+// * That a scalar summarize over no events answers one row is KQL semantics,
+//   not measured here. If Cribl answers no row, an empty window reads as NOT
+//   RUN — the safe direction: neither a pass nor a failure.
 // * Nothing here has been run against Cribl. The C, D and E queries exist so
 //   that the next parity run MEASURES those three classes.
 
@@ -61,7 +99,7 @@ import { LAKE_DATASET } from './config'
 export type NullClass = 'A' | 'B' | 'C' | 'D' | 'E'
 
 export const NULL_CLASSES: Readonly<Record<NullClass, { pattern: string; underParquet: string }>> = Object.freeze({
-  A: { pattern: 'isnotnull(f)', underParquet: 'true on every row, so a rare signal counts the whole window' },
+  A: { pattern: 'isnotnull(f)', underParquet: 'is true on every row, so a rare signal counts the whole window' },
   B: { pattern: 'count(f)', underParquet: 'counts every row, so every detection fires' },
   C: { pattern: 'dcount(f)', underParquet: 'gains one distinct value, the empty string' },
   D: { pattern: 'f=* presence filter', underParquet: 'may admit every row, so a scoped panel stops being scoped' },
@@ -337,46 +375,77 @@ function numberOf(v: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-export type ColumnVerdict = 'agrees' | 'differs' | 'unexercised'
+export type ColumnVerdict = 'agrees' | 'differs' | 'unexercised' | 'notrun'
+
+export type Side = 'json' | 'parquet'
 
 export interface ColumnResult extends ParityColumn {
   json: number | null
   parquet: number | null
   /** parquet ÷ json, when json is a non-zero number. */
   ratio: number | null
+  /** The absolute difference this figure was allowed, when it was compared. */
+  allowed: number | null
+  /** The sides that returned no row for this figure's check. Empty unless `notrun`. */
+  missing: Side[]
   verdict: ColumnVerdict
+}
+
+/**
+ * The absolute difference a figure is allowed: its own tolerance, and — for a
+ * count — at least the whole records the control's own `drift` says one side
+ * holds and the other does not. See THE COUNT SLACK in the header.
+ */
+export function allowedDifference(col: Pick<ParityColumn, 'kind' | 'tolerance'>, expected: number, drift: number): number {
+  const byTolerance = col.tolerance * Math.abs(expected)
+  if (col.kind !== 'count') return byTolerance
+  return Math.max(byTolerance, Math.ceil(Math.abs(expected) * drift))
 }
 
 /**
  * One column, both sides.
  *
- * Nothing on both sides is `unexercised`, never `agrees`: a figure that was
- * zero on both sides compared nothing. For a count-kind aggregate a missing
- * value and 0 are the same statement (a `sum` over rows that all lack the key
- * is omitted from the row). For a distribution they are NOT: a latency tile
- * that read "no value" on JSON and 0 on Parquet is class E's failure exactly.
+ * A side with no row is `notrun` — the job did not answer, which says nothing
+ * about the window or about Parquet. Nothing on both sides is `unexercised`,
+ * never `agrees`: a figure that was zero on both sides compared nothing. For a
+ * count-kind aggregate a missing value and 0 are the same statement (a `sum`
+ * over rows that all lack the key is omitted from the row). For a distribution
+ * they are NOT: a latency tile that read "no value" or 0 on JSON and a number
+ * on Parquet (or the reverse) is class E's failure exactly.
+ *
+ * `drift` is the control's relative disagreement, 0 when it agreed exactly.
  */
-export function compareColumn(col: ParityColumn, jsonRow: Row | null | undefined, parquetRow: Row | null | undefined): ColumnResult {
+export function compareColumn(
+  col: ParityColumn,
+  jsonRow: Row | null | undefined,
+  parquetRow: Row | null | undefined,
+  drift = 0,
+): ColumnResult {
   const json = numberOf(jsonRow?.[col.column])
   const parquet = numberOf(parquetRow?.[col.column])
-  const base = { ...col, json, parquet }
+  const missing: Side[] = []
+  if (jsonRow == null) missing.push('json')
+  if (parquetRow == null) missing.push('parquet')
+  const base = { ...col, json, parquet, missing, ratio: null, allowed: null }
+  if (missing.length) return { ...base, verdict: 'notrun' }
+
   const nothing = (v: number | null) => v === null || v === 0
 
   if (col.kind === 'distribution') {
-    if (json === null && parquet === null) return { ...base, ratio: null, verdict: 'unexercised' }
-    if (json === null || parquet === null) return { ...base, ratio: null, verdict: 'differs' }
-    if (json === 0) return { ...base, ratio: null, verdict: parquet === 0 ? 'unexercised' : 'differs' }
+    if (json === null && parquet === null) return { ...base, verdict: 'unexercised' }
+    if (json === null || parquet === null) return { ...base, verdict: 'differs' }
+    if (json === 0) return { ...base, verdict: parquet === 0 ? 'unexercised' : 'differs' }
   } else {
-    if (nothing(json) && nothing(parquet)) return { ...base, ratio: null, verdict: 'unexercised' }
-    if (nothing(json)) return { ...base, ratio: null, verdict: 'differs' }
+    if (nothing(json) && nothing(parquet)) return { ...base, verdict: 'unexercised' }
+    if (nothing(json)) return { ...base, verdict: 'differs' }
   }
   const j = json as number
   const p = parquet ?? 0
-  const ratio = p / j
-  return { ...base, ratio, verdict: Math.abs(p - j) / Math.abs(j) <= col.tolerance ? 'agrees' : 'differs' }
+  const allowed = allowedDifference(col, j, drift)
+  return { ...base, ratio: p / j, allowed, verdict: Math.abs(p - j) <= allowed ? 'agrees' : 'differs' }
 }
 
-export type ClassVerdict = 'pass' | 'fail' | 'unexercised' | 'incomparable'
+export type ClassVerdict = 'pass' | 'fail' | 'unexercised' | 'notrun' | 'incomparable'
 
 export interface ClassReport {
   cls: NullClass
@@ -392,10 +461,17 @@ export interface ParityReport {
   window: ParityWindow
   datasets: ParityDatasets
   control: ColumnResult
+  /** The control's relative disagreement, 0 when it is not comparable. */
+  drift: number
   comparable: boolean
-  verdict: 'pass' | 'fail' | 'partial' | 'incomparable'
+  /**
+   * `fail`: a class failed, or a figure outside the five classes changed.
+   * `incomplete`: nothing failed, but a check returned no row on some side.
+   * `partial`: every check ran, and some class had nothing to compare.
+   */
+  verdict: 'pass' | 'fail' | 'incomplete' | 'partial' | 'incomparable'
   classes: ClassReport[]
-  /** Columns no class applies to — compared, but attributed to none. */
+  /** Columns no class applies to — compared, and counted in the verdict. */
   unaffected: ColumnResult[]
   sentence: string
 }
@@ -421,51 +497,116 @@ export function windowWords(w: ParityWindow): string {
 
 function sides(r: ColumnResult, d: ParityDatasets): string {
   const move = r.ratio === null ? 'where the JSON side had none' : `×${Number(r.ratio.toPrecision(3))}`
-  return `${r.protects}: ${fmtValue(r.json)} on ${d.json}, ${fmtValue(r.parquet)} on ${d.parquet} (${move})`
+  const allowed = r.allowed === null ? '' : `, allowed ±${fmtValue(r.allowed)}`
+  return `${r.protects}: ${fmtValue(r.json)} on ${d.json}, ${fmtValue(r.parquet)} on ${d.parquet} (${move}${allowed})`
 }
 
-/** A limit a class's own tolerance puts on what a pass can mean. */
+/** "gigamon_ami_pq" / "either dataset", for the sides a not-run figure lacked. */
+function missingSides(cols: ColumnResult[], d: ParityDatasets): string {
+  const s = new Set(cols.flatMap((c) => c.missing))
+  return s.size === 2 ? `either ${d.json} or ${d.parquet}` : s.has('json') ? d.json : d.parquet
+}
+
+function checksOf(cols: ColumnResult[]): string {
+  return [...new Set(cols.map((c) => c.check))].join(', ')
+}
+
+/**
+ * The smallest difference a class's failure mode produces, where that is a
+ * fixed size. Class C's is one distinct value, the "": an agreeing figure that
+ * was allowed ±1 or more could not have shown it, so it does not count as
+ * evidence the class held.
+ */
+const CLASS_DETECTS: Partial<Record<NullClass, number>> = { C: 1 }
+
+function sees(cls: NullClass, c: ColumnResult): boolean {
+  const detect = CLASS_DETECTS[cls]
+  return c.verdict === 'agrees' && (detect === undefined || (c.allowed ?? Infinity) < detect)
+}
+
+/** A limit on what a class's pass can mean, whatever the run's figures. */
 const CLASS_LIMIT: Partial<Record<NullClass, string>> = {
-  C: `A difference of one distinct value is outside ${pct(TOLERANCE.count)} only while the count is under 100, so a pass cannot rule out the extra "" on a larger one.`,
+  C:
+    `A difference of one distinct value is outside ${pct(TOLERANCE.count)} only while the count is under 100, and not at all ` +
+    `when the control itself drifted. The "Distinct resolvers" figure reads only app_name="dns" rows: if every one of them ` +
+    `carries dns_host, Parquet has no empty value to add there and its agreement shows nothing about this class.`,
 }
 
-function classSentence(cls: NullClass, verdict: ClassVerdict, cols: ColumnResult[], control: ColumnResult, d: ParityDatasets, w: ParityWindow): string {
+function classSentence(cls: NullClass, verdict: ClassVerdict, cols: ColumnResult[], control: ColumnResult, d: ParityDatasets, w: ParityWindow, drift: number): string {
   const name = `Class ${cls} (${NULL_CLASSES[cls].pattern})`
   const over = `over ${windowWords(w)}`
+  const limit = CLASS_LIMIT[cls] ? ` ${CLASS_LIMIT[cls]}` : ''
   switch (verdict) {
     case 'incomparable':
-      return `${name} was not judged: the control disagreed (${sides(control, d)}), so the two datasets did not hold the same records ${over}.`
+      return `${name} was not judged: ${controlWords(control, d)} ${over}.`
     case 'fail': {
       const bad = cols.filter((c) => c.verdict === 'differs')
-      const tol = bad.map((c) => c.tolerance)
+      const widened = drift > 0 ? `, each count widened by the control's own drift of ${pct(drift).slice(1)}` : ''
       return (
-        `${name} FAILED on ${bad.length} of ${cols.length} figures ${over}, outside ${pct(Math.max(...tol))}: ` +
+        `${name} FAILED on ${bad.length} of ${cols.length} figures ${over}, outside the difference each was allowed${widened}: ` +
         bad.map((c) => sides(c, d)).join('; ') +
         `. Under Parquet this aggregate ${NULL_CLASSES[cls].underParquet}.`
       )
     }
-    case 'unexercised':
-      return `${name} was not exercised: every figure that carries it was empty or zero on both sides ${over}, so this run says nothing about it.`
-    case 'pass': {
-      const agreed = cols.filter((c) => c.verdict === 'agrees')
-      const limit = CLASS_LIMIT[cls] ? ` ${CLASS_LIMIT[cls]}` : ''
+    case 'notrun': {
+      const gone = cols.filter((c) => c.verdict === 'notrun')
       return (
-        `${name} held: ${agreed.length} of ${cols.length} figures agreed between ${d.json} and ${d.parquet} ${over}, ` +
-        `each within ${pct(Math.max(...agreed.map((c) => c.tolerance)))} — ${agreed.map((c) => c.protects).join('; ')}.` +
-        (agreed.length < cols.length ? ` The other ${cols.length - agreed.length} were empty or zero on both sides.` : '') +
+        `${name} was not judged: ${gone.length} of ${cols.length} figures got no result from ${missingSides(gone, d)} ` +
+        `(check ${checksOf(gone)}) ${over}. The job failed, was stopped or was never submitted — this is not a statement about the window.`
+      )
+    }
+    case 'unexercised': {
+      const blind = cols.filter((c) => c.verdict === 'agrees')
+      const empty = cols.length - blind.length
+      return blind.length
+        ? `${name} was not exercised ${over}: ${blind.length} of ${cols.length} figures agreed, but each was allowed a difference ` +
+            `the failure could hide inside (${blind.map((c) => sides(c, d)).join('; ')})` +
+            (empty ? `, and the other ${empty} were empty or zero on both sides.` : '.') +
+            limit
+        : `${name} was not exercised: every figure that carries it was empty or zero on both sides ${over}, so this run says nothing about it.`
+    }
+    case 'pass': {
+      const seen = cols.filter((c) => sees(cls, c))
+      const blind = cols.filter((c) => c.verdict === 'agrees' && !sees(cls, c))
+      const empty = cols.length - seen.length - blind.length
+      return (
+        `${name} held: ${seen.length} of ${cols.length} figures agreed between ${d.json} and ${d.parquet} ${over}, ` +
+        `each within the difference it was allowed — ${seen.map((c) => c.protects).join('; ')}.` +
+        (blind.length ? ` ${blind.length} more agreed only inside a slack this class's failure fits in: ${blind.map((c) => c.protects).join('; ')}.` : '') +
+        (empty ? ` The other ${empty} were empty or zero on both sides.` : '') +
         limit
       )
     }
   }
 }
 
+function controlWords(control: ColumnResult, d: ParityDatasets): string {
+  switch (control.verdict) {
+    case 'notrun':
+      return `the control count got no result from ${missingSides([control], d)}, so nothing says the two sides held the same records`
+    case 'unexercised':
+      return `the control count was empty on both sides, so the window held no records to compare`
+    default:
+      return `the control disagreed (${sides(control, d)}), so the two datasets did not hold the same records`
+  }
+}
+
+function classVerdict(cls: NullClass, cols: ColumnResult[], comparable: boolean): ClassVerdict {
+  if (!comparable) return 'incomparable'
+  if (cols.some((c) => c.verdict === 'differs')) return 'fail'
+  if (cols.some((c) => c.verdict === 'notrun')) return 'notrun'
+  if (cols.some((c) => sees(cls, c))) return 'pass'
+  return 'unexercised'
+}
+
 /**
  * Compare a parity run. `rows` maps each check id to the one row each side
- * returned (null when a side returned no row at all).
+ * returned: null (or the whole entry absent) when a side returned no row.
  *
  * THE CONTROL GATES EVERYTHING. When the flat count disagrees, the windows did
  * not hold the same records and no class is judged — a failure there would be a
- * claim about Parquet that is really a claim about landing lag.
+ * claim about Parquet that is really a claim about landing lag. When it agrees
+ * within its tolerance, its own drift widens every count (THE COUNT SLACK).
  */
 export function compareParity(
   rows: Readonly<Record<string, { json: Row | null; parquet: Row | null } | undefined>>,
@@ -473,44 +614,76 @@ export function compareParity(
   datasets: ParityDatasets,
   checks: readonly ParityCheck[] = PARITY_CHECKS,
 ): ParityReport {
-  const results = parityColumns(checks).map((col) => compareColumn(col, rows[col.check]?.json, rows[col.check]?.parquet))
-  const control = results.find((r) => r.role === 'control')
-  if (!control) throw new Error('parity: no control column')
+  const columns = parityColumns(checks)
+  const controlCol = columns.find((c) => c.role === 'control')
+  if (!controlCol) throw new Error('parity: no control column')
+  const control = compareColumn(controlCol, rows[controlCol.check]?.json, rows[controlCol.check]?.parquet)
   const comparable = control.verdict === 'agrees'
+  const drift = comparable ? Math.abs((control.parquet ?? 0) - (control.json as number)) / Math.abs(control.json as number) : 0
+
+  const results = columns.map((col) => (col === controlCol ? control : compareColumn(col, rows[col.check]?.json, rows[col.check]?.parquet, drift)))
 
   const classes = CLASS_ORDER.map((cls): ClassReport => {
     const cols = results.filter((r) => r.classes.includes(cls))
-    const verdict: ClassVerdict = !comparable
-      ? 'incomparable'
-      : cols.some((c) => c.verdict === 'differs')
-        ? 'fail'
-        : cols.some((c) => c.verdict === 'agrees')
-          ? 'pass'
-          : 'unexercised'
+    const verdict = classVerdict(cls, cols, comparable)
     return {
       cls,
       pattern: NULL_CLASSES[cls].pattern,
       verdict,
       protects: cols.map((c) => c.protects),
       columns: cols,
-      sentence: classSentence(cls, verdict, cols, control, datasets, window),
+      sentence: classSentence(cls, verdict, cols, control, datasets, window, drift),
     }
   })
   const unaffected = results.filter((r) => r.role === 'unaffected')
+  const outsideChanged = unaffected.filter((r) => r.verdict === 'differs')
+  const notRun = results.filter((r) => r.verdict === 'notrun')
 
   const failed = classes.filter((c) => c.verdict === 'fail').map((c) => c.cls)
   const unexercised = classes.filter((c) => c.verdict === 'unexercised').map((c) => c.cls)
-  const verdict: ParityReport['verdict'] = !comparable ? 'incomparable' : failed.length ? 'fail' : unexercised.length ? 'partial' : 'pass'
+  const verdict: ParityReport['verdict'] = !comparable
+    ? 'incomparable'
+    : failed.length || outsideChanged.length
+      ? 'fail'
+      : notRun.length
+        ? 'incomplete'
+        : unexercised.length
+          ? 'partial'
+          : 'pass'
+
   const between = `${datasets.json} against ${datasets.parquet} over ${windowWords(window)}`
-  const sentence =
-    verdict === 'incomparable'
-      ? `Parity was not judged for ${between}: the control count disagreed, so the two sides did not hold the same records.`
-      : verdict === 'fail'
-        ? `Parity FAILED for ${between}: class ${failed.join(', ')} changed a dashboard number.`
-        : verdict === 'partial'
-          ? `Parity held for ${between} on ${5 - unexercised.length} of 5 classes; class ${unexercised.join(', ')} had nothing to compare in this window.`
-          : `Parity held for ${between} on all 5 classes.`
+  const notRunWords = notRun.length
+    ? `${notRun.length} figure${notRun.length === 1 ? '' : 's'} got no result from ${missingSides(notRun, datasets)} (check ${checksOf(notRun)})`
+    : ''
+  let sentence: string
+  switch (verdict) {
+    case 'incomparable':
+      sentence = `Parity was not judged for ${between}: ${controlWords(control, datasets)}.`
+      break
+    case 'fail': {
+      const why = [
+        failed.length ? `class ${failed.join(', ')} changed a dashboard number` : '',
+        outsideChanged.length
+          ? `${outsideChanged.length} figure${outsideChanged.length === 1 ? '' : 's'} outside the five null classes changed — ` +
+            outsideChanged.map((c) => sides(c, datasets)).join('; ')
+          : '',
+      ].filter(Boolean)
+      sentence = `Parity FAILED for ${between}: ${why.join('; and ')}.` + (notRunWords ? ` Also, ${notRunWords}.` : '')
+      break
+    }
+    case 'incomplete': {
+      const notJudged = classes.filter((c) => c.verdict === 'notrun').map((c) => c.cls)
+      sentence =
+        `Parity is incomplete for ${between}: nothing compared failed, but ${notRunWords}, ` +
+        (notJudged.length ? `so class ${notJudged.join(', ')} was not judged.` : 'so figures outside the five classes were not judged.')
+      break
+    }
+    case 'partial':
+      sentence = `Parity held for ${between} on ${5 - unexercised.length} of 5 classes; class ${unexercised.join(', ')} was not exercised — nothing in this window could have shown its failure.`
+      break
+    default:
+      sentence = `Parity held for ${between} on all 5 classes, and on every figure outside them.`
+  }
 
-  return { window, datasets, control, comparable, verdict, classes, unaffected, sentence }
+  return { window, datasets, control, drift, comparable, verdict, classes, unaffected, sentence }
 }
-

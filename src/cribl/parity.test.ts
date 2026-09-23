@@ -179,6 +179,7 @@ describe('class A — isnotnull(f)', () => {
     expect(a.sentence).toContain('"Protocol Tunneling" (T1572)')
     expect(a.sentence).toContain('18 on gigamon_ami')
     expect(a.sentence).toContain('43,338 on gigamon_ami_pq')
+    expect(a.sentence).toContain('Under Parquet this aggregate is true on every row')
     expect(r.verdict).toBe('fail')
   })
   it('fails on the zero/non-zero trap: both sides non-zero, magnitude wrong', () => {
@@ -211,11 +212,21 @@ describe('class C — dcount(f)', () => {
     expect(c.verdict).toBe('fail')
     expect(c.sentence).toContain('"Distinct resolvers" tile')
   })
-  it('cannot see +1 on a count of 100 or more, and its pass sentence says so', () => {
+  it('cannot see +1 on a count of 100 or more, so a run with no smaller figure is not exercised, not a pass', () => {
+    // web-kpi.hosts is 1,000 in the baseline: +1 there is inside ±1 % already.
     const rows = withParquet(withJson(agreeing(), 'dns', { resolvers: 500 }), 'dns', { resolvers: 501 })
-    const c = compareParity(rows, WINDOW, DATASETS).classes.find((x) => x.cls === 'C')!
-    expect(c.verdict).toBe('pass')
+    const r = compareParity(rows, WINDOW, DATASETS)
+    const c = r.classes.find((x) => x.cls === 'C')!
+    expect(c.verdict).toBe('unexercised')
     expect(c.sentence).toMatch(/only while the count is under 100/)
+    expect(r.verdict).toBe('partial')
+  })
+  it('says in its pass sentence that the resolvers figure reads only DNS rows', () => {
+    const c = compareParity(agreeing(), WINDOW, DATASETS).classes.find((x) => x.cls === 'C')!
+    expect(c.verdict).toBe('pass')
+    expect(c.sentence).toMatch(/reads only app_name="dns" rows/)
+    // The 1,000-host figure agreed, but inside a slack +1 fits in: named, not counted.
+    expect(c.sentence).toMatch(/1 more agreed only inside a slack/)
   })
 })
 
@@ -256,6 +267,118 @@ describe('class E — percentile / avg / min(f)', () => {
     const rows = withParquet(withJson(agreeing(), 'web-kpi', { server_p95: null }), 'web-kpi', { server_p95: 0 })
     expect(verdicts(rows).E).toBe('fail')
   })
+  it('fails when JSON read 0 and Parquet reads a number — 0 on one side is not "nothing to compare"', () => {
+    const rows = withParquet(withJson(agreeing(), 'latency', { net_lo: 0 }), 'latency', { net_lo: 0.042 })
+    expect(verdicts(rows).E).toBe('fail')
+  })
+  it('passes a figure 4 % off and fails one 6 % off: ±5 % is the tolerance, not a bound nothing reaches', () => {
+    expect(verdicts(withParquet(agreeing(), 'capacity-kpi', { rtt: 0.042 * 1.04 })).E).toBe('pass')
+    expect(verdicts(withParquet(agreeing(), 'capacity-kpi', { rtt: 0.042 * 1.06 })).E).toBe('fail')
+  })
+})
+
+describe('the count tolerance', () => {
+  it('passes a count 0.9 % off and fails one 1.5 % off when the control agreed exactly', () => {
+    expect(verdicts(withParquet(agreeing(), 'findings', { f2: 1_009 })).B).toBe('pass')
+    expect(verdicts(withParquet(agreeing(), 'findings', { f2: 1_015 })).B).toBe('fail')
+  })
+})
+
+describe('the count slack the control’s own drift allows', () => {
+  // The control 0.8 % apart: inside its ±1 %, so the run is judged — and 800
+  // records are on one side and not the other.
+  const drifted = () => withParquet(agreeing(), 'count', { c: 99_200 })
+
+  it('does not report a one-record window-edge difference in a rare count as the class A failure', () => {
+    const rows = withParquet(withJson(drifted(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 19 })
+    const r = compareParity(rows, WINDOW, DATASETS)
+    expect(r.comparable).toBe(true)
+    expect(r.drift).toBeCloseTo(0.008, 6)
+    expect(r.classes.find((c) => c.cls === 'A')!.verdict).toBe('pass')
+    // Not 'pass': the same slack hides class C's +1 (below), and the run says so.
+    expect(r.verdict).toBe('partial')
+    expect(r.sentence).toMatch(/class C was not exercised/)
+  })
+  it('allows whole records in proportion, not a blanket margin: 18 → 20 still fails', () => {
+    const rows = withParquet(withJson(drifted(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 20 })
+    expect(verdicts(rows).A).toBe('fail')
+  })
+  it('still fails the measured 18 → 40,280, and says the allowance was widened', () => {
+    const rows = withParquet(withJson(drifted(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 40_280 })
+    const a = compareParity(rows, WINDOW, DATASETS).classes.find((c) => c.cls === 'A')!
+    expect(a.verdict).toBe('fail')
+    expect(a.sentence).toMatch(/widened by the control's own drift of 0\.8 %/)
+  })
+  it('makes +1 distinct invisible, so class C on a drifted run is not exercised rather than passed', () => {
+    expect(verdicts(withParquet(drifted(), 'dns', { resolvers: 13 })).C).toBe('unexercised')
+  })
+})
+
+describe('figures outside the five classes', () => {
+  it('are compared and counted: a SERVFAIL count gone to 0 fails the run and names its tile', () => {
+    expect(col('dns', 'sf').role).toBe('unaffected')
+    const r = compareParity(withParquet(agreeing(), 'dns', { sf: 0, nx: 0 }), WINDOW, DATASETS)
+    for (const c of r.classes) expect(c.verdict, c.cls).toBe('pass')
+    expect(r.verdict).toBe('fail')
+    expect(r.sentence).toMatch(/2 figures outside the five null classes changed/)
+    expect(r.sentence).toContain('"SERVFAIL / error rate" tile (SERVFAIL): 1,000 on gigamon_ami, 0 on gigamon_ami_pq')
+  })
+  it('fail on a total outside tolerance, and on a max, which belongs to no class', () => {
+    expect(compareParity(withParquet(agreeing(), 'capacity-kpi', { total: 1 }), WINDOW, DATASETS).sentence).toContain('"Total traffic" tile')
+    expect(col('latency', 'net_hi').role).toBe('unaffected')
+    expect(compareParity(withParquet(agreeing(), 'latency', { net_hi: 0 }), WINDOW, DATASETS).verdict).toBe('fail')
+  })
+  it('are named beside a class failure, not hidden by it', () => {
+    const rows = withParquet(withParquet(withJson(agreeing(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 43_338 }), 'dns', { sf: 0 })
+    expect(compareParity(rows, WINDOW, DATASETS).sentence).toMatch(/class A changed a dashboard number; and 1 figure outside the five null classes changed/)
+  })
+})
+
+describe('a check that did not run', () => {
+  it('is "not run", never "nothing in this window", when neither side answered', () => {
+    const rows: Rows = agreeing()
+    delete rows['host-presence']
+    delete rows['code-presence']
+    const r = compareParity(rows, WINDOW, DATASETS)
+    const d = r.classes.find((c) => c.cls === 'D')!
+    expect(d.verdict).toBe('notrun')
+    expect(d.sentence).toMatch(/got no result from either gigamon_ami or gigamon_ami_pq/)
+    expect(d.sentence).toMatch(/not a statement about the window/)
+    expect(d.sentence).not.toMatch(/empty or zero/)
+    expect(r.verdict).toBe('incomplete')
+    expect(r.sentence).toMatch(/class D was not judged/)
+    expect(r.sentence).not.toMatch(/nothing to compare|not exercised/)
+  })
+  it('is "not run", not a Parquet difference, when only the Parquet side has no row', () => {
+    const rows: Rows = { ...agreeing(), security: { json: agreeing().security.json, parquet: null } }
+    const r = compareParity(rows, WINDOW, DATASETS)
+    const a = r.classes.find((c) => c.cls === 'A')!
+    expect(a.verdict).toBe('notrun')
+    expect(a.sentence).toContain('got no result from gigamon_ami_pq')
+    expect(r.verdict).toBe('incomplete')
+  })
+  it('makes a run incomplete when only figures outside the classes are missing', () => {
+    // A check list whose only non-control check is DNS, with DNS never answered:
+    // its class C figure and its unclassed reply-code counts all went unjudged.
+    const checks = PARITY_CHECKS.filter((c) => c.id === 'count' || c.id === 'dns')
+    const r = compareParity({ count: agreeing().count }, WINDOW, DATASETS, checks)
+    expect(r.verdict).toBe('incomplete')
+    expect(r.sentence).toMatch(/check dns/)
+  })
+  it('is still said when the run failed for another reason', () => {
+    const rows: Rows = withParquet(withJson(agreeing(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 43_338 })
+    delete rows['code-presence']
+    const r = compareParity(rows, WINDOW, DATASETS)
+    expect(r.verdict).toBe('fail')
+    expect(r.sentence).toMatch(/Also, 1 figure got no result/)
+  })
+  it('is what the report says when the control count itself did not run', () => {
+    const rows: Rows = agreeing()
+    delete rows.count
+    const r = compareParity(rows, WINDOW, DATASETS)
+    expect(r.verdict).toBe('incomparable')
+    expect(r.sentence).toMatch(/control count got no result/)
+  })
 })
 
 // ── What gates the verdict ──────────────────────────────────────────────────
@@ -271,7 +394,9 @@ describe('the control', () => {
   })
   it('judges no class over an empty window', () => {
     const rows = withParquet(withJson(agreeing(), 'count', { c: 0 }), 'count', { c: 0 })
-    expect(compareParity(rows, WINDOW, DATASETS).verdict).toBe('incomparable')
+    const r = compareParity(rows, WINDOW, DATASETS)
+    expect(r.verdict).toBe('incomparable')
+    expect(r.sentence).toMatch(/held no records/)
   })
 })
 
@@ -282,7 +407,7 @@ describe('a class with nothing to compare', () => {
     const r = compareParity(rows, WINDOW, DATASETS)
     expect(r.classes.find((c) => c.cls === 'D')!.verdict).toBe('unexercised')
     expect(r.verdict).toBe('partial')
-    expect(r.sentence).toMatch(/class D had nothing to compare/)
+    expect(r.sentence).toMatch(/class D was not exercised/)
   })
 })
 
@@ -291,6 +416,13 @@ describe('a class with nothing to compare', () => {
 //   A and B magnitudes are measured; the C, D and E ones are the mechanism's
 //   prediction. Only a parity run against two real datasets settles them.
 // * That ±1 % and ±5 % are the right tolerances. They are chosen, and a real
-//   JSON-vs-JSON run over the same window is what would calibrate them.
+//   JSON-vs-JSON run over the same window is what would calibrate them. The
+//   cases above pin THAT they are the tolerances (just inside passes, just
+//   outside fails), not that they are right.
+// * That the control's drift hits a rare count in proportion. The slack assumes
+//   the records one side lacks are a fair sample of the window; records lost at
+//   one edge of it need not be.
+// * That class C's resolvers figure can show anything at all: see the header
+//   of parity.ts on DNS-only rows.
 // * That a pass on the whole-window latency aggregate implies a pass on every
 //   per-minute point of the panel it stands for.
