@@ -29,6 +29,7 @@ import {
   CLASS_ORDER,
   PARITY_CHECKS,
   classify,
+  compareColumn,
   compareParity,
   parityColumns,
   parityJobs,
@@ -312,6 +313,101 @@ describe('the count slack the control’s own drift allows', () => {
   it('makes +1 distinct invisible, so class C on a drifted run is not exercised rather than passed', () => {
     expect(verdicts(withParquet(drifted(), 'dns', { resolvers: 13 })).C).toBe('unexercised')
   })
+  it('gives a count of 0 the same one record: 0 → 1 agrees under drift, and fails with none', () => {
+    const t1572 = (rows: Rows) =>
+      compareParity(rows, WINDOW, DATASETS).classes.find((c) => c.cls === 'A')!.columns.find((c) => c.column === 'c_T1572')!
+    const zeroToOne = (base: Rows) => withParquet(withJson(base, 'security', { c_T1572: 0 }), 'security', { c_T1572: 1 })
+    expect(t1572(zeroToOne(drifted())).verdict).toBe('agrees')
+    expect(t1572(zeroToOne(drifted())).allowed).toBe(1)
+    expect(verdicts(zeroToOne(drifted())).A).toBe('pass')
+    expect(t1572(zeroToOne(agreeing())).verdict).toBe('differs')
+    expect(verdicts(zeroToOne(agreeing())).A).toBe('fail')
+  })
+  it('allows 0 → 1, not 0 → 2, and never 0 → 40,280', () => {
+    const from0 = (n: number) => withParquet(withJson(drifted(), 'security', { c_T1572: 0 }), 'security', { c_T1572: n })
+    expect(verdicts(from0(2)).A).toBe('fail')
+    const a = compareParity(from0(40_280), WINDOW, DATASETS).classes.find((c) => c.cls === 'A')!
+    expect(a.verdict).toBe('fail')
+    expect(a.sentence).toContain('Under Parquet this aggregate is true on every row')
+  })
+  it('sizes the allowance by the drift, not a multiple of it: 1,000 at 1.5 % drift allows 15', () => {
+    const f2 = col('findings', 'f2')
+    const at = (p: number) => compareColumn(f2, { f2: 1_000 }, { f2: p }, 0.015)
+    expect(at(1_015).allowed).toBe(15)
+    expect(at(1_015).verdict).toBe('agrees')
+    expect(at(1_016).verdict).toBe('differs')
+    expect(at(985).verdict).toBe('agrees')
+    expect(at(984).verdict).toBe('differs')
+  })
+  it('lets the tolerance win where it is larger: 1,000 on a 0.8 % run allows 10, not 8 or more', () => {
+    expect(verdicts(withParquet(drifted(), 'findings', { f2: 1_010 })).B).toBe('pass')
+    expect(verdicts(withParquet(drifted(), 'findings', { f2: 1_011 })).B).toBe('fail')
+  })
+})
+
+describe('a min or max on a run whose control drifted', () => {
+  const drifted = () => withParquet(agreeing(), 'count', { c: 99_200 })
+  const netLo = (rows: Rows) =>
+    compareParity(rows, WINDOW, DATASETS).classes.find((c) => c.cls === 'E')!.columns.find((c) => c.column === 'net_lo')!
+
+  it('is window-edge noise when Parquet still holds a value: not the class E failure, and not blamed on Parquet', () => {
+    const rows = withParquet(withJson(drifted(), 'latency', { net_lo: 0.004 }), 'latency', { net_lo: 0.003 })
+    const r = compareParity(rows, WINDOW, DATASETS)
+    const e = r.classes.find((c) => c.cls === 'E')!
+    expect(netLo(rows).verdict).toBe('edge')
+    expect(e.verdict).toBe('pass')
+    expect(r.verdict).not.toBe('fail')
+    expect(e.sentence).toMatch(/1 min or max figure moved beyond ±5 % with a non-zero value still on gigamon_ami_pq/)
+    expect(e.sentence).toMatch(/evidence neither of that failure nor of its absence/)
+    expect(e.sentence).not.toMatch(/dragged toward 0 by rows/)
+  })
+  it('is not evidence for the class: with nothing else to compare, class E is not exercised', () => {
+    let rows = withParquet(withJson(drifted(), 'latency', { net_lo: 0.004 }), 'latency', { net_lo: 0.003 })
+    for (const [check, column] of [['latency', 'net'], ['latency', 'app'], ['latency', 'app_lo'], ['web-kpi', 'server_p95'], ['capacity-kpi', 'rtt']]) {
+      rows = withParquet(withJson(rows, check, { [column]: 0 }), check, { [column]: 0 })
+    }
+    const r = compareParity(rows, WINDOW, DATASETS)
+    const e = r.classes.find((c) => c.cls === 'E')!
+    expect(e.verdict).toBe('unexercised')
+    expect(e.sentence).toMatch(/1 of 6 was a min or max that moved within window-edge noise; 5 of 6 were empty or zero on both sides/)
+    expect(r.verdict).toBe('partial')
+  })
+  it('is still the class E failure when Parquet went to 0 or to no value', () => {
+    for (const v of [0, null]) {
+      const rows = withParquet(withJson(drifted(), 'latency', { net_lo: 0.004 }), 'latency', { net_lo: v })
+      const e = compareParity(rows, WINDOW, DATASETS).classes.find((c) => c.cls === 'E')!
+      expect(e.verdict, String(v)).toBe('fail')
+      expect(e.sentence).toContain('Under Parquet this aggregate is dragged toward 0 by rows that never had a value')
+    }
+  })
+  it('is a failure, with the mechanism named, when the control agreed exactly', () => {
+    const rows = withParquet(withJson(agreeing(), 'latency', { net_lo: 0.004 }), 'latency', { net_lo: 0.003 })
+    expect(netLo(rows).verdict).toBe('differs')
+    expect(compareParity(rows, WINDOW, DATASETS).classes.find((c) => c.cls === 'E')!.sentence).toContain('dragged toward 0')
+  })
+  it('does the same for the maxima outside the classes: noise when non-zero, a failure at 0', () => {
+    const moved = compareParity(withParquet(drifted(), 'latency', { net_hi: 0.03, app_hi: 0.03 }), WINDOW, DATASETS)
+    expect(moved.unaffected.find((c) => c.column === 'net_hi')!.verdict).toBe('edge')
+    // Partial, not pass: the drift that makes these noise also hides class C.
+    expect(moved.verdict).toBe('partial')
+    expect(moved.sentence).toMatch(/class C was not exercised .* 2 unclassed min or max figures moved beyond ±5 %/)
+    expect(moved.sentence).toMatch(/counted neither way/)
+    expect(compareParity(withParquet(drifted(), 'latency', { net_hi: 0 }), WINDOW, DATASETS).verdict).toBe('fail')
+  })
+  it('does not touch a percentile or an average, which ±5 % still judges', () => {
+    expect(verdicts(withParquet(drifted(), 'capacity-kpi', { rtt: 0.042 * 1.06 })).E).toBe('fail')
+  })
+})
+
+describe('a failure sentence', () => {
+  it('names the mechanism only for a figure that moved the way the mechanism moves it', () => {
+    const e = compareParity(withParquet(agreeing(), 'capacity-kpi', { rtt: 0.042 * 1.06 }), WINDOW, DATASETS).classes.find((c) => c.cls === 'E')!
+    expect(e.verdict).toBe('fail')
+    expect(e.sentence).not.toMatch(/Under Parquet this aggregate/)
+    expect(e.sentence).toMatch(/It did not move the way Parquet's null semantics predicts .*not that mechanism/)
+    const b = compareParity(withParquet(agreeing(), 'findings', { f2: 500, f3: 43_338 }), WINDOW, DATASETS).classes.find((c) => c.cls === 'B')!
+    expect(b.sentence).toMatch(/1 of these moved the way Parquet's null semantics predicts .*the other 1 did not, so for that one/)
+  })
 })
 
 describe('figures outside the five classes', () => {
@@ -364,6 +460,16 @@ describe('a check that did not run', () => {
     const r = compareParity({ count: agreeing().count }, WINDOW, DATASETS, checks)
     expect(r.verdict).toBe('incomplete')
     expect(r.sentence).toMatch(/check dns/)
+  })
+  it('names the classes that were not exercised, when only unclassed figures went unrun', () => {
+    // A check whose only figure belongs to no class, never answered; and class D
+    // empty on both sides.
+    const bare = { id: 'bare', query: 'dataset="gigamon_ami" | summarize k=sum(bytes)', protects: { k: 'a bare sum' } }
+    let rows: Rows = agreeing()
+    for (const check of ['host-presence', 'code-presence']) rows = withParquet(withJson(rows, check, { n: 0 }), check, { n: 0 })
+    const r = compareParity(rows, WINDOW, DATASETS, [...PARITY_CHECKS, bare])
+    expect(r.verdict).toBe('incomplete')
+    expect(r.sentence).toMatch(/so figures outside the five classes were not judged\. Class D was also not exercised/)
   })
   it('is still said when the run failed for another reason', () => {
     const rows: Rows = withParquet(withJson(agreeing(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 43_338 })

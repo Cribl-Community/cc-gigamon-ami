@@ -49,13 +49,30 @@
 // then cannot be held to ±1 % (0.18 of a record): the records the control says
 // are missing hit it in proportion, 18 × drift of them on average, and a count
 // moves in whole records. So a count figure is allowed
-//     max(tolerance × expected, ceil(expected × drift))
+//     max(tolerance × expected, ceil(expected × drift), drift > 0 ? 1 : 0)
 // where drift is the control's own relative disagreement. With drift 0 that is
-// exactly the tolerance; with ANY drift it is at least one record, so a
+// exactly the tolerance, and a count of 0 on JSON is allowed nothing; with ANY
+// drift it is at least one record — including on a count of 0, since the one
+// record the window edge added may be the first T1572 flow in it — so a
 // one-record window-edge difference is not reported as the class A failure.
-// 18 → 40,280 is still thousands of records outside it. The same slack means a
-// +1 distinct value (class C) cannot be seen on a run whose control drifted,
-// and the class C sentence says so rather than calling that a pass.
+// 0 or 18 → 40,280 is still thousands of records outside it. The same slack
+// means a +1 distinct value (class C) cannot be seen on a run whose control
+// drifted, and the class C sentence says so rather than calling that a pass.
+//
+// ── THE EXTREMES UNDER DRIFT ────────────────────────────────────────────────
+// A min or a max is set by ONE record, so the records the control says one
+// side lacks can move it any distance: ±5 % means nothing to a single row at the
+// window edge. Parquet's failure for an extreme has one shape — the value reads
+// 0, or no value. So on a run whose control drifted, a min or max that moved
+// while the Parquet side still held a non-zero value is `edge`: neither an
+// agreement nor the Parquet failure, and counted as evidence for no class (like
+// "not exercised"). One that went to 0 or to no value is still `differs`. With
+// drift 0 the two sides hold the same records and any move is Parquet's.
+//
+// Nor does a failure sentence claim the mechanism unless the figure moved the
+// way the mechanism moves it (up for A–D, toward 0 for E): a changed number
+// that moved the other way is still a failure, and is said to be one without
+// being blamed on null semantics.
 //
 // ── WHAT THIS CANNOT ESTABLISH ──────────────────────────────────────────────
 // * The tolerances are chosen, not measured. The only measured agreement is the
@@ -375,7 +392,12 @@ function numberOf(v: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-export type ColumnVerdict = 'agrees' | 'differs' | 'unexercised' | 'notrun'
+/**
+ * `edge`: a min or max that moved on a run whose control drifted, with the
+ * Parquet side still non-zero — see THE EXTREMES UNDER DRIFT. Not a failure,
+ * and not evidence for any class.
+ */
+export type ColumnVerdict = 'agrees' | 'differs' | 'edge' | 'unexercised' | 'notrun'
 
 export type Side = 'json' | 'parquet'
 
@@ -399,8 +421,10 @@ export interface ColumnResult extends ParityColumn {
 export function allowedDifference(col: Pick<ParityColumn, 'kind' | 'tolerance'>, expected: number, drift: number): number {
   const byTolerance = col.tolerance * Math.abs(expected)
   if (col.kind !== 'count') return byTolerance
-  return Math.max(byTolerance, Math.ceil(Math.abs(expected) * drift))
+  return Math.max(byTolerance, Math.ceil(Math.abs(expected) * drift), drift > 0 ? 1 : 0)
 }
+
+const EXTREME_RE = /^(min|max)\(/
 
 /**
  * One column, both sides.
@@ -411,7 +435,12 @@ export function allowedDifference(col: Pick<ParityColumn, 'kind' | 'tolerance'>,
  * count-kind aggregate a missing value and 0 are the same statement (a `sum`
  * over rows that all lack the key is omitted from the row). For a distribution
  * they are NOT: a latency tile that read "no value" or 0 on JSON and a number
- * on Parquet (or the reverse) is class E's failure exactly.
+ * on Parquet (or the reverse) is class E's failure exactly — except for a min
+ * or max on a drifted run whose Parquet side is still non-zero, which is `edge`.
+ *
+ * A count of 0 on JSON is compared like any other, against the one-record
+ * allowance drift gives it (THE COUNT SLACK): 0 → 1 on a drifted run agrees,
+ * 0 → 2 does not, and with drift 0 nothing is allowed.
  *
  * `drift` is the control's relative disagreement, 0 when it agreed exactly.
  */
@@ -430,19 +459,21 @@ export function compareColumn(
   if (missing.length) return { ...base, verdict: 'notrun' }
 
   const nothing = (v: number | null) => v === null || v === 0
+  // A moved extreme that Parquet's failure cannot have produced: see THE
+  // EXTREMES UNDER DRIFT. Never on a run whose control agreed exactly.
+  const moved: ColumnVerdict = drift > 0 && EXTREME_RE.test(col.expr) && !nothing(parquet) ? 'edge' : 'differs'
 
   if (col.kind === 'distribution') {
     if (json === null && parquet === null) return { ...base, verdict: 'unexercised' }
-    if (json === null || parquet === null) return { ...base, verdict: 'differs' }
-    if (json === 0) return { ...base, verdict: parquet === 0 ? 'unexercised' : 'differs' }
+    if (json === null || parquet === null) return { ...base, verdict: moved }
+    if (json === 0) return { ...base, verdict: parquet === 0 ? 'unexercised' : moved }
   } else {
     if (nothing(json) && nothing(parquet)) return { ...base, verdict: 'unexercised' }
-    if (nothing(json)) return { ...base, verdict: 'differs' }
   }
-  const j = json as number
+  const j = json ?? 0
   const p = parquet ?? 0
   const allowed = allowedDifference(col, j, drift)
-  return { ...base, ratio: p / j, allowed, verdict: Math.abs(p - j) <= allowed ? 'agrees' : 'differs' }
+  return { ...base, ratio: j === 0 ? null : p / j, allowed, verdict: Math.abs(p - j) <= allowed ? 'agrees' : moved }
 }
 
 export type ClassVerdict = 'pass' | 'fail' | 'unexercised' | 'notrun' | 'incomparable'
@@ -466,6 +497,7 @@ export interface ParityReport {
   comparable: boolean
   /**
    * `fail`: a class failed, or a figure outside the five classes changed.
+   * An `edge` figure (THE EXTREMES UNDER DRIFT) fails nothing, and is named.
    * `incomplete`: nothing failed, but a check returned no row on some side.
    * `partial`: every check ran, and some class had nothing to compare.
    */
@@ -532,20 +564,63 @@ const CLASS_LIMIT: Partial<Record<NullClass, string>> = {
     `carries dns_host, Parquet has no empty value to add there and its agreement shows nothing about this class.`,
 }
 
+/**
+ * Whether a differing figure moved the way Parquet's null semantics moves it:
+ * up for A–D (every row counts, or "" is one more value), toward 0 or to
+ * nothing for E. Only then may a sentence name the mechanism.
+ */
+function mechanismShaped(cls: NullClass, c: ColumnResult): boolean {
+  if (cls === 'E') return c.parquet === null || Math.abs(c.parquet) < Math.abs(c.json ?? Infinity)
+  return (c.parquet ?? 0) > (c.json ?? 0)
+}
+
+function mechanismWords(cls: NullClass, bad: ColumnResult[]): string {
+  const how = `this aggregate ${NULL_CLASSES[cls].underParquet}`
+  const shaped = bad.filter((c) => mechanismShaped(cls, c)).length
+  if (shaped === bad.length) return ` Under Parquet ${how}.`
+  const other = bad.length - shaped
+  return shaped
+    ? ` ${shaped} of these moved the way Parquet's null semantics predicts (${how}); the other ${other} did not, so for ${other === 1 ? 'that one' : 'those'} this run shows a changed number, not that mechanism.`
+    : ` ${bad.length === 1 ? 'It did' : 'None of them did'} not move the way Parquet's null semantics predicts (${how}), so this run shows a changed number, not that mechanism.`
+}
+
+/** Why an `edge` figure is counted neither way. */
+function edgeWhy(drift: number): string {
+  return (
+    `the control drifted ${pct(drift).slice(1)}, and one record at the window edge can move a min or max that far; ` +
+    `Parquet's failure would have read 0 or no value, so this is evidence neither of that failure nor of its absence`
+  )
+}
+
+/** The `edge` figures among `cols`, as a trailing sentence, or ''. */
+function edgeClause(cols: ColumnResult[], d: ParityDatasets, drift: number, lead: string): string {
+  const edge = cols.filter((c) => c.verdict === 'edge')
+  if (!edge.length) return ''
+  const n = edge.length === 1 ? `1 ${lead}min or max figure` : `${edge.length} ${lead}min or max figures`
+  return (
+    ` ${n} moved beyond ${pct(TOLERANCE.distribution)} with a non-zero value still on ${d.parquet}, and ${edge.length === 1 ? 'was' : 'were'} ` +
+    `counted neither way: ${edgeWhy(drift)} — ${edge.map((c) => sides(c, d)).join('; ')}.`
+  )
+}
+
 function classSentence(cls: NullClass, verdict: ClassVerdict, cols: ColumnResult[], control: ColumnResult, d: ParityDatasets, w: ParityWindow, drift: number): string {
   const name = `Class ${cls} (${NULL_CLASSES[cls].pattern})`
   const over = `over ${windowWords(w)}`
   const limit = CLASS_LIMIT[cls] ? ` ${CLASS_LIMIT[cls]}` : ''
+  const edge = cols.filter((c) => c.verdict === 'edge')
+  const edgeNote = edgeClause(cols, d, drift, '')
   switch (verdict) {
     case 'incomparable':
       return `${name} was not judged: ${controlWords(control, d)} ${over}.`
     case 'fail': {
       const bad = cols.filter((c) => c.verdict === 'differs')
-      const widened = drift > 0 ? `, each count widened by the control's own drift of ${pct(drift).slice(1)}` : ''
+      const widened = drift > 0 && bad.some((c) => c.kind === 'count') ? `, each count widened by the control's own drift of ${pct(drift).slice(1)}` : ''
       return (
         `${name} FAILED on ${bad.length} of ${cols.length} figures ${over}, outside the difference each was allowed${widened}: ` +
         bad.map((c) => sides(c, d)).join('; ') +
-        `. Under Parquet this aggregate ${NULL_CLASSES[cls].underParquet}.`
+        '.' +
+        mechanismWords(cls, bad) +
+        edgeNote
       )
     }
     case 'notrun': {
@@ -557,22 +632,29 @@ function classSentence(cls: NullClass, verdict: ClassVerdict, cols: ColumnResult
     }
     case 'unexercised': {
       const blind = cols.filter((c) => c.verdict === 'agrees')
-      const empty = cols.length - blind.length
-      return blind.length
-        ? `${name} was not exercised ${over}: ${blind.length} of ${cols.length} figures agreed, but each was allowed a difference ` +
-            `the failure could hide inside (${blind.map((c) => sides(c, d)).join('; ')})` +
-            (empty ? `, and the other ${empty} were empty or zero on both sides.` : '.') +
-            limit
-        : `${name} was not exercised: every figure that carries it was empty or zero on both sides ${over}, so this run says nothing about it.`
+      const empty = cols.length - blind.length - edge.length
+      if (!blind.length && !edge.length) {
+        return `${name} was not exercised: every figure that carries it was empty or zero on both sides ${over}, so this run says nothing about it.`
+      }
+      const bits = [
+        blind.length
+          ? `${blind.length} of ${cols.length} figures agreed, but each was allowed a difference the failure could hide inside ` +
+            `(${blind.map((c) => sides(c, d)).join('; ')})`
+          : '',
+        edge.length ? `${edge.length} of ${cols.length} ${edge.length === 1 ? 'was a min or max that' : 'were a min or max that'} moved within window-edge noise` : '',
+        empty ? `${empty} of ${cols.length} ${empty === 1 ? 'was' : 'were'} empty or zero on both sides` : '',
+      ].filter(Boolean)
+      return `${name} was not exercised ${over}: ${bits.join('; ')}.` + edgeNote + limit
     }
     case 'pass': {
       const seen = cols.filter((c) => sees(cls, c))
       const blind = cols.filter((c) => c.verdict === 'agrees' && !sees(cls, c))
-      const empty = cols.length - seen.length - blind.length
+      const empty = cols.length - seen.length - blind.length - edge.length
       return (
         `${name} held: ${seen.length} of ${cols.length} figures agreed between ${d.json} and ${d.parquet} ${over}, ` +
         `each within the difference it was allowed — ${seen.map((c) => c.protects).join('; ')}.` +
         (blind.length ? ` ${blind.length} more agreed only inside a slack this class's failure fits in: ${blind.map((c) => c.protects).join('; ')}.` : '') +
+        edgeNote +
         (empty ? ` The other ${empty} were empty or zero on both sides.` : '') +
         limit
       )
@@ -655,6 +737,9 @@ export function compareParity(
   const notRunWords = notRun.length
     ? `${notRun.length} figure${notRun.length === 1 ? '' : 's'} got no result from ${missingSides(notRun, datasets)} (check ${checksOf(notRun)})`
     : ''
+  // Classed `edge` figures are in their class's sentence; these are the rest.
+  const outsideEdge = edgeClause(unaffected, datasets, drift, 'unclassed ')
+  const notExercised = unexercised.length ? ` Class ${unexercised.join(', ')} was also not exercised — nothing in this window could have shown its failure.` : ''
   let sentence: string
   switch (verdict) {
     case 'incomparable':
@@ -668,21 +753,27 @@ export function compareParity(
             outsideChanged.map((c) => sides(c, datasets)).join('; ')
           : '',
       ].filter(Boolean)
-      sentence = `Parity FAILED for ${between}: ${why.join('; and ')}.` + (notRunWords ? ` Also, ${notRunWords}.` : '')
+      sentence = `Parity FAILED for ${between}: ${why.join('; and ')}.` + (notRunWords ? ` Also, ${notRunWords}.` : '') + outsideEdge
       break
     }
     case 'incomplete': {
       const notJudged = classes.filter((c) => c.verdict === 'notrun').map((c) => c.cls)
       sentence =
         `Parity is incomplete for ${between}: nothing compared failed, but ${notRunWords}, ` +
-        (notJudged.length ? `so class ${notJudged.join(', ')} was not judged.` : 'so figures outside the five classes were not judged.')
+        (notJudged.length ? `so class ${notJudged.join(', ')} was not judged.` : 'so figures outside the five classes were not judged.') +
+        notExercised +
+        outsideEdge
       break
     }
     case 'partial':
-      sentence = `Parity held for ${between} on ${5 - unexercised.length} of 5 classes; class ${unexercised.join(', ')} was not exercised — nothing in this window could have shown its failure.`
+      sentence =
+        `Parity held for ${between} on ${5 - unexercised.length} of 5 classes; class ${unexercised.join(', ')} was not exercised — nothing in this window could have shown its failure.` +
+        outsideEdge
       break
     default:
-      sentence = `Parity held for ${between} on all 5 classes, and on every figure outside them.`
+      sentence = outsideEdge
+        ? `Parity held for ${between} on all 5 classes, and on every other figure outside them.` + outsideEdge
+        : `Parity held for ${between} on all 5 classes, and on every figure outside them.`
   }
 
   return { window, datasets, control, drift, comparable, verdict, classes, unaffected, sentence }
