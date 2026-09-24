@@ -2183,6 +2183,23 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .ac-preset-off .ac-preset-name { color: var(--gm-fg-subtle); }
 .ac-preset-off input { opacity: 0.5; }
 
+/* The per-dashboard switches (owner decision 2026-09-24). One line each: the
+   switch, the tab's name, its state and cost in words, and the ⓘ. The state
+   line wraps under the name on a narrow screen rather than pushing the page
+   sideways; the note a no-op flip leaves takes its own line. */
+.ac-switches {
+  display: flex; flex-direction: column; gap: var(--gm-sp-8);
+  margin: 0 0 var(--gm-sp-16); padding: var(--gm-sp-12) var(--gm-sp-14);
+  border: 1px solid var(--gm-border); border-radius: var(--gm-radius);
+}
+.ac-switches-head { display: flex; align-items: center; gap: var(--gm-sp-4); }
+.ac-switch-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--gm-sp-6); }
+.ac-switch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-4) var(--gm-sp-10); min-width: 0; }
+.ac-switch-master { padding-bottom: var(--gm-sp-8); border-bottom: 1px solid var(--gm-border); }
+.ac-switch-label { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium'); color: var(--gm-fg); }
+.ac-switch-state { flex: 1 1 260px; min-width: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.45; font-variant-numeric: tabular-nums; }
+.ac-switch-note { flex-basis: 100%; font-size: var(--gm-fs-12); color: var(--gm-fg); line-height: 1.45; max-width: 82ch; }
+
 /* Guided Setup's two data tables — Acceleration's schedules and the Lake landing
    read map — scroll inside their own box rather than the page. Named `.gs-` and
    not `.ac-` since Phase 3: it was born in the Acceleration panel and the landing

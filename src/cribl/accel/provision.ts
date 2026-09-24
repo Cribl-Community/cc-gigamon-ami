@@ -15,8 +15,9 @@
 // (AGENTS.md; CLAUDE.md, "nothing writes on load"). The module cannot enforce
 // that — it cannot tell a deliberate click from an accidental one — so the
 // confirmation lives in front of `applyAcceleration`, `pauseAcceleration`,
-// `resumeAcceleration` and `removeAcceleration`, which are the only four entry
-// points that write anything. `readAccelState` is a GET and needs none.
+// `resumeAcceleration`, `setAccelSchedules` (the per-tab and master switches)
+// and `removeAcceleration`, which are the only five entry points that write
+// anything. `readAccelState` is a GET and needs none.
 //
 // So that the confirmation can NAME what it is about to change without
 // re-deriving it, `applyPlan()` and `removalPlan()` below turn a state into the
@@ -821,13 +822,25 @@ export async function resumeAcceleration(id: AccelId): Promise<ScheduleWriteResu
  * `keepLastN`. `mergeSchedule` fills only what is genuinely missing and never
  * overwrites a value the customer set.
  */
-async function setScheduleEnabled(id: AccelId, enabled: boolean): Promise<ScheduleWriteResult> {
+async function setScheduleEnabled(id: AccelId, enabled: boolean, expectFrom?: boolean): Promise<ScheduleWriteResult> {
   const entry = accelEntry(id)
   const cur = await readSaved(id, false)
   if (cur.denied) return { id, ok: false, enabled: null, raced: false, detail: 'Cribl refused to read this saved search.' }
   if (cur.error) return { id, ok: false, enabled: null, raced: false, detail: cur.error }
   if (!cur.raw) {
     return { id, ok: false, enabled: null, raced: false, detail: `There is no saved search called '${id}' to ${enabled ? 'resume' : 'pause'}.` }
+  }
+  // The switches' guard: the confirmation named this row as running (or
+  // paused). If Cribl now says otherwise, somebody changed it while the dialog
+  // was open, and the click approved a state that no longer exists.
+  if (expectFrom !== undefined && bool(cur.raw.schedule?.enabled) !== expectFrom) {
+    return {
+      id,
+      ok: false,
+      enabled: bool(cur.raw.schedule?.enabled),
+      raced: false,
+      detail: `It changed after the confirmation was opened (it was ${expectFrom ? 'running' : 'paused'}), so it was left as it is. Re-check and try again.`,
+    }
   }
   const body: StoredSavedSearch = { ...cur.raw, schedule: mergeSchedule(entry, cur.raw.schedule, enabled) }
   const r = await patchSaved(id, body)
@@ -849,6 +862,43 @@ async function setScheduleEnabled(id: AccelId, enabled: boolean): Promise<Schedu
       ? `Cribl accepted the change and then reported this search as ${now ? 'running' : 'paused'}. Somebody else wrote it at the same time — this endpoint has no version to make a write conditional on, so theirs is the one in force.`
       : null,
   }
+}
+
+/** One flip a switch confirmed: the id, the state the dialog saw, the state it asked for. */
+export interface ScheduleChange {
+  id: AccelId
+  from: boolean
+  to: boolean
+}
+
+/**
+ * Pause and resume a SUBSET of the schedules, one read-modify-write each.
+ *
+ * The per-tab and master switches (components/AccelPanel.tsx) end here, and
+ * only from a confirmed click. Each change is the same whole-body PATCH as
+ * Pause and Resume above — A-SP23 does not care how many objects a click
+ * touches — and each is refused if Cribl no longer reports the `from` the
+ * dialog showed. Sequential, not parallel: one PATCH at a time keeps the order
+ * of the results the order the dialog listed them in, and a refusal on the
+ * first says something about the rest before they are sent.
+ */
+export async function setAccelSchedules(
+  changes: readonly ScheduleChange[],
+  onResult: (r: ScheduleWriteResult) => void = () => {},
+): Promise<ScheduleWriteResult[]> {
+  const out: ScheduleWriteResult[] = []
+  for (const c of changes) {
+    if (!MANIFEST.some((e) => e.id === c.id)) {
+      const r: ScheduleWriteResult = { id: c.id, ok: false, enabled: null, raced: false, detail: 'not in this release’s manifest' }
+      out.push(r)
+      onResult(r)
+      continue
+    }
+    const r = await setScheduleEnabled(c.id, c.to, c.from)
+    out.push(r)
+    onResult(r)
+  }
+  return out
 }
 
 // ── Remove ──────────────────────────────────────────────────────────────────

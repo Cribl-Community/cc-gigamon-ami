@@ -27,7 +27,8 @@ import type { AccelEntry } from '../cribl/accel/manifest'
 import type { AccelEntryState, AccelRow, AccelState } from '../cribl/accel/provision'
 import type { AccelStatus } from '../cribl/accel/status'
 import { cadenceLooksRight } from '../cribl/accel/status'
-import { creditsFor, type EntrySaving, type Span, type WorkspaceSaving } from '../cribl/accel/estimate'
+import { creditsFor, type EntrySaving, type ScheduleSetCost, type Span, type WorkspaceSaving } from '../cribl/accel/estimate'
+import { accelTab, type AccelTabKey, type SwitchReading, type SwitchState, type TogglePlan } from '../cribl/accel/tabs'
 import { formatCost, formatRecurringCost } from '../lib/format'
 
 // ── The words, kept pure so a test can read them without a DOM ──────────────
@@ -390,4 +391,131 @@ export function scheduleCostLine(saving: WorkspaceSaving, id: string, enable: bo
   return enable
     ? `Starts this schedule's charge again (${formatRecurringCost(schedule)}) and stops the live query's (${live}).`
     : `Stops this schedule's charge (${formatRecurringCost(schedule)}). The panel it feeds goes back to its live query, which this workspace bills ${live} for.`
+}
+
+// ── The switches: one per dashboard tab, and the master ─────────────────────
+//
+// Owner decision 2026-09-24: acceleration is a default, switchable per tab and
+// for everything at once, each switch showing its own cost. The rule and the
+// reading live in cribl/accel/tabs.ts; this is only what the switches say.
+
+/** One lead line; the rule and its consequences are behind the ⓘ. */
+export const SWITCHES_LEAD = 'On by default. Switch it off for a dashboard nobody opens, or for all of them.'
+
+export const SWITCHES_LEAD_TIP =
+  'A scheduled search runs while the master switch is on and at least one dashboard it feeds is on. ' +
+  'Some searches feed several dashboards, so switching one dashboard off pauses only the searches no other dashboard that is on still reads. ' +
+  'Findings and Security read only the shared overview search, so they go off together, and only once Capacity, Web & API and Data Flow are off too. ' +
+  'Each switch is read from the saved searches themselves, not from a remembered setting, so a search paused in Cribl shows here as Mixed. ' +
+  'The master switch keeps no memory of which dashboards were off: on resumes every one.'
+
+/** A switch's state as one word. The switch itself shows only on/off; this is
+ *  what says Mixed, which a two-position control cannot. */
+export const SWITCH_WORD: Record<SwitchState, string> = {
+  on: 'On',
+  off: 'Off',
+  mixed: 'Mixed',
+  unavailable: 'Not set up',
+}
+
+const searches = (n: number) => `${n} scheduled ${n === 1 ? 'search' : 'searches'}`
+
+/** The state, with the counts that make Mixed a statement rather than a shrug. */
+export function switchStateWords(r: SwitchReading): string {
+  const untouchable = r.untouchable.length ? ` · ${r.untouchable.length} not switchable here` : ''
+  switch (r.state) {
+    case 'on':
+      return `On — ${searches(r.running.length)} running`
+    case 'off':
+      return `Off — ${searches(r.paused.length)} paused`
+    case 'mixed':
+      return `Mixed — ${r.running.length} of ${r.ids.length} running${untouchable}`
+    case 'unavailable':
+      return `Not set up — none of its ${searches(r.ids.length)} can be switched here`
+  }
+}
+
+/**
+ * What a set of schedules costs and saves, as one line. Both halves, always:
+ * a charge without the saving reads as a bill, a saving without the charge
+ * reads as free. "Estimated" rides on the line whenever any part was modelled
+ * or assumed; the provenance sentence goes in the ⓘ beside it.
+ */
+export function setCostWords(cost: ScheduleSetCost): string {
+  if (cost.basis === 'none') return 'no scheduled search — nothing billed, nothing saved'
+  const flag = cost.basis === 'measured' && !cost.saving.assumedFrequency && !cost.saving.modelledLiveCost ? '' : ' (estimated)'
+  return `bills ${creditSpanWords(cost.chargeCredits)} · saves ${creditSpanWords(cost.saving.savedCredits)}${flag}`
+}
+
+/** The switch's accessible name. The visible label is the tab's name. */
+export function switchName(key: AccelTabKey | 'master'): string {
+  return key === 'master' ? 'Acceleration for every dashboard' : `Acceleration for ${accelTab(key).label}`
+}
+
+const labels = (keys: readonly AccelTabKey[]) => keys.map((k) => accelTab(k).label).join(', ')
+
+/** The dialog's title: kind, how many, and where. */
+export function toggleTitle(plan: TogglePlan): string {
+  const n = plan.changes.length
+  const what = `${plan.target.on ? 'Resume' : 'Pause'} ${n === 1 ? 'a scheduled Cribl Search saved search' : `${n} scheduled Cribl Search saved searches`} in ${SEARCH_GROUP}`
+  return plan.target.kind === 'master'
+    ? `Acceleration ${plan.target.on ? 'on' : 'off'} for every dashboard: ${what}`
+    : `Acceleration ${plan.target.on ? 'on' : 'off'} for ${accelTab(plan.target.tab).label}: ${what}`
+}
+
+/** Exactly the saved searches the write will PATCH — `plan.changes`, no more. */
+export function toggleResources(plan: TogglePlan): ConfirmResource[] {
+  return plan.changes.map((c) => ({
+    action: 'replace' as const,
+    kind: SAVED_KIND,
+    id: c.id,
+    group: SEARCH_GROUP,
+    detail: c.to
+      ? `${c.entry.name} · its schedule is turned back on (${c.entry.cron} ${c.entry.tz}). Feeds ${labels(c.tabs)}.`
+      : `${c.entry.name} · its schedule is turned off; the saved search and the runs it stored are kept. Feeds ${labels(c.tabs)}.`,
+  }))
+}
+
+/** What the flip does to the bill, in the direction it goes. `cost` is the
+ *  estimate for exactly `plan.changes`. */
+export function toggleCostLine(plan: TogglePlan, cost: ScheduleSetCost): string {
+  const live = liveCpuSecondsPerDay(cost.saving)
+  const liveWords = creditSpanWords({ low: creditsFor(live.low), high: creditsFor(live.high) })
+  const their = plan.changes.length === 1 ? 'this schedule’s' : 'these schedules’'
+  return plan.target.on
+    ? `Starts ${their} charge again (${creditSpanWords(cost.chargeCredits)}) whether or not anybody opens the dashboards, and replaces live queries this workspace bills ${liveWords} for — an expected net saving of ${creditSpanWords(cost.saving.savedCredits)}. An estimate, not a bill.`
+    : `Stops ${their} charge (${creditSpanWords(cost.chargeCredits)}). The panels they feed go back to their live queries, which this workspace bills ${liveWords} for. An estimate, not a bill.`
+}
+
+const stateWord = (s: SwitchState) => SWITCH_WORD[s].toLowerCase()
+
+/** Everything else the dialog must say: which dashboards change, what stays
+ *  running and why, and what the switch will not touch. */
+export function toggleConsequences(plan: TogglePlan): string[] {
+  const out: string[] = []
+  if (plan.tabsChanged.length) {
+    out.push(`Dashboards that change: ${plan.tabsChanged.map((t) => `${accelTab(t.tab).label} ${stateWord(t.before)} → ${stateWord(t.after)}`).join('; ')}.`)
+  }
+  for (const k of plan.kept) {
+    out.push(`Kept running: ${k.id} — it also feeds ${labels(k.for)}, which ${k.for.length === 1 ? 'is' : 'are'} on.`)
+  }
+  for (const u of plan.untouchable) out.push(`Not changed: ${u.id} — ${u.why}.`)
+  if (plan.target.kind === 'master' && plan.target.on) {
+    out.push('The master switch keeps no memory of which dashboards were off: this resumes every one.')
+  }
+  out.push('This endpoint carries no version to make a write conditional on, so this app re-reads each search before and after writing it, and leaves alone any that changed since this dialog opened.')
+  return out
+}
+
+/** Why a flip has nothing to write — said beside the switch instead of opening
+ *  a confirmation for nothing. Null when there is something to write. */
+export function toggleNothingWords(plan: TogglePlan): string | null {
+  if (plan.changes.length) return null
+  if (plan.kept.length) {
+    const ids = plan.kept.map((k) => k.id).join(', ')
+    const tabs = [...new Set(plan.kept.flatMap((k) => k.for))]
+    return `Stays on: ${ids} also ${plan.kept.length === 1 ? 'feeds' : 'feed'} ${labels(tabs)}, which ${tabs.length === 1 ? 'is' : 'are'} on.`
+  }
+  if (plan.untouchable.length) return `Nothing here can be switched: ${plan.untouchable.map((u) => `${u.id} — ${u.why}`).join('; ')}.`
+  return `Already ${plan.target.on ? 'on' : 'off'}.`
 }
