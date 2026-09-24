@@ -41,9 +41,12 @@ interface Call { method: string; path: string }
  * A Leader with none of the stack provisioned — so the screen offers "Deploy
  * onboarding stack" — whose Git status this test can move under the panel.
  */
-function stubLeader() {
+function stubLeader(opts: { behindAndSlow?: boolean } = {}) {
   const calls: Call[] = []
   const state = { pending: [] as string[] }
+  // `behindAndSlow`: the group runs an older commit than HEAD, and
+  // `/version/files` never answers — the slowest `pendingDeploy` can be.
+  const running = opts.behindAndSlow ? 'bbbb2222' : 'aaaa1111'
 
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -64,11 +67,15 @@ function stubLeader() {
     if (path === '/version/status') {
       return reply(200, { items: [{ files: state.pending.map((p) => ({ path: p })) }] })
     }
-    if (path === '/version/files') return reply(200, { items: [] })
-    if (path === '/version') return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
+    if (path === '/version/files') {
+      return opts.behindAndSlow ? new Promise<never>(() => {}) : reply(200, { items: [] })
+    }
+    if (path === '/version') {
+      return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }, { hash: 'bbbb2222', refs: '' }] })
+    }
     if (path === '/products/stream/groups') return reply(200, { items: [{ id: GROUP, name: GROUP }] })
     if (path === `/products/stream/groups/${GROUP}`) {
-      return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
+      return reply(200, { items: [{ id: GROUP, configVersion: running }] })
     }
     // This app's own store: nothing remembered, and the audit trail takes
     // whatever it is handed.
@@ -156,6 +163,19 @@ describe('the pending-file list the Guided Setup confirmation names', () => {
 
     expect(bodyText()).toContain(OTHERS_WORK)
     expect(bodyText()).toContain('somebody else’s unfinished work')
+  })
+})
+
+describe('the status rows', () => {
+  // `refresh()` used to await `Promise.all([checkStatus, pendingDeploy, …])`,
+  // so the rows waited for the slowest of the three — and `pendingDeploy` reads
+  // `/version/files` once per commit the group is behind. The undeployed-commit
+  // line is a side question; it must not hold the rows hostage.
+  it('appear when the status check answers, without waiting on the undeployed-commit read', async () => {
+    stubLeader({ behindAndSlow: true })
+    await mount()
+    expect(buttonNamed('Re-check'), 'still "Checking…" while /version/files had not answered').toBeTruthy()
+    expect(buttonNamed('Deploy onboarding stack')).toBeTruthy()
   })
 })
 
