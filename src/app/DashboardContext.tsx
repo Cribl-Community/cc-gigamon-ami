@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { forgetRunHistory } from '../cribl/accel/status'
 import { recheckDatasetTarget, recheckDatasetTargetOnTick } from '../cribl/datasetTarget'
+import { refreshAccelServing } from '../cribl/accel/serving'
 
 export interface TimeRange {
   label: string
@@ -65,6 +66,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     // landed since (cribl/datasetTarget.ts). A read. Unthrottled here; a tick
     // asks the throttled one below.
     recheckDatasetTarget()
+    // …and whether each schedule is still on is a thing a person may have
+    // changed from another browser. Re-read on the click, never on a tick.
+    refreshAccelServing()
     setRefreshNonce((n) => n + 1)
     setManualRefreshNonce((n) => n + 1)
     setLastRefresh(Date.now())

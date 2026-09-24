@@ -12,11 +12,21 @@
 import { beforeEach } from 'vitest'
 
 beforeEach(async () => {
-  const [{ forgetRunHistory }, { forgetArtifacts }, { forgetLakeFacts }, { settleDatasetTarget }] = await Promise.all([
+  const [
+    { forgetRunHistory },
+    { forgetArtifacts },
+    { forgetLakeFacts },
+    { settleDatasetTarget },
+    { forgetAccelServing },
+  ] = await Promise.all([
     import('./cribl/accel/status'),
     import('./cribl/accel/read'),
     import('./cribl/lakeWindowRead'),
     import('./cribl/datasetTarget'),
+    // The saved-search verdicts (accel/serving.ts): AccelPanel publishes the
+    // state it read, and a Pause in one test must not send the next test's
+    // panels live.
+    import('./cribl/accel/serving'),
   ])
   forgetRunHistory()
   forgetArtifacts()
@@ -29,4 +39,5 @@ beforeEach(async () => {
   // (`resetDatasetTarget`) in cribl/datasetTarget.test.ts and
   // tabs/sampleData.test.tsx, against the real read path.
   settleDatasetTarget(false)
+  forgetAccelServing()
 })

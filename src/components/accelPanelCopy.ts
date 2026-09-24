@@ -222,10 +222,36 @@ export function showOwnerColumn(rows: readonly AccelRow[], me: string | null): b
 /** The extra sentence a row needs, or null. Rendered under the row rather than
  *  in a cell, because `.dtable` cells do not wrap. */
 export function rowNote(row: AccelRow, health: Health): string | null {
+  // Before the differences: with the Lake window unresolved they are only the
+  // ones that do not depend on it, and Apply will not write this row at all
+  // (provision.ts `windowUnresolved`), so "Apply overwrites it" would be false.
+  // Owner decision, 2026-09-24: nor is an absent one created on the default.
+  if (row.windowUnresolved && row.state === 'absent') {
+    return 'The Lake dataset’s retention could not be read, so the window this search would read is not known, and Apply does not create it. Re-check once the Lake API answers; Apply creates it then.'
+  }
+  if (row.windowUnresolved) {
+    return `The Lake dataset’s retention could not be read, so whether this search reads the right window cannot be checked, and Apply leaves it as it is. Re-check once the Lake API answers.${row.state === 'differs' && row.differences.length ? ` Also edited since this app wrote it: ${row.differences.join('; ')}.` : ''}`
+  }
   if (row.state === 'differs' && row.differences.length) {
     return `Edited since this app wrote it: ${row.differences.join('; ')}. Apply overwrites it with what this release defines.`
   }
   return health.detail
+}
+
+/**
+ * The line under the actions when Apply has nothing to write.
+ *
+ * "Already exactly as it defines it" is true only when nothing was held back.
+ * A Lake total whose window could not be resolved is written in no state
+ * (provision.ts `windowUnresolved`) — absent or differing, it is still not as
+ * this release defines it, and saying so would hide the one thing left to do.
+ */
+export function nothingToApplyWords(state: AccelState): string {
+  const held = state.rows.find((r) => r.windowUnresolved && (r.state === 'absent' || r.state === 'differs'))
+  if (held) {
+    return `Nothing to apply now — ${held.entry.name} (${held.id}) is ${held.state === 'absent' ? 'not created' : 'left as it is'} because the Lake dataset’s retention could not be read, so the window it should read is not known. Re-check once the Lake API answers.`
+  }
+  return 'Nothing to apply — every scheduled search this release defines is already exactly as it defines it. A paused one is left paused; use Resume in its row.'
 }
 
 // ── The estimate, in words ──────────────────────────────────────────────────
@@ -322,7 +348,9 @@ export const SAVED_KIND = 'Cribl Search saved search'
 export function applyResources(state: AccelState): ConfirmResource[] {
   const out: ConfirmResource[] = []
   for (const row of state.rows) {
-    if (row.state === 'absent') {
+    // An absent Lake total with its window unresolved is not created
+    // (provision.ts `windowUnresolved`, owner decision 2026-09-24).
+    if (row.state === 'absent' && !row.windowUnresolved) {
       out.push({
         action: 'create',
         kind: SAVED_KIND,
@@ -330,7 +358,7 @@ export function applyResources(state: AccelState): ConfirmResource[] {
         group: SEARCH_GROUP,
         detail: `${row.entry.name} · runs ${row.entry.cron} ${row.entry.tz} over ${row.entry.earliest} → ${row.entry.latest}, keeping the last ${row.entry.keepLastN} runs readable. Feeds ${row.entry.serves}.`,
       })
-    } else if (row.state === 'differs') {
+    } else if (row.state === 'differs' && !row.windowUnresolved) {
       out.push({
         action: 'replace',
         kind: SAVED_KIND,
@@ -388,7 +416,7 @@ export const ACCEL_LEAD =
 
 export const ACCEL_LEAD_TIP =
   'It adds no new number to any screen: it changes where existing numbers come from, and each panel’s ⓘ still shows the query behind its figure, because that query is what ran. ' +
-  'The schedules bill whether or not anybody opens the app, and uninstalling the app does not stop them — Remove acceleration does.'
+  'The schedules bill whether or not anybody opens the app, and uninstalling the app does not stop them. The switches here pause them — per dashboard or all at once — and the panels they fed run their live queries again; Remove acceleration deletes the scheduled searches outright.'
 
 /** The one preset on offer. The words are behind its ⓘ; the name is the label. */
 export const SAVINGS_PRESET_TIP =

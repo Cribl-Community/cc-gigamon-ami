@@ -191,6 +191,9 @@ export interface SwitchContext {
  * same decision; tabs.test.ts pins that they agree.
  */
 export function switchable(row: AccelRow): { enabled: boolean | null; why: string | null } {
+  if (row.state === 'absent' && row.windowUnresolved) {
+    return { enabled: null, why: 'not created yet — the Lake dataset’s retention could not be read, so the window it would read is not known' }
+  }
   if (row.state === 'absent') return { enabled: null, why: 'not created yet — Review changes creates it' }
   if (row.state === 'foreign' || (!row.ours && !row.recorded)) return { enabled: null, why: 'not created by this app, so no switch here changes it' }
   if (row.state === 'unreadable') return { enabled: null, why: 'Cribl would not say what state it is in' }

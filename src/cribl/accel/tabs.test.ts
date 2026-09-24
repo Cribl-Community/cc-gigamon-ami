@@ -185,6 +185,16 @@ describe('reading a switch from the saved searches', () => {
     }
   })
 
+  it('does not promise Review changes will create the Lake total while its window is unresolved', () => {
+    // Owner decision, 2026-09-24: Apply leaves an absent Lake entry uncreated
+    // while the dataset's retention cannot be read (provision.ts).
+    const s = switchable(row('gno_lake_30d_c1d', 'absent', { windowUnresolved: true }))
+    expect(s.enabled).toBeNull()
+    expect(s.why).toContain('retention could not be read')
+    expect(s.why).not.toContain('creates it')
+    expect(switchable(row('gno_lake_30d_c1d', 'absent')).why).toContain('Review changes creates it')
+  })
+
   it('reads on, off and mixed from schedule.enabled', () => {
     const readings = tabReadings(stateOf({ gno_app_l4_c1h: 'paused' }))
     expect(readings['tcp-health'].state).toBe('on')

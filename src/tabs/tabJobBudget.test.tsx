@@ -34,6 +34,12 @@
 //   * a `$vt_results` job, if one is submitted, answers with the same rows, so
 //     a panel that falls off the artifact path is counted ONCE, as the stored
 //     read it is, and not again as a live fallback;
+//   * the saved-search list holds every manifest entry exactly as this release
+//     writes it, schedule ON — so accel/serving.ts reads every entry as
+//     `scheduled`, through the same boot read main.tsx starts, and the budget
+//     below is the one for a healthy workspace. The paused case is its own
+//     describe at the bottom: a switched-off entry's panels run live, which is
+//     what the switch's confirmation priced;
 //   * KV, Lake, metrics and everything else answer harmlessly (a 404 on a KV
 //     key is "nobody wrote it"; the Lake API answers with a 30-day retention).
 //
@@ -84,10 +90,14 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { DashboardProvider } from '../app/DashboardContext'
-import { MANIFEST, columnsOf, type AccelEntry, type AccelId } from '../cribl/accel/manifest'
+import { MANIFEST, accelSavedSearch, columnsOf, resolvedManifest, type AccelEntry, type AccelId, type AccelSavedSearch } from '../cribl/accel/manifest'
+import { accelServing, forgetAccelServing, loadAccelServing } from '../cribl/accel/serving'
+import { lakeWindow } from '../queries/lakeWindow'
+import { METRICS_QUERY } from '../queries/dataFlow'
+import { PRESENCE_QUERY } from '../queries/fieldExplorer'
 import { resetAccelKeyMemo } from '../cribl/accel/read'
 import { HEAD_LIMIT, cronIntervalMs } from '../cribl/accel/status'
 import { resetSelectedSnapshot } from '../cribl/accel/selection'
@@ -384,6 +394,15 @@ let answeredBy = new Map<string, Set<'head' | 'own' | 'full'>>()
 /** The entry of each artifact read — each stored read that submitted no job. */
 let artifactReads: string[] = []
 
+/** Every entry as this release writes it, resolved against the stub's 30-day
+ *  Lake — what `readAccelState` will compare the list with. */
+let SAVED: AccelSavedSearch[] = []
+beforeAll(async () => {
+  SAVED = await Promise.all(resolvedManifest(lakeWindow(30, 30)).map((e) => accelSavedSearch(e)))
+})
+/** Entries whose schedule the saved-search list reports as switched off. */
+let paused = new Set<AccelId>()
+
 function stub(): void {
   submits = []
   ownPages = []
@@ -407,6 +426,10 @@ function stub(): void {
           { id: 'cribl_metrics', retentionPeriodInDays: 30, metrics: {} },
         ],
       })
+    }
+    if (method === 'GET' && u.includes('/search/saved')) {
+      const items = SAVED.map((s) => ({ ...s, schedule: { ...s.schedule, enabled: !paused.has(s.id as AccelId) } }))
+      return res(200, { items, count: items.length, totalCount: items.length })
     }
     const sub = /\/search\/jobs\/([^/?]+)\/([a-z-]+)/.exec(u)
     if (sub) {
@@ -468,7 +491,11 @@ beforeEach(() => {
   resetSelectedSnapshot()
   resetSnapshotCensus()
   resetAccelKeyMemo()
+  paused = new Set()
   stub()
+  // What main.tsx starts at boot. vitest.setup.ts dropped the last test's
+  // verdicts; every entry reads `scheduled` against this stub.
+  void loadAccelServing()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -543,6 +570,14 @@ describe('the workspace this gate reads', () => {
     expect(LAGGARDS.size).toBeGreaterThan(0)
     expect(FOREIGN).toBeGreaterThan(0)
   })
+
+  it('reads every schedule as on and running this release’s query', async () => {
+    // Otherwise the budget above would be for `unknown` verdicts — the
+    // behaviour before accel/serving.ts — and say nothing about a healthy
+    // workspace read the way the app reads it.
+    await loadAccelServing()
+    expect(MANIFEST.map((e) => [e.id, accelServing(e.id)])).toEqual(MANIFEST.map((e) => [e.id, 'scheduled']))
+  })
 })
 
 describe('jobs each tab submits in Snapshot mode, opened and scrolled', () => {
@@ -609,4 +644,43 @@ describe('jobs each tab submits in Snapshot mode, opened and scrolled', () => {
       }
     })
   }
+})
+
+// ── A SWITCHED-OFF SCHEDULE ─────────────────────────────────────────────────
+// Review 2026-09-24, defect 1. The switches and Pause say the panels they feed
+// "go back to their live queries" and price exactly that; until accel/serving.ts
+// the panels went on reading the paused schedule's last run for days, under
+// "check the schedule". This is the budget for that state, on the tab that
+// motivated the phase: both of Data Flow's Cribl-side figures paused, both run
+// live — no more, and not as stored reads.
+describe('a paused schedule’s panels run live', () => {
+  it('/data-flow with its pipeline and Lake schedules paused: exactly those two live queries', async () => {
+    act(() => root.unmount())
+    paused = new Set<AccelId>(['gno_pipeline_c1h', 'gno_lake_30d_c1d'])
+    // The boot read in beforeEach saw the healthy list; this one sees the pause.
+    forgetAccelServing()
+    void loadAccelServing()
+    root = createRoot(container)
+    await renderAt('/data-flow')
+    const lakeQuery = lakeWindow(30, 30)!.query
+    const strip = (q: string) => q.replace(EXEC_PREFIX, '')
+    expect(submits.map(strip).sort()).toEqual([METRICS_QUERY, lakeQuery].sort())
+    const main = container.querySelector('.app-main')?.textContent ?? ''
+    expect(main, 'a paused schedule’s panel told the reader to check the schedule').not.toContain('schedule overdue')
+    // Neither the diagram (its Cribl half is live) nor the Lake card is a dated
+    // stored run any more.
+    expect(census?.snapshotted).toBe(0)
+  })
+
+  it('/fields with its presence schedule paused: exactly that one live query', async () => {
+    // Field Explorer reads through accel/read.ts without useSearch, so it has
+    // to ask the same question on its own.
+    act(() => root.unmount())
+    paused = new Set<AccelId>(['gno_presence_c1h'])
+    forgetAccelServing()
+    await loadAccelServing()
+    root = createRoot(container)
+    await renderAt('/fields')
+    expect(submits.map((q) => q.replace(EXEC_PREFIX, ''))).toEqual([PRESENCE_QUERY])
+  })
 })

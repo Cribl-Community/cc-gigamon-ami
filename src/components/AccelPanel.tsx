@@ -129,6 +129,7 @@ import {
   removeResources,
   rowAction,
   rowActionName,
+  nothingToApplyWords,
   rowNote,
   scheduleCostLine,
   setCostWords,
@@ -169,6 +170,7 @@ import {
   type RemoveResult,
 } from '../cribl/accel/provision'
 import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/accel/status'
+import { publishAccelServing } from '../cribl/accel/serving'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
 import { datasetTarget, realDataConfirmed, useDatasetTarget } from '../cribl/datasetTarget'
 import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
@@ -297,6 +299,9 @@ export function AccelPanel() {
         readAccelState(),
         allAccelStatus().catch(() => null),
       ])
+      // The panels read the same answer (accel/serving.ts): a Pause, a switch
+      // or a Re-check is heard by every accelerated panel from this one read.
+      publishAccelServing(next)
       if (!alive.current) return
       setState(next)
       setStatus(runs)
@@ -359,6 +364,7 @@ export function AccelPanel() {
         (s) => setSteps((prev) => [...prev, s]),
         state === null ? undefined : approvedWrites(state),
       )
+      publishAccelServing(result.state)
       if (!alive.current) return
       setState(result.state)
       const failed = result.steps.filter((s) => s.action === 'error' || s.action === 'refused')
@@ -389,6 +395,7 @@ export function AccelPanel() {
     setStillPresent([])
     try {
       const result = await removeAcceleration((s) => setSteps((prev) => [...prev, s]))
+      publishAccelServing(result.state)
       if (!alive.current) return
       setState(result.state)
       setLeftBehind(result.left)
@@ -691,11 +698,8 @@ export function AccelPanel() {
             <GateNote write="accel.apply" />
           </>
         )}
-        {plan !== null && plan.willWrite.length === 0 && (
-          <p className="gs-action-note">
-            Nothing to apply — every scheduled search this release defines is already exactly as it defines
-            it. A paused one is left paused; use Resume in its row.
-          </p>
+        {plan !== null && state && plan.willWrite.length === 0 && (
+          <p className="gs-action-note">{nothingToApplyWords(state)}</p>
         )}
         {canRemove && (
           <>

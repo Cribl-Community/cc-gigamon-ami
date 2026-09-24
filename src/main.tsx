@@ -13,6 +13,7 @@ import { applyTheme, readStoredTheme } from './app/theme'
 import { loadSearchCaps } from './cribl/searchCaps'
 import { prefetchRunHistory } from './cribl/accel/status'
 import { resolveDatasetTarget } from './cribl/datasetTarget'
+import { loadAccelServing } from './cribl/accel/serving'
 import { installTrace } from './cribl/devTrace'
 
 // The dev-only page trace (cribl/devTrace.ts). `import.meta.env.DEV` is a
@@ -48,6 +49,14 @@ prefetchRunHistory()
 // module loading. One GET that bills nothing, and at most one tiny search on a
 // sample-only install; it writes nothing.
 void resolveDatasetTarget()
+
+// Whether each schedule is on, and still runs the query its panels show
+// (cribl/accel/serving.ts). The same config-plane GETs Guided Setup's table
+// makes — nothing billed, nothing written — started here for the same reason as
+// the history: accelerated panels hold their first read for it, up to a
+// deadline, so that a paused schedule's panel runs live once rather than
+// reading a stale run first and then running live.
+void loadAccelServing()
 
 const Strict = TRACE ? Fragment : StrictMode
 
