@@ -20,6 +20,7 @@
     "lint": "oxlint",
     "test": "vitest run",
     "queries:extract": "node scripts/extract-queries.mjs",
+    "assets:budget": "node scripts/asset-budget.mjs",
     "preview": "vite preview",
     "package": "node scripts/package.mjs"
   },

@@ -1,0 +1,21 @@
+{
+  "about": "Limits for scripts/asset-budget.mjs (npm run assets:budget), in bytes of JavaScript as written to dist/. Each is about 7% above what feat/route-code-splitting measured at e728bb7 on 2026-09-24; largestLazyRaw is about 10% above, because that chunk is Guided Setup, which another branch is rewriting. Raising a limit is allowed: say what grew and why in the commit.",
+  "measured": {
+    "commit": "e728bb7",
+    "date": "2026-09-24",
+    "initialRaw": 938444,
+    "initialGzip": 288286,
+    "entryRaw": 835181,
+    "entryGzip": 254230,
+    "largestLazyRaw": 135532,
+    "largestLazyFile": "GuidedSetup",
+    "totalRaw": 1408780,
+    "totalChunks": 36
+  },
+  "budgets": {
+    "initialRaw": 1005000,
+    "initialGzip": 309000,
+    "largestLazyRaw": 149000,
+    "totalRaw": 1510000
+  }
+}
