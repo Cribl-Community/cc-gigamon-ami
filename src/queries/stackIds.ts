@@ -51,9 +51,9 @@
 // so a change to which ids are counted is a visible diff.
 
 import {
-  PACK_LAKE_DATASET_ID, PACK_LAKE_OUTPUT_ID, PACK_PUBLISHED, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID,
-  PACK_SAMPLE_OUTPUT_ID, PACK_SAMPLE_PIPELINE_ID, PACK_SAMPLE_ROUTE_ID, PACK_SYSLOG_INPUT_ID,
-  PACK_SYSLOG_PIPELINE_ID, PACK_SYSLOG_ROUTE_ID,
+  PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_JSON_OUTPUT_ID,
+  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PIPELINE_ID, PACK_PUBLISHED,
+  PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID, PACK_SAMPLE_ROUTE_ID,
 } from '../cribl/pack'
 
 export interface StackPath {
@@ -75,10 +75,16 @@ export interface Stack {
   key: string
   /** Where the objects live: the worker group's own config, or inside the pack. */
   scope: 'global' | 'pack'
-  /** Whether anything can run it today. `running` and `offered` are the only
-   *  ones a tenant can have; `unreleased` is built but not published,
-   *  `planned` is not built, and `pending` ids are not known yet. */
-  status: 'running' | 'offered' | 'released' | 'unreleased' | 'planned' | 'pending'
+  /** Whether anything can run it today, and how a tenant comes to have it.
+   *  `running` is running in this workspace; `offered` is what this release
+   *  offers to create; `retired` is what an earlier release of this app
+   *  created and this one only offers to remove, which a tenant may still run.
+   *  Those three are the ones the screen names. `released` is a published pack
+   *  release a tenant may have installed — counted, but not named on screen
+   *  until it is. `unreleased` is built but not published, `planned` is not
+   *  built, and `pending` ids are not known yet. Every one of them is COUNTED:
+   *  the status decides only what the screen names (SHOWN_PATHS below). */
+  status: 'running' | 'offered' | 'retired' | 'released' | 'unreleased' | 'planned' | 'pending'
   what: string
   paths: readonly StackPath[]
 }
@@ -99,50 +105,54 @@ export const STACKS: readonly Stack[] = [
     ],
   },
   {
+    // Earlier releases' Guided Setup wrote it; this one only offers to remove
+    // it. A tenant that ran an earlier release can still have it running, so
+    // it is still counted and still named.
     key: 'global-legacy-syslog',
     scope: 'global',
-    status: 'offered',
-    what: "Guided Setup's Syslog onboarding (src/cribl/provision.ts). It shares the demo's Lake destination.",
+    status: 'retired',
+    what: "The Syslog onboarding earlier releases of Guided Setup created (provision.ts's LEGACY_SYSLOG_*). It shares the demo's Lake destination.",
     paths: [
       { route: 'gigamon_ami_syslog', input: 'syslog:in_gigamon_syslog', pipeline: 'gigamon_syslog', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
     ],
   },
   {
-    // Guided Setup's onboarding is moving from Syslog to Raw HTTP on another
-    // branch, with ids not decided yet. At that merge this is the one place
-    // to add them: one path, the new source, its pipeline and its destination.
-    key: 'global-http-PENDING',
+    // Written out, not imported: ../cribl/provision reaches the network, and
+    // this file is loaded under plain Node. stackIds.test.ts holds these equal
+    // to provision.ts's HTTP_* and LAKE_DESTINATION_ID, and the `http_raw:`
+    // prefix to the route filter provision.ts writes.
+    key: 'global-http',
     scope: 'global',
-    status: 'pending',
-    what: "Guided Setup's Raw HTTP onboarding — ids not known yet.",
-    paths: [],
-  },
-  {
-    // The ids come from ../cribl/pack; the `<type>:` prefixes are the YAML's
-    // `type:` fields, which stackIds.test.ts reads to hold them equal.
-    key: 'pack-0.1.0',
-    scope: 'pack',
-    status: PACK_PUBLISHED ? 'released' : 'unreleased',
-    what: 'cc-network-gigamon-ami 0.1.0: Syslog and a sample DataGen, both shipped disabled.',
+    status: 'offered',
+    what: "Guided Setup's Raw HTTP onboarding (src/cribl/provision.ts). It shares the demo's Lake destination.",
     paths: [
-      { route: PACK_SYSLOG_ROUTE_ID, input: `syslog:${PACK_SYSLOG_INPUT_ID}`, pipeline: PACK_SYSLOG_PIPELINE_ID, output: `cribl_lake:${PACK_LAKE_OUTPUT_ID}`, dataset: PACK_LAKE_DATASET_ID },
-      { route: PACK_SAMPLE_ROUTE_ID, input: `datagen:${PACK_SAMPLE_INPUT_ID}`, pipeline: PACK_SAMPLE_PIPELINE_ID, output: `cribl_lake:${PACK_SAMPLE_OUTPUT_ID}`, dataset: PACK_SAMPLE_DATASET_ID },
+      { route: 'gigamon_ami_http', input: 'http_raw:in_gigamon_http', pipeline: 'gigamon_http_normalize', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
     ],
   },
   {
-    // Owner's ids, 2026-09-24. The HTTP source fans out: one route to the JSON
-    // dataset the dashboards read, one to the Parquet copy, both through the
-    // same cast/derive pipeline. The sample route's pipeline is not decided
-    // in the design; it cannot reach these counters either way, because its
-    // source and destination are not on a gigamon_ami path.
+    // The published 0.1.0 release, from ../cribl/pack's PACK_0_1_0 — literals
+    // read from that tag, never the 0.2.0 constants, several of which kept
+    // their names while their values changed. A tenant that installed 0.1.0
+    // runs these ids until it upgrades.
+    key: 'pack-0.1.0',
+    scope: 'pack',
+    status: 'released',
+    what: 'cc-network-gigamon-ami 0.1.0: Syslog and a sample DataGen, both shipped disabled.',
+    paths: PACK_0_1_0.paths,
+  },
+  {
+    // The ids come from ../cribl/pack; the `<type>:` prefixes are the YAML's
+    // `type:` fields, which stackIds.test.ts reads to hold them equal. The HTTP
+    // source fans out: one route to the JSON dataset the dashboards read, one
+    // to the Parquet copy, both through the same cast/derive pipeline.
     key: 'pack-0.2.0',
     scope: 'pack',
-    status: 'planned',
+    status: PACK_PUBLISHED ? 'released' : 'unreleased',
     what: 'cc-network-gigamon-ami 0.2.0: Raw HTTP, dual-written as JSON and Parquet, plus a sample DataGen.',
     paths: [
-      { route: 'gigamon_ami_http_to_json', input: 'http_raw:in_gigamon_ami_http', pipeline: 'gigamon_ami_normalize', output: 'cribl_lake:gigamon_ami_json_lake', dataset: 'gigamon_ami' },
-      { route: 'gigamon_ami_http_to_parquet', input: 'http_raw:in_gigamon_ami_http', pipeline: 'gigamon_ami_normalize', output: 'cribl_lake:gigamon_ami_parquet_lake', dataset: 'gigamon_ami_pq' },
-      { route: 'gigamon_ami_sample', input: 'datagen:in_gigamon_ami_sample', pipeline: 'gigamon_ami_normalize', output: 'cribl_lake:gigamon_ami_sample_lake', dataset: 'gigamon_ami_sample' },
+      { route: PACK_HTTP_JSON_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_JSON_OUTPUT_ID}`, dataset: PACK_LAKE_DATASET_ID },
+      { route: PACK_HTTP_PARQUET_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_PARQUET_OUTPUT_ID}`, dataset: PACK_PARQUET_DATASET_ID },
+      { route: PACK_SAMPLE_ROUTE_ID, input: `datagen:${PACK_SAMPLE_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_SAMPLE_OUTPUT_ID}`, dataset: PACK_SAMPLE_DATASET_ID },
     ],
   },
 ]
@@ -215,13 +225,14 @@ const listed = (xs: readonly string[]): string =>
 //
 // The queries count every stack above, so they are right the day a pack is
 // installed. The words on screen name only the stacks a tenant can have today
-// (the demo feed and Guided Setup's onboarding), so a viewer is never told
+// (the demo feed, Guided Setup's onboarding and the Syslog onboarding earlier
+// releases created), so a viewer is never told
 // about an object no release has shipped, nor how a planned one will work.
 // The query in the ⓘ still shows every id it counts; the sentence below
 // accounts for the rest in one clause.
 
 const SHOWN_PATHS: readonly StackPath[] = STACKS
-  .filter((s) => s.status === 'running' || s.status === 'offered')
+  .filter((s) => s.status === 'running' || s.status === 'offered' || s.status === 'retired')
   .flatMap((s) => s.paths)
   .filter((p) => p.dataset === COUNTED_DATASET)
 

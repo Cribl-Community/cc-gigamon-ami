@@ -1505,7 +1505,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--gm-sp-18); align-items: start; }
 @media (max-width: 780px) { .gs-grid { grid-template-columns: 1fr; } }
 
-.gs-group-picker {
+.gs-group-picker, .gs-port-picker {
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--gm-sp-10);
   padding: var(--gm-sp-12) var(--gm-sp-14); margin: 0 0 var(--gm-sp-16);
   background: var(--gm-panel-2); border: 1px solid var(--gm-border); border-radius: var(--gm-radius);
@@ -1520,6 +1520,8 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   padding: var(--gm-sp-6) var(--gm-sp-10); cursor: pointer; min-width: 200px;
 }
 .gs-group-select:disabled { opacity: 0.5; cursor: default; }
+/* The port picker is typed into, not chosen from. */
+.gs-port-input { cursor: text; }
 
 .gs-checklist { border: 1px solid var(--gm-border); border-radius: var(--gm-radius); overflow: hidden; }
 .gs-checklist-head {

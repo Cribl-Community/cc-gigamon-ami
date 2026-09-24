@@ -1,24 +1,59 @@
 # Gigamon AMI onboarding pack
 
 The Cribl Stream pack that the Gigamon Network Observability app installs from Guided Setup. It
-receives Gigamon Application Metadata Intelligence (AMI) records over syslog, parses them and lands
-them in the Cribl Lake dataset `gigamon_ami`.
+receives Gigamon Application Metadata Intelligence (AMI) records from Gigamon AMX over Raw HTTP and
+lands them in Cribl Lake twice: as JSON in `gigamon_ami`, which every dashboard reads, and as a
+Parquet copy in `gigamon_ami_pq`.
 
 | Object | Id | What it does |
 |---|---|---|
-| Source | `in_gno_syslog` | Syslog, TCP and UDP. **Ships disabled.** A Cloud port in 20000–20010 is reachable from the internet and syslog is unauthenticated, so nothing listens until you confirm a port in Guided Setup, which then enables the input. **The port shipped here (20005) is a placeholder** inside 20000–20010, the range a Cribl-managed worker group exposes. |
-| Source | `in_gno_sample` | DataGen of synthetic sample flows. **Ships disabled.** |
-| Pipeline | `gno_syslog` | Takes the JSON record out of the syslog message, casts numeric fields, derives helper fields. |
-| Pipeline | `gno_sample` | Casts and derives only; sample events arrive as objects. |
-| Destination | `out_gno_lake` | Cribl Lake → `gigamon_ami` |
-| Destination | `out_gno_sample_lake` | Cribl Lake → `gigamon_ami_sample` |
+| Source | `in_gigamon_ami_http` | Raw HTTP (`http_raw`). Gigamon AMX POSTs a JSON array of records. **Ships disabled, with no auth token.** |
+| Source | `in_gigamon_ami_sample` | DataGen of synthetic sample flows. **Ships disabled.** |
+| Event breaker | `gigamon_ami_http_json_array` | One event per record of the POSTed array, every field extracted. |
+| Pipeline | `gigamon_ami_normalize` | Casts numeric fields and derives helper fields. No parse step: the breaker has already extracted the fields. All three routes use it. |
+| Route | `gigamon_ami_http_to_json` | HTTP → `gigamon_ami_json_lake`. **Not final**, so each event goes on to the next route too. |
+| Route | `gigamon_ami_http_to_parquet` | HTTP → `gigamon_ami_parquet_lake`. |
+| Route | `gigamon_ami_sample` | Sample DataGen → `gigamon_ami_sample_lake`. |
+| Destination | `gigamon_ami_json_lake` | Cribl Lake → `gigamon_ami` (JSON) |
+| Destination | `gigamon_ami_parquet_lake` | Cribl Lake → `gigamon_ami_pq` (Parquet). Drops events rather than blocking under backpressure, so it can never stop the JSON copy. |
+| Destination | `gigamon_ami_sample_lake` | Cribl Lake → `gigamon_ami_sample` (JSON) |
 
-Neither dataset is part of the pack, because Cribl has no pack-scoped dataset. The app creates them,
-and removing the pack deletes neither.
+No dataset is part of the pack, because Cribl has no pack-scoped dataset. The app creates them, and
+removing the pack deletes none of them.
 
-The routes are in `default/pipelines/route.yml`, where every pack on a Leader keeps them. Each route
-sends its events to its named destination only: no route carries an output expression, and no
-source uses QuickConnect `connections`, so the routes are the only path out of the pack.
+Object names say what each object does. The `gno_` prefix is reserved for the app's acceleration
+schedules, and `npm run pack:check` refuses a pack object that carries it.
+
+## Security of the HTTP source
+
+The source ships **disabled**, and with **no auth token**. A port in 20000–20010 on a Cribl-managed
+worker group can be reached from the internet. A token written into the pack would be one secret
+shared by every tenant that installed it. So Guided Setup does three things in one write when you
+confirm the source:
+
+1. It picks a free port.
+2. It generates a random token, which is written only into this source and shown to you once.
+3. It enables the source.
+
+Gigamon AMX sends that token in the `Authorization` header.
+
+**The port shipped here (20005) is a placeholder** inside 20000–20010, the range a Cribl-managed
+worker group exposes. TLS ships in the form a Cribl-managed group needs: Cribl's own certificate
+(`$CRIBL_CLOUD_CRT` / `$CRIBL_CLOUD_KEY`). A hybrid group has no such certificate, so on a hybrid
+group Guided Setup turns TLS off. It then tells you the traffic is unencrypted until you add a
+certificate.
+
+## Undecided: PENDING
+
+These are placeholders and not decisions. The pack must not be released while they are open. A
+release build (`scripts/pack.mjs build --expect-version`, which the release workflow runs) refuses any
+pack file that says PENDING, and so do the app's tests on a release tag.
+
+- **PENDING: the Parquet schema mode.** `gigamon_ami_parquet_lake` ships `automaticSchema: true`.
+  Whether it stays automatic or becomes an explicit schema waits on a schema-change test and an
+  owner decision.
+- **PENDING: the partition fields of `gigamon_ami_pq`.** A Lake dataset's layout is fixed when it
+  is created, and the app creates this one, so this has to be decided before that happens.
 
 ## Sample data
 
@@ -27,8 +62,9 @@ them from a fixed seed. Internal hosts are in `10.20.0.0/16` (private address sp
 are only in the documentation ranges `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24`.
 Hostnames are only under `example.com`, `example.net` and `example.org`.
 
-Sample events go to their own dataset, `gigamon_ami_sample`, and never to `gigamon_ami`. Each event
-carries `gno_origin=sample`. The DataGen replays five samples at one event per second each.
+Sample events go to their own dataset, `gigamon_ami_sample`, and never to `gigamon_ami` or
+`gigamon_ami_pq`. Each event carries `gigamon_origin=sample`. The DataGen replays five samples at
+one event per second each.
 
 `data/samples/*.json` and `default/samples.yml` are generated. Do not edit them by hand. Run
 `npm run pack:samples` to regenerate them, and `npm run pack:check` to validate the pack.
@@ -39,12 +75,24 @@ These are left for the proof install on a real Leader:
 
 - **The value of `__inputId` for an input inside a pack.** The route filters assume `<type>:<id>`,
   as for a global input. A wrong filter drops the data silently.
+- **Where a pack keeps event breakers.** This pack puts them in `default/breakers.yml`, the global
+  file's path without `cribl/`, as for every other pack file. Another Cribl Community pack does the
+  same, but no pack breaker has yet been read back from a Leader.
 - **Unknown (f): whether the samples replay with `_time` as now.** Every sample in
   `default/samples.yml` has `isTemplate: false`, while every live DataGen sample seen on a Leader has
   `isTemplate: true`. The value stays as it is until the install shows which one is right.
+- **What an upgrade from 0.1.0 leaves behind.** 0.1.0 shipped a Syslog source, `in_gno_syslog`. An
+  in-place upgrade replaces the pack's `default/` files, but nobody has yet checked what stays in its
+  `local/` folder. A port set on that source after install could survive as a listener that no route
+  reads. The app keeps the 0.1.0 object ids so the install can find what is left.
+- **That the Parquet copy cannot stall the JSON feed.** `gigamon_ami_parquet_lake` drops events
+  under backpressure rather than blocking. It shares its source with `gigamon_ami_json_lake`, and a
+  blocked Parquet writer would otherwise stop the data every dashboard reads. The install has to show
+  `gigamon_ami` still filling while `gigamon_ami_pq` is missing.
 
 ## Releases
 
 The pack is released on its own, from a `gigamon-pack-v<version>` tag, as a GitHub release asset
 named `cc-network-gigamon-ami-<version>.crbl`. The version is in this directory's `package.json`
-and is independent of the app's version.
+and is independent of the app's version. Version 0.1.0 received Syslog. From 0.2.0 on, the pack
+receives Raw HTTP only.

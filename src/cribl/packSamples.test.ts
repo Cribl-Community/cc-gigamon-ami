@@ -28,7 +28,7 @@
 // JavaScript over the sample file, as a DataGen replaying it in order would
 // feed them. It does not run KQL: Cribl's percentile() is approximate and its
 // type coercion is measured, not specified. It cannot show how DataGen actually
-// replays a sample (in order or at random), nor how `gno_origin` surfaces as a
+// replays a sample (in order or at random), nor how `gigamon_origin` surfaces as a
 // Search column, nor that replayed events land in the current time window.
 // Those are measured by the proof install, not by a unit test.
 
@@ -74,7 +74,9 @@ function evalExpr(expr: string, ev: Ev): unknown {
   return new Function('scope', `with (scope) { return (${expr}) }`)(scope)
 }
 
-const castAndDerive = PIPELINE_SPEC.conf.functions.slice(2) as { filter: string; conf: { add: { name: string; value: string }[] } }[]
+// The whole global pipeline: since the move to Raw HTTP it is exactly the cast
+// and derive functions (the prep and parse steps went with Syslog).
+const castAndDerive = PIPELINE_SPEC.conf.functions as { filter: string; conf: { add: { name: string; value: string }[] } }[]
 const events: Ev[] = rawEvents.map((e) => {
   const out: Ev = { ...e }
   for (const fn of castAndDerive) {
@@ -124,7 +126,7 @@ describe('the generator reproduces the committed samples', () => {
 
   it('every event is tagged as sample data and carries no _time', () => {
     for (const e of rawEvents) {
-      expect(e.gno_origin).toBe('sample')
+      expect(e.gigamon_origin).toBe('sample')
       expect(e).not.toHaveProperty('_time')
     }
   })

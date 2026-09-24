@@ -111,7 +111,7 @@ function Harness({ resources = REMOVE_RESOURCES, diff, typeToConfirm, irreversib
         onCancel={() => setOpen(false)}
         confirm={
           <GatedControl
-            write="syslog_stack.remove"
+            write="onboarding_stack.remove"
             label="Yes, delete from default"
             busyLabel="Removing…"
             className="btn btn-danger"

@@ -23,11 +23,14 @@ into the raw Cribl Search UI whenever you want to go deeper.
 
 ## What it does
 
-1. **Onboard the data (Guided Setup).** Idempotently provisions a real-world Gigamon syslog
-   onboarding stack — a Syslog source, a parse/normalize pipeline, a route, and the `gigamon_ami`
-   Cribl Lake dataset — in a Stream worker group you pick (`default` unless you change it), then
-   commits and deploys it. It only *adds* resources (never edits shared ones) and can tear down
-   exactly what it added.
+1. **Onboard the data (Guided Setup).** Idempotently provisions a real-world Gigamon AMX
+   onboarding stack — a Raw HTTP source with an auth token the app generates and shows once, an
+   event breaker ruleset that splits each POSTed JSON array into records, a normalize pipeline, a
+   route, and the `gigamon_ami` Cribl Lake dataset — in a Stream worker group you pick (`default`
+   unless you change it), then commits and deploys it. On a Cribl-managed group the source listens
+   on a free port in 20000–20010 with TLS; on a hybrid group it starts without TLS and the app says
+   so. It only *adds* resources (never edits shared ones) and can tear down exactly what it added —
+   including the Syslog stack earlier releases created.
 2. **Query on demand.** Each tab issues KQL jobs against `dataset="gigamon_ami"`, polls to
    completion, and streams the result rows into the view. A global time range and auto-refresh
    interval drive every panel at once.
@@ -68,7 +71,7 @@ The dashboard is organized into tabs, each answering a different operational que
 - **Security** & **Findings** — security-relevant observations surfaced from the metadata
 - **Field Explorer** — browse the AMI field schema and per-field summaries
 - **AMI Reference** — reference documentation for the Gigamon AMI dataset
-- **Guided Setup** — provision (or tear down) the syslog → Lake onboarding stack
+- **Guided Setup** — provision (or tear down) the Raw HTTP → Lake onboarding stack
 
 ## Installation
 
@@ -128,11 +131,12 @@ fields so the Copilot agent does not rediscover it on every investigation.
 and none of it touches configuration", which the long-running-search watch (slice 1.8, branch
 `feat/phase-1.8-hang-control`) falsified.*
 
-**The writes are worth reading properly.** Guided Setup can create a Syslog source, a pipeline, a
-route and a Cribl Lake destination and dataset, commit them to your Leader's config repo, and deploy
+**The writes are worth reading properly.** Guided Setup can create a Raw HTTP source, an event
+breaker ruleset, a pipeline, a route and a Cribl Lake destination and dataset, commit them to your Leader's config repo, and deploy
 that commit to a worker group — which restarts that group's Worker Processes. It only ever runs
 from a button press with a confirmation that names the objects it will change, it only touches
-objects it created, and it can remove the source, the pipeline and the route again. Two things it
+objects it created, and it can remove the source, the ruleset, the pipeline and the route again
+— and the Syslog source, pipeline and route an earlier release created. Two things it
 creates it does **not** remove: the `gigamon_ami` Lake dataset, because that holds your ingested
 data and deleting it is a Cribl Lake decision you should make deliberately, and the `gigamon_lake`
 destination, because on most tenants it already existed and other things may route through it — so
@@ -162,7 +166,7 @@ took. It is scoped to this app; nothing else can read it, and it holds no search
 ways to cover a child path and never says whether `*` matches one path segment or many — and an
 admin can never find out by testing, because a user who already holds a permission reaches the path
 without any grant. So every object names each segment it needs, and uses a literal wherever the app
-only ever calls one value: the entry is `/m/:gid/system/inputs/in_gigamon_syslog`, so what you
+only ever calls one value: the entry is `/m/:gid/system/inputs/in_gigamon_http`, so what you
 approve is "may delete the input this app made" rather than "may delete any input".
 
 Everything in that file is checked against the code: `src/cribl/policyCoverage.test.ts` fails if the

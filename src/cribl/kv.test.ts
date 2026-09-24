@@ -189,7 +189,7 @@ describe('appendLog', () => {
   it('files one document per entry, keyed by the millisecond it happened', async () => {
     const { store, calls } = stubStore()
     await appendLog('gigamon', { action: 'syslog_stack.applied', group: 'default' })
-    await appendLog('gigamon', { action: 'syslog_stack.removed', group: 'default' })
+    await appendLog('gigamon', { action: 'onboarding_stack.removed', group: 'default' })
 
     const keys = [...store.keys()]
     expect(keys).toHaveLength(2)

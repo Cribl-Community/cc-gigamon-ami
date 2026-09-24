@@ -13,8 +13,11 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 import { LAKE_DATASET } from '../cribl/config'
-import { PACK_ID, PACK_PUBLISHED, PACK_ROUTES_FILE } from '../cribl/pack'
-import { LAKE_DESTINATION_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID, SYSLOG_SOURCE_ID } from '../cribl/provision'
+import { PACK_0_1_0, PACK_ID, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, PACK_ROUTES_FILE } from '../cribl/pack'
+import {
+  HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DESTINATION_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
+  LEGACY_SYSLOG_SOURCE_ID, ROUTE_SPEC,
+} from '../cribl/provision'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY } from './dataFlow'
 import {
   COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
@@ -93,7 +96,7 @@ function everyStackRunning(opts: { fromInput?: boolean } = {}): { rows: Row[]; l
 }
 
 describe('the Data Flow counters count every stack, and each event once', () => {
-  it('adds up the demo, Syslog and pack stacks side by side, dual-write included', () => {
+  it('adds up the demo, Syslog, Raw HTTP and pack stacks side by side, dual-write included', () => {
     const { rows, landed } = everyStackRunning()
     expect(landed).toBeGreaterThan(0)
     const m = run(METRICS_QUERY, rows)
@@ -156,24 +159,56 @@ describe('the stack list', () => {
     expect(COUNTED_DATASET).toBe(LAKE_DATASET)
   })
 
-  it('names the Syslog onboarding stack Guided Setup actually writes', () => {
+  it('calls the old Syslog stack retired, and still counts and names it, because tenants may still run it', () => {
+    // No release creates it any more — this one only offers to remove it — so
+    // "offered" was wrong. It is not gone either: a tenant that ran an earlier
+    // release can still be sending through it, and a counter that skipped it
+    // would read short while looking complete.
+    const legacy = STACKS.find((s) => s.key === 'global-legacy-syslog')!
+    expect(legacy.status).toBe('retired')
+    for (const p of legacy.paths) expect(COUNTED_PATHS).toContain(p)
+    expect(SHOWN_INPUTS).toContain(LEGACY_SYSLOG_SOURCE_ID)
+    expect(SHOWN_PIPELINES).toContain(LEGACY_SYSLOG_PIPELINE_ID)
+  })
+
+  it('names the Syslog stack earlier releases of Guided Setup wrote', () => {
     const syslog = STACKS.find((s) => s.key === 'global-legacy-syslog')!.paths[0]
     expect(syslog).toEqual({
-      route: SYSLOG_ROUTE_ID,
-      input: `syslog:${SYSLOG_SOURCE_ID}`,
-      pipeline: SYSLOG_PIPELINE_ID,
+      route: LEGACY_SYSLOG_ROUTE_ID,
+      input: `syslog:${LEGACY_SYSLOG_SOURCE_ID}`,
+      pipeline: LEGACY_SYSLOG_PIPELINE_ID,
       output: `cribl_lake:${LAKE_DESTINATION_ID}`,
       dataset: LAKE_DATASET,
     })
   })
 
-  it('names the pack 0.1.0 objects the pack YAML defines, type prefix included', () => {
+  it('names the Raw HTTP stack Guided Setup actually writes, type prefix from its own route filter', () => {
+    const http = STACKS.find((s) => s.key === 'global-http')!
+    expect(http.status).toBe('offered')
+    expect(http.paths).toEqual([{
+      route: HTTP_ROUTE_ID,
+      input: `http_raw:${HTTP_SOURCE_ID}`,
+      pipeline: HTTP_PIPELINE_ID,
+      output: `cribl_lake:${LAKE_DESTINATION_ID}`,
+      dataset: LAKE_DATASET,
+    }])
+    // The route provision.ts writes selects exactly this `input` value.
+    expect(ROUTE_SPEC.filter).toBe(`__inputId=='${http.paths[0].input}'`)
+    expect(ROUTE_SPEC.pipeline).toBe(http.paths[0].pipeline)
+    expect(ROUTE_SPEC.output).toBe(LAKE_DESTINATION_ID)
+  })
+
+  it('has no stack still waiting for its ids', () => {
+    expect(STACKS.filter((s) => s.status === 'pending' || /PENDING/.test(s.key))).toEqual([])
+  })
+
+  it('names the pack 0.2.0 objects the pack YAML defines, type prefix included', () => {
     const dir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'packs', PACK_ID)
     const yml = (rel: string) => parse(readFileSync(join(dir, rel), 'utf8'))
     const inputs = yml('default/inputs.yml').inputs as Record<string, { type: string }>
     const outputs = yml('default/outputs.yml').outputs as Record<string, { type: string }>
     const routes = yml(PACK_ROUTES_FILE).routes as { id: string; filter: string; pipeline: string; output: string }[]
-    const pack = STACKS.find((s) => s.key === 'pack-0.1.0')!
+    const pack = STACKS.find((s) => s.key === 'pack-0.2.0')!
     // Every route the YAML defines is a path here, and nothing else is.
     expect(pack.paths.map((p) => p.route).sort()).toEqual(routes.map((r) => r.id).sort())
     for (const p of pack.paths) {
@@ -187,8 +222,15 @@ describe('the stack list', () => {
   })
 
   it('does not call the pack released before its release exists', () => {
-    const pack = STACKS.find((s) => s.key === 'pack-0.1.0')!
+    const pack = STACKS.find((s) => s.key === 'pack-0.2.0')!
     expect(pack.status === 'released').toBe(PACK_PUBLISHED)
+  })
+
+  it('calls 0.1.0 released, with the ids that release shipped', () => {
+    const pack = STACKS.find((s) => s.key === 'pack-0.1.0')!
+    expect(PACK_PUBLISHED_VERSIONS).toContain(PACK_0_1_0.version)
+    expect(pack.status).toBe('released')
+    expect(pack.paths).toEqual(PACK_0_1_0.paths)
   })
 })
 
@@ -196,16 +238,17 @@ describe('the stage ⓘ prose', () => {
   const PROSE = [COUNTED_SOURCES_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_DESTINATIONS_PROSE]
   const bare = (v: string) => v.slice(v.indexOf(':') + 1)
 
-  it('names only objects a tenant can have today: the running and offered stacks', () => {
-    const shown = STACKS.filter((s) => s.status === 'running' || s.status === 'offered').flatMap((s) => s.paths)
-    const unshown = STACKS.filter((s) => s.status !== 'running' && s.status !== 'offered').flatMap((s) => s.paths)
+  it('names only objects a tenant can have today: the running, offered and retired stacks', () => {
+    const today = (s: (typeof STACKS)[number]) => s.status === 'running' || s.status === 'offered' || s.status === 'retired'
+    const shown = STACKS.filter(today).flatMap((s) => s.paths)
+    const unshown = STACKS.filter((s) => !today(s)).flatMap((s) => s.paths)
     const ids = (ps: readonly StackPath[]) => new Set(ps.flatMap((p) => [bare(p.input), p.pipeline, bare(p.output)]))
     const allowed = ids(shown)
     const forbidden = [...ids(unshown)].filter((id) => !allowed.has(id))
     expect(forbidden.length).toBeGreaterThan(0)
     for (const text of PROSE) for (const id of forbidden) expect(text).not.toMatch(new RegExp(`\\b${id}\\b`))
-    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen', 'in_gigamon_syslog'])
-    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami', 'gigamon_syslog'])
+    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen', 'in_gigamon_syslog', 'in_gigamon_http'])
+    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami', 'gigamon_syslog', 'gigamon_http_normalize'])
     expect(SHOWN_OUTPUTS).toEqual(['gigamon_lake'])
     for (const id of SHOWN_INPUTS) expect(COUNTED_SOURCES_PROSE).toContain(id)
     for (const id of SHOWN_PIPELINES) expect(COUNTED_PIPELINES_PROSE).toContain(id)

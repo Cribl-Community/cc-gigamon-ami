@@ -1,0 +1,32 @@
+# Event breaker rulesets of the cc-network-gigamon-ami pack.
+#
+# gigamon_ami_http_json_array: one event per record of a POSTed JSON array,
+#   every record's fields extracted (jsonExtractAll), so the pipeline has
+#   nothing to parse. provision.ts's HTTP_BREAKER_SPEC, value for value, under
+#   the pack's own id; src/cribl/pack.test.ts fails if the two drift. Its own id
+#   so the pack input never depends on, and never collides with, the global
+#   ruleset Guided Setup creates (gigamon_ami_json_array).
+#   Two more differences, both names: the rule is not named after the global
+#   ruleset, and the description is not the global one's, which provision.ts
+#   reads as the app's ownership stamp on the global ruleset (stampedBreaker).
+#
+# UNMEASURED: that a pack keeps its rulesets in default/breakers.yml and that a
+# pack input's breakerRulesets resolves against them. Cribl keeps the global
+# library in (default|local)/cribl/breakers.yml; a pack keeps every other kind
+# of object one level up, without `cribl/`. The proof install has to read this
+# ruleset back from the Leader.
+gigamon_ami_http_json_array:
+  lib: custom
+  description: "Gigamon AMI pack: one event per record of a POSTed JSON array"
+  minRawLength: 256
+  rules:
+    - name: one_event_per_record
+      condition: "true"
+      type: json_array
+      jsonExtractAll: true
+      maxEventBytes: 51200
+      timestampAnchorRegex: /^/
+      timestamp:
+        type: auto
+        length: 150
+      disabled: false

@@ -261,7 +261,7 @@ export async function listKeys(prefix: string): Promise<string[]> {
 }
 
 /** One entry of an audit trail. `action` is this app's own vocabulary for what
- *  happened (e.g. `syslog_stack.applied`); anything else the caller adds rides
+ *  happened (e.g. `onboarding_stack.applied`); anything else the caller adds rides
  *  along beside it. */
 export interface LogEntry {
   action: string

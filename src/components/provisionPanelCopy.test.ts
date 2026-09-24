@@ -7,7 +7,7 @@
 // It shipped, it is in the installed 1.0.20, and it is false. Git commits FILES
 // (openapi.json, GitCommitBody.files: "Array of file paths to include in the
 // commit"), and `groups/<g>/local/cribl/inputs.yml` holds every Source in the
-// group — the app's syslog source and the demo DataGen source are two entries
+// group — the app's own source and the demo DataGen source are two entries
 // in one file. So the press that promised not to touch the DataGen source
 // commits whatever anybody had left uncommitted in it and deploys the result to
 // running Worker Processes.
@@ -22,17 +22,24 @@
 // opposite of what it should.
 
 import { describe, expect, it } from 'vitest'
-import { SETUP_FACTS, deployConsequences, pendingSentence, removeConsequences } from './provisionPanelCopy'
+import {
+  AUTH_HEADER, ENDPOINT_LEAD, ENDPOINT_TIP, HTTP_RESTART_PRECAUTION, SETUP_FACTS, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING,
+  behindNote, behindTip, deployConsequences, legacyNote, LEGACY_TIP, leftAloneSentence, pendingSentence, removeConsequences,
+  undeployedSentence,
+} from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
-import { commitScope, SYSLOG_PIPELINE_ID, SYSLOG_PORT, SYSLOG_SOURCE_ID, type ResourceKey } from '../cribl/provision'
+import {
+  commitScope, CLOUD_PORT_RANGE, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID,
+  LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID, type CommitKey,
+} from '../cribl/provision'
 
 const GROUP = 'default'
-const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
+const ALL: CommitKey[] = ['source', 'pipeline', 'route', 'destination']
 const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
 const ROUTES = `groups/${GROUP}/local/cribl/pipelines/route.yml`
 const OUTPUTS = `groups/${GROUP}/local/cribl/outputs.yml`
 
-const ctx = (pending: string[] | null, keys: ResourceKey[] = ALL, undeployed: string | null = null) => ({
+const ctx = (pending: string[] | null, keys: CommitKey[] = ALL, undeployed: string | null = null) => ({
   group: GROUP,
   scope: commitScope(GROUP, keys, pending),
   undeployed,
@@ -50,8 +57,9 @@ describe('what the deploy confirmation claims about reach', () => {
 
   it('still says what is true about the write, because that is what somebody is asking', () => {
     const line = deployConsequences(ctx([]))[0]
-    expect(line).toContain(SYSLOG_PIPELINE_ID)
-    expect(line).toContain(SYSLOG_SOURCE_ID)
+    expect(line).toContain(HTTP_PIPELINE_ID)
+    expect(line).toContain(HTTP_SOURCE_ID)
+    expect(line).toContain(HTTP_BREAKER_ID)
     expect(line).toContain('does not edit the demo DataGen source')
   })
 
@@ -65,7 +73,7 @@ describe('what the deploy confirmation claims about reach', () => {
     const lines = removeConsequences(ctx([], ['source', 'pipeline', 'route']), 'gigamon_lake', 'gigamon_ami')
     expect(all(lines)).toContain(INPUTS)
     expect(all(lines)).toContain(ROUTES)
-    // Over-naming is the same class of untruth as hiding: `removeSyslogStack`
+    // Over-naming is the same class of untruth as hiding: `removeOnboardingStack`
     // never writes the destination, so its commit never carries outputs.yml.
     expect(all(lines)).not.toContain(OUTPUTS)
   })
@@ -147,6 +155,34 @@ describe('what the deploy confirmation claims about reach', () => {
   })
 })
 
+describe('what a Raw HTTP source does across the restart', () => {
+  it('is said in Guided Setup’s own dialogs, as a precaution, not in the sentences every deploy dialog shares', () => {
+    // DEPLOY_CONSEQUENCES is also the Lake landing panel's, where no Raw HTTP
+    // source need exist — and "refuses POSTs" was never measured.
+    for (const line of DEPLOY_CONSEQUENCES) {
+      expect(line).not.toMatch(/Raw HTTP|POST/)
+    }
+    expect(HTTP_RESTART_PRECAUTION).toMatch(/retry/)
+    expect(HTTP_RESTART_PRECAUTION).not.toMatch(/refuses/)
+    expect(deployConsequences(ctx([]))).toContain(HTTP_RESTART_PRECAUTION)
+    expect(removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami')).toContain(HTTP_RESTART_PRECAUTION)
+  })
+})
+
+describe('what a teardown leaves alone because it could not see it', () => {
+  it('names each object it will not delete, and says why', () => {
+    const line = leftAloneSentence(GROUP, ['Syslog source in_gigamon_syslog', 'Raw HTTP source in_gigamon_http'])
+    expect(line).toContain('in_gigamon_syslog')
+    expect(line).toContain('in_gigamon_http')
+    expect(line).toContain('could not')
+    expect(line).toContain('not deleted')
+  })
+
+  it('says nothing when there is nothing it could not see', () => {
+    expect(leftAloneSentence(GROUP, [])).toBeNull()
+  })
+})
+
 describe('“What gets created & things to know”', () => {
   it('is five short labels, each with its explanation behind an ⓘ', () => {
     expect(SETUP_FACTS).toHaveLength(5)
@@ -156,18 +192,92 @@ describe('“What gets created & things to know”', () => {
     }
   })
 
-  it('still names the port to open and the ids the stack creates', () => {
+  it('still names the port range and the ids the stack creates', () => {
     const text = SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')
-    expect(text).toContain(String(SYSLOG_PORT))
-    expect(text).toContain(SYSLOG_PIPELINE_ID)
-    expect(text).toContain(`syslog:${SYSLOG_SOURCE_ID}`)
-    // The firewall step is the one a customer must act on, so it is the label,
-    // not only the tip.
-    expect(SETUP_FACTS.some((f) => f.label.includes(`port ${SYSLOG_PORT}`))).toBe(true)
+    expect(text).toContain(HTTP_PIPELINE_ID)
+    expect(text).toContain(HTTP_BREAKER_ID)
+    expect(text).toContain(`http_raw:${HTTP_SOURCE_ID}`)
+    // The port range is the one constraint a Cloud customer cannot work
+    // around, so it is a label, not only a tip.
+    const range = `${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`
+    expect(SETUP_FACTS.some((f) => f.label.includes(range))).toBe(true)
+  })
+
+  it('no longer tells anybody to open a Syslog port', () => {
+    const text = SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')
+    expect(text).not.toMatch(/syslog|5514|TCP\/UDP/i)
   })
 
   it('says nothing about "the lab" — that was our demo workspace, not the customer’s', () => {
     expect(SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')).not.toMatch(/\blab\b/i)
+  })
+})
+
+describe('the endpoint card and the old Syslog stack', () => {
+  it('says the token is shown once and kept nowhere by this app', () => {
+    expect(TOKEN_ONCE).toContain('Shown once')
+    expect(TOKEN_ONCE).toContain('keeps no copy')
+    // And where to find it afterwards — never "lost".
+    expect(TOKEN_ELSEWHERE).toContain('authentication settings')
+  })
+
+  it('says plainly, on a hybrid group, that the traffic is unencrypted', () => {
+    expect(UNENCRYPTED_WARNING).toMatch(/^Unencrypted/)
+    expect(UNENCRYPTED_WARNING).toContain('plain text')
+    expect(UNENCRYPTED_WARNING).toContain('until you add')
+  })
+
+  it('keeps the endpoint card to one short lead line', () => {
+    expect(ENDPOINT_LEAD.split(/\s+/).length).toBeLessThanOrEqual(20)
+  })
+
+  it('gives the exact header line, not just the header name', () => {
+    // openapi.json, InputHttpRaw.authTokensExt: "Shared secrets to be provided
+    // by any client (Authorization: <token>)" — the whole value, no scheme.
+    expect(AUTH_HEADER).toBe('Authorization: <token>')
+    expect(ENDPOINT_TIP).toContain(AUTH_HEADER)
+    expect(ENDPOINT_TIP).toContain('Bearer')
+    expect(ENDPOINT_TIP).toMatch(/no .?Bearer/)
+  })
+
+  it('names every old Syslog object the teardown will remove', () => {
+    for (const id of [LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID]) expect(LEGACY_TIP).toContain(id)
+    expect(legacyNote(GROUP)).toContain(GROUP)
+  })
+})
+
+describe('what the three confirmations say about an undeployed commit', () => {
+  const HEAD = 'aaaa1111cccc2222'
+  const at = (undeployed: string | null, undeployedChecking = false) => ({ ...ctx([]), undeployed, undeployedChecking })
+  const removal = (c: ReturnType<typeof at>) => all(removeConsequences(c, 'gigamon_lake', 'gigamon_ami'))
+
+  it('names the commit in the teardown dialogs too, because a teardown deploys as well', () => {
+    // Both Remove dialogs commit and deploy (DEPLOY_CONSEQUENCES), so they move
+    // the group to HEAD exactly as Deploy does. They used to say nothing.
+    expect(removal(at(HEAD))).toContain(`${GROUP} is behind commit #${HEAD.slice(0, 10)}`)
+    expect(all(deployConsequences(at(HEAD)))).toContain(`${GROUP} is behind commit #${HEAD.slice(0, 10)}`)
+    expect(removal(at(null))).not.toContain('is behind')
+  })
+
+  it('says the check was still running, in every dialog, rather than saying nothing', () => {
+    for (const text of [all(deployConsequences(at(null, true))), removal(at(null, true))]) {
+      expect(text).toContain(`still checking whether ${GROUP} is behind a commit that touches it`)
+      expect(text).not.toContain('is behind commit #')
+    }
+  })
+
+  it('says it about when the dialog opened, so the sentence stays true while it is open', () => {
+    expect(undeployedSentence(at(null, true))).toContain('When this dialog opened')
+  })
+})
+
+describe('the undeployed-commit note beside Deploy', () => {
+  it('claims only what pendingDeploy proves: a commit that touches the group, not a failed deploy', () => {
+    expect(behindNote(GROUP)).toBe(`${GROUP} is behind a commit that touches it.`)
+    const tip = behindTip(GROUP, 'aaaa1111cccc2222')
+    expect(tip).toContain('#aaaa1111cc')
+    expect(tip).toContain('somebody else')
+    expect(`${behindNote(GROUP)} ${tip}`).not.toMatch(/did not finish|failed/)
   })
 })
 

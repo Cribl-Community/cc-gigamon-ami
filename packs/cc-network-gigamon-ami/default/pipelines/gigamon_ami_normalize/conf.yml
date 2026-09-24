@@ -1,29 +1,16 @@
-# Pipeline gno_syslog of the cc-network-gigamon-ami pack.
-# The functions are provision.ts's PIPELINE_SPEC, value for value (gno_sample carries
-# only its cast and derive steps). src/cribl/pack.test.ts fails if the two drift, so
-# change them together.
+# Pipeline gigamon_ami_normalize of the cc-network-gigamon-ami pack.
+# The functions are provision.ts's PIPELINE_SPEC, value for value: cast and
+# derive only. There is NO parse step. The HTTP input's breaker has already
+# split the POSTed array and extracted every record's fields, and the sample
+# DataGen's events arrive as objects, so all three routes run this one pipeline
+# and every row lands in one shape. src/cribl/pack.test.ts fails if this and
+# PIPELINE_SPEC drift, so change them together.
 output: default
 streamtags: []
 groups: {}
 asyncFuncTimeout: 1000
-description: Gigamon AMI over syslog - parse the JSON record out of the message, then cast and derive.
+description: Gigamon AMI records, already objects (HTTP after the breaker, or sample) - cast and derive only.
 functions:
-  - id: eval
-    filter: "true"
-    disabled: false
-    description: Fallback to _raw when no syslog MSG
-    conf:
-      add:
-        - name: message
-          value: message==null?_raw:message
-  - id: serde
-    filter: typeof message==='string' && message.trim().charAt(0)==='{'
-    disabled: false
-    description: Parse Gigamon AMI JSON from the syslog message
-    conf:
-      mode: extract
-      type: json
-      srcField: message
   - id: eval
     filter: "true"
     disabled: false

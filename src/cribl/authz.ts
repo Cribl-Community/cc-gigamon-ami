@@ -91,8 +91,8 @@ export type WriteSurface =
 /** Every control in this app that performs a write. One id per control, because
  *  the id is what a `<GatedControl>` carries and what a denial is latched to. */
 export type WriteId =
-  | 'syslog_stack.apply'
-  | 'syslog_stack.remove'
+  | 'onboarding_stack.apply'
+  | 'onboarding_stack.remove'
   | 'search_caps.save'
   | 'dataset_intel.generate'
   | 'hung_job.cancel'
@@ -102,6 +102,10 @@ export type WriteId =
   | 'lake_landing.retention'
   | 'lake_landing.description'
   | 'lake_landing.destination'
+  | 'onboarding_pack.install'
+  | 'onboarding_pack.upgrade'
+  | 'onboarding_pack.remove'
+  | 'onboarding_pack.configure'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -111,15 +115,23 @@ export interface GatedWrite {
    * two controls cannot describe the same write differently.
    */
   does: string
+  /**
+   * Set only while NO control renders this id yet, and why: the write is built
+   * a slice ahead of its UI. gatedWrites.test.ts accepts a missing
+   * `<GatedControl>` for it only while every write it gates sits in a module on
+   * paths.ts `UNREACHED_MODULES` (nothing on screen can reach it), and fails as
+   * soon as a control renders the id with this still set.
+   */
+  unrendered?: string
 }
 
 /** The controls, and what each one is. */
 export const GATED_WRITES: Record<WriteId, GatedWrite> = {
-  'syslog_stack.apply': {
+  'onboarding_stack.apply': {
     surface: 'config',
     does: 'applying the Gigamon AMI onboarding stack',
   },
-  'syslog_stack.remove': {
+  'onboarding_stack.remove': {
     surface: 'config',
     does: 'removing the Gigamon AMI onboarding stack',
   },
@@ -191,6 +203,33 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
     surface: 'config',
     does: 'changing how objects are written to Cribl Lake, and deploying it',
   },
+  // The onboarding pack's four (cribl/packClient.ts). All `config`: each
+  // installs, edits or removes objects in a worker group and ends in a commit
+  // and a deploy. The UI is the next slice; until it renders them, each is
+  // `unrendered`, and the module is on paths.ts `UNREACHED_MODULES`.
+  'onboarding_pack.install': {
+    surface: 'config',
+    does: 'installing the Gigamon AMI onboarding pack',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
+  'onboarding_pack.upgrade': {
+    surface: 'config',
+    does: 'upgrading the Gigamon AMI onboarding pack',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
+  'onboarding_pack.remove': {
+    surface: 'config',
+    does: 'removing the Gigamon AMI onboarding pack',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
+  // ONE ID FOR THE PACK SOURCES' SETTINGS: port, token, TLS, enable and the
+  // sample's opt-in are all the same whole-body PATCH of a pack source, so a
+  // refusal of one is a refusal of all of them.
+  'onboarding_pack.configure': {
+    surface: 'config',
+    does: 'changing the onboarding pack’s sources',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
 }
 
 // --- Where the writes actually are ----------------------------------------
@@ -224,51 +263,89 @@ export const WRITE_SITES: readonly WriteSite[] = [
   // --- Guided Setup: the only customer configuration this app writes --------
   {
     at: 'cribl/provision.ts#ensureDataset',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'POST creates the Cribl Lake dataset the dashboards read, when the tenant has none.',
   },
   {
     at: 'cribl/provision.ts#ensureDestination',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'POST creates the Cribl Lake destination on a tenant that lacks it.',
   },
   {
+    at: 'cribl/provision.ts#ensureBreaker',
+    gates: ['onboarding_stack.apply'],
+    surface: 'config',
+    why: 'POST creates the event breaker ruleset the Raw HTTP source names, in the group library; PATCH overwrites its rules on a re-apply, only when the live ruleset differs, and as a read-modify-write of the whole object because the endpoint deletes any field a PATCH omits.',
+  },
+  {
     at: 'cribl/provision.ts#ensurePipeline',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply — but only when the live list does not already say what the spec says. Until Phase 3 it PATCHed whenever the object existed, so a re-apply of a settled stack wrote twice, dirtied the group\'s Git status and carried the run on into a deploy that restarts Worker Processes.',
   },
   {
     at: 'cribl/provision.ts#ensureSource',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
-    why: 'POST creates the Syslog source; PATCH overwrites its settings on a re-apply — the call slice 1.3 shipped undeclared, and since Phase 3 one that is sent only when the live source differs. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function now takes, which is where a caller can be shown what is about to change rather than only which object.',
+    why: 'POST creates the Raw HTTP source, with the port, TLS mode and app-generated auth token chosen at creation; PATCH overwrites its other settings on a re-apply, only when the live source differs, and never its port, TLS or token. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function takes, which is where a caller can be shown what is about to change rather than only which object.',
   },
   {
     at: 'cribl/provision.ts#ensureRoute',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'PATCH replaces the group routing table wholesale — the most consequential write in the app.',
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['syslog_stack.apply', 'syslog_stack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove', 'onboarding_pack.configure'],
     surface: 'config',
-    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both controls end here.',
+    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both Guided Setup controls end here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['syslog_stack.apply', 'syslog_stack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove', 'onboarding_pack.configure'],
     surface: 'config',
-    why: 'POST /version/commit writes a Git commit on the Leader. Both controls end here.',
+    why: 'POST /version/commit writes a Git commit on the Leader. Both Guided Setup controls end here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
   {
-    at: 'cribl/provision.ts#removeSyslogStack',
-    gates: ['syslog_stack.remove'],
+    at: 'cribl/provision.ts#removeOnboardingStack',
+    gates: ['onboarding_stack.remove'],
     surface: 'config',
-    why: 'PATCH drops our route from the table; DELETE removes the source and the pipeline.',
+    why: 'PATCH drops our routes from the table — this release’s, the Syslog route an earlier release created, or both; DELETE removes the Raw HTTP source and the pipeline, and the old Syslog source and pipeline. Only what the status check found present, which is exactly what the confirmation names. The same control also removes the old Syslog objects alone.',
+  },
+  {
+    at: 'cribl/provision.ts#removeBreaker',
+    gates: ['onboarding_stack.remove'],
+    surface: 'config',
+    why: 'DELETE removes the breaker ruleset in the teardown — only once its source is gone, only when it carries this app’s description, and only when no other source in the group, or in a pack, names it.',
+  },
+
+  // --- The onboarding pack (not yet reachable from any screen) -------------
+  {
+    at: 'cribl/packClient.ts#installPack',
+    gates: ['onboarding_pack.install'],
+    surface: 'config',
+    why: 'POST /packs installs the pack from its pinned GitHub release into the picked group — refused until that release exists and its sha256 is recorded, and refused when the pack is already there.',
+  },
+  {
+    at: 'cribl/packClient.ts#upgradePack',
+    gates: ['onboarding_pack.upgrade'],
+    surface: 'config',
+    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward.',
+  },
+  {
+    at: 'cribl/packClient.ts#removePack',
+    gates: ['onboarding_pack.remove'],
+    surface: 'config',
+    why: 'DELETE /packs/<id> uninstalls the pack — only when the installed id is this app’s, its version is one this app published, and the pack list names that version’s release as where it came from.',
+  },
+  {
+    at: 'cribl/packClient.ts#patchPackInput',
+    gates: ['onboarding_pack.install', 'onboarding_pack.configure'],
+    surface: 'config',
+    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read in the same call (readLive) with only the port, token, TLS or disabled flag changed — and nothing is sent when that read no longer gives the diff the confirmation showed. Install ends here too: a freshly installed Raw HTTP source is disabled with no token until this sets them.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------
