@@ -18,14 +18,24 @@
 //   - every sample id a DataGen names must exist.
 //   - every pipeline and output a route names must exist, and every YAML file
 //     must parse.
-//   - the syslog input's port must be one a Cribl-managed group exposes, and
-//     the input must ship disabled: that port is internet-reachable and syslog
-//     is unauthenticated, so nothing listens until Guided Setup confirms it.
+//   - the HTTP input must ship disabled, on a port a Cribl-managed group
+//     exposes, and with NO auth token: that port is internet-reachable, and a
+//     token in the pack would be one secret shared by every tenant. Guided
+//     Setup generates the token and enables the input. Every breaker ruleset
+//     it names must be in the pack. Only http_raw and datagen inputs may ship.
 //   - the routes file must be default/pipelines/route.yml, where every pack
 //     on a Leader keeps it; a default/routes.yml is refused, not ignored.
-//   - sample data must have no way into gigamon_ami that the route checks do
-//     not see: no input may carry QuickConnect `connections`, every input must
-//     send to routes, and no route may carry an output expression.
+//   - sample data must have no way into gigamon_ami (or its Parquet copy) that
+//     the route checks do not see: no input may carry QuickConnect
+//     `connections`, every input must send to routes, no route may carry an
+//     output expression, every route filter names exactly one pack input, a
+//     DataGen route may write only the sample dataset, and only a DataGen
+//     route may write it.
+//   - each Lake destination writes one of the pack's three datasets in that
+//     dataset's format (the dashboards read gigamon_ami as JSON), and a
+//     *_to_parquet route is the only kind that may reach a Parquet destination.
+//   - no object id (or route name) starts with `gno_`, which is reserved for
+//     the app's acceleration schedules.
 //
 // WHY THIS WRITES ITS OWN TAR. Three things measured in the delivery spike:
 //   - Cribl's extractor does not create missing parent directories, so the
@@ -56,12 +66,31 @@ const PACK_NAME = 'cc-network-gigamon-ami'
  * refuse, a timestamp in the future.
  */
 const FIXED_MTIME = 1767225600
-/** The ports a Cribl-managed worker group exposes for syslog. */
+/** The ports a Cribl-managed worker group exposes for a source. */
 const PORT_MIN = 20000
 const PORT_MAX = 20010
 /** A sample must loop within five minutes at its rate. */
 const MAX_LOOP_SECONDS = 300
-const SAMPLE_ORIGIN_METADATA = { name: 'gno_origin', value: "'sample'" }
+/** The field every sample event carries, and the DataGen metadata that sets it. */
+const SAMPLE_ORIGIN_FIELD = 'gigamon_origin'
+const SAMPLE_ORIGIN_METADATA = { name: SAMPLE_ORIGIN_FIELD, value: "'sample'" }
+/** The only input types this pack ships. Gigamon AMX sends over HTTP; syslog was 0.1.0's. */
+const INPUT_TYPES = new Set(['http_raw', 'datagen'])
+/** Auth-token keys an http_raw input can carry. None may ship in the pack. */
+const TOKEN_KEYS = ['authTokens', 'authTokensExt', 'authToken']
+/** Reserved for the app's acceleration schedules (src/cribl/accel/manifest.ts). */
+const RESERVED_PREFIX = 'gno_'
+/**
+ * Every Lake dataset a pack destination may write, and the format it must be
+ * written in. gigamon_ami is JSON because every dashboard reads it as JSON.
+ */
+const DATASET_FORMATS = Object.freeze({ gigamon_ami: 'json', gigamon_ami_pq: 'parquet', gigamon_ami_sample: 'json' })
+/** Where sample data goes, and the only place it may go. */
+const SAMPLE_DATASET = 'gigamon_ami_sample'
+/** A route id with this suffix writes the Parquet copy, and only such a route may. */
+const PARQUET_ROUTE_SUFFIX = '_to_parquet'
+/** Where a pack keeps its event breaker rulesets. UNMEASURED: see src/cribl/pack.ts. */
+const BREAKERS_FILE = 'default/breakers.yml'
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
@@ -215,6 +244,13 @@ export function hygieneProblems(value, where) {
 
 // ── Checks ──────────────────────────────────────────────────────────────────
 
+/** Refuse an object id carrying the prefix reserved for acceleration schedules. */
+function reserved(where, id, errors) {
+  if (typeof id === 'string' && id.startsWith(RESERVED_PREFIX)) {
+    errors.push(`${where}: the ${RESERVED_PREFIX} prefix is reserved for acceleration schedules; name the object for what it does`)
+  }
+}
+
 export function checkPack(dir, { expectVersion = null } = {}) {
   const errors = []
   if (!existsSync(dir)) return { errors: [`${dir}: no such directory`] }
@@ -268,7 +304,7 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     parsed.forEach((e, i) => {
       if (!isPlainObject(e)) errors.push(`${f}[${i}]: every event must be an object`)
       else {
-        if (e.gno_origin !== 'sample') errors.push(`${f}[${i}]: gno_origin must be "sample"`)
+        if (e[SAMPLE_ORIGIN_FIELD] !== 'sample') errors.push(`${f}[${i}]: ${SAMPLE_ORIGIN_FIELD} must be "sample"`)
         if ('_time' in e) errors.push(`${f}[${i}]: carries _time; Cribl sets it on replay`)
       }
     })
@@ -300,16 +336,28 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     if (entry.numEvents !== actual.events) errors.push(`${where}: numEvents is ${entry.numEvents} but the file holds ${actual.events} events`)
   }
   for (const id of samples.keys()) if (!(id in declared)) errors.push(`data/samples/${id}.json: not declared in default/samples.yml`)
+  for (const id of Object.keys(declared)) reserved(`default/samples.yml: ${id}`, id, errors)
+
+  // 4b. Event breaker rulesets.
+  const breakersYml = yml[BREAKERS_FILE]
+  if (breakersYml !== undefined && !isPlainObject(breakersYml)) errors.push(`${BREAKERS_FILE}: must be a map of ruleset id to ruleset`)
+  const breakers = isPlainObject(breakersYml) ? breakersYml : {}
+  for (const [id, b] of Object.entries(breakers)) {
+    reserved(`${BREAKERS_FILE}: ${id}`, id, errors)
+    if (!isPlainObject(b) || !Array.isArray(b.rules) || b.rules.length === 0) errors.push(`${BREAKERS_FILE}: ${id}: must have at least one rule`)
+  }
 
   // 5. Inputs: DataGen references, the sample tag, the syslog port.
   const inputs = isPlainObject(yml['default/inputs.yml']?.inputs) ? yml['default/inputs.yml'].inputs : {}
   if (!files.includes('default/inputs.yml')) errors.push('default/inputs.yml: missing')
   for (const [id, input] of Object.entries(inputs)) {
     const where = `default/inputs.yml: ${id}`
+    reserved(where, id, errors)
     if (!isPlainObject(input) || typeof input.type !== 'string') {
       errors.push(`${where}: must have a type`)
       continue
     }
+    if (!INPUT_TYPES.has(input.type)) errors.push(`${where}: input type "${input.type}" is not one this pack may ship (${[...INPUT_TYPES].join(', ')})`)
     // Every input reaches a destination through the pack's routes and nothing
     // else. A QuickConnect `connections` list (with sendToRoutes false) skips
     // the routes, which is how the DataGen could write into gigamon_ami while
@@ -333,16 +381,23 @@ export function checkPack(dir, { expectVersion = null } = {}) {
         errors.push(`${where}: metadata must set ${SAMPLE_ORIGIN_METADATA.name} = ${SAMPLE_ORIGIN_METADATA.value}`)
       }
     }
-    if (input.type === 'syslog') {
-      // A Cloud port in 20000-20010 is reachable from the internet and syslog
-      // is unauthenticated: nothing listens until Guided Setup confirms a port.
+    if (input.type === 'http_raw') {
+      // A Cloud port in 20000-20010 is reachable from the internet: nothing
+      // listens until Guided Setup sets a port and a token and enables it.
       // An absent key is refused too, because Cribl reads it as enabled.
-      if (input.disabled !== true) errors.push(`${where}: a syslog input must ship disabled: true; Guided Setup enables it once the user confirms a port`)
-      for (const k of ['tcpPort', 'udpPort']) {
-        const p = input[k]
-        if (!(Number.isInteger(p) && p >= PORT_MIN && p <= PORT_MAX)) {
-          errors.push(`${where}: ${k} ${JSON.stringify(p)} is outside ${PORT_MIN}-${PORT_MAX}, the ports a Cribl-managed group exposes`)
-        }
+      if (input.disabled !== true) errors.push(`${where}: an http_raw input must ship disabled: true; Guided Setup enables it with a port and a token`)
+      // A token in the pack is one secret shared by every tenant that installs
+      // it, and public in this repository. Any value, even an empty list, is
+      // refused: the key's presence is the mistake.
+      for (const k of TOKEN_KEYS) {
+        if (k in input) errors.push(`${where}: must carry no auth token (${k}); the app generates one at install`)
+      }
+      const p = input.port
+      if (!(Number.isInteger(p) && p >= PORT_MIN && p <= PORT_MAX)) {
+        errors.push(`${where}: port ${JSON.stringify(p)} is outside ${PORT_MIN}-${PORT_MAX}, the ports a Cribl-managed group exposes`)
+      }
+      for (const b of Array.isArray(input.breakerRulesets) ? input.breakerRulesets : []) {
+        if (!(b in breakers)) errors.push(`${where}: breaker ruleset "${b}" is not in ${BREAKERS_FILE}; a pack input must not depend on a global ruleset`)
       }
     }
   }
@@ -351,14 +406,30 @@ export function checkPack(dir, { expectVersion = null } = {}) {
   const outputs = isPlainObject(yml['default/outputs.yml']?.outputs) ? yml['default/outputs.yml'].outputs : {}
   if (!files.includes('default/outputs.yml')) errors.push('default/outputs.yml: missing')
   for (const [id, o] of Object.entries(outputs)) {
-    if (!isPlainObject(o) || typeof o.type !== 'string') errors.push(`default/outputs.yml: ${id}: must have a type`)
+    const where = `default/outputs.yml: ${id}`
+    reserved(where, id, errors)
+    if (!isPlainObject(o) || typeof o.type !== 'string') {
+      errors.push(`${where}: must have a type`)
+      continue
+    }
+    if (o.type === 'cribl_lake') {
+      const want = Object.hasOwn(DATASET_FORMATS, o.destPath) ? DATASET_FORMATS[o.destPath] : undefined
+      if (want === undefined) errors.push(`${where}: writes dataset ${JSON.stringify(o.destPath)}, which is not one of this pack's datasets (${Object.keys(DATASET_FORMATS).join(', ')})`)
+      else if (o.format !== want) errors.push(`${where}: ${o.destPath} must be written as ${want}, not ${o.format}`)
+    }
   }
+  /** The dataset and format a route's output writes, when it is a Lake destination. */
+  const lakeOf = (outputId) => (isPlainObject(outputs[outputId]) && outputs[outputId].type === 'cribl_lake' ? outputs[outputId] : null)
   const routesDoc = yml[ROUTES_FILE]
   if (!files.includes(ROUTES_FILE)) errors.push(`${ROUTES_FILE}: missing`)
   const routes = Array.isArray(routesDoc?.routes) ? routesDoc.routes : []
   if (files.includes(ROUTES_FILE) && routes.length === 0) errors.push(`${ROUTES_FILE}: has no routes`)
   for (const route of routes) {
     const where = `${ROUTES_FILE}: ${route?.id}`
+    reserved(where, route?.id, errors)
+    if (route?.name !== undefined && String(route.name).startsWith(RESERVED_PREFIX)) {
+      errors.push(`${where}: name ${JSON.stringify(route.name)}: the ${RESERVED_PREFIX} prefix is reserved for acceleration schedules`)
+    }
     // A route's `output` must be the only place its events go. An output
     // expression overrides it at runtime, so a route could name the sample
     // destination and still write into gigamon_ami.
@@ -366,10 +437,25 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     if (route?.enableOutputExpression !== undefined && route.enableOutputExpression !== false) errors.push(`${where}: enableOutputExpression must be false`)
     if (!files.includes(`default/pipelines/${route?.pipeline}/conf.yml`)) errors.push(`${where}: pipeline "${route?.pipeline}" has no default/pipelines/${route?.pipeline}/conf.yml`)
     if (!(route?.output in outputs)) errors.push(`${where}: output "${route?.output}" is not in default/outputs.yml`)
+    // Exactly one pack input per route. A catch-all (`true`) or any other
+    // expression would let a route take events this file cannot see, which is
+    // how sample data could meet the customer's destination.
     const m = /^__inputId=='([a-z_]+):([A-Za-z0-9_-]+)'$/.exec(String(route?.filter))
-    if (m && inputs[m[2]]?.type !== m[1]) errors.push(`${where}: filter names input ${m[1]}:${m[2]}, which default/inputs.yml does not define`)
+    if (!m) errors.push(`${where}: filter must be __inputId=='<type>:<id>' naming one input of this pack, not ${JSON.stringify(route?.filter)}`)
+    else if (inputs[m[2]]?.type !== m[1]) errors.push(`${where}: filter names input ${m[1]}:${m[2]}, which default/inputs.yml does not define`)
+    const from = m ? inputs[m[2]] : undefined
+    const lake = lakeOf(route?.output)
+    const isSampleRoute = from?.type === 'datagen'
+    if (isSampleRoute && lake && lake.destPath !== SAMPLE_DATASET) {
+      errors.push(`${where}: a DataGen route may only write ${SAMPLE_DATASET}, not ${lake.destPath}; Lake has no row delete`)
+    }
+    if (!isSampleRoute && lake?.destPath === SAMPLE_DATASET) errors.push(`${where}: only a DataGen route may write ${SAMPLE_DATASET}`)
+    const parquetRoute = String(route?.id).endsWith(PARQUET_ROUTE_SUFFIX)
+    if (parquetRoute && lake?.format !== 'parquet') errors.push(`${where}: a *${PARQUET_ROUTE_SUFFIX} route may only target a Parquet destination, not ${route?.output}`)
+    if (!parquetRoute && lake?.format === 'parquet') errors.push(`${where}: only a *${PARQUET_ROUTE_SUFFIX} route may target the Parquet destination ${route?.output}`)
   }
   for (const f of files.filter((x) => /^default\/pipelines\/[^/]+\/conf\.yml$/.test(x))) {
+    reserved(f, f.split('/')[2], errors)
     if (yml[f] !== undefined && !Array.isArray(yml[f]?.functions)) errors.push(`${f}: must have a functions list`)
   }
 

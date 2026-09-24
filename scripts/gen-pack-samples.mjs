@@ -22,7 +22,7 @@
 // "": the Findings and Field Explorer tabs count presence, and in Cribl KQL an
 // empty string is not the same as an absent field. There is no `_time` (Cribl
 // adds it on replay) and no template token of any kind. Every event carries
-// gno_origin="sample", which the DataGen's metadata also sets. Fields the
+// gigamon_origin="sample", which the DataGen's metadata also sets. Fields the
 // pack's pipeline derives (total_bytes, l4_proto, the subnets, http_server_ms,
 // tcp_reset) are not written here; their inputs are.
 //
@@ -129,7 +129,7 @@ const vlanOf = (ip) => (ip.startsWith('10.20.') ? 100 + Number(ip.split('.')[2])
 
 /** Every field an event may carry, in the order it is written. */
 const KEY_ORDER = [
-  'gno_origin', 'app_name', 'app_id', 'protocol', 'ip_version', 'src_ip', 'src_port', 'dst_ip', 'dst_port', 'vlan_id',
+  'gigamon_origin', 'app_name', 'app_id', 'protocol', 'ip_version', 'src_ip', 'src_port', 'dst_ip', 'dst_port', 'vlan_id',
   'src_bytes', 'dst_bytes', 'src_packets', 'dst_packets',
   'tcp_flags', 'tcp_flag_reset', 'tcp_rtt', 'tcp_rtt_app', 'tcp_dup_ack', 'tcp_retransmission_bytes', 'tcp_loss_count',
   'tcp_wrong_crc', 'tcp_window_size', 'tcp_zero_window', 'udp_wrong_crc', 'ip_wrong_crc',
@@ -173,7 +173,7 @@ function flow(r, { app, proto = TCP, src, dst, dport, sport, bytes, reqShare = 0
   const dstB = Math.max(40, total - srcB)
   const ports = proto === ICMP ? {} : { src_port: sport ?? r.int(49152, 65535), dst_port: dport }
   return {
-    gno_origin: 'sample',
+    gigamon_origin: 'sample',
     app_name: app,
     app_id: appId(app),
     protocol: proto,
@@ -220,7 +220,7 @@ const httpTimes = (r, i, serverSec) => {
   return { http_request_ts: req, http_response_ts: r6(req + serverSec) }
 }
 
-// ── gno_services: Flow Map, TCP health, Capacity ─────────────────────────────
+// ── gigamon_ami_services: Flow Map, TCP health, Capacity ─────────────────────────────
 
 const VPCS = [`vpc-${stableHex('vpc:shop', 17)}`, `vpc-${stableHex('vpc:data', 17)}`]
 
@@ -347,7 +347,7 @@ function genServices() {
   return r.shuffle(events).map(finish)
 }
 
-// ── gno_web_api: Web and API health, Findings ────────────────────────────────
+// ── gigamon_ami_web_api: Web and API health, Findings ────────────────────────────────
 
 const WEB_HOSTS = [
   { host: 'shop.example.com', ip: '10.20.1.20', port: 8080, w: 30, server: 'nginx/1.24.0', med: 0.04, uris: ['/', '/cart', '/product/1042', '/search?q=shoes'], ctype: 'text/html; charset=utf-8', ext: true },
@@ -423,7 +423,7 @@ function genWeb() {
   return [...merged.slice(0, at), ...legacy, ...merged.slice(at)].map(finish)
 }
 
-// ── gno_dns: DNS health, Flow Map's DNS domain, Findings ─────────────────────
+// ── gigamon_ami_dns: DNS health, Flow Map's DNS domain, Findings ─────────────────────
 
 const RESOLVERS = [
   { ip: '10.20.5.53', tag: true, med: 0.004, w: 45 },
@@ -499,7 +499,7 @@ function genDns() {
   return r.shuffle(events).map(finish)
 }
 
-// ── gno_tls_apps: Shadow AI, TLS posture, PQC readiness ──────────────────────
+// ── gigamon_ami_tls_apps: Shadow AI, TLS posture, PQC readiness ──────────────────────
 
 /** Asserted against src/data/aiApps.ts: a rename there fails --check. */
 const AI_USED = ['openai', 'chatgpt', 'claude', 'anthropic', 'perplexity-ai', 'ms-copilot', 'deepseek', 'mistral-ai', 'google-gen', 'poe']
@@ -623,7 +623,7 @@ function genTls() {
   return r.shuffle(events).map(finish)
 }
 
-// ── gno_security: Security techniques, Findings, Field Explorer coverage ─────
+// ── gigamon_ami_security: Security techniques, Findings, Field Explorer coverage ─────
 
 function genSecurity() {
   const r = rng('gno_security')
@@ -728,13 +728,20 @@ function genSecurity() {
 
 // ── Output ──────────────────────────────────────────────────────────────────
 
-/** Sample id -> generator. The order is the order samples.yml lists them. */
+/**
+ * Sample id -> generator. The order is the order samples.yml lists them.
+ *
+ * The ids are object ids in the pack, so they carry no `gno_` prefix (reserved
+ * for acceleration schedules). The `rng('gno_…')` labels inside each generator
+ * are NOT ids: they are the frozen seeds 0.1.0's samples were drawn from, kept
+ * so the 0.2.0 events are the same draws. Changing a label re-rolls that file.
+ */
 const SAMPLES = [
-  ['gno_services', genServices],
-  ['gno_web_api', genWeb],
-  ['gno_dns', genDns],
-  ['gno_tls_apps', genTls],
-  ['gno_security', genSecurity],
+  ['gigamon_ami_services', genServices],
+  ['gigamon_ami_web_api', genWeb],
+  ['gigamon_ami_dns', genDns],
+  ['gigamon_ami_tls_apps', genTls],
+  ['gigamon_ami_security', genSecurity],
 ]
 
 /** One JSON document per file (a DataGen sample must be an array), one event per line. */
@@ -769,7 +776,7 @@ export function generate() {
   const files = SAMPLES.map(([id, gen]) => {
     const events = gen()
     for (const e of events) {
-      if (e.gno_origin !== 'sample') throw new Error(`gen-pack-samples: ${id} has an event without gno_origin="sample"`)
+      if (e.gigamon_origin !== 'sample') throw new Error(`gen-pack-samples: ${id} has an event without gigamon_origin="sample"`)
       if ('_time' in e) throw new Error(`gen-pack-samples: ${id} has an event with _time`)
     }
     if (events.length > MAX_EVENTS_PER_FILE) throw new Error(`gen-pack-samples: ${id} has ${events.length} events; the limit is ${MAX_EVENTS_PER_FILE}`)

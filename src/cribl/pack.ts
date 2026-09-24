@@ -8,25 +8,46 @@
 // parses that YAML and fails if an id here and an id there disagree, so neither
 // side can be renamed alone.
 //
-// NOTHING IMPORTS THIS YET. Slice 1 ships the pack content and its gates only;
-// no query, tab, grant or write changes. That is deliberate, and it is why this
-// file makes no network call and names no API path: the paths arrive with the
-// code that calls them, and with their `config/policies.yml` grants.
+// PURE DATA. This file makes no network call and names no API path: the paths
+// arrive with the code that calls them, and with their `config/policies.yml`
+// grants. The query extractor may load it under plain Node.
 //
-// DISTINCT IDS, NOT THE GLOBAL ONES. The group's global config already holds
-// objects with the old names — the syslog source, its pipeline and route, the
-// `gigamon_lake` destination, and the demo DataGen. A pack that reused those
-// names would make every place that matches on an id (a route filter on
-// `__inputId`, a `cribl_metrics` dimension, an operator reading the UI)
-// ambiguous about which of the two it meant. Every object in the pack carries a
-// `gno_` prefix instead. `REPLACED_BY_PACK` records the global objects the
+// ── 0.2.0: RAW HTTP, DUAL-WRITTEN AS JSON AND PARQUET ───────────────────────
+//
+// Gigamon AMX delivers AMI records by HTTP POST, not syslog (owner, 2026-09-24),
+// so 0.2.0 replaces 0.1.0's syslog input with an `http_raw` input and its event
+// breaker. That input fans out through two routes: one to the JSON dataset
+// every dashboard reads, one to a Parquet copy. The sample DataGen keeps its
+// own route to its own dataset. One cast/derive pipeline serves all three,
+// because after the breaker an HTTP record is an object exactly as a sample
+// event is.
+//
+// NAMES SAY WHAT THINGS DO. The `gno_` prefix is RESERVED for the acceleration
+// schedules (src/cribl/accel/manifest.ts); no pack object may carry it, and
+// `npm run pack:check` refuses one.
+//
+// DISTINCT IDS, NOT THE GLOBAL ONES. The group's global config holds Guided
+// Setup's own Raw HTTP stack (provision.ts: `in_gigamon_http`,
+// `gigamon_http_normalize`, `gigamon_ami_http`, the `gigamon_ami_json_array`
+// breaker), possibly the older Syslog stack, the `gigamon_lake` destination and
+// the demo DataGen. A pack object with one of those names would make every place
+// that matches on an id (a route filter on `__inputId`, a `cribl_metrics`
+// dimension, an operator reading the UI) ambiguous about which of the two it
+// meant, and would stop the pack being installed beside the global stack for a
+// side-by-side migration. `REPLACED_BY_PACK` records the global objects the
 // migration removes and what takes their place; `KEPT_BESIDE_PACK` records the
 // ones it deliberately leaves alone, and why.
 //
-// NOT VERIFIED, AND LEFT FOR THE PROOF SLICE (an install on a real Leader):
+// NOT VERIFIED, AND LEFT FOR THE PROOF INSTALL (on a real Leader):
 //   - the value of `__inputId` for an input inside a pack. The pack's route
 //     filters assume `<type>:<id>`, as for a global input; a wrong filter
 //     drops the data silently.
+//   - that a pack's event breaker rulesets live in `default/breakers.yml`, and
+//     that a pack input's `breakerRulesets` resolves against them. No pack with
+//     a breaker has been read back from a Leader in this project; the path is
+//     the one another Cribl Community pack ships, and the global file's
+//     `default/cribl/breakers.yml` without the `cribl/` segment, as every other
+//     pack file drops it. See `PACK_BREAKERS_FILE`.
 //   - unknown (f): whether a DataGen sample replays with `_time` as now. Every sample in
 //     default/samples.yml ships `isTemplate: false` (set in
 //     scripts/gen-pack-samples.mjs), while every live DataGen sample observed
@@ -40,17 +61,18 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * A PLACEHOLDER UNTIL THE FIRST PACK RELEASE EXISTS. No `gigamon-pack-v0.1.0`
- * release has been published, so `PACK_URL` below is a 404 today. Nothing calls
- * it in this slice. Bumping this constant is how the app ships a pack update;
- * `packs/cc-network-gigamon-ami/package.json` may run ahead of it, never behind.
+ * A PLACEHOLDER UNTIL ITS RELEASE EXISTS. No `gigamon-pack-v0.2.0` release has
+ * been published, so `PACK_URL` below is a 404 today. Bumping this constant is
+ * how the app ships a pack update; `packs/cc-network-gigamon-ami/package.json`
+ * may run ahead of it, never behind.
  */
-export const PACK_VERSION = '0.1.0'
+export const PACK_VERSION = '0.2.0'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. False: no pack release has
+ * Whether `PACK_VERSION`'s release exists on GitHub. False: no 0.2.0 release has
  * been published. Set it to true in the same change that sets `PACK_SHA256`;
- * pack.test.ts fails if one moves without the other.
+ * pack.test.ts fails if one moves without the other, and fails while
+ * `PACK_PENDING` below still holds anything.
  */
 export const PACK_PUBLISHED: boolean = false
 
@@ -69,6 +91,16 @@ export const PACK_SHA256: string | null = null
  * `routes.yml` exists anywhere. scripts/pack.mjs refuses a `default/routes.yml`.
  */
 export const PACK_ROUTES_FILE = 'default/pipelines/route.yml'
+
+/**
+ * Where a pack keeps its event breaker rulesets, relative to the pack root.
+ * NOT MEASURED — see the header. Cribl keeps the global library in
+ * `(default|local)/cribl/breakers.yml`; a pack keeps every other kind of object
+ * one level up (`default/inputs.yml`, not `default/cribl/inputs.yml`), and
+ * another Cribl Community pack ships its breakers here and references them from
+ * its own sources. The proof install has to read it back.
+ */
+export const PACK_BREAKERS_FILE = 'default/breakers.yml'
 
 /**
  * The GitHub release tag for a pack version.
@@ -91,68 +123,113 @@ export const packAssetName = (version: string): string => `${PACK_ID}-${version}
 export const PACK_URL: string =
   `https://github.com/Cribl-Community/cc-gigamon-ami/releases/download/${packTag(PACK_VERSION)}/${packAssetName(PACK_VERSION)}`
 
-/** Objects inside the pack. Each is referenced by these ids in the pack's YAML. */
-export const PACK_SYSLOG_INPUT_ID = 'in_gno_syslog'
-export const PACK_SAMPLE_INPUT_ID = 'in_gno_sample'
-/** Parse + normalize: the four functions of provision.ts's `PIPELINE_SPEC`. */
-export const PACK_SYSLOG_PIPELINE_ID = 'gno_syslog'
-/** Shape only (cast + derive) for the DataGen, whose events are already objects. */
-export const PACK_SAMPLE_PIPELINE_ID = 'gno_sample'
-export const PACK_SYSLOG_ROUTE_ID = 'gno_syslog'
-export const PACK_SAMPLE_ROUTE_ID = 'gno_sample'
-export const PACK_LAKE_OUTPUT_ID = 'out_gno_lake'
-export const PACK_SAMPLE_OUTPUT_ID = 'out_gno_sample_lake'
+// ── Objects inside the pack. Each is referenced by these ids in the pack's YAML.
 
-/** The customer's dataset. Outside the pack: Cribl has no pack-scoped dataset. */
-export const PACK_LAKE_DATASET_ID = 'gigamon_ami'
 /**
- * Where the sample DataGen writes. NEVER `gigamon_ami`: Lake has no row delete,
- * so a generated flow written into the customer's dataset could not be taken
- * back out before retention expired. Also outside the pack, created by the app.
+ * Where Gigamon AMX POSTs. SHIPS DISABLED with a placeholder port and NO auth
+ * token: the app generates a token at install, writes it into this input only,
+ * and enables it in the same whole-body PATCH. A token in the pack would be one
+ * token shared by every tenant that installed it.
+ */
+export const PACK_HTTP_INPUT_ID = 'in_gigamon_ami_http'
+/** Synthetic sample flows. SHIPS DISABLED; starting it is an opt-in. */
+export const PACK_SAMPLE_INPUT_ID = 'in_gigamon_ami_sample'
+/** Splits a POSTed JSON array into one event per record, fields extracted. */
+export const PACK_BREAKER_ID = 'gigamon_ami_http_json_array'
+/** Cast + derive only, for all three routes: provision.ts's `PIPELINE_SPEC`. */
+export const PACK_PIPELINE_ID = 'gigamon_ami_normalize'
+/** HTTP → the JSON dataset the dashboards read. NOT final: the event goes on
+ *  to the Parquet route as well. */
+export const PACK_HTTP_JSON_ROUTE_ID = 'gigamon_ami_http_to_json'
+/** HTTP → the Parquet copy. Final. */
+export const PACK_HTTP_PARQUET_ROUTE_ID = 'gigamon_ami_http_to_parquet'
+/** Sample DataGen → the sample dataset. Final. */
+export const PACK_SAMPLE_ROUTE_ID = 'gigamon_ami_sample'
+export const PACK_JSON_OUTPUT_ID = 'gigamon_ami_json_lake'
+export const PACK_PARQUET_OUTPUT_ID = 'gigamon_ami_parquet_lake'
+export const PACK_SAMPLE_OUTPUT_ID = 'gigamon_ami_sample_lake'
+
+/** The customer's dataset, which every dashboard reads. Outside the pack:
+ *  Cribl has no pack-scoped dataset, so the app creates each dataset. */
+export const PACK_LAKE_DATASET_ID = 'gigamon_ami'
+/** The Parquet copy of the same records. Dashboards do not read it (yet). */
+export const PACK_PARQUET_DATASET_ID = 'gigamon_ami_pq'
+/**
+ * Where the sample DataGen writes. NEVER `gigamon_ami` (or its Parquet copy):
+ * Lake has no row delete, so a generated flow written into the customer's
+ * dataset could not be taken back out before retention expired.
  */
 export const PACK_SAMPLE_DATASET_ID = 'gigamon_ami_sample'
 
+/** The ports a Cribl-managed (Cloud) worker group exposes for a source.
+ *  pack.test.ts holds it equal to provision.ts's `CLOUD_PORT_RANGE`. */
+export const PACK_CLOUD_PORT_RANGE = Object.freeze({ min: 20000, max: 20010 })
 /**
- * The port the pack's syslog input ships with, inside the 20000–20010 range a
- * Cribl-managed worker group exposes. A placeholder: Guided Setup sets the real
- * port at install (a later slice). It is not 5514, which a Cloud tenant's
- * exporter cannot reach.
- *
- * The input ships `disabled: true`, unlike the global SOURCE_SPEC: a Cloud port
- * in this range is reachable from the internet and syslog is unauthenticated,
- * so nothing listens until the user confirms a port in Guided Setup, which
- * enables the input in the same write.
+ * The port the pack's HTTP input ships with, inside `PACK_CLOUD_PORT_RANGE`.
+ * A placeholder: Guided Setup picks a free one at install.
  */
-export const PACK_SYSLOG_PLACEHOLDER_PORT = 20005
-/** The ports a Cribl-managed (Cloud) worker group exposes for syslog. */
-export const CLOUD_SYSLOG_PORT_RANGE = Object.freeze({ min: 20000, max: 20010 })
+export const PACK_HTTP_PLACEHOLDER_PORT = 20005
 
 /**
  * The field every sample event carries, set by the DataGen's `metadata` and
  * written into each sample event as well. Not `source`: Search uses that for
- * the file path on object-store datasets.
+ * the file path on object-store datasets. Not `gno_origin` (0.1.0's name): the
+ * `gno_` prefix is reserved for acceleration. No query in src/ reads it.
  */
-export const SAMPLE_ORIGIN_FIELD = 'gno_origin'
+export const SAMPLE_ORIGIN_FIELD = 'gigamon_origin'
 export const SAMPLE_ORIGIN_VALUE = 'sample'
 
 /**
- * The global objects the migration to the pack REMOVES, each with the pack
- * object that takes its place. These are the three ids provision.ts's
- * `SOURCE_SPEC`, `PIPELINE_SPEC` and `ROUTE_SPEC` create today
- * (`SYSLOG_SOURCE_ID`, `SYSLOG_PIPELINE_ID`, `SYSLOG_ROUTE_ID`).
+ * DECISIONS NOT TAKEN YET, and shipped as a placeholder. Each key is a setting
+ * the pack (or the dataset the app creates for it) carries today only so the
+ * pack is complete; each value says what it is waiting for.
+ *
+ * pack.test.ts FAILS if `PACK_PUBLISHED` is true while this holds anything, or
+ * while the pack's README or YAML still says PENDING: a release must not freeze
+ * a guess into every tenant that installs it. Resolve an entry by deciding it,
+ * changing the pack to match, and deleting the entry and its PENDING notes.
+ */
+export const PACK_PENDING: Readonly<Record<string, string>> = Object.freeze({
+  parquet_schema_mode:
+    `${PACK_PARQUET_OUTPUT_ID} ships automaticSchema: true. Automatic or explicit schema is undecided until the schema-change test (g) and owner decision D-10.`,
+  parquet_partitions:
+    `${PACK_PARQUET_DATASET_ID}'s partition fields are undecided (D-10). They are fixed when the app creates the dataset, so this blocks that create, not only the release.`,
+})
+
+/**
+ * The GLOBAL objects the migration to the pack REMOVES, each with the pack
+ * object that takes its place: Guided Setup's Raw HTTP stack (provision.ts's
+ * `HTTP_SOURCE_ID`, `HTTP_PIPELINE_ID`, `HTTP_ROUTE_ID`, `HTTP_BREAKER_ID`) and
+ * the Syslog stack earlier releases created (`LEGACY_SYSLOG_*`).
  */
 export const REPLACED_BY_PACK: Readonly<Record<string, { readonly by: string; readonly why: string }>> = Object.freeze({
+  in_gigamon_http: {
+    by: PACK_HTTP_INPUT_ID,
+    why: 'The pack input receives the same exporter POSTs; two listeners for one feed would split or double it.',
+  },
+  gigamon_http_normalize: {
+    by: PACK_PIPELINE_ID,
+    why: 'The same two functions, value for value; only the pack routes use the pack copy.',
+  },
+  gigamon_ami_http: {
+    by: PACK_HTTP_JSON_ROUTE_ID,
+    why: 'Its filter names the global source, which the migration removes; the pack routes its own input.',
+  },
+  gigamon_ami_json_array: {
+    by: PACK_BREAKER_ID,
+    why: 'The same rule, value for value, carried inside the pack so the pack input does not depend on a global ruleset.',
+  },
   in_gigamon_syslog: {
-    by: PACK_SYSLOG_INPUT_ID,
-    why: 'The pack input receives the same exporter traffic; two listeners for one feed would split or double it.',
+    by: PACK_HTTP_INPUT_ID,
+    why: 'Gigamon AMX sends over HTTP, not syslog; the pack input replaces the old listener.',
   },
   gigamon_syslog: {
-    by: PACK_SYSLOG_PIPELINE_ID,
-    why: 'Same four functions, value for value; only the pack route uses the pack copy.',
+    by: PACK_PIPELINE_ID,
+    why: 'Its cast and derive functions are the pack pipeline; its syslog parse step has no HTTP equivalent.',
   },
   gigamon_ami_syslog: {
-    by: PACK_SYSLOG_ROUTE_ID,
-    why: 'Its filter names the global source, which the migration removes; the pack routes its own input.',
+    by: PACK_HTTP_JSON_ROUTE_ID,
+    why: 'Its filter names the old syslog source, which the migration removes.',
   },
 })
 
@@ -162,7 +239,7 @@ export const REPLACED_BY_PACK: Readonly<Record<string, { readonly by: string; re
  * does not own.
  */
 export const KEPT_BESIDE_PACK: Readonly<Record<string, string>> = Object.freeze({
-  in_gigamon_datagen: 'The workspace\'s demo feed, which this app did not create and never edits; the pack\'s in_gno_sample is a separate feed into a separate dataset.',
+  in_gigamon_datagen: 'The workspace\'s demo feed, which this app did not create and never edits; the pack\'s in_gigamon_ami_sample is a separate feed into a separate dataset.',
   gigamon_ami: 'The global pipeline the demo feed is processed by (provision.ts copied its two Evals from it); removing it would break a feed the pack does not own.',
-  gigamon_lake: 'The global Lake destination usually pre-dates the app and other routes may use it; removeSyslogStack already leaves it in place.',
+  gigamon_lake: 'The global Lake destination usually pre-dates the app and other routes may use it; Guided Setup\'s teardown already leaves it in place.',
 })

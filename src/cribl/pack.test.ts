@@ -1,28 +1,25 @@
 // The pack's YAML against the app's TypeScript specs, value for value.
 //
 // The pack under packs/cc-network-gigamon-ami/ is a second copy of objects the
-// app already describes in TypeScript: provision.ts's PIPELINE_SPEC,
-// SOURCE_SPEC and ROUTE_SPEC, and the Lake destination landing.ts builds from
-// DEFAULT_PROFILE. provision.ts says in as many words that one copy of those
-// numbers was the whole point of landing.ts. This file is what makes the second
-// copy safe: change either side alone and it fails.
+// app already describes in TypeScript: provision.ts's Raw HTTP stack
+// (SOURCE_SPEC via sourceCreateBody, HTTP_BREAKER_SPEC, PIPELINE_SPEC,
+// ROUTE_SPEC) and the Lake destinations landing.ts builds from a profile. This
+// file is what makes the second copy safe: change either side alone and it
+// fails.
 //
-// Ids are the one deliberate difference. Every pack object has a `gno_` id so
-// nothing collides with the live global objects; src/cribl/pack.ts records
-// them, and this file checks the YAML uses exactly those.
+// THE DIFFERENCES ARE WRITTEN DOWN, AND ONLY THOSE ARE ALLOWED:
+//   - ids. Every pack object has its own id (src/cribl/pack.ts), distinct from
+//     every global one, so the pack installs beside the global stack.
+//   - the HTTP input ships `disabled: true`, on a placeholder port, with NO
+//     auth token (the app generates one at install), and names the pack's own
+//     breaker. TLS is the Cribl-managed form: a pack cannot know the group.
+//   - the JSON route is NOT final, so the same event reaches the Parquet route
+//     after it; the Parquet route's description names its dataset.
+//   - the Parquet destination is the same profile with format parquet, pointed
+//     at gigamon_ami_pq. Its schema mode is PENDING (pack.ts `PACK_PENDING`).
 //
-// ── THE 0.1.0 SYSLOG OBJECTS ARE PINNED HERE, NOT READ FROM provision.ts ─────
-//
-// Guided Setup moved from Syslog to Raw HTTP on 2026-09-24 (stage 12.1), so
-// provision.ts's SOURCE_SPEC, PIPELINE_SPEC and ROUTE_SPEC now describe an
-// `http_raw` stack. Pack 0.1.0 still ships the Syslog stack, and 0.1.0 is the
-// version this app pins: its content must not move because the app's specs
-// did. So what the 0.1.0 syslog source, pipeline and route were checked against
-// until then is written out below as FROZEN LITERALS — exactly the values
-// provision.ts held before the switch — and compared value for value as
-// before. Stage 11.7 (pack 0.2.0) re-points these at the HTTP specs. The cast
-// and derive functions did not change, so `gno_sample` is still compared with
-// the live PIPELINE_SPEC, which is now exactly those two.
+// Every comparison is whole-object: `toMatchObject` would let an added key (an
+// `outputExpression`, an auth token) pass unseen.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -30,162 +27,117 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { describe, it, expect } from 'vitest'
 import {
-  PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor,
+  PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody,
+  HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID, CLOUD_PORT_RANGE, tlsFor,
   LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
 } from './provision'
-import { DEFAULT_PROFILE, destinationSpec } from './landing'
+import { DEFAULT_PROFILE, destinationSpec, type LandingProfile } from './landing'
 import {
   PACK_ID, PACK_VERSION, PACK_URL, packTag, packAssetName,
-  PACK_SYSLOG_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_SYSLOG_PIPELINE_ID, PACK_SAMPLE_PIPELINE_ID,
-  PACK_SYSLOG_ROUTE_ID, PACK_SAMPLE_ROUTE_ID, PACK_LAKE_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID,
-  PACK_LAKE_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SYSLOG_PLACEHOLDER_PORT, CLOUD_SYSLOG_PORT_RANGE,
+  PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_BREAKER_ID, PACK_PIPELINE_ID,
+  PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID,
+  PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID,
+  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID,
+  PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
-  PACK_SHA256, PACK_PUBLISHED, PACK_ROUTES_FILE,
+  PACK_SHA256, PACK_PUBLISHED, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const PACK_DIR = join(ROOT, 'packs', PACK_ID)
-const yml = (rel: string) => parse(readFileSync(join(PACK_DIR, rel), 'utf8'))
+const text = (rel: string) => readFileSync(join(PACK_DIR, rel), 'utf8')
+const yml = (rel: string) => parse(text(rel))
 
 type Obj = Record<string, unknown>
 const without = (o: Obj, ...keys: string[]): Obj => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)))
 
-// ── Frozen: the global Syslog specs pack 0.1.0 was built from ───────────────
-const V010_NUMERIC_FIELDS = [
-  'src_bytes', 'dst_bytes', 'src_packets', 'dst_packets', 'src_port', 'dst_port',
-  'protocol', 'app_id', 'ip_version', 'tcp_rtt', 'tcp_rtt_app', 'tcp_dup_ack',
-  'tcp_loss_count', 'tcp_wrong_crc', 'tcp_unseq', 'dns_response_time', 'dns_ttl',
-  'ssl_mitm_score', 'ssl_request_size', 'snmp_version', 'end_reason', 'seq_num',
-  'http_request_ts', 'http_response_ts', 'tcp_flags',
-]
-const V010_SYSLOG_PORT = 5514
-const V010_FUNCTIONS = Object.freeze([
-  {
-    id: 'eval', filter: 'true', disabled: false, description: 'Fallback to _raw when no syslog MSG',
-    conf: { add: [{ name: 'message', value: 'message==null?_raw:message' }] },
-  },
-  {
-    id: 'serde', filter: "typeof message==='string' && message.trim().charAt(0)==='{'", disabled: false,
-    description: 'Parse Gigamon AMI JSON from the syslog message',
-    conf: { mode: 'extract', type: 'json', srcField: 'message' },
-  },
-  {
-    id: 'eval', filter: 'true', disabled: false, description: 'Cast numeric strings',
-    conf: { add: V010_NUMERIC_FIELDS.map((n) => ({ name: n, value: `${n}==null?${n}:Number(${n})` })) },
-  },
-  {
-    id: 'eval', filter: 'true', disabled: false, description: 'Derive helper fields',
-    conf: {
-      add: [
-        { name: 'src_subnet', value: "typeof src_ip==='string'?src_ip.split('.').slice(0,3).join('.'):undefined" },
-        { name: 'dst_subnet', value: "typeof dst_ip==='string'?dst_ip.split('.').slice(0,3).join('.'):undefined" },
-        { name: 'total_bytes', value: '(src_bytes||0)+(dst_bytes||0)' },
-        { name: 'total_packets', value: '(src_packets||0)+(dst_packets||0)' },
-        { name: 'l4_proto', value: "({'6':'TCP','17':'UDP','1':'ICMP'})[String(protocol)]||String(protocol)" },
-        { name: 'http_server_ms', value: '(http_request_ts!=null&&http_response_ts!=null)?(http_response_ts-http_request_ts)*1000:undefined' },
-        { name: 'tcp_reset', value: 'tcp_flags==null?undefined:((tcp_flags&4)?1:0)' },
-        { name: 'src_subnet16', value: "typeof src_ip==='string'?src_ip.split('.').slice(0,2).join('.'):undefined" },
-        { name: 'dst_subnet16', value: "typeof dst_ip==='string'?dst_ip.split('.').slice(0,2).join('.'):undefined" },
-      ],
-    },
-  },
-])
-const V010_SOURCE_SPEC = Object.freeze({
-  id: 'in_gigamon_syslog',
-  type: 'syslog',
-  disabled: false,
-  host: '0.0.0.0',
-  tcpPort: V010_SYSLOG_PORT,
-  udpPort: V010_SYSLOG_PORT,
-  sendToRoutes: true,
-  streamtags: ['gigamon', 'ami'],
-})
-const V010_ROUTE_SPEC = Object.freeze({
-  id: 'gigamon_ami_syslog',
-  name: 'gigamon_ami_syslog',
-  final: true,
-  disabled: false,
-  filter: "__inputId=='syslog:in_gigamon_syslog'",
-  pipeline: 'gigamon_syslog',
-  output: 'gigamon_lake',
-  description: 'Gigamon AMI syslog → parse → Cribl Lake (gigamon_ami)',
-  clones: [],
-  enableOutputExpression: false,
-})
-
-describe('the frozen 0.1.0 specs are the Syslog stack provision.ts no longer creates', () => {
-  it('name exactly the legacy ids the teardown still removes', () => {
-    expect(V010_SOURCE_SPEC.id).toBe(LEGACY_SYSLOG_SOURCE_ID)
-    expect(V010_ROUTE_SPEC.pipeline).toBe(LEGACY_SYSLOG_PIPELINE_ID)
-    expect(V010_ROUTE_SPEC.id).toBe(LEGACY_SYSLOG_ROUTE_ID)
-  })
-
-  it('share their cast and derive functions with today’s pipeline, value for value', () => {
-    // The one part of the 0.1.0 pipeline the HTTP stack kept. If this fails,
-    // the two feeds no longer produce rows of one shape.
-    expect(V010_FUNCTIONS.slice(2)).toEqual(PIPELINE_SPEC.conf.functions)
-  })
-})
-
 const inputs = yml('default/inputs.yml').inputs as Record<string, Obj>
 const outputs = yml('default/outputs.yml').outputs as Record<string, Obj>
+const breakers = yml(PACK_BREAKERS_FILE) as Record<string, Obj>
 const routes = yml(PACK_ROUTES_FILE).routes as Obj[]
+const route = (id: string) => routes.find((r) => r.id === id)
 const pipeline = (id: string) => yml(`default/pipelines/${id}/conf.yml`) as { functions: unknown[] }
 /** The pipeline directories: `default/pipelines/` also holds the pack's route.yml. */
 const pipelineDirs = () => readdirSync(join(PACK_DIR, 'default', 'pipelines'), { withFileTypes: true })
   .filter((e) => e.isDirectory()).map((e) => e.name)
+const samples = yml('default/samples.yml') as Obj
 
-describe('the pack routes file is where Cribl reads a pack\'s routes', () => {
-  it('is default/pipelines/route.yml, and default/routes.yml does not exist', () => {
+const profileFor = (datasetId: string, format: LandingProfile['format']): LandingProfile =>
+  ({ ...DEFAULT_PROFILE, datasetId, format })
+const lakeOutput = (datasetId: string, format: LandingProfile['format']) =>
+  ({ type: 'cribl_lake', ...destinationSpec(profileFor(datasetId, format)).set })
+
+describe('the pack files are where Cribl reads them', () => {
+  it('routes are in default/pipelines/route.yml, and default/routes.yml does not exist', () => {
     // Measured on a Leader: every bundled pack keeps <pack>/default/pipelines/route.yml,
     // and no file named routes.yml exists anywhere. A routes file anywhere else
     // is not read, so the pack would install with no routes at all.
     expect(PACK_ROUTES_FILE).toBe('default/pipelines/route.yml')
     expect(existsSync(join(PACK_DIR, 'default', 'routes.yml'))).toBe(false)
   })
-})
 
-describe('the pack pipelines are the frozen 0.1.0 functions', () => {
-  it('gno_syslog carries all four functions, value for value', () => {
-    expect(pipeline(PACK_SYSLOG_PIPELINE_ID).functions).toEqual(V010_FUNCTIONS)
-  })
-
-  it('gno_sample carries only the cast and derive functions — provision.ts\'s PIPELINE_SPEC, value for value', () => {
-    // The DataGen's events are already objects, so there is no syslog message
-    // to take apart. Since the move to Raw HTTP the global pipeline is exactly
-    // these two as well: the breaker extracts the fields before it runs.
-    const castAndDerive = PIPELINE_SPEC.conf.functions
-    expect(castAndDerive.map((f) => f.description)).toEqual(['Cast numeric strings', 'Derive helper fields'])
-    expect(pipeline(PACK_SAMPLE_PIPELINE_ID).functions).toEqual(castAndDerive)
-  })
-
-  it('ships exactly those two pipelines', () => {
-    expect(pipelineDirs().sort()).toEqual([PACK_SAMPLE_PIPELINE_ID, PACK_SYSLOG_PIPELINE_ID].sort())
+  it('breakers are in default/breakers.yml (unmeasured: the proof install reads it back)', () => {
+    expect(PACK_BREAKERS_FILE).toBe('default/breakers.yml')
+    expect(existsSync(join(PACK_DIR, 'default', 'cribl', 'breakers.yml'))).toBe(false)
   })
 })
 
-describe('the pack syslog source is the frozen 0.1.0 SOURCE_SPEC', () => {
-  const src = inputs[PACK_SYSLOG_INPUT_ID]
+describe('the pack HTTP input is provision.ts\'s Cribl-managed source, with the documented differences only', () => {
+  const src = inputs[PACK_HTTP_INPUT_ID]
+  const global = sourceCreateBody({ managed: true, port: PACK_HTTP_PLACEHOLDER_PORT }, 'not-a-token')
 
-  it('matches every field but the id, the port and `disabled`', () => {
-    expect(without(src, 'tcpPort', 'udpPort', 'disabled')).toEqual(without(V010_SOURCE_SPEC, 'id', 'tcpPort', 'udpPort', 'disabled'))
+  it('matches every field but the id, `disabled`, the auth token and the breaker it names', () => {
+    expect(without(src, 'disabled', 'breakerRulesets')).toEqual(
+      without(global, 'id', 'disabled', 'authTokensExt', 'breakerRulesets'),
+    )
+    expect(src.breakerRulesets).toEqual([PACK_BREAKER_ID])
+    expect(global.breakerRulesets).toEqual([HTTP_BREAKER_ID])
+    expect(src.type).toBe('http_raw')
+    // Cribl's own certificate: what a Cribl-managed group provides.
+    expect(src.tls).toEqual(tlsFor(true))
   })
 
   it('ships disabled, unlike the global source', () => {
-    // A Cloud port in 20000-20010 is reachable from the internet and takes
-    // unauthenticated syslog. The input is enabled only after the user confirms
-    // a port in Guided Setup; until then nothing listens.
+    // A Cloud port in 20000-20010 is reachable from the internet. Nothing
+    // listens until Guided Setup sets a port and a token and enables it.
     expect(src.disabled).toBe(true)
-    expect(V010_SOURCE_SPEC.disabled).toBe(false)
+    expect(SOURCE_SPEC.disabled).toBe(false)
   })
 
-  it('ships a placeholder port a Cribl-managed group exposes, the same for TCP and UDP', () => {
-    expect(src.tcpPort).toBe(PACK_SYSLOG_PLACEHOLDER_PORT)
-    expect(src.udpPort).toBe(PACK_SYSLOG_PLACEHOLDER_PORT)
-    expect(PACK_SYSLOG_PLACEHOLDER_PORT).toBeGreaterThanOrEqual(CLOUD_SYSLOG_PORT_RANGE.min)
-    expect(PACK_SYSLOG_PLACEHOLDER_PORT).toBeLessThanOrEqual(CLOUD_SYSLOG_PORT_RANGE.max)
-    // Not the global stack's 5514, which a Cloud tenant's exporter cannot reach.
-    expect(PACK_SYSLOG_PLACEHOLDER_PORT).not.toBe(V010_SOURCE_SPEC.tcpPort)
+  it('carries no auth token of any kind: the app generates one at install', () => {
+    for (const k of ['authTokensExt', 'authTokens', 'authToken']) expect(src).not.toHaveProperty(k)
+    expect(text('default/inputs.yml')).not.toMatch(/^\s*(authTokens|authTokensExt|token)\s*:/m)
+  })
+
+  it('ships a placeholder port a Cribl-managed group exposes', () => {
+    expect(src.port).toBe(PACK_HTTP_PLACEHOLDER_PORT)
+    expect(PACK_CLOUD_PORT_RANGE).toEqual(CLOUD_PORT_RANGE)
+    expect(PACK_HTTP_PLACEHOLDER_PORT).toBeGreaterThanOrEqual(PACK_CLOUD_PORT_RANGE.min)
+    expect(PACK_HTTP_PLACEHOLDER_PORT).toBeLessThanOrEqual(PACK_CLOUD_PORT_RANGE.max)
+  })
+
+  it('ships exactly two inputs, and no syslog one', () => {
+    expect(Object.keys(inputs).sort()).toEqual([PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID].sort())
+    expect(Object.values(inputs).map((i) => i.type)).not.toContain('syslog')
+  })
+})
+
+describe('the pack breaker is HTTP_BREAKER_SPEC under the pack id', () => {
+  it('equals the global ruleset value for value', () => {
+    expect(Object.keys(breakers)).toEqual([PACK_BREAKER_ID])
+    expect(breakers[PACK_BREAKER_ID]).toEqual(without(HTTP_BREAKER_SPEC, 'id'))
+  })
+})
+
+describe('the pack pipeline is provision.ts\'s PIPELINE_SPEC: cast and derive, no parse step', () => {
+  it('carries the two functions, value for value', () => {
+    expect(PIPELINE_SPEC.conf.functions.map((f) => f.description)).toEqual(['Cast numeric strings', 'Derive helper fields'])
+    expect(pipeline(PACK_PIPELINE_ID).functions).toEqual(PIPELINE_SPEC.conf.functions)
+  })
+
+  it('is the only pipeline, and every route runs it', () => {
+    expect(pipelineDirs()).toEqual([PACK_PIPELINE_ID])
+    for (const r of routes) expect(r.pipeline).toBe(PACK_PIPELINE_ID)
   })
 })
 
@@ -204,78 +156,137 @@ describe('the sample DataGen', () => {
   })
 
   it('replays every sample samples.yml declares', () => {
-    const declared = Object.keys(yml('default/samples.yml') as Obj)
-    expect((gen.samples as { sample: string }[]).map((s) => s.sample).sort()).toEqual(declared.sort())
+    expect((gen.samples as { sample: string }[]).map((s) => s.sample).sort()).toEqual(Object.keys(samples).sort())
   })
 })
 
-describe('the pack Lake destinations are destinationSpecFor(DEFAULT_PROFILE)', () => {
-  it('out_gno_lake is the app\'s own destination body under the pack id', () => {
-    expect({ id: PACK_LAKE_OUTPUT_ID, ...outputs[PACK_LAKE_OUTPUT_ID] }).toEqual({ ...destinationSpecFor(DEFAULT_PROFILE), id: PACK_LAKE_OUTPUT_ID })
-    expect(outputs[PACK_LAKE_OUTPUT_ID].destPath).toBe(PACK_LAKE_DATASET_ID)
+describe('the pack Lake destinations are landing.ts\'s profile bodies', () => {
+  it('the JSON destination is destinationSpecFor(DEFAULT_PROFILE) under the pack id', () => {
+    expect({ id: PACK_JSON_OUTPUT_ID, ...outputs[PACK_JSON_OUTPUT_ID] }).toEqual({ ...destinationSpecFor(DEFAULT_PROFILE), id: PACK_JSON_OUTPUT_ID })
+    expect(outputs[PACK_JSON_OUTPUT_ID].destPath).toBe(PACK_LAKE_DATASET_ID)
+    expect(outputs[PACK_JSON_OUTPUT_ID].format).toBe('json')
   })
 
-  it('out_gno_sample_lake is the same profile pointed at the sample dataset', () => {
-    const profile = { ...DEFAULT_PROFILE, datasetId: PACK_SAMPLE_DATASET_ID }
-    expect(outputs[PACK_SAMPLE_OUTPUT_ID]).toEqual({ type: 'cribl_lake', ...destinationSpec(profile).set })
+  it('the Parquet destination is the same profile as Parquet, pointed at gigamon_ami_pq', () => {
+    expect(outputs[PACK_PARQUET_OUTPUT_ID]).toEqual(lakeOutput(PACK_PARQUET_DATASET_ID, 'parquet'))
+    expect(outputs[PACK_PARQUET_OUTPUT_ID].format).toBe('parquet')
+    // PENDING (test (g), D-10): automatic schema is the placeholder, not a decision.
+    expect(outputs[PACK_PARQUET_OUTPUT_ID].automaticSchema).toBe(true)
   })
 
-  it('never lets sample data reach the customer\'s dataset', () => {
-    expect(PACK_SAMPLE_DATASET_ID).not.toBe(PACK_LAKE_DATASET_ID)
-    const sampleRoute = routes.find((r) => r.id === PACK_SAMPLE_ROUTE_ID)!
-    expect(outputs[sampleRoute.output as string].destPath).toBe(PACK_SAMPLE_DATASET_ID)
+  it('the sample destination is the JSON profile pointed at the sample dataset', () => {
+    expect(outputs[PACK_SAMPLE_OUTPUT_ID]).toEqual(lakeOutput(PACK_SAMPLE_DATASET_ID, 'json'))
+  })
+
+  it('ships exactly those three', () => {
+    expect(Object.keys(outputs).sort()).toEqual([PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID].sort())
+    expect(new Set([PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID]).size).toBe(3)
   })
 })
 
 describe('the pack routes', () => {
-  // Whole-object equality, never toMatchObject: a key added to a route (an
-  // `outputExpression`, say) would otherwise pass unseen.
-  it('the syslog route is the frozen 0.1.0 ROUTE_SPEC with the pack\'s ids, and nothing else', () => {
-    expect(routes.find((r) => r.id === PACK_SYSLOG_ROUTE_ID)).toEqual({
-      ...V010_ROUTE_SPEC,
-      id: PACK_SYSLOG_ROUTE_ID,
-      name: PACK_SYSLOG_ROUTE_ID,
-      filter: `__inputId=='syslog:${PACK_SYSLOG_INPUT_ID}'`,
-      pipeline: PACK_SYSLOG_PIPELINE_ID,
-      output: PACK_LAKE_OUTPUT_ID,
+  const http = `__inputId=='http_raw:${PACK_HTTP_INPUT_ID}'`
+
+  it('HTTP → JSON is ROUTE_SPEC with the pack ids, and NOT final', () => {
+    expect(route(PACK_HTTP_JSON_ROUTE_ID)).toEqual({
+      ...ROUTE_SPEC,
+      id: PACK_HTTP_JSON_ROUTE_ID,
+      name: PACK_HTTP_JSON_ROUTE_ID,
+      final: false,
+      filter: http,
+      pipeline: PACK_PIPELINE_ID,
+      output: PACK_JSON_OUTPUT_ID,
+    })
+    expect(ROUTE_SPEC.final).toBe(true)
+  })
+
+  it('HTTP → Parquet is the same route, final, to the Parquet destination only', () => {
+    expect(route(PACK_HTTP_PARQUET_ROUTE_ID)).toEqual({
+      ...ROUTE_SPEC,
+      id: PACK_HTTP_PARQUET_ROUTE_ID,
+      name: PACK_HTTP_PARQUET_ROUTE_ID,
+      final: true,
+      filter: http,
+      pipeline: PACK_PIPELINE_ID,
+      output: PACK_PARQUET_OUTPUT_ID,
+      description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami_pq, Parquet)',
     })
   })
 
   it('the sample route sends the DataGen to the sample destination, and nothing else', () => {
-    expect(routes.find((r) => r.id === PACK_SAMPLE_ROUTE_ID)).toEqual({
+    expect(route(PACK_SAMPLE_ROUTE_ID)).toEqual({
       id: PACK_SAMPLE_ROUTE_ID,
       name: PACK_SAMPLE_ROUTE_ID,
       final: true,
       disabled: false,
       filter: `__inputId=='datagen:${PACK_SAMPLE_INPUT_ID}'`,
-      pipeline: PACK_SAMPLE_PIPELINE_ID,
+      pipeline: PACK_PIPELINE_ID,
       output: PACK_SAMPLE_OUTPUT_ID,
       description: 'Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)',
       clones: [],
       enableOutputExpression: false,
     })
-    expect(routes).toHaveLength(2)
+  })
+
+  it('runs JSON before Parquet, so the non-final route sees the event first', () => {
+    // A final route ahead of the JSON one would leave the dashboards' dataset
+    // empty; the order is the fan-out.
+    expect(routes.map((r) => r.id)).toEqual([PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID])
+  })
+
+  it('never lets sample data reach the customer\'s datasets', () => {
+    const sampleRoute = route(PACK_SAMPLE_ROUTE_ID)!
+    expect(outputs[sampleRoute.output as string].destPath).toBe(PACK_SAMPLE_DATASET_ID)
+    for (const r of routes.filter((x) => x.id !== PACK_SAMPLE_ROUTE_ID)) expect(r.filter).toBe(http)
   })
 })
 
-describe('pack ids never collide with the live global objects', () => {
+describe('the PENDING decisions cannot ship in a release', () => {
+  const places = ['README.md', 'default/outputs.yml']
+
+  it('are named in pack.ts, the README and the Parquet destination\'s file while they are open', () => {
+    // Held both ways: while PACK_PENDING has entries, every place a reader
+    // looks says PENDING; once it is empty, none of them may.
+    for (const p of places) expect(/PENDING/.test(text(p))).toBe(Object.keys(PACK_PENDING).length > 0)
+    for (const why of Object.values(PACK_PENDING)) expect(why.trim()).not.toBe('')
+  })
+
+  it('PACK_PUBLISHED cannot be true while anything is PENDING', () => {
+    if (PACK_PUBLISHED) {
+      expect(Object.keys(PACK_PENDING)).toEqual([])
+      for (const p of places) expect(text(p)).not.toMatch(/PENDING/)
+    }
+  })
+})
+
+describe('pack ids', () => {
   const packIds = [
     ...Object.keys(inputs), ...Object.keys(outputs), ...routes.map((r) => r.id as string),
-    ...pipelineDirs(),
+    ...pipelineDirs(), ...Object.keys(breakers), ...Object.keys(samples),
   ]
   const replaced = Object.keys(REPLACED_BY_PACK)
   const kept = Object.keys(KEPT_BESIDE_PACK)
 
-  it('no pack object reuses a global id', () => {
-    const globals = new Set([...replaced, ...kept])
-    expect(packIds.filter((id) => globals.has(id))).toEqual([])
-    // Nor the ids provision.ts creates today, nor the ones it created before.
-    for (const id of [
+  it('are exactly the ids pack.ts names', () => {
+    expect([...packIds].sort()).toEqual([
+      PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID,
+      PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID, PACK_PIPELINE_ID, PACK_BREAKER_ID,
+      ...Object.keys(samples),
+    ].sort())
+  })
+
+  it('never carry the gno_ prefix, which is reserved for acceleration schedules', () => {
+    expect(packIds.filter((id) => id.startsWith('gno_'))).toEqual([])
+    expect(SAMPLE_ORIGIN_FIELD.startsWith('gno_')).toBe(false)
+  })
+
+  it('never reuse a global id, today\'s or an earlier release\'s', () => {
+    const globals = new Set([
+      ...replaced, ...kept,
       SOURCE_SPEC.id, PIPELINE_SPEC.id, ROUTE_SPEC.id, HTTP_BREAKER_SPEC.id, destinationSpecFor(DEFAULT_PROFILE).id,
-      V010_SOURCE_SPEC.id, V010_ROUTE_SPEC.pipeline, V010_ROUTE_SPEC.id,
-    ]) {
-      expect(packIds).not.toContain(id)
-    }
+      LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
+    ])
+    expect(packIds.filter((id) => globals.has(id))).toEqual([])
   })
 
   it('every replacement names an object the pack actually defines, and every entry a reason', () => {
@@ -286,8 +297,11 @@ describe('pack ids never collide with the live global objects', () => {
     for (const why of Object.values(KEPT_BESIDE_PACK)) expect(why.trim()).not.toBe('')
   })
 
-  it('the migration removes exactly the syslog source, its pipeline and its route that provision.ts created', () => {
-    expect([...replaced].sort()).toEqual([V010_SOURCE_SPEC.id, V010_ROUTE_SPEC.pipeline, V010_ROUTE_SPEC.id].sort())
+  it('the migration removes exactly Guided Setup\'s HTTP stack and the old Syslog stack', () => {
+    expect([...replaced].sort()).toEqual([
+      HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID,
+      LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
+    ].sort())
   })
 
   it('keeps the demo DataGen, the global gigamon_ami pipeline and the global Lake destination', () => {
