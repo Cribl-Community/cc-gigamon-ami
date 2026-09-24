@@ -10,7 +10,10 @@
 //
 // PURE DATA. This file makes no network call and names no API path: the paths
 // arrive with the code that calls them, and with their `config/policies.yml`
-// grants. The query extractor may load it under plain Node.
+// grants. The query extractor may load it under plain Node. Its importers are
+// src/queries/stackIds.ts (the Data Flow counters, METRICS_QUERY and
+// LAKE_TOTAL_QUERY, built from these ids), src/cribl/packClient.ts (the pack
+// install/upgrade client) and src/cribl/paths.ts (the grants that client needs).
 //
 // ── 0.2.0: RAW HTTP, DUAL-WRITTEN AS JSON AND PARQUET ───────────────────────
 //
