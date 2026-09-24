@@ -750,6 +750,38 @@ describe('the switches write a subset, each with its whole body', () => {
     expect(writes(calls)).toEqual([])
   })
 
+  it('stops at the first refusal and reports the rest as not sent', async () => {
+    // Review 2026-09-24, defect 7: the comment promised that a refusal on the
+    // first said something about the rest before they were sent; the loop sent
+    // every one anyway, each to be refused the same way.
+    const { calls } = stubWorkspace({ saved: await allCorrect(), status: { [`PATCH ${SAVED}/gno_app_l4_c1h`]: 403 } })
+    const results = await setAccelSchedules([
+      { id: 'gno_app_l4_c1h', from: true, to: false },
+      { id: 'gno_talkers_src_c1h', from: true, to: false },
+      { id: 'gno_web_host_c1h', from: true, to: false },
+    ])
+    expect(writes(calls).map((c) => c.path)).toEqual([`${SAVED}/gno_app_l4_c1h`])
+    expect(results.map((r) => [r.id, r.ok, r.sent])).toEqual([
+      ['gno_app_l4_c1h', false, true],
+      ['gno_talkers_src_c1h', false, false],
+      ['gno_web_host_c1h', false, false],
+    ])
+    expect(results[1].detail).toContain('not sent')
+  })
+
+  it('carries on past a row that merely changed since the dialog opened', async () => {
+    const obj = await correct(LAKE)
+    const { calls } = stubWorkspace({
+      saved: await allCorrect({ [LAKE]: { ...obj, schedule: { ...(obj.schedule as Record<string, unknown>), enabled: false } } }),
+    })
+    const results = await setAccelSchedules([
+      { id: LAKE, from: true, to: false },
+      { id: 'gno_pipeline_c1h', from: true, to: false },
+    ])
+    expect(results.map((r) => r.ok)).toEqual([false, true])
+    expect(writes(calls).map((c) => c.path)).toEqual([`${SAVED}/gno_pipeline_c1h`])
+  })
+
   it('refuses an id that is not in the manifest without sending anything', async () => {
     const { calls } = stubWorkspace()
     const [r] = await setAccelSchedules([{ id: 'gno_not_ours' as AccelId, from: true, to: false }])

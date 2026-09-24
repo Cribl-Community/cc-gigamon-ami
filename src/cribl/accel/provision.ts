@@ -798,6 +798,11 @@ export interface ScheduleWriteResult {
    */
   raced: boolean
   detail: string | null
+  /** Cribl refused the read or the PATCH as not permitted (401/403). */
+  denied?: boolean
+  /** Set by `setAccelSchedules`: false for a change it did not send (outside
+   *  the manifest, or after a permission refusal), true for one it attempted. */
+  sent?: boolean
 }
 
 /** Stop the schedule. The saved search stays, with its stored results; it simply
@@ -825,7 +830,7 @@ export async function resumeAcceleration(id: AccelId): Promise<ScheduleWriteResu
 async function setScheduleEnabled(id: AccelId, enabled: boolean, expectFrom?: boolean): Promise<ScheduleWriteResult> {
   const entry = accelEntry(id)
   const cur = await readSaved(id, false)
-  if (cur.denied) return { id, ok: false, enabled: null, raced: false, detail: 'Cribl refused to read this saved search.' }
+  if (cur.denied) return { id, ok: false, enabled: null, raced: false, denied: true, detail: 'Cribl refused to read this saved search.' }
   if (cur.error) return { id, ok: false, enabled: null, raced: false, detail: cur.error }
   if (!cur.raw) {
     return { id, ok: false, enabled: null, raced: false, detail: `There is no saved search called '${id}' to ${enabled ? 'resume' : 'pause'}.` }
@@ -844,7 +849,9 @@ async function setScheduleEnabled(id: AccelId, enabled: boolean, expectFrom?: bo
   }
   const body: StoredSavedSearch = { ...cur.raw, schedule: mergeSchedule(entry, cur.raw.schedule, enabled) }
   const r = await patchSaved(id, body)
-  if (!accepted(r)) return { id, ok: false, enabled: bool(cur.raw.schedule?.enabled), raced: false, detail: errText(r) }
+  if (!accepted(r)) {
+    return { id, ok: false, enabled: bool(cur.raw.schedule?.enabled), raced: false, denied: isDenial(r.status), detail: errText(r) }
+  }
 
   // The only concurrency check this endpoint permits. It cannot prevent a lost
   // update; it can tell the customer one happened, which is more than the API
@@ -879,8 +886,12 @@ export interface ScheduleChange {
  * Pause and Resume above — A-SP23 does not care how many objects a click
  * touches — and each is refused if Cribl no longer reports the `from` the
  * dialog showed. Sequential, not parallel: one PATCH at a time keeps the order
- * of the results the order the dialog listed them in, and a refusal on the
- * first says something about the rest before they are sent.
+ * of the results the order the dialog listed them in, and lets a PERMISSION
+ * refusal (401/403, on the read or the PATCH) stop the run — the rest would be
+ * refused the same way, so they are reported as not sent rather than sent to be
+ * refused. Any other failure (the row changed since the dialog, a 404, a 5xx)
+ * is about that row, and the run carries on. Review 2026-09-24, defect 7: this
+ * comment used to promise the stop while the loop sent every change regardless.
  */
 export async function setAccelSchedules(
   changes: readonly ScheduleChange[],
@@ -889,14 +900,29 @@ export async function setAccelSchedules(
   const out: ScheduleWriteResult[] = []
   for (const c of changes) {
     if (!MANIFEST.some((e) => e.id === c.id)) {
-      const r: ScheduleWriteResult = { id: c.id, ok: false, enabled: null, raced: false, detail: 'not in this release’s manifest' }
+      const r: ScheduleWriteResult = { id: c.id, ok: false, enabled: null, raced: false, sent: false, detail: 'not in this release’s manifest' }
       out.push(r)
       onResult(r)
       continue
     }
-    const r = await setScheduleEnabled(c.id, c.to, c.from)
+    const r: ScheduleWriteResult = { ...(await setScheduleEnabled(c.id, c.to, c.from)), sent: true }
     out.push(r)
     onResult(r)
+    if (r.denied) {
+      for (const rest of changes.slice(changes.indexOf(c) + 1)) {
+        const skipped: ScheduleWriteResult = {
+          id: rest.id,
+          ok: false,
+          enabled: null,
+          raced: false,
+          sent: false,
+          detail: `not sent — Cribl refused ${c.id} as not permitted, and would refuse this the same way.`,
+        }
+        out.push(skipped)
+        onResult(skipped)
+      }
+      break
+    }
   }
   return out
 }

@@ -137,11 +137,15 @@ import {
   SWITCHES_LEAD_TIP,
   switchName,
   switchStateWords,
+  planResumes,
+  tabCostWords,
   toggleConsequences,
   toggleCostLine,
+  toggleDoneWords,
   toggleNothingWords,
   toggleResources,
   toggleTitle,
+  toggleUndo,
   type Health,
   type RowAction,
 } from './accelPanelCopy'
@@ -169,13 +173,14 @@ import { forgetLakeFacts } from '../cribl/lakeWindowRead'
 import { estimateScheduleSetCost, estimateWorkspaceSaving, type ScheduleSetCost } from '../cribl/accel/estimate'
 import {
   ACCEL_TABS,
+  flipPlan,
   masterReading,
+  ownSchedulesOfTab,
   schedulesOfTab,
+  sharedSchedulesOfTab,
   tabReadings,
-  togglePlan,
   type AccelTabKey,
   type SwitchReading,
-  type ToggleTarget,
   type TogglePlan,
 } from '../cribl/accel/tabs'
 
@@ -197,28 +202,34 @@ type Confirming =
   | { kind: 'schedule'; id: AccelId; enable: boolean }
   | { kind: 'toggle'; plan: TogglePlan }
 
-/** What each switch costs, from the manifest alone — it does not change while
- *  the page is open, so it is computed once rather than on every render. */
-const TAB_COST: Readonly<Record<AccelTabKey, ScheduleSetCost>> = Object.fromEntries(
-  ACCEL_TABS.map((t) => [t.key, estimateScheduleSetCost(schedulesOfTab(t.key))]),
+/** What each tab's switch ALONE decides — the searches only that tab reads.
+ *  From the manifest, so computed once rather than on every render. A shared
+ *  search is not on any tab's line (review 2026-09-24, defect 5): Findings'
+ *  switch does not stop the overview scan while Capacity, Web & API or Data
+ *  Flow is on, so its saving is not Findings' to claim. */
+const TAB_OWN_COST: Readonly<Record<AccelTabKey, ScheduleSetCost>> = Object.fromEntries(
+  ACCEL_TABS.map((t) => [t.key, estimateScheduleSetCost(ownSchedulesOfTab(t.key))]),
 ) as Record<AccelTabKey, ScheduleSetCost>
 const TOTAL_COST: ScheduleSetCost = estimateScheduleSetCost(MANIFEST.map((e) => e.id))
 
-/** The ⓘ beside one switch: which searches it covers, which of them another
- *  dashboard shares, and the provenance of the figures. */
-function switchTipText(key: AccelTabKey | 'master', cost: ScheduleSetCost): string {
-  if (key === 'master') return `Covers all ${cost.ids.length} scheduled searches. ${cost.provenance}`
-  const shared = cost.ids.filter((id) => ACCEL_TABS.some((t) => t.key !== key && schedulesOfTab(t.key).includes(id)))
-  return (
-    `Reads ${cost.ids.join(', ')}. ` +
-    (shared.length ? `Shared with other dashboards: ${shared.join(', ')} — counted on each of them, and kept running while any of them is on. ` : '') +
-    cost.provenance
-  )
+/** The ⓘ beside one switch: what it reads, the shared searches' own cost and
+ *  which dashboards keep each one running, and the provenance of the figures. */
+function switchTipText(key: AccelTabKey | 'master'): string {
+  if (key === 'master') return `Covers all ${TOTAL_COST.ids.length} scheduled searches: ${setCostWords(TOTAL_COST)}. ${TOTAL_COST.provenance}`
+  const own = TAB_OWN_COST[key]
+  const shared = sharedSchedulesOfTab(key).map((id) => {
+    const cost = estimateScheduleSetCost([id])
+    const others = ACCEL_TABS.filter((t) => t.key !== key && schedulesOfTab(t.key).includes(id)).map((t) => t.label)
+    return `${id} (${setCostWords(cost)}) is shared with ${others.join(', ')} and keeps running while any of them is on, so it is not on this line. `
+  })
+  const ownWords = own.ids.length ? `Its own: ${own.ids.join(', ')}. ` : 'It has no scheduled search of its own. '
+  const sentences = [...new Set([own.provenance, ...sharedSchedulesOfTab(key).map((id) => estimateScheduleSetCost([id]).provenance)])]
+  return `${ownWords}${shared.join('')}${sentences.join(' ')}`
 }
 const TAB_TIP: Readonly<Record<AccelTabKey, string>> = Object.fromEntries(
-  ACCEL_TABS.map((t) => [t.key, switchTipText(t.key, TAB_COST[t.key])]),
+  ACCEL_TABS.map((t) => [t.key, switchTipText(t.key)]),
 ) as Record<AccelTabKey, string>
-const MASTER_TIP = switchTipText('master', TOTAL_COST)
+const MASTER_TIP = switchTipText('master')
 
 export function AccelPanel() {
   const [state, setState] = useState<AccelState | null>(null)
@@ -396,13 +407,15 @@ export function AccelPanel() {
   const master = state && readError === null ? masterReading(state) : null
   const switchBlocked = running !== null || loading || state === null || readError !== null
 
-  /** A flip. Computes the plan and opens the confirmation; writes nothing. */
-  const onFlip = (target: ToggleTarget) => {
+  /** A flip. Computes the plan and opens the confirmation; writes nothing.
+   *  Which way it goes is `flipPlan`'s decision, from what the switch reads
+   *  now — a Mixed switch goes off (review 2026-09-24, defect 3). */
+  const onFlip = (key: AccelTabKey | 'master') => {
     if (switchBlocked || state === null) return
-    const plan = togglePlan(state, target)
+    const plan = flipPlan(state, key)
     const why = toggleNothingWords(plan)
     if (why !== null) {
-      setNothing({ key: target.kind === 'master' ? 'master' : target.tab, text: why })
+      setNothing({ key, text: why })
       return
     }
     setNothing(null)
@@ -421,7 +434,7 @@ export function AccelPanel() {
       if (failed.length) {
         pushToast({ kind: 'error', text: `Acceleration: ${failed.map((r) => `${r.id} — ${r.detail ?? 'Cribl refused the change.'}`).join(' · ')}` })
       } else {
-        pushToast({ kind: 'done', text: `${plan.target.on ? 'Resumed' : 'Paused'}: ${results.map((r) => r.id).join(', ')}.` })
+        pushToast({ kind: 'done', text: toggleDoneWords(plan, results.map((r) => r.id)) })
       }
       await refresh()
     } catch (err) {
@@ -453,11 +466,11 @@ export function AccelPanel() {
           label="Every dashboard"
           name={switchName('master')}
           reading={master}
-          cost={TOTAL_COST}
+          costWords={setCostWords(TOTAL_COST)}
           tip={MASTER_TIP}
           note={nothing?.key === 'master' ? nothing.text : null}
           master
-          onFlip={(on) => onFlip({ kind: 'master', on })}
+          onFlip={() => onFlip('master')}
         />
         <ul className="ac-switch-rows">
           {ACCEL_TABS.map((t) => (
@@ -466,10 +479,10 @@ export function AccelPanel() {
                 label={t.label}
                 name={switchName(t.key)}
                 reading={readings?.[t.key] ?? null}
-                cost={TAB_COST[t.key]}
+                costWords={tabCostWords(t.key, TAB_OWN_COST[t.key])}
                 tip={TAB_TIP[t.key]}
                 note={nothing?.key === t.key ? nothing.text : null}
-                onFlip={(on) => onFlip({ kind: 'tab', tab: t.key, on })}
+                onFlip={() => onFlip(t.key)}
               />
             </li>
           ))}
@@ -794,13 +807,13 @@ export function AccelPanel() {
           resources={toggleResources(togglingPlan)}
           costLine={toggleCostLine(togglingPlan, estimateScheduleSetCost(togglingPlan.changes.map((c) => c.id)))}
           consequences={toggleConsequences(togglingPlan)}
-          undo={`The same switch, on this tab, ${togglingPlan.target.on ? 'pauses them' : 'resumes them'} again. Nothing is deleted.`}
+          undo={toggleUndo(togglingPlan)}
           onCancel={() => setConfirming(null)}
           confirm={
             <GatedControl
               write="accel.pause"
-              label={togglingPlan.target.on ? 'Yes, resume them' : 'Yes, pause them'}
-              busyLabel={togglingPlan.target.on ? 'Resuming…' : 'Pausing…'}
+              label={planResumes(togglingPlan) ? 'Yes, resume them' : 'Yes, pause them'}
+              busyLabel={planResumes(togglingPlan) ? 'Resuming…' : 'Pausing…'}
               unavailable={running !== null ? 'Another run is already in progress.' : null}
               run={() => onToggle(togglingPlan)}
             />
@@ -851,32 +864,35 @@ interface SwitchRowProps {
   label: string
   name: string
   reading: SwitchReading | null
-  cost: ScheduleSetCost
+  /** The cost line — for a tab, only what its switch alone decides. */
+  costWords: string
   tip: string
   note: string | null
   master?: boolean
-  onFlip: (on: boolean) => void
+  onFlip: () => void
 }
 
 /**
  * One switch: the tab's name, its state in words, and what its schedules cost.
  *
- * The switch shows on only when every schedule it covers is running; Mixed and
- * Not set up are said in words beside it, because a two-position control cannot
- * say them. It is never given the HTML `disabled` attribute — Capra's Switch
+ * The switch shows on only when every schedule it can change is running; Mixed
+ * and Not set up are said in words beside it, because a two-position control
+ * cannot say them. Which way a flip goes is decided by the parent from the
+ * reading, not from `checked`: a Mixed switch is drawn unchecked and still
+ * flips OFF. It is never given the HTML `disabled` attribute — Capra's Switch
  * would announce it unavailable without the reason — so a flip while the page
  * is busy is refused in `onFlip` instead, and nothing is written either way: a
  * flip only ever opens a confirmation.
  */
-function SwitchRow({ label, name, reading, cost, tip, note, master, onFlip }: SwitchRowProps) {
+function SwitchRow({ label, name, reading, costWords, tip, note, master, onFlip }: SwitchRowProps) {
   const descId = useId()
   const checked = reading?.state === 'on'
   return (
     <div className={master ? 'ac-switch ac-switch-master' : 'ac-switch'}>
-      <Switch aria-label={name} aria-describedby={descId} checked={checked} onChange={() => onFlip(!checked)} />
+      <Switch aria-label={name} aria-describedby={descId} checked={checked} onChange={onFlip} />
       <span className="ac-switch-label">{label}</span>
       <span className="ac-switch-state" id={descId}>
-        {reading ? switchStateWords(reading) : 'Checking…'} · {setCostWords(cost)}
+        {reading ? switchStateWords(reading) : 'Checking…'} · {costWords}
       </span>
       <InfoTip text={tip} />
       {note && <span className="ac-switch-note" role="status">{note}</span>}

@@ -872,6 +872,48 @@ describe('the per-dashboard switches', () => {
     expect(text).toContain('Yes, resume them')
   })
 
+  // Review 2026-09-24, defect 1: one entry a release added and nobody applied
+  // read the master as Mixed, and a Mixed master could only ask for on.
+  it('the master switch still pauses everything when one entry was never created', async () => {
+    const saved = await everyEntry()
+    delete saved.gno_sample_2m_c1h
+    const { calls } = stubWorkspace({ saved })
+    await mount()
+    expect(switchNamed(switchName('master'))?.checked).toBe(true)
+    expect(bodyText()).toContain('1 not switchable here')
+    await press(switchNamed(switchName('master')))
+    expect(savedWrites(calls)).toEqual([])
+    const text = dialog()?.textContent ?? ''
+    expect(text).toContain('Yes, pause them')
+    for (const e of MANIFEST.filter((x) => x.id !== 'gno_sample_2m_c1h')) expect(text).toContain(e.id)
+    // Defect 4: the master's undo names the master switch, not "this tab".
+    expect(text).toContain('Turning the master switch back on')
+    expect(text).not.toContain('on this tab')
+  })
+
+  // Defect 3: a Mixed switch goes OFF, the cheaper direction.
+  it('a Mixed tab flips off, pausing the rest, and never asks to resume first', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(['gno_web_h2_c1h']) })
+    await mount()
+    await press(switchNamed(switchName('web-api')))
+    expect(savedWrites(calls)).toEqual([])
+    const text = dialog()?.textContent ?? ''
+    expect(text).toContain('Yes, pause them')
+    expect(text).not.toContain('Yes, resume them')
+    for (const id of ['gno_web_host_c1h', 'gno_web_code_c1h', 'gno_web_trend_c1h']) expect(text).toContain(id)
+    // Defect 4: the one paused before is named as one turning the tab back on resumes too.
+    expect(text).toContain('gno_web_h2_c1h, which was already paused before this')
+  })
+
+  // Defect 5: a tab's line bills it only for what its switch alone decides.
+  it('bills Findings nothing of its own and names the shared scan', async () => {
+    stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    const state = document.getElementById(switchNamed(switchName('findings'))?.getAttribute('aria-describedby') ?? '')
+    expect(state?.textContent).toContain('no scheduled search of its own · shares gno_overview_c1h')
+    expect(state?.textContent).not.toMatch(/bills/)
+  })
+
   it('offers no switch write while it cannot read the saved-search list', async () => {
     const { calls } = stubWorkspace({ status: { [`GET ${SAVED}`]: 403 } })
     await mount()

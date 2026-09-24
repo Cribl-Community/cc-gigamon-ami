@@ -23,12 +23,23 @@
 import type { ConfirmResource } from './ConfirmDialog'
 import type { StatusState } from './StatusPill'
 import { SEARCH_GROUP } from '../cribl/config'
-import type { AccelEntry } from '../cribl/accel/manifest'
+import { MANIFEST, type AccelEntry } from '../cribl/accel/manifest'
 import type { AccelEntryState, AccelRow, AccelState } from '../cribl/accel/provision'
 import type { AccelStatus } from '../cribl/accel/status'
 import { cadenceLooksRight } from '../cribl/accel/status'
 import { creditsFor, type EntrySaving, type ScheduleSetCost, type Span, type WorkspaceSaving } from '../cribl/accel/estimate'
-import { accelTab, type AccelTabKey, type SwitchReading, type SwitchState, type TogglePlan } from '../cribl/accel/tabs'
+import {
+  ACCEL_TABS,
+  accelTab,
+  ownSchedulesOfTab,
+  schedulesOfTab,
+  sharedSchedulesOfTab,
+  tabsOfEntry,
+  type AccelTabKey,
+  type SwitchReading,
+  type SwitchState,
+  type TogglePlan,
+} from '../cribl/accel/tabs'
 import { formatCost, formatRecurringCost } from '../lib/format'
 
 // ── The words, kept pure so a test can read them without a DOM ──────────────
@@ -402,12 +413,50 @@ export function scheduleCostLine(saving: WorkspaceSaving, id: string, enable: bo
 /** One lead line; the rule and its consequences are behind the ⓘ. */
 export const SWITCHES_LEAD = 'On by default. Switch it off for a dashboard nobody opens, or for all of them.'
 
-export const SWITCHES_LEAD_TIP =
-  'A scheduled search runs while the master switch is on and at least one dashboard it feeds is on. ' +
-  'Some searches feed several dashboards, so switching one dashboard off pauses only the searches no other dashboard that is on still reads. ' +
-  'Findings and Security read only the shared overview search, so they go off together, and only once Capacity, Web & API and Data Flow are off too. ' +
-  'Each switch is read from the saved searches themselves, not from a remembered setting, so a search paused in Cribl shows here as Mixed. ' +
-  'The master switch keeps no memory of which dashboards were off: on resumes every one.'
+/** "a", "a and b", "a, b and c". */
+const andList = (xs: readonly string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
+
+/**
+ * The tabs that read only searches other tabs share, and the tabs that keep
+ * those searches running — DERIVED from the manifest (review 2026-09-24,
+ * defect 6: this was fixed text that the next manifest change would falsify).
+ * Tabs reading the same shared set are one sentence. Empty when no tab reads
+ * only shared searches.
+ */
+export function sharedOnlyTabsSentence(manifest: readonly AccelEntry[] = MANIFEST): string {
+  const groups = new Map<string, AccelTabKey[]>()
+  for (const t of ACCEL_TABS) {
+    const all = schedulesOfTab(t.key, manifest)
+    if (all.length === 0 || ownSchedulesOfTab(t.key, manifest).length > 0) continue
+    const key = sharedSchedulesOfTab(t.key, manifest).join(', ')
+    groups.set(key, [...(groups.get(key) ?? []), t.key])
+  }
+  return [...groups.entries()]
+    .map(([ids, tabs]) => {
+      const feeds = new Set(manifest.filter((e) => ids.split(', ').includes(e.id)).flatMap((e) => tabsOfEntry(e)))
+      // Only tabs with a search of their own can hold a shared one on: a tab
+      // that reads nothing but shared searches is never evidence for them.
+      const others = ACCEL_TABS.filter((t) => feeds.has(t.key) && !tabs.includes(t.key) && ownSchedulesOfTab(t.key, manifest).length > 0)
+      const names = andList(tabs.map((k) => accelTab(k).label))
+      const one = tabs.length === 1
+      return (
+        `${names} ${one ? 'reads' : 'read'} only ${ids}, which other dashboards share, so ` +
+        `${one ? 'it goes off' : 'they go off together, and'} only once ${andList(others.map((t) => t.label))} ${others.length === 1 ? 'is' : 'are'} off too.`
+      )
+    })
+    .join(' ')
+}
+
+export const SWITCHES_LEAD_TIP = [
+  'A scheduled search runs while the master switch is on and at least one dashboard it feeds is on.',
+  'Some searches feed several dashboards, so switching one dashboard off pauses only the searches no other dashboard that is on still reads.',
+  sharedOnlyTabsSentence(),
+  'Each switch is read from the saved searches themselves, not from a remembered setting, so a search paused in Cribl shows here as Mixed; flipping a Mixed switch turns it off.',
+  'A search this app cannot switch (not created yet, or not its own) is counted beside the switch and never decides which way it points.',
+  'The master switch keeps no memory of which dashboards were off: on resumes every one.',
+]
+  .filter(Boolean)
+  .join(' ')
 
 /** A switch's state as one word. The switch itself shows only on/off; this is
  *  what says Mixed, which a two-position control cannot. */
@@ -425,11 +474,11 @@ export function switchStateWords(r: SwitchReading): string {
   const untouchable = r.untouchable.length ? ` · ${r.untouchable.length} not switchable here` : ''
   switch (r.state) {
     case 'on':
-      return `On — ${searches(r.running.length)} running`
+      return `On — ${searches(r.running.length)} running${untouchable}`
     case 'off':
-      return `Off — ${searches(r.paused.length)} paused`
+      return `Off — ${searches(r.paused.length)} paused${untouchable}`
     case 'mixed':
-      return `Mixed — ${r.running.length} of ${r.ids.length} running${untouchable}`
+      return `Mixed — ${r.running.length} of ${r.running.length + r.paused.length} running${untouchable}`
     case 'unavailable':
       return `Not set up — none of its ${searches(r.ids.length)} can be switched here`
   }
@@ -447,6 +496,19 @@ export function setCostWords(cost: ScheduleSetCost): string {
   return `bills ${creditSpanWords(cost.chargeCredits)} · saves ${creditSpanWords(cost.saving.savedCredits)}${flag}`
 }
 
+/**
+ * One tab's line: what the searches only it reads bill and save, and the
+ * shared ones by name. Review 2026-09-24, defect 5: the line used to bill each
+ * tab for every search it reads, so Findings claimed the whole overview
+ * scan's saving, a saving that stays while Capacity, Web & API or Data Flow
+ * is on whatever Findings' switch says. A shared search's cost is in the ⓘ.
+ */
+export function tabCostWords(key: AccelTabKey, own: ScheduleSetCost): string {
+  const shared = sharedSchedulesOfTab(key)
+  const mine = own.ids.length ? setCostWords(own) : 'no scheduled search of its own'
+  return shared.length ? `${mine} · shares ${shared.join(', ')}` : mine
+}
+
 /** The switch's accessible name. The visible label is the tab's name. */
 export function switchName(key: AccelTabKey | 'master'): string {
   return key === 'master' ? 'Acceleration for every dashboard' : `Acceleration for ${accelTab(key).label}`
@@ -454,13 +516,55 @@ export function switchName(key: AccelTabKey | 'master'): string {
 
 const labels = (keys: readonly AccelTabKey[]) => keys.map((k) => accelTab(k).label).join(', ')
 
+/**
+ * Whether the plan's writes resume, from the changes themselves rather than
+ * from the target (review 2026-09-24, defect 8). `togglePlan` now only moves
+ * rows the target's way, so the two agree; this is what keeps the words true
+ * if they ever do not.
+ */
+export function planResumes(plan: TogglePlan): boolean {
+  return plan.changes.length ? plan.changes.every((c) => c.to) : plan.target.on
+}
+
 /** The dialog's title: kind, how many, and where. */
 export function toggleTitle(plan: TogglePlan): string {
   const n = plan.changes.length
-  const what = `${plan.target.on ? 'Resume' : 'Pause'} ${n === 1 ? 'a scheduled Cribl Search saved search' : `${n} scheduled Cribl Search saved searches`} in ${SEARCH_GROUP}`
+  const up = planResumes(plan)
+  const what = `${up ? 'Resume' : 'Pause'} ${n === 1 ? 'a scheduled Cribl Search saved search' : `${n} scheduled Cribl Search saved searches`} in ${SEARCH_GROUP}`
   return plan.target.kind === 'master'
-    ? `Acceleration ${plan.target.on ? 'on' : 'off'} for every dashboard: ${what}`
-    : `Acceleration ${plan.target.on ? 'on' : 'off'} for ${accelTab(plan.target.tab).label}: ${what}`
+    ? `Acceleration ${up ? 'on' : 'off'} for every dashboard: ${what}`
+    : `Acceleration ${up ? 'on' : 'off'} for ${accelTab(plan.target.tab).label}: ${what}`
+}
+
+/** The toast after a confirmed flip: each id under the word for what was done to it. */
+export function toggleDoneWords(plan: TogglePlan, done: readonly string[]): string {
+  const to = new Map(plan.changes.map((c) => [c.id as string, c.to]))
+  const paused = done.filter((id) => to.get(id) === false)
+  const resumed = done.filter((id) => to.get(id) === true)
+  return [paused.length ? `Paused: ${paused.join(', ')}.` : '', resumed.length ? `Resumed: ${resumed.join(', ')}.` : ''].filter(Boolean).join(' ')
+}
+
+/**
+ * The dialog's undo line, by what was switched (review 2026-09-24, defect 4).
+ * Flipping back does not restore the state before this flip: it applies the
+ * rule again, so any search that was ALREADY where this flip points is named
+ * as one flipping back will move too.
+ */
+export function toggleUndo(plan: TogglePlan): string {
+  const up = planResumes(plan)
+  const n = plan.already.length
+  const already = n
+    ? ` That includes ${plan.already.join(', ')}, which ${n === 1 ? 'was' : 'were'} already ${up ? 'running' : 'paused'} before this and ${n === 1 ? 'is' : 'are'} not put back that way.`
+    : ''
+  const back =
+    plan.target.kind === 'master'
+      ? up
+        ? 'Turning the master switch off again pauses every search this app can switch.'
+        : 'Turning the master switch back on resumes every search this app can switch.'
+      : up
+        ? `Turning ${accelTab(plan.target.tab).label} off again pauses the searches it reads that no other dashboard that is on still reads.`
+        : `Turning ${accelTab(plan.target.tab).label} back on resumes every search it reads.`
+  return `${back}${already} Nothing is deleted.`
 }
 
 /** Exactly the saved searches the write will PATCH — `plan.changes`, no more. */
@@ -482,7 +586,7 @@ export function toggleCostLine(plan: TogglePlan, cost: ScheduleSetCost): string 
   const live = liveCpuSecondsPerDay(cost.saving)
   const liveWords = creditSpanWords({ low: creditsFor(live.low), high: creditsFor(live.high) })
   const their = plan.changes.length === 1 ? 'this schedule’s' : 'these schedules’'
-  return plan.target.on
+  return planResumes(plan)
     ? `Starts ${their} charge again (${creditSpanWords(cost.chargeCredits)}) whether or not anybody opens the dashboards, and replaces live queries this workspace bills ${liveWords} for — an expected net saving of ${creditSpanWords(cost.saving.savedCredits)}. An estimate, not a bill.`
     : `Stops ${their} charge (${creditSpanWords(cost.chargeCredits)}). The panels they feed go back to their live queries, which this workspace bills ${liveWords} for. An estimate, not a bill.`
 }

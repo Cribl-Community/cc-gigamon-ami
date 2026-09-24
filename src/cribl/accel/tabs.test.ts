@@ -22,9 +22,12 @@ import type { AccelEntryState, AccelRow, AccelState } from './provision'
 import {
   ACCEL_TABS,
   ALL_TABS_ON,
+  flipPlan,
   masterReading,
+  ownSchedulesOfTab,
   scheduleEnabled,
   schedulesOfTab,
+  sharedSchedulesOfTab,
   switchable,
   tabOfQueryId,
   tabReadings,
@@ -190,10 +193,31 @@ describe('reading a switch from the saved searches', () => {
     expect(tabReadings(stateOf({}, 'paused')).capacity.state).toBe('off')
   })
 
-  it('calls a tab mixed, not on, when one of its searches was never created', () => {
+  // Review 2026-09-24, defect 1: this test used to pin 'mixed' here. A row the
+  // switch cannot change is not evidence about which way the switch points, and
+  // counting it made the master switch unable to pause anything the day a
+  // release added an entry nobody had applied yet.
+  it('reads a tab from the searches it can switch, and counts a never-created one beside it', () => {
     const r = tabReadings(stateOf({ gno_web_h2_c1h: 'absent' }))['web-api']
-    expect(r.state).toBe('mixed')
+    expect(r.state).toBe('on')
     expect(r.untouchable).toEqual([{ id: 'gno_web_h2_c1h', why: expect.stringContaining('not created') }])
+    expect(tabReadings(stateOf({ gno_web_h2_c1h: 'foreign' }, 'paused'))['web-api'].state).toBe('off')
+  })
+
+  it('lets the master switch pause every running search when one entry was never applied', () => {
+    const state = stateOf({ gno_sample_2m_c1h: 'absent' })
+    const master = masterReading(state)
+    expect(master.state).toBe('on')
+    expect(master.untouchable.map((u) => u.id)).toEqual(['gno_sample_2m_c1h'])
+    const plan = flipPlan(state, 'master')
+    expect(plan.target).toEqual({ kind: 'master', on: false })
+    expect(plan.changes.map((c) => c.id)).toEqual(allIds.filter((id) => id !== 'gno_sample_2m_c1h'))
+  })
+
+  it('lets a tab with a foreign search be switched off', () => {
+    const plan = flipPlan(stateOf({ gno_web_h2_c1h: 'foreign' }), 'web-api')
+    expect(plan.target).toEqual({ kind: 'tab', tab: 'web-api', on: false })
+    expect(plan.changes.map((c) => c.id)).toEqual(['gno_web_host_c1h', 'gno_web_code_c1h', 'gno_web_trend_c1h'])
   })
 
   it('reads nothing at all from a list it could not read', () => {
@@ -287,5 +311,90 @@ describe('the master switch', () => {
     expect(masterReading(stateOf({})).state).toBe('on')
     expect(masterReading(stateOf({}, 'paused')).state).toBe('off')
     expect(masterReading(stateOf({}, 'absent')).state).toBe('unavailable')
+  })
+})
+
+// ── Review 2026-09-24: direction ────────────────────────────────────────────
+
+describe('a flip only ever moves schedules the way the switch was flipped', () => {
+  // Defect 2: an off flip took every in-scope row whose rule value differed
+  // from now, in either direction — so with the overview scan paused, Data
+  // Flow off paused lake and pipeline AND resumed overview, under a dialog
+  // titled Pause.
+  const mixedStates = [
+    stateOf({ gno_overview_c1h: 'paused' }),
+    stateOf({ gno_overview_c1h: 'paused', gno_dns_resolver_c1h: 'paused', gno_app_l4_c1h: 'paused' }),
+    stateOf({ gno_overview_c1h: 'enabled' }, 'paused'),
+  ]
+  for (const [i, state] of mixedStates.entries()) {
+    it(`every change goes to target.on, for every tab and the master (state ${i})`, () => {
+      for (const on of [true, false]) {
+        const targets = [{ kind: 'master' as const, on }, ...ACCEL_TABS.map((t) => ({ kind: 'tab' as const, tab: t.key, on }))]
+        for (const target of targets) {
+          const plan = togglePlan(state, target)
+          expect(plan.changes.filter((c) => c.to !== on).map((c) => c.id), JSON.stringify(target)).toEqual([])
+          expect(plan.changes.every((c) => c.from !== c.to)).toBe(true)
+        }
+      }
+    })
+  }
+
+  it('turning Data Flow off with overview paused resumes nothing', () => {
+    const plan = togglePlan(stateOf({ gno_overview_c1h: 'paused' }), { kind: 'tab', tab: 'data-flow', on: false })
+    expect(plan.changes.map((c) => [c.id, c.to])).toEqual([
+      ['gno_lake_30d_c1d', false],
+      ['gno_pipeline_c1h', false],
+    ])
+  })
+})
+
+describe('which way a flip goes', () => {
+  // Defect 3: a switch reading Mixed was drawn unchecked, so every flip asked
+  // for on — a user who wanted Web & API off had to start a charge first.
+  it('goes off from on and on from off', () => {
+    expect(flipPlan(stateOf({}), 'capacity').target).toEqual({ kind: 'tab', tab: 'capacity', on: false })
+    expect(flipPlan(stateOf({}, 'paused'), 'capacity').target).toEqual({ kind: 'tab', tab: 'capacity', on: true })
+    expect(flipPlan(stateOf({}), 'master').target).toEqual({ kind: 'master', on: false })
+    expect(flipPlan(stateOf({}, 'paused'), 'master').target).toEqual({ kind: 'master', on: true })
+  })
+
+  it('goes off from mixed — pausing the rest is the cheaper direction', () => {
+    const state = stateOf({ gno_web_h2_c1h: 'paused' })
+    const plan = flipPlan(state, 'web-api')
+    expect(plan.target).toEqual({ kind: 'tab', tab: 'web-api', on: false })
+    expect(plan.changes.map((c) => c.id)).toEqual(['gno_web_host_c1h', 'gno_web_code_c1h', 'gno_web_trend_c1h'])
+    expect(flipPlan(state, 'master').target).toEqual({ kind: 'master', on: false })
+  })
+
+  it('goes on from mixed only when off would change nothing — the dialog then says Resume', () => {
+    // Capacity's own two paused; the overview scan it shares still running
+    // for Web & API. Off has nothing to pause, so the only move is on.
+    const state = stateOf({ gno_app_l4_c1h: 'paused', gno_talkers_src_c1h: 'paused' })
+    expect(tabReadings(state).capacity.state).toBe('mixed')
+    const plan = flipPlan(state, 'capacity')
+    expect(plan.target).toEqual({ kind: 'tab', tab: 'capacity', on: true })
+    expect(plan.changes.map((c) => c.id)).toEqual(['gno_app_l4_c1h', 'gno_talkers_src_c1h'])
+  })
+})
+
+// ── Review 2026-09-24: what a tab's cost line may claim ─────────────────────
+
+describe('own and shared schedules', () => {
+  // Defect 5: each tab's line billed it for every schedule it reads, so
+  // Findings claimed the whole overview saving.
+  it('splits each tab into schedules only it reads and ones it shares', () => {
+    for (const t of ACCEL_TABS) {
+      expect(sorted([...ownSchedulesOfTab(t.key), ...sharedSchedulesOfTab(t.key)]), t.key).toEqual(sorted(schedulesOfTab(t.key)))
+      expect(ownSchedulesOfTab(t.key)).toEqual(exclusiveTo(t.key))
+    }
+    expect(ownSchedulesOfTab('findings')).toEqual([])
+    expect(sharedSchedulesOfTab('findings')).toEqual(['gno_overview_c1h'])
+  })
+
+  it('counts every schedule as some one tab’s own, or as shared — once', () => {
+    const own = ACCEL_TABS.flatMap((t) => ownSchedulesOfTab(t.key))
+    const shared = [...new Set(ACCEL_TABS.flatMap((t) => sharedSchedulesOfTab(t.key)))]
+    expect(sorted([...own, ...shared])).toEqual(sorted(allIds))
+    expect(own.length + shared.length).toBe(allIds.length)
   })
 })

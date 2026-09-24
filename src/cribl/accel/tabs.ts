@@ -27,7 +27,11 @@
 // the switch lies. The price of that honesty is written down rather than
 // hidden:
 //
-//   * A TAB WHOSE SCHEDULES DISAGREE IS `mixed`, not on and not off.
+//   * A TAB WHOSE SCHEDULES DISAGREE IS `mixed`, not on and not off — judged
+//     only over the rows it can switch; the others are a count beside it.
+//   * A FLIP MOVES ONE WAY. An off flip only pauses and an on flip only
+//     resumes, whatever the rule would say from a mixed state; and a Mixed
+//     switch flips OFF (`flipPlan`). Review 2026-09-24, defects 1–3.
 //   * TABS THAT SHARE A SCHEDULE CANNOT BE TOLD APART BY IT. Findings and
 //     Security read only `gno_overview_c1h`, which also feeds Capacity, Web &
 //     API and Data Flow. So, when a tab T is switched OFF, another tab S counts
@@ -130,6 +134,17 @@ export function schedulesOfTab(key: AccelTabKey, manifest: readonly AccelEntry[]
   return manifest.filter((e) => tabsOfEntry(e).includes(key)).map((e) => e.id)
 }
 
+/** The schedules only this tab reads — what its switch alone decides, and so
+ *  the only cost its line may claim as its own. */
+export function ownSchedulesOfTab(key: AccelTabKey, manifest: readonly AccelEntry[] = MANIFEST): AccelId[] {
+  return manifest.filter((e) => tabsOfEntry(e).length === 1 && tabsOfEntry(e)[0] === key).map((e) => e.id)
+}
+
+/** The schedules this tab reads that another tab reads too. */
+export function sharedSchedulesOfTab(key: AccelTabKey, manifest: readonly AccelEntry[] = MANIFEST): AccelId[] {
+  return manifest.filter((e) => tabsOfEntry(e).length > 1 && tabsOfEntry(e).includes(key)).map((e) => e.id)
+}
+
 export type TabSwitches = Readonly<Record<AccelTabKey, boolean>>
 
 /** Every tab on — the default the owner decided on. */
@@ -166,6 +181,15 @@ export function switchable(row: AccelRow): { enabled: boolean | null; why: strin
 export type SwitchState = 'on' | 'off' | 'mixed' | 'unavailable'
 
 export interface SwitchReading {
+  /**
+   * Decided from the rows the switch can change and nothing else: `on` when
+   * none of them is paused, `off` when none is running, `mixed` only when both
+   * lists are non-empty, `unavailable` when there is no such row. A row the
+   * switch cannot change (absent, foreign, unreadable, no schedule) is counted
+   * in `untouchable` beside it, never as a vote — review 2026-09-24, defect 1:
+   * counting it made one unapplied entry read the master as Mixed, and a Mixed
+   * switch could not be turned off.
+   */
   state: SwitchState
   /** Every schedule the switch covers, in manifest order. */
   ids: readonly AccelId[]
@@ -204,9 +228,9 @@ function reading(ids: readonly AccelId[], live: LiveSchedules, why: ReadonlyMap<
   const state: SwitchState =
     running.length + paused.length === 0
       ? 'unavailable'
-      : running.length === ids.length
+      : paused.length === 0
         ? 'on'
-        : paused.length === ids.length
+        : running.length === 0
           ? 'off'
           : 'mixed'
   return { state, ids, running, paused, untouchable }
@@ -251,6 +275,10 @@ export interface TogglePlan {
   kept: readonly { id: AccelId; for: readonly AccelTabKey[] }[]
   /** Schedules the switch covers and cannot change, and why. */
   untouchable: readonly { id: AccelId; why: string }[]
+  /** Schedules the switch covers that were ALREADY where the flip points before
+   *  it — paused before an off flip, running before an on flip. The undo line
+   *  names them, because flipping back does not return them to that state. */
+  already: readonly AccelId[]
   /** Every tab whose switch reads differently afterwards, the target included. */
   tabsChanged: readonly { tab: AccelTabKey; before: SwitchState; after: SwitchState }[]
 }
@@ -282,14 +310,21 @@ export function togglePlan(state: AccelState, target: ToggleTarget): TogglePlan 
 
   const changes: ToggleChange[] = []
   const kept: { id: AccelId; for: AccelTabKey[] }[] = []
+  const already: AccelId[] = []
   for (const entry of MANIFEST) {
     if (!inScope.has(entry.id)) continue
     const now = live.get(entry.id)
     if (now === undefined) continue
+    if (now === target.on) already.push(entry.id)
     const to = scheduleEnabled(entry, master, tabs)
     const served = tabsOfEntry(entry)
-    if (to !== now) changes.push({ id: entry.id, entry, from: now, to, tabs: served })
-    else if (to && target.kind === 'tab' && !target.on) {
+    // A flip moves schedules ONE way: an off flip never resumes, an on flip
+    // never pauses (review 2026-09-24, defect 2). The rule can say otherwise
+    // from a mixed state — Data Flow off with the shared overview paused once
+    // wanted overview resumed, under a dialog titled Pause — and when it does,
+    // that row is simply left as it is.
+    if (to !== now && to === target.on) changes.push({ id: entry.id, entry, from: now, to, tabs: served })
+    else if (to && now && target.kind === 'tab' && !target.on) {
       kept.push({ id: entry.id, for: served.filter((k) => k !== target.tab && tabs[k]) })
     }
   }
@@ -307,6 +342,29 @@ export function togglePlan(state: AccelState, target: ToggleTarget): TogglePlan 
     changes,
     kept,
     untouchable: scope.filter((id) => !live.has(id)).map((id) => ({ id, why: why.get(id) ?? 'not read yet' })),
+    already,
     tabsChanged,
   }
+}
+
+/**
+ * What flipping one switch means, from what it reads now.
+ *
+ * On goes off and off goes on. MIXED GOES OFF (review 2026-09-24, defect 3):
+ * pausing the rest is the cheaper and safer direction, and a Mixed switch that
+ * could only go on made a user who wanted a tab off start a charge first. The
+ * one exception is a Mixed tab whose running schedules are all kept by other
+ * tabs, so off would change nothing; then the flip goes on, and the dialog's
+ * title and button say Resume. Unavailable asks for on, which changes nothing
+ * and says why beside the switch.
+ */
+export function flipPlan(state: AccelState, key: AccelTabKey | 'master'): TogglePlan {
+  const r = key === 'master' ? masterReading(state) : tabReadings(state)[key]
+  const target = (on: boolean): ToggleTarget => (key === 'master' ? { kind: 'master', on } : { kind: 'tab', tab: key, on })
+  if (r.state === 'on') return togglePlan(state, target(false))
+  if (r.state === 'mixed') {
+    const off = togglePlan(state, target(false))
+    return off.changes.length ? off : togglePlan(state, target(true))
+  }
+  return togglePlan(state, target(true))
 }
