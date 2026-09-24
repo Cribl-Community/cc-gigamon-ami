@@ -31,10 +31,10 @@ import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { ProvisionPanel } from './ProvisionPanel'
 import {
-  GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployNote,
+  AUTH_HEADER, ENDPOINT_INCOMPLETE, GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployNote,
 } from './provisionPanelCopy'
 import {
-  HTTP_BREAKER_ID, HTTP_BREAKER_SPEC, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, PIPELINE_SPEC, ROUTE_SPEC,
+  HTTP_BREAKER_ID, HTTP_BREAKER_SPEC, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, PIPELINE_SPEC, ROUTE_SPEC, SOURCE_SPEC,
 } from '../cribl/provision'
 
 const GROUP = 'default'
@@ -71,9 +71,11 @@ function stubLeader() {
     }
     if (path === '/version/files') return reply(200, { items: [] })
     if (path === '/version') return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
-    if (path === '/products/stream/groups') return reply(200, { items: [{ id: GROUP, name: GROUP }] })
-    // No other sources, so every port is free.
+    // Cribl-managed, on the Cribl.Cloud Leader the beforeEach names.
+    if (path === '/products/stream/groups') return reply(200, { items: [{ id: GROUP, name: GROUP, onPrem: false }] })
+    // No other sources and no packs, so every port is free.
     if (path === `/m/${GROUP}/system/inputs`) return reply(200, { items: [] })
+    if (path === `/m/${GROUP}/packs`) return reply(200, { items: [] })
     if (path === `/products/stream/groups/${GROUP}`) {
       return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
     }
@@ -93,6 +95,9 @@ let root: Root
 
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  // A Cribl.Cloud Leader, which is what makes `onPrem: false` mean
+  // Cribl-managed. A test about a self-hosted Leader overrides it.
+  window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   resetDenials()
@@ -105,6 +110,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete window.__CRIBL_SEARCH_ORIGIN
   act(() => root.unmount())
   container.remove()
   document.body.innerHTML = ''
@@ -205,9 +211,36 @@ describe('what the panel says before anything is pressed', () => {
  * Deploy therefore creates. It remembers the create body and answers later
  * reads of the source with it, so the endpoint card reads what was created.
  */
-function stubLeaderWithoutSource(opts: { onPrem?: boolean; usedPorts?: number[] } = {}) {
+interface StackOpts {
+  /** The group record's `onPrem`; null leaves it out, as a self-hosted Leader does. */
+  onPrem?: boolean | null
+  usedPorts?: number[]
+  /** Start with the Raw HTTP source already there (so the whole stack is). */
+  sourcePresent?: boolean
+  /** Start without our route in the table, and answer its PATCH with this. */
+  routeMissing?: boolean
+  routePatchStatus?: number
+  /** What the old Syslog stack's three reads answer. Default absent. */
+  legacy?: 'present' | 'absent' | 'unreadable'
+  /** Status per DELETE path. Default 200. */
+  deleteStatus?: Record<string, number>
+}
+
+function stubLeaderWithoutSource(opts: StackOpts = {}) {
   const sent: Array<{ method: string; path: string; body: string }> = []
-  let source: Record<string, unknown> | null = null
+  let source: Record<string, unknown> | null = opts.sourcePresent
+    ? { ...SOURCE_SPEC, port: 20001, tls: { disabled: false }, authTokensExt: [{ token: 'lab-existing-token-value', authType: 'manual' }] }
+    : null
+  const legacyRoute = { id: 'gigamon_ami_syslog', name: 'gigamon_ami_syslog', filter: "__inputId=='syslog:in_gigamon_syslog'" }
+  let routes: Array<Record<string, unknown>> = [
+    ...(opts.legacy === 'present' ? [legacyRoute] : []),
+    ...(opts.routeMissing ? [] : [{ ...ROUTE_SPEC }]),
+    { id: 'default', filter: 'true' },
+  ]
+  const legacyRead = () =>
+    opts.legacy === 'present' ? { status: 200, value: { items: [{ id: 'x' }] } }
+      : opts.legacy === 'unreadable' ? { status: 403, value: { message: 'forbidden' } }
+        : { status: 404, value: { message: 'not found' } }
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
     const path = String(url).replace(/^\/capi/, '').split('?')[0]
@@ -223,14 +256,36 @@ function stubLeaderWithoutSource(opts: { onPrem?: boolean; usedPorts?: number[] 
     if (at('GET', '/version')) return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
     if (at('POST', '/version/commit')) return reply(200, { items: [{ commit: 'bbbb2222bbbb2222' }] })
     if (at('PATCH', `/products/stream/groups/${GROUP}/deploy`)) return reply(200, { items: [] })
-    if (at('GET', '/products/stream/groups')) return reply(200, { items: [{ id: GROUP, name: GROUP, onPrem: opts.onPrem === true }] })
+    if (at('GET', '/products/stream/groups')) {
+      const onPrem = opts.onPrem === undefined ? false : opts.onPrem
+      return reply(200, { items: [{ id: GROUP, name: GROUP, ...(onPrem === null ? {} : { onPrem }) }] })
+    }
     if (at('GET', `/products/stream/groups/${GROUP}`)) return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
     if (at('GET', '/master/groups')) return reply(200, { items: [{ id: GROUP, name: GROUP, type: 'stream' }] })
     if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
     if (at('GET', `/m/${GROUP}/system/outputs/gigamon_lake`)) return reply(200, { items: [{ id: 'gigamon_lake' }] })
     if (at('GET', `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`)) return reply(200, { items: [{ ...HTTP_BREAKER_SPEC }] })
     if (at('GET', `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)) return reply(200, { items: [{ ...PIPELINE_SPEC }] })
-    if (at('GET', `/m/${GROUP}/routes`)) return reply(200, { items: [{ id: 'default', routes: [{ ...ROUTE_SPEC }, { id: 'default', filter: 'true' }] }] })
+    if (at('GET', `/m/${GROUP}/routes`)) {
+      // A legacy-unreadable Leader refuses the table too, for the legacy check;
+      // the HTTP check reads the same path, so it answers the table either way.
+      return reply(200, { items: [{ id: 'default', routes }] })
+    }
+    if (at('PATCH', `/m/${GROUP}/routes/default`)) {
+      if (opts.routePatchStatus && opts.routePatchStatus !== 200) return reply(opts.routePatchStatus, { message: 'refused' })
+      routes = (JSON.parse(bodyText) as { routes: Array<Record<string, unknown>> }).routes
+      return reply(200, { items: [] })
+    }
+    if (at('GET', `/m/${GROUP}/system/inputs/in_gigamon_syslog`) || at('GET', `/m/${GROUP}/pipelines/gigamon_syslog`)) {
+      const r = legacyRead()
+      return reply(r.status, r.value)
+    }
+    if (at('GET', `/m/${GROUP}/packs`)) return reply(200, { items: [] })
+    if (method === 'DELETE') {
+      const status = opts.deleteStatus?.[path] ?? 200
+      if (status === 200 && path === `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`) source = null
+      return reply(status, status === 200 ? { items: [] } : { message: 'refused' })
+    }
     if (at('GET', `/m/${GROUP}/system/inputs`)) {
       return reply(200, { items: (opts.usedPorts ?? []).map((port, i) => ({ id: `other${i}`, type: 'http', port })) })
     }
@@ -252,6 +307,29 @@ async function deployThroughTheDialog() {
   await press(buttonNamed(`Yes, deploy to ${GROUP}`))
   await settle(20)
 }
+
+/** Type into the open dialog's type-to-confirm field. */
+async function typeGroup() {
+  await act(async () => {
+    const el = document.body.querySelector<HTMLInputElement>('[role="dialog"] input')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    setter.call(el, GROUP)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await settle()
+}
+
+async function removeThroughTheDialog(trigger: string) {
+  await press(buttonNamed(trigger))
+  await typeGroup()
+  await press(buttonNamed(`Yes, delete from ${GROUP}`))
+  await settle(20)
+}
+
+const dialogText = () => (document.body.querySelector('[role="dialog"]')?.textContent ?? '').replace(/\s+/g, ' ')
+const deleted = (sent: Array<{ method: string; path: string }>) => sent.filter((c) => c.method === 'DELETE').map((c) => c.path)
+const tokenOf = (created: Record<string, unknown> | null) =>
+  ((created?.authTokensExt as Array<{ token: string }> | undefined) ?? [])[0]?.token
 
 const portInput = () => document.body.querySelector<HTMLInputElement>('#gs-port-input')
 
@@ -304,6 +382,53 @@ describe('the Raw HTTP source’s port, TLS and token', () => {
     expect(bodyText()).toContain(TOKEN_ELSEWHERE)
   })
 
+  it('shows the token even when the run stopped after the source was created', async () => {
+    // The source is created, then the route fails. The token exists only in
+    // this page's state, so a card that waited for every row to be present
+    // would never show it: "shown once" would be "never shown".
+    const leader = stubLeaderWithoutSource({ routeMissing: true, routePatchStatus: 500 })
+    await mount()
+    await deployThroughTheDialog()
+    const token = tokenOf(leader.created())
+    expect(token, 'the source was not created').toMatch(/^[0-9a-f]{64}$/)
+    expect(bodyText()).toContain(token)
+    expect(bodyText()).toContain(TOKEN_ONCE)
+    expect(bodyText()).toContain(ENDPOINT_INCOMPLETE)
+  })
+
+  it('prints the exact header AMX must send', async () => {
+    stubLeaderWithoutSource()
+    await mount()
+    await deployThroughTheDialog()
+    expect(bodyText()).toContain(AUTH_HEADER)
+  })
+
+  it('keeps showing the token when Remove could not delete the source', async () => {
+    const leader = stubLeaderWithoutSource({ deleteStatus: { [`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`]: 500 } })
+    await mount()
+    await deployThroughTheDialog()
+    const token = tokenOf(leader.created())
+    expect(bodyText()).toContain(token)
+    await removeThroughTheDialog('Remove onboarding stack')
+    expect(deleted(leader.sent), 'Remove was never confirmed').toContain(`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)
+    expect(bodyText(), 'the token was dropped although the source that uses it is still there').toContain(token)
+  })
+
+  it('blocks creating a source when the group record does not say how it is hosted', async () => {
+    stubLeaderWithoutSource({ onPrem: null })
+    await mount()
+    expect(bodyText()).toContain('could not tell whether')
+    expect(buttonNamed('Deploy onboarding stack')?.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('does not treat a self-hosted Leader’s group as Cribl-managed', async () => {
+    window.__CRIBL_SEARCH_ORIGIN = 'https://leader.example.com'
+    stubLeaderWithoutSource({ onPrem: false })
+    await mount()
+    expect(bodyText()).toContain('could not tell whether')
+    expect(buttonNamed('Deploy onboarding stack')?.getAttribute('aria-disabled')).toBe('true')
+  })
+
   it('says plainly on a hybrid group that the traffic is unencrypted, and prints http', async () => {
     stubLeaderWithoutSource({ onPrem: true })
     await mount()
@@ -314,11 +439,46 @@ describe('the Raw HTTP source’s port, TLS and token', () => {
   })
 })
 
+describe('removing the old Syslog objects', () => {
+  const SYSLOG = [`/m/${GROUP}/system/inputs/in_gigamon_syslog`, `/m/${GROUP}/pipelines/gigamon_syslog`]
+
+  it('has its own button, whose confirmation names only those objects and deletes only them', async () => {
+    const leader = stubLeaderWithoutSource({ sourcePresent: true, legacy: 'present' })
+    await mount()
+    await press(buttonNamed('Remove old Syslog objects'))
+    const text = dialogText()
+    expect(text).toContain('in_gigamon_syslog')
+    expect(text).toContain('gigamon_syslog')
+    expect(text).toContain('gigamon_ami_syslog')
+    expect(text, 'the Syslog-only dialog names the HTTP source').not.toContain(HTTP_SOURCE_ID)
+    await typeGroup()
+    await press(buttonNamed(`Yes, delete from ${GROUP}`))
+    await settle(20)
+    expect(deleted(leader.sent)).toEqual(SYSLOG)
+  })
+
+  it('deletes none of them from the main Remove when their status could not be read, and says so', async () => {
+    const leader = stubLeaderWithoutSource({ sourcePresent: true, legacy: 'unreadable' })
+    await mount()
+    await press(buttonNamed('Remove onboarding stack'))
+    expect(dialogText()).toContain('could not tell whether')
+    expect(dialogText()).toContain('in_gigamon_syslog')
+    await typeGroup()
+    await press(buttonNamed(`Yes, delete from ${GROUP}`))
+    await settle(20)
+    expect(deleted(leader.sent)).toContain(`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)
+    expect(deleted(leader.sent).filter((p) => SYSLOG.includes(p))).toEqual([])
+  })
+})
+
 // ── What this file does not establish ───────────────────────────────────────
 //
-//   * THE TEARDOWN TRIGGER. It is only rendered when something in the group is
-//     present, and the first stub provisions nothing, so the pending-file
-//     assertions are on the deploy trigger alone.
+//   * THE PENDING-FILE READ ON THE TEARDOWN TRIGGERS. The two Remove dialogs
+//     are opened and confirmed above, but the re-read of Git status at open is
+//     asserted on the deploy trigger alone.
+//   * THAT A POST WITH `Authorization: <token>` IS ACCEPTED. The header line
+//     comes from openapi.json; proving it takes a POST to a live source, which
+//     is a write nothing in this suite (or its reviewers) may make.
 //   * THAT COPY PUTS THE TOKEN ON THE CLIPBOARD. happy-dom has no clipboard;
 //     the Copy buttons are asserted present, not working. Both call the same `openConfirm`, which is a
 //     type-level fact here and not a measured one.

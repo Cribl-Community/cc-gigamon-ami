@@ -373,6 +373,17 @@ policies:
   # reads every source in the group, including ones this app did not create.
   - object: '/m/:gid/system/inputs'
     actions: ['GET', 'POST']
+  # The sources inside each pack installed in the group, read two ways and
+  # never written. Their ports: a pack source listening in 20000–20010 — the
+  # onboarding pack's own Raw HTTP source does — is as much a collision for
+  # the new source as any other. And the breaker rulesets they name: Remove
+  # keeps this app's ruleset while any other source, in a pack or not, still
+  # names it. `:pack` is any installed pack, because the check has to see all
+  # of them; a pack that cannot be read blocks the check rather than passing it.
+  - object: '/m/:gid/packs'
+    actions: ['GET']
+  - object: '/m/:gid/p/:pack/system/inputs'
+    actions: ['GET']
   - object: '/m/:gid/system/inputs/in_gigamon_http'
     actions: ['GET', 'PATCH', 'DELETE']
   # The Syslog source an earlier release created. GET so Remove can name it,

@@ -271,7 +271,13 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/provision.ts#removeOnboardingStack',
     gates: ['onboarding_stack.remove'],
     surface: 'config',
-    why: 'PATCH drops our routes from the table — this release’s and the Syslog route an earlier release created; DELETE removes the Raw HTTP source, the pipeline and the breaker ruleset, and the old Syslog source and pipeline where they are still there.',
+    why: 'PATCH drops our routes from the table — this release’s, the Syslog route an earlier release created, or both; DELETE removes the Raw HTTP source and the pipeline, and the old Syslog source and pipeline. Only what the status check found present, which is exactly what the confirmation names. The same control also removes the old Syslog objects alone.',
+  },
+  {
+    at: 'cribl/provision.ts#removeBreaker',
+    gates: ['onboarding_stack.remove'],
+    surface: 'config',
+    why: 'DELETE removes the breaker ruleset in the teardown — only once its source is gone, only when it carries this app’s description, and only when no other source in the group, or in a pack, names it.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------

@@ -323,8 +323,52 @@ export interface StreamInput {
   /** Output ids this source is wired straight to, bypassing the routing table. */
   connectedOutputs: string[]
   /** Every port this source listens on — `port`, or a Syslog source's
-   *  `tcpPort` / `udpPort`. Guided Setup reads it to offer a free port. */
+   *  `tcpPort` / `udpPort`. Guided Setup reads it to offer a free port. A port
+   *  Cribl reports as a numeric string is counted as the number it spells. */
   ports: number[]
+  /**
+   * True when a port field is present and this app cannot say which port it
+   * is: a non-numeric string, or a port bound to a variable
+   * (`__template_port` and friends). A free-port check must read that as
+   * "cannot tell", never as "free" — two sources on one port is a bind failure
+   * on every worker in the group.
+   */
+  portUnknown: boolean
+  /** The event breaker rulesets this source names. Guided Setup reads it before
+   *  deleting its own ruleset, which another source may also name. */
+  breakerRulesets: string[]
+}
+
+/** A source inside an installed pack, and which pack. */
+export interface PackInput extends StreamInput {
+  pack: string
+}
+
+const PORT_KEYS = ['port', 'tcpPort', 'udpPort'] as const
+
+/** A port field as a number; `undefined` when the field is not set; null when it
+ *  is set and is not a port this app can read. */
+function portOf(v: unknown): number | null | undefined {
+  if (v === undefined || v === null || v === '') return undefined
+  if (typeof v === 'number') return Number.isInteger(v) ? v : null
+  if (typeof v === 'string' && /^\d+$/.test(v.trim())) return Number(v.trim())
+  return null
+}
+
+/** One source record, reduced. Shared by the group's own list and each pack's. */
+function streamInput(it: Record<string, unknown>): StreamInput {
+  const read = PORT_KEYS.map((k) => portOf(it[k]))
+  const templated = PORT_KEYS.some((k) => it[`__template_${k}`] !== undefined && it[`__template_${k}`] !== null && it[`__template_${k}`] !== '')
+  return {
+    id: text(it.id) ?? '',
+    type: text(it.type),
+    connectedOutputs: (Array.isArray(it.connections) ? it.connections : [])
+      .map((c) => (c && typeof c === 'object' ? text((c as Record<string, unknown>).output) : null))
+      .filter((o): o is string => o !== null),
+    ports: read.filter((p): p is number => typeof p === 'number'),
+    portUnknown: templated || read.some((p) => p === null),
+    breakerRulesets: (Array.isArray(it.breakerRulesets) ? it.breakerRulesets : []).filter((b): b is string => typeof b === 'string'),
+  }
 }
 
 /**
@@ -342,20 +386,41 @@ export async function listInputs(group: string, init: CapiInit = {}): Promise<Re
   try {
     const r = await capi('GET', groupPath(group, '/system/inputs'), undefined, init)
     if (r.status !== 200) return failed(object, r)
-    return ok(
-      object,
-      items(r.body).map((it) => ({
-        id: text(it.id) ?? '',
-        type: text(it.type),
-        connectedOutputs: (Array.isArray(it.connections) ? it.connections : [])
-          .map((c) => (c && typeof c === 'object' ? text((c as Record<string, unknown>).output) : null))
-          .filter((o): o is string => o !== null),
-        ports: [it.port, it.tcpPort, it.udpPort].filter((p): p is number => num(p) !== null),
-      })),
-      r.status,
-    )
+    return ok(object, items(r.body).map(streamInput), r.status)
   } catch (err) {
     return threw(object, err)
+  }
+}
+
+/**
+ * The sources inside every pack installed in the group.
+ *
+ * READ BECAUSE THE GROUP'S OWN LIST DOES NOT HOLD THEM. A pack's sources are
+ * addressed under `/m/<g>/p/<pack>/system/inputs` (openapi.json lists the
+ * `/p/{pack}/system/inputs` family beside the global one), and the onboarding
+ * pack's Raw HTTP source listens in the same 20000–20010 range a Cribl-managed
+ * group allows Guided Setup's. NOT MEASURED on a Leader with a pack that holds
+ * a source: none of this workspace's groups had a pack installed when this was
+ * written (read 2026-09-24).
+ *
+ * One pack that cannot be read fails the whole read, which is the point: a
+ * port check or an ownership check built on part of the answer says "free" or
+ * "unused" about something it never saw.
+ */
+export async function listPackInputs(group: string, init: CapiInit = {}): Promise<ReadResult<PackInput[]>> {
+  try {
+    const packs = await capi('GET', groupPath(group, '/packs'), undefined, init)
+    if (packs.status !== 200) return failed('/m/:gid/packs', packs)
+    const ids = items(packs.body).map((p) => text(p.id)).filter((id): id is string => id !== null)
+    const out: PackInput[] = []
+    for (const pack of ids) {
+      const r = await capi('GET', groupPath(group, `/p/${encodeURIComponent(pack)}/system/inputs`), undefined, init)
+      if (r.status !== 200) return failed('/m/:gid/p/:pack/system/inputs', r)
+      out.push(...items(r.body).map((it) => ({ ...streamInput(it), pack })))
+    }
+    return ok('/m/:gid/p/:pack/system/inputs', out, packs.status)
+  } catch (err) {
+    return threw('/m/:gid/packs', err)
   }
 }
 
@@ -502,7 +567,10 @@ export interface StreamGroupInfo {
   /** The commit this group's Workers are running. What a rollback needs a name
    *  for: "redeploy the previous version" is not a plan until it has one. */
   configVersion: string | null
-  onPrem: boolean
+  /** True for a hybrid group, false for a Cribl-managed one, null when the
+   *  record does not say — which a self-hosted Leader's does not, and which
+   *  must not be read as "Cribl-managed". */
+  onPrem: boolean | null
 }
 
 /**
@@ -526,7 +594,7 @@ export async function listStreamGroupsCurrent(init: CapiInit = {}): Promise<Read
         id: text(it.id) ?? '',
         name: text(it.name) ?? text(it.id) ?? '',
         configVersion: text(it.configVersion),
-        onPrem: it.onPrem === true,
+        onPrem: typeof it.onPrem === 'boolean' ? it.onPrem : null,
       })),
       r.status,
     )

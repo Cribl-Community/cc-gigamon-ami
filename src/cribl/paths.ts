@@ -412,6 +412,20 @@ export const API_CALLS: readonly ApiCall[] = [
   // narrower and more useful to the admin reading it: "may delete the input
   // in_gigamon_http" rather than "may delete any input".
   {
+    method: 'GET',
+    path: '/m/:gid/packs',
+    scope: 'product',
+    site: 'lake.ts listPackInputs',
+    why: 'List the packs installed in the worker group, so Guided Setup can read the sources inside them. A pack source listens on a port like any other — the onboarding pack’s own Raw HTTP source uses the same 20000–20010 range a Cribl-managed group allows — and a pack’s sources have their own endpoint (openapi.json lists `/p/{pack}/system/inputs` apart from the group’s list). Read only.',
+  },
+  {
+    method: 'GET',
+    path: '/m/:gid/p/:pack/system/inputs',
+    scope: 'product',
+    site: 'lake.ts listPackInputs',
+    why: 'Read the sources inside each installed pack: their ports, so the new Raw HTTP source is not given one a pack source already listens on, and the event breaker rulesets they name, so Remove never deletes this app’s ruleset while a pack source still uses it. Read only; `:pack` is any installed pack’s id, because the port check has to see all of them.',
+  },
+  {
     method: 'POST',
     path: '/m/:gid/system/inputs',
     scope: 'product',

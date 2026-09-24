@@ -45,7 +45,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
   commitScope, deployAll, pendingConfigPaths, pendingDeploy, removeOnboardingStack, undeployedHead,
-  portProblem, portsInUse, postUrl, suggestPort,
+  portProblem, portsInUse, postUrl, suggestPort, hostingOf, isCriblCloudHost,
   ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, HTTP_BREAKER_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
   HTTP_ROUTE_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, HTTP_BREAKER_ID, DEFAULT_STREAM_GROUP,
   type PendingChange, type CommitKey, type StepResult,
@@ -117,6 +117,21 @@ interface LeaderOpts {
   /** The create POST fails with a message quoting the body it was sent — the
    *  worst case for a token, and the one the scrub exists for. */
   sourcePostEchoes?: boolean
+  /** The create POST fails with THIS body — for the shapes `sourcePostEchoes`
+   *  does not cover, such as a refusal with no `message` field at all. */
+  sourcePostError?: (sent: Record<string, unknown>) => unknown
+  /** The re-apply PATCH of the source fails with this body. */
+  sourcePatchError?: (sent: Record<string, unknown>) => unknown
+  /** Status per DELETE path, for a teardown step that fails. Default 200. */
+  deleteStatus?: Record<string, number>
+  /** Installed packs and the sources inside each, as `/m/<g>/packs` and
+   *  `/m/<g>/p/<pack>/system/inputs` list them. */
+  packs?: Array<{ id: string; inputs: Array<Record<string, unknown>>; inputsStatus?: number }>
+  /** The status `/m/<g>/packs` answers with. */
+  packsStatus?: number
+  /** Paths `/version/status` STILL reports after a successful commit — a file
+   *  this run changed and its commit did not carry. */
+  commitLeaves?: string[]
 }
 
 /**
@@ -157,9 +172,13 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     configVersion = HEAD, head = HEAD, changedSince = [], filesStatus = 200, pendingStatus = 200,
     pipeline = STALE_PIPELINE, source = STALE_SOURCE, breaker = { ...HTTP_BREAKER_SPEC },
     pipelineBetweenReads, sourceBetweenReads, routesBetweenReads, inputs = [], sourceStatus = 200,
-    sourcePostEchoes = false,
+    sourcePostEchoes = false, sourcePostError, sourcePatchError, deleteStatus = {}, packs = [], packsStatus = 200,
+    commitLeaves = [],
   } = opts
   const calls: Call[] = []
+  // What Git reports uncommitted. A successful commit takes its files out, as a
+  // real Leader's status does, except the ones `commitLeaves` names.
+  let pendingNow = [...pending]
   let pipeReads = 0
   let sourceReads = 0
   let routeReads = 0
@@ -206,10 +225,17 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     }
     if (at('GET', '/version/status')) {
       return pendingStatus === 200
-        ? reply(200, { items: [{ files: pending.map((p) => ({ path: p })) }] })
+        ? reply(200, { items: [{ files: pendingNow.map((p) => ({ path: p })) }] })
         : reply(pendingStatus, { message: 'not granted' })
     }
-    if (at('POST', '/version/commit')) return reply(200, commit === null ? { items: [{}] } : { items: [{ commit }] })
+    if (at('POST', '/version/commit')) {
+      if (commit !== null) {
+        const carried = new Set((body as { files?: string[] } | undefined)?.files ?? [])
+        const rest = pendingNow.filter((p) => !carried.has(p))
+        pendingNow = [...rest, ...commitLeaves.filter((p) => !rest.includes(p))]
+      }
+      return reply(200, commit === null ? { items: [{}] } : { items: [{ commit }] })
+    }
 
     // The routing table, and everything else already provisioned.
     if (at('GET', `/m/${GROUP}/routes`)) {
@@ -228,8 +254,25 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
       return breaker === null ? reply(404, { message: 'not found' }) : reply(200, { items: [breaker] })
     }
     if (at('GET', `/m/${GROUP}/system/inputs`)) return reply(200, { items: inputs })
+    if (at('GET', `/m/${GROUP}/packs`)) {
+      return packsStatus === 200 ? reply(200, { items: packs.map((p) => ({ id: p.id })) }) : reply(packsStatus, { message: 'not granted' })
+    }
+    for (const p of packs) {
+      if (at('GET', `/m/${GROUP}/p/${p.id}/system/inputs`)) {
+        return (p.inputsStatus ?? 200) === 200 ? reply(200, { items: p.inputs }) : reply(p.inputsStatus!, { message: 'not granted' })
+      }
+    }
     if (at('POST', `/m/${GROUP}/system/inputs`) && sourcePostEchoes) {
       return reply(400, { message: `invalid input: ${JSON.stringify(body)}` })
+    }
+    if (at('POST', `/m/${GROUP}/system/inputs`) && sourcePostError) {
+      return reply(400, sourcePostError(body as Record<string, unknown>))
+    }
+    if (at('PATCH', `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`) && sourcePatchError) {
+      return reply(400, sourcePatchError(body as Record<string, unknown>))
+    }
+    if (method === 'DELETE' && deleteStatus[path] !== undefined) {
+      return reply(deleteStatus[path], { message: 'refused' })
     }
     if (at('GET', `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)) {
       pipeReads += 1
@@ -1151,6 +1194,36 @@ describe('creating the Raw HTTP source', () => {
     expect(tokens).toEqual([])
   })
 
+  it('counts a port Cribl reports as a string', async () => {
+    const { calls, steps } = await create({ inputs: [{ id: 'theirs', type: 'http', port: '20004' }] }, { ingress: managed })
+    expect(createBody(calls)).toBeUndefined()
+    expect(step(steps, 'source')?.detail).toContain('already listens on 20004')
+  })
+
+  it('refuses when a source’s port is set from a variable, because it cannot tell which port that is', async () => {
+    const { calls, steps } = await create({ inputs: [{ id: 'theirs', type: 'http', port: 20009, __template_port: 'HTTP_PORT' }] }, { ingress: managed })
+    expect(createBody(calls)).toBeUndefined()
+    expect(step(steps, 'source')?.detail).toContain('could not read')
+  })
+
+  it('counts the ports of sources inside installed packs', async () => {
+    const { calls, steps } = await create({
+      packs: [{ id: 'cc-network-gigamon-ami', inputs: [{ id: 'in_gigamon_ami_http', type: 'http_raw', port: 20004 }] }],
+    }, { ingress: managed })
+    expect(createBody(calls), 'created a source on the port a pack source listens on').toBeUndefined()
+    expect(step(steps, 'source')?.detail).toContain('already listens on 20004')
+  })
+
+  it('refuses when the installed packs cannot be listed', async () => {
+    const { calls } = await create({ packsStatus: 403 }, { ingress: managed })
+    expect(createBody(calls)).toBeUndefined()
+  })
+
+  it('refuses when one pack’s sources cannot be read', async () => {
+    const { calls } = await create({ packs: [{ id: 'p1', inputs: [], inputsStatus: 500 }] }, { ingress: managed })
+    expect(createBody(calls)).toBeUndefined()
+  })
+
   it('refuses a port outside 20000–20010 on a Cribl-managed group', async () => {
     const { calls, steps } = await create({}, { ingress: { managed: true, port: 9999 } })
     expect(createBody(calls)).toBeUndefined()
@@ -1166,6 +1239,69 @@ describe('creating the Raw HTTP source', () => {
     expect(tokens).toEqual([])
   })
 
+  /** Every 12-character slice of the token: none may survive into the detail. */
+  const noSliceOf = (detail: string, token: string) => {
+    for (let i = 0; i + 12 <= token.length; i++) expect(detail, `a piece of the token survived: ${token.slice(i, i + 12)}`).not.toContain(token.slice(i, i + 12))
+  }
+
+  it('scrubs the token out of a refusal with no message field, even one longer than 200 characters', async () => {
+    let sentToken = ''
+    const { steps } = await create({
+      sourcePostError: (sent) => {
+        sentToken = (sent.authTokensExt as Array<{ token: string }>)[0].token
+        // No `message` / `error`: errText stringifies and cuts this at 200
+        // characters, and the cut falls inside the token.
+        return { status: 'error', field: 'authTokensExt', pad: 'x'.repeat(110), value: sentToken }
+      },
+    }, { ingress: managed })
+    expect(sentToken).toMatch(/^[0-9a-f]{64}$/)
+    noSliceOf(step(steps, 'source')?.detail ?? '', sentToken)
+  })
+
+  it('scrubs it from the body before the 200-character cut, so not even a short head of it is left', async () => {
+    // Placed so the cut leaves ten characters of the token: too short for the
+    // slice mask to recognise afterwards, so only scrubbing the body first
+    // keeps them out.
+    let sentToken = ''
+    let refusal = ''
+    const { steps } = await create({
+      sourcePostError: (sent) => {
+        sentToken = (sent.authTokensExt as Array<{ token: string }>)[0].token
+        const body = { status: 'error', field: 'authTokensExt', pad: 'x'.repeat(130), value: sentToken }
+        refusal = JSON.stringify(body)
+        return body
+      },
+    }, { ingress: managed })
+    expect(200 - refusal.indexOf(sentToken), 'the cut does not fall where this test means it to').toBe(10)
+    expect(step(steps, 'source')?.detail ?? '').not.toContain(sentToken.slice(0, 10))
+  })
+
+  it('scrubs a piece of the token that Cribl itself cut short', async () => {
+    let sentToken = ''
+    const { steps } = await create({
+      sourcePostError: (sent) => {
+        sentToken = (sent.authTokensExt as Array<{ token: string }>)[0].token
+        return { message: `token ${sentToken.slice(0, 30)}… is not accepted` }
+      },
+    }, { ingress: managed })
+    noSliceOf(step(steps, 'source')?.detail ?? '', sentToken)
+  })
+
+  it('scrubs the source’s existing tokens out of an error on the re-apply PATCH', async () => {
+    const EXT = 'lab-secret-0123456789abcdef-ext'
+    const OLD = 'lab-secret-legacy-token-9876543210'
+    stubLeader({
+      ...settledRest,
+      source: { ...SOURCE_SPEC, host: '127.0.0.1', port: 20001, authTokensExt: [{ token: EXT, authType: 'manual' }], authTokens: [OLD] },
+      sourcePatchError: (sent) => ({ message: `invalid source: ${JSON.stringify(sent)}` }),
+    })
+    const steps = await run()
+    const detail = step(steps, 'source')?.detail ?? ''
+    expect(step(steps, 'source')?.action).toBe('error')
+    noSliceOf(detail, EXT)
+    noSliceOf(detail, OLD)
+  })
+
   it('scrubs the token out of an error Cribl sends back about the create', async () => {
     const { steps, tokens } = await create({ sourcePostEchoes: true }, { ingress: managed })
     // The create failed, so nothing was handed out either.
@@ -1173,6 +1309,32 @@ describe('creating the Raw HTTP source', () => {
     const detail = step(steps, 'source')?.detail ?? ''
     expect(detail).toContain('<token>')
     expect(detail).not.toMatch(/[0-9a-f]{64}/)
+  })
+})
+
+describe('a commit that did not carry every file this run changed', () => {
+  const settled = { routes: [{ ...ROUTE_SPEC }, catchAll], pipeline: { ...PIPELINE_SPEC }, source: { ...SOURCE_SPEC } }
+  const BREAKERS = `groups/${GROUP}/local/cribl/breakers.yml`
+
+  it('is not deployed, and says which file was left out', async () => {
+    // The ruleset drifted, so the run writes it; Git reports its file; the
+    // commit answers with a hash but the file is still uncommitted after it.
+    const calls = stubLeader({
+      ...settled,
+      breaker: { ...HTTP_BREAKER_SPEC, minRawLength: 10 },
+      pending: [BREAKERS],
+      commitLeaves: [BREAKERS],
+    })
+    const steps = await run()
+    expect(writes(calls)).not.toContain(`PATCH ${PRODUCTS_DEPLOY}`)
+    expect(step(steps, 'commit')?.action).toBe('error')
+    expect(step(steps, 'commit')?.detail).toContain(BREAKERS)
+  })
+
+  it('is deployed when Git reports nothing of this run left behind', async () => {
+    const calls = stubLeader({ ...settled, breaker: { ...HTTP_BREAKER_SPEC, minRawLength: 10 }, pending: [BREAKERS] })
+    await run()
+    expect(writes(calls)).toContain(`PATCH ${PRODUCTS_DEPLOY}`)
   })
 })
 
@@ -1195,6 +1357,14 @@ describe('the event breaker ruleset', () => {
     expect(writes(calls).filter((w) => w.includes('/lib/breakers'))).toEqual([])
   })
 
+  it('is not overwritten when a ruleset of that id does not carry this app’s description', async () => {
+    const theirs = { ...HTTP_BREAKER_SPEC, description: 'Customer AMX breaker', rules: [{ ...HTTP_BREAKER_SPEC.rules[0], maxEventBytes: 1024 }] }
+    const calls = stubLeader({ ...settled, breaker: theirs })
+    const steps = await run()
+    expect(writes(calls).filter((w) => w.includes('/lib/breakers'))).toEqual([])
+    expect(step(steps, 'breaker')?.action).toBe('error')
+  })
+
   it('is PATCHed as the whole live ruleset when a rule drifted, keeping what the spec never names', async () => {
     const drifted = {
       ...HTTP_BREAKER_SPEC,
@@ -1215,13 +1385,18 @@ describe('the event breaker ruleset', () => {
 
 describe('removing the onboarding stack', () => {
   const legacyRoute = { id: 'gigamon_ami_syslog', name: 'gigamon_ami_syslog', filter: "__inputId=='syslog:in_gigamon_syslog'" }
-  const remove = (present?: Parameters<typeof removeOnboardingStack>[3]) =>
+  const remove = (present: Parameters<typeof removeOnboardingStack>[3]) =>
     new Promise<StepResult[]>((resolve) => { void removeOnboardingStack(() => {}, GROUP, undefined, present).then(resolve) })
   const deletes = (calls: Call[]) => calls.filter((c) => c.method === 'DELETE').map((c) => c.path)
+  /** What a status check reports when both stacks are there — what the dialog
+   *  then names, object by object. */
+  const HTTP_PRESENT = { source: 'present', pipeline: 'present', route: 'present', breaker: 'present' } as const
+  const LEGACY_PRESENT = { legacy_source: 'present', legacy_pipeline: 'present', legacy_route: 'present' } as const
+  const EVERYTHING = { ...HTTP_PRESENT, ...LEGACY_PRESENT }
 
   it('takes away the HTTP stack and the Syslog stack an earlier release left, in one routing-table edit', async () => {
     const calls = stubLeader({ routes: [{ id: 'a', name: 'a' }, legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    const steps = await remove()
+    const steps = await remove(EVERYTHING)
 
     expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'default'])
     expect(calls.filter((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)).toHaveLength(1)
@@ -1240,13 +1415,107 @@ describe('removing the onboarding stack', () => {
 
   it('leaves the Syslog objects alone when the status check says they are not there', async () => {
     const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
-    await remove({ legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' })
+    await remove({ ...HTTP_PRESENT, legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' })
     expect(deletes(calls).some((p) => p.includes('syslog'))).toBe(false)
+  })
+
+  // ── Every delete is one the confirmation named ────────────────────────────
+  // The dialog lists an object only when the status check found it PRESENT.
+  // So the teardown deletes only what it was told is present — never what it
+  // could not see, which the dialog had no row for.
+
+  it('deletes no old Syslog object the status check could not read, because the dialog never named it', async () => {
+    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
+    await remove({ ...HTTP_PRESENT, legacy_source: 'unreadable', legacy_pipeline: 'unreadable', legacy_route: 'unreadable' })
+    expect(deletes(calls).filter((p) => p.includes('syslog'))).toEqual([])
+    expect(routesSent(calls)!.map((r) => r.id), 'the unnamed Syslog route was taken out of the table').toEqual(['gigamon_ami_syslog', 'default'])
+  })
+
+  it('deletes no old Syslog object when the legacy status could not be read at all', async () => {
+    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
+    await remove({ ...HTTP_PRESENT })
+    expect(deletes(calls).filter((p) => p.includes('syslog'))).toEqual([])
+    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['gigamon_ami_syslog', 'default'])
+  })
+
+  it('deletes no HTTP object whose state could not be read either', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
+    await remove({ source: 'unreadable', pipeline: 'present', route: 'present', breaker: 'present' })
+    expect(deletes(calls)).not.toContain(`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)
+  })
+
+  it('can remove only the old Syslog objects, leaving the HTTP source, its token and its port alone', async () => {
+    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
+    const steps = await remove({ ...LEGACY_PRESENT })
+    expect(deletes(calls)).toEqual([`/m/${GROUP}/system/inputs/in_gigamon_syslog`, `/m/${GROUP}/pipelines/gigamon_syslog`])
+    expect(routesSent(calls)!.map((r) => r.id), 'the HTTP route went with the Syslog one').toEqual([HTTP_ROUTE_ID, 'default'])
+    expect(step(steps, 'source')).toBeUndefined()
+    expect(step(steps, 'breaker')).toBeUndefined()
+  })
+
+  it('says so when the routing table cannot be read, rather than skipping the route in silence', async () => {
+    stubLeader({ routes: null as unknown as Array<Record<string, unknown>> })
+    const steps = await remove({ ...HTTP_PRESENT })
+    expect(step(steps, 'route')?.action).toBe('error')
+  })
+
+  // ── The breaker ruleset is deleted only when nothing can still need it ────
+
+  const RULESET = `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`
+
+  it('keeps the ruleset when the source that names it could not be deleted', async () => {
+    const calls = stubLeader({
+      routes: [{ ...ROUTE_SPEC }, catchAll],
+      deleteStatus: { [`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`]: 500 },
+    })
+    const steps = await remove({ ...HTTP_PRESENT })
+    expect(deletes(calls)).not.toContain(RULESET)
+    expect(step(steps, 'breaker')?.action).toBe('error')
+  })
+
+  it('keeps the ruleset when another source in the group still names it', async () => {
+    const calls = stubLeader({
+      routes: [{ ...ROUTE_SPEC }, catchAll],
+      inputs: [{ id: 'customer_http', type: 'http_raw', port: 20009, breakerRulesets: [HTTP_BREAKER_ID] }],
+    })
+    const steps = await remove({ ...HTTP_PRESENT })
+    expect(deletes(calls)).not.toContain(RULESET)
+    expect(step(steps, 'breaker')?.detail).toContain('customer_http')
+  })
+
+  it('keeps the ruleset when a source inside a pack still names it', async () => {
+    const calls = stubLeader({
+      routes: [{ ...ROUTE_SPEC }, catchAll],
+      packs: [{ id: 'somepack', inputs: [{ id: 'in_theirs', type: 'http_raw', port: 20008, breakerRulesets: [HTTP_BREAKER_ID] }] }],
+    })
+    await remove({ ...HTTP_PRESENT })
+    expect(deletes(calls)).not.toContain(RULESET)
+  })
+
+  it('keeps the ruleset when the group’s sources cannot be read, rather than guessing nobody uses it', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], packsStatus: 403 })
+    const steps = await remove({ ...HTTP_PRESENT })
+    expect(deletes(calls)).not.toContain(RULESET)
+    expect(step(steps, 'breaker')?.action).toBe('error')
+  })
+
+  it('keeps a ruleset of that id that does not carry this app’s description', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], breaker: { ...HTTP_BREAKER_SPEC, description: 'Our own AMX breaker' } })
+    const steps = await remove({ ...HTTP_PRESENT })
+    expect(deletes(calls)).not.toContain(RULESET)
+    expect(step(steps, 'breaker')?.action).toBe('error')
+  })
+
+  it('deletes the ruleset when the source was already gone and nothing else names it', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
+    const steps = await remove({ source: 'absent', pipeline: 'present', route: 'present', breaker: 'present' })
+    expect(deletes(calls)).toContain(RULESET)
+    expect(step(steps, 'breaker')?.detail).toBe('deleted')
   })
 
   it('never deletes the dataset, the destination, or anything not named by id', async () => {
     const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    await remove()
+    await remove(EVERYTHING)
     const allowed = new Set([
       `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`, `/m/${GROUP}/system/inputs/in_gigamon_syslog`,
       `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`, `/m/${GROUP}/pipelines/gigamon_syslog`,
@@ -1264,7 +1533,7 @@ describe('removing the onboarding stack', () => {
         `groups/${GROUP}/local/cribl/outputs.yml`,
       ],
     })
-    await remove()
+    await remove(EVERYTHING)
     const files = (calls.find((c) => c.path === '/version/commit')?.body as { files?: string[] } | undefined)?.files ?? []
     expect(files).toContain(`groups/${GROUP}/local/cribl/breakers.yml`)
     expect(files).toContain(`groups/${GROUP}/local/cribl/pipelines/gigamon_syslog/conf.yml`)
@@ -1283,6 +1552,12 @@ describe('the port picker’s rules', () => {
     for (const bad of [0, 65536, 1.5, Number.NaN]) expect(portProblem(bad, false, []), String(bad)).not.toBeNull()
   })
 
+  it('refuses a port below 1024 on a hybrid group, whose workers do not run as root', () => {
+    expect(portProblem(514, false, [])).toContain('1024')
+    expect(portProblem(1023, false, [])).toContain('1024')
+    expect(portProblem(1024, false, [])).toBeNull()
+  })
+
   it('refuses a port another source uses, and refuses to guess when it cannot read them', () => {
     expect(portProblem(20001, true, [20001])).toContain('already listens')
     expect(portProblem(20001, true, null)).toContain('could not read')
@@ -1296,9 +1571,30 @@ describe('the port picker’s rules', () => {
 
   it('counts every port a source listens on, Syslog’s two included', () => {
     expect(portsInUse([
-      { id: 'a', type: 'syslog', connectedOutputs: [], ports: [5514, 5515] },
-      { id: 'b', type: 'http_raw', connectedOutputs: [], ports: [20001] },
+      { id: 'a', type: 'syslog', connectedOutputs: [], ports: [5514, 5515], portUnknown: false, breakerRulesets: [] },
+      { id: 'b', type: 'http_raw', connectedOutputs: [], ports: [20001], portUnknown: false, breakerRulesets: [] },
     ])).toEqual([5514, 5515, 20001])
+  })
+
+  it('answers "cannot tell" when any source’s port could not be read', () => {
+    expect(portsInUse([
+      { id: 'a', type: 'http', connectedOutputs: [], ports: [20001], portUnknown: false, breakerRulesets: [] },
+      { id: 'b', type: 'http', connectedOutputs: [], ports: [], portUnknown: true, breakerRulesets: [] },
+    ])).toBeNull()
+  })
+
+  it('calls a group Cribl-managed only when its record says onPrem false AND the Leader is Cribl.Cloud', () => {
+    expect(hostingOf(false, 'main-acme.cribl.cloud')).toBe('managed')
+    expect(hostingOf(true, 'main-acme.cribl.cloud')).toBe('hybrid')
+    expect(hostingOf(true, 'leader.example.com')).toBe('hybrid')
+    // A self-hosted Leader: no Cloud certificate and no 20000–20010 limit, so
+    // neither rule may be applied to it by default.
+    expect(hostingOf(false, 'leader.example.com')).toBeNull()
+    expect(hostingOf(null, 'main-acme.cribl.cloud')).toBeNull()
+    expect(hostingOf(undefined, 'leader.example.com')).toBeNull()
+    expect(hostingOf(false, null)).toBeNull()
+    expect(isCriblCloudHost('evilcribl.cloud')).toBe(false)
+    expect(isCriblCloudHost('cribl.cloud.example.com')).toBe(false)
   })
 
   it('builds https only for a source that terminates TLS', () => {

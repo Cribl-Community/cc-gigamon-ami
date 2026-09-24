@@ -305,7 +305,7 @@ describe('partitionLimitsFrom', () => {
 // ── feedsThrough ────────────────────────────────────────────────────────────
 
 describe('resolveFeeds', () => {
-  const quickconnect = [{ id: 'in_gigamon_datagen', type: 'datagen', connectedOutputs: ['gigamon_lake'], ports: [] }]
+  const quickconnect = [{ id: 'in_gigamon_datagen', type: 'datagen', connectedOutputs: ['gigamon_lake'], ports: [], portUnknown: false, breakerRulesets: [] }]
   const route = [{ id: 'gigamon_ami_syslog', name: 'gigamon_ami_syslog', output: 'gigamon_lake', disabled: false }]
 
   it('finds a feed that is wired straight to the destination and appears in no route', () => {
@@ -322,7 +322,7 @@ describe('resolveFeeds', () => {
   })
 
   it('ignores sources and routes pointed somewhere else', () => {
-    expect(resolveFeeds([{ id: 'x', type: null, connectedOutputs: ['other'], ports: [] }], [{ id: 'r', name: null, output: 'other', disabled: false }], 'gigamon_lake')).toEqual([])
+    expect(resolveFeeds([{ id: 'x', type: null, connectedOutputs: ['other'], ports: [], portUnknown: false, breakerRulesets: [] }], [{ id: 'r', name: null, output: 'other', disabled: false }], 'gigamon_lake')).toEqual([])
   })
 
   it('includes a disabled route and says so, rather than filtering it out', () => {

@@ -1321,7 +1321,12 @@ export const DEPLOY_CONSEQUENCES: readonly string[] = Object.freeze([
   'Deploying restarts this worker group’s Worker Processes.',
   'A commit takes whole files, never single objects, so anybody else’s uncommitted work in the files named above is committed and deployed with this change.',
   'A deploy moves the group to a commit rather than applying one change: every commit anybody made on this Leader between the commit this group is running and the one this press creates goes live with it.',
-  'A source with onBackpressure "block" can lose seconds of data across the restart, and while it restarts a Raw HTTP source refuses POSTs, which the sender has to retry.',
+  // Generic on purpose: this array is on the Lake landing panel's deploy dialog
+  // too, where no Raw HTTP source need exist. What a Raw HTTP source does across
+  // the restart is Guided Setup's to say — HTTP_RESTART_PRECAUTION in
+  // components/provisionPanelCopy.ts — and it is said there as a precaution,
+  // because it has not been measured.
+  'A source with onBackpressure "block" can lose seconds of data across the restart.',
 ])
 
 export const DESTINATION_UNDO =

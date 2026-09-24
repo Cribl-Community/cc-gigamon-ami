@@ -128,6 +128,31 @@ function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
  * deploy moves the group to a COMMIT rather than applying one change, and the
  * `onBackpressure: block` data loss — one constant, every deploy site.
  */
+/**
+ * What a Raw HTTP source may do while the Worker Processes restart. Said here,
+ * in Guided Setup's own two dialogs, and NOT in DEPLOY_CONSEQUENCES, which the
+ * Lake landing panel shares and where no such source need exist. Worded as a
+ * precaution because it is one: whether the source refuses a POST mid-restart,
+ * or holds the connection, has not been measured.
+ */
+export const HTTP_RESTART_PRECAUTION =
+  'While the Worker Processes restart, a Raw HTTP source can briefly fail to accept a POST, so set Gigamon AMX to retry a failed POST.'
+
+/**
+ * The objects a teardown will NOT delete because this app could not see them,
+ * as one sentence, or null when there are none. The teardown deletes only what
+ * the status check found present, which is also exactly what the dialog lists —
+ * so an object it could not read is left alone, and this is the dialog saying so
+ * rather than leaving the reader to infer it from an absence.
+ */
+export function leftAloneSentence(group: string, objects: readonly string[]): string | null {
+  if (objects.length === 0) return null
+  return (
+    `This app could not tell whether ${objects.join(', ')} ${objects.length === 1 ? 'is' : 'are'} in ${group}, so ` +
+    `${objects.length === 1 ? 'it is' : 'they are'} not deleted. Check in Cribl, and remove ${objects.length === 1 ? 'it' : 'them'} there if needed.`
+  )
+}
+
 export function deployConsequences(ctx: ProvisionConfirmContext): string[] {
   const { group, undeployed } = ctx
   return [
@@ -145,6 +170,7 @@ export function deployConsequences(ctx: ProvisionConfirmContext): string[] {
         ]
       : []),
     ...DEPLOY_CONSEQUENCES,
+    HTTP_RESTART_PRECAUTION,
   ]
 }
 
@@ -163,6 +189,7 @@ export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination
     carriesSentence(ctx, 'removal'),
     pendingSentence(ctx),
     ...DEPLOY_CONSEQUENCES,
+    HTTP_RESTART_PRECAUTION,
   ]
 }
 
@@ -197,7 +224,7 @@ export const deployNote = (group: string): string => `Commits and deploys to ${g
 
 /** Beside the actions, when the group still has the Syslog stack an earlier release created. */
 export const legacyNote = (group: string): string =>
-  `${group} still has the Syslog objects an earlier release created. Remove deletes them along with the HTTP stack.`
+  `${group} still has the Syslog objects an earlier release created. Remove them on their own, or with the HTTP stack.`
 
 export const LEGACY_TIP =
   `Syslog source ${LEGACY_SYSLOG_SOURCE_ID}, pipeline ${LEGACY_SYSLOG_PIPELINE_ID} and route ${LEGACY_SYSLOG_ROUTE_ID}. This release no longer creates or edits them; ` +
@@ -208,8 +235,20 @@ export const LEGACY_TIP =
 /** The one line on "Point Gigamon AMX here". */
 export const ENDPOINT_LEAD = 'Configure Gigamon AMX to POST AMI records, as JSON arrays, to this URL with this token.'
 
+/**
+ * The header AMX must send, exactly. openapi.json (InputHttpRaw.authTokensExt):
+ * "Shared secrets to be provided by any client (Authorization: <token>)" — the
+ * token is the whole header value. NOT CHECKED against a live source: that takes
+ * a POST to one, which is a write this app's reviewers may not make.
+ */
+export const AUTH_HEADER = 'Authorization: <token>'
+
 export const ENDPOINT_TIP =
-  'Send the token in the Authorization header. The source splits each POSTed array into one event per record, and the pipeline gives them the same fields as the demo feed.'
+  `Send the token as the whole header value — ${AUTH_HEADER}, with no "Bearer" prefix. The source splits each POSTed array into one event per record, and the pipeline gives them the same fields as the demo feed.`
+
+/** On the endpoint card when the token was just made but the stack is not whole. */
+export const ENDPOINT_INCOMPLETE =
+  'The source exists, but the run stopped before the rest of the stack was in place, so nothing it receives reaches Cribl Lake yet. Copy the token now, then deploy again.'
 
 /** Shown beside the token, the one time it is shown. */
 export const TOKEN_ONCE =

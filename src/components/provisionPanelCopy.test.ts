@@ -23,8 +23,8 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  ENDPOINT_LEAD, SETUP_FACTS, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployConsequences, legacyNote, LEGACY_TIP,
-  pendingSentence, removeConsequences,
+  AUTH_HEADER, ENDPOINT_LEAD, ENDPOINT_TIP, HTTP_RESTART_PRECAUTION, SETUP_FACTS, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING,
+  deployConsequences, legacyNote, LEGACY_TIP, leftAloneSentence, pendingSentence, removeConsequences,
 } from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
 import {
@@ -154,6 +154,34 @@ describe('what the deploy confirmation claims about reach', () => {
   })
 })
 
+describe('what a Raw HTTP source does across the restart', () => {
+  it('is said in Guided Setup’s own dialogs, as a precaution, not in the sentences every deploy dialog shares', () => {
+    // DEPLOY_CONSEQUENCES is also the Lake landing panel's, where no Raw HTTP
+    // source need exist — and "refuses POSTs" was never measured.
+    for (const line of DEPLOY_CONSEQUENCES) {
+      expect(line).not.toMatch(/Raw HTTP|POST/)
+    }
+    expect(HTTP_RESTART_PRECAUTION).toMatch(/retry/)
+    expect(HTTP_RESTART_PRECAUTION).not.toMatch(/refuses/)
+    expect(deployConsequences(ctx([]))).toContain(HTTP_RESTART_PRECAUTION)
+    expect(removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami')).toContain(HTTP_RESTART_PRECAUTION)
+  })
+})
+
+describe('what a teardown leaves alone because it could not see it', () => {
+  it('names each object it will not delete, and says why', () => {
+    const line = leftAloneSentence(GROUP, ['Syslog source in_gigamon_syslog', 'Raw HTTP source in_gigamon_http'])
+    expect(line).toContain('in_gigamon_syslog')
+    expect(line).toContain('in_gigamon_http')
+    expect(line).toContain('could not')
+    expect(line).toContain('not deleted')
+  })
+
+  it('says nothing when there is nothing it could not see', () => {
+    expect(leftAloneSentence(GROUP, [])).toBeNull()
+  })
+})
+
 describe('“What gets created & things to know”', () => {
   it('is five short labels, each with its explanation behind an ⓘ', () => {
     expect(SETUP_FACTS).toHaveLength(5)
@@ -200,6 +228,15 @@ describe('the endpoint card and the old Syslog stack', () => {
 
   it('keeps the endpoint card to one short lead line', () => {
     expect(ENDPOINT_LEAD.split(/\s+/).length).toBeLessThanOrEqual(20)
+  })
+
+  it('gives the exact header line, not just the header name', () => {
+    // openapi.json, InputHttpRaw.authTokensExt: "Shared secrets to be provided
+    // by any client (Authorization: <token>)" — the whole value, no scheme.
+    expect(AUTH_HEADER).toBe('Authorization: <token>')
+    expect(ENDPOINT_TIP).toContain(AUTH_HEADER)
+    expect(ENDPOINT_TIP).toContain('Bearer')
+    expect(ENDPOINT_TIP).toMatch(/no .?Bearer/)
   })
 
   it('names every old Syslog object the teardown will remove', () => {
