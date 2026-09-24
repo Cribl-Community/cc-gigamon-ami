@@ -26,7 +26,7 @@ import { accelEntry } from '../cribl/accel/manifest'
 import type { Row } from '../cribl/search'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
-import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY } from '../queries/dataFlow'
+import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY, METRICS_QUERY } from '../queries/dataFlow'
 import { DataFlow, LAKE_CADENCE, PIPELINE_CADENCE, PIPELINE_WINDOW, lakeComputed, lakeHeldLabel } from './DataFlow'
 
 const LAKE = 'gno_lake_30d_c1d'
@@ -446,8 +446,11 @@ function stubAllApplied(): void {
 }
 
 /** A live run of the stage counters — the query this entry replaces. */
+// By the query itself, not a word inside it: this matched on 'pipe.in_events'
+// until the Sources counter moved to total.in_events, and the "ran live anyway"
+// check above would then have passed with nothing to find.
 const metricsLiveSubmits = () =>
-  submits.filter((s) => s.query.includes('pipe.in_events') && !s.query.includes('$vt_results'))
+  submits.filter((s) => s.query.includes(METRICS_QUERY) && !s.query.includes('$vt_results'))
 
 /** Sets the range picker, which is what the diagram's volumes follow when they
  *  are live — and deliberately do not when they are served. */

@@ -37,7 +37,7 @@
 // NOTHING HERE CREATES A REAL SAVED SEARCH. The first real Apply is a human's
 // click in Preview.
 
-import { LAKE_HELD_QUERY } from '../../queries/dataFlow'
+import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
@@ -872,6 +872,44 @@ describe('the Lake total follows the dataset’s retention', () => {
     expect(body.earliest).toBe('-365d')
     expect(body.query).toBe(LAKE_HELD_QUERY)
     expect(body.name).toBe('GNO Lake total 365 days')
+  })
+
+  // The Lake total's write-counter query as it was before the counters were
+  // built from src/queries/stackIds.ts: it named today's destination only, so
+  // once the onboarding pack carries the data it reads short. A schedule
+  // applied by that release still runs this string, and has to read as drift.
+  const PRE_STACK_LIST_LAKE_TOTAL =
+    'dataset="cribl_metrics" | summarize ' +
+    'total_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
+    'total_bytes=sum(iif(metric=="total.out_bytes" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0))'
+  const appliedBeforeTheStackList = async () => {
+    const base = accelEntry(LAKE)
+    return (await accelSavedSearch({
+      ...base,
+      body: PRE_STACK_LIST_LAKE_TOTAL,
+      panels: base.panels.map((p) => ({ ...p, display: PRE_STACK_LIST_LAKE_TOTAL })),
+    })) as unknown as Record<string, unknown>
+  }
+
+  it('reports a schedule still running the pre-pack write-counter query as drifted', async () => {
+    expect(LAKE_TOTAL_QUERY).not.toBe(PRE_STACK_LIST_LAKE_TOTAL)
+    stubWorkspace({ saved: { [LAKE]: await appliedBeforeTheStackList() }, lake: lakeList(30, 30) })
+    const row = (await readAccelState()).rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('differs')
+    expect(row.differences).toContain('the query it runs')
+    expect(row.differences).toContain('the query the panel shows for it')
+    // Same retention, same window: only the body moved.
+    expect(row.differences).not.toContain('the window it reads')
+  })
+
+  it('writes the stack-list query over it on Re-apply', async () => {
+    const { calls } = stubWorkspace({
+      saved: { [LAKE]: await appliedBeforeTheStackList(), [SAMPLE]: await correct(SAMPLE) },
+      lake: lakeList(30, 30),
+    })
+    await applyAcceleration()
+    const body = bodyOf(savedCalls(calls).find((c) => c.method === 'PATCH' && c.body?.id === LAKE))
+    expect(body.query).toBe(LAKE_TOTAL_QUERY)
   })
 
   it('sees no drift on a 30-day tenant whose schedule matches the default', async () => {
