@@ -165,10 +165,13 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   },
   // Pause and resume are one control and therefore one id: both are the same
   // PATCH of the same object, differing only in one boolean, and splitting them
-  // would mean a refusal latched on Pause left Resume looking available.
+  // would mean a refusal latched on Pause left Resume looking available. The
+  // per-dashboard and master switches (2026-09-24) are the same PATCH on a
+  // subset of the same objects, so they share the id for the same reason: a
+  // refusal on a switch must not leave the row's Pause looking available.
   'accel.pause': {
     surface: 'config',
-    does: 'pausing or resuming a scheduled search',
+    does: 'pausing or resuming scheduled searches',
   },
   'accel.remove': {
     surface: 'config',
@@ -356,7 +359,7 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/accel/provision.ts#patchSaved',
     gates: ['accel.apply', 'accel.pause'],
     surface: 'config',
-    why: 'PATCH replaces a saved search WHOLESALE — A-SP23 measured that an omitted field is a deleted field on this endpoint, which is how a search silently loses its schedule. Two controls end here: Apply, correcting one that has drifted, and Pause/Resume, flipping schedule.enabled.',
+    why: 'PATCH replaces a saved search WHOLESALE — A-SP23 measured that an omitted field is a deleted field on this endpoint, which is how a search silently loses its schedule. Three controls end here: Apply, correcting one that has drifted; Pause/Resume in a row, flipping schedule.enabled; and the per-dashboard and master switches, flipping it on exactly the subset their confirmation names (setAccelSchedules), each refused if it changed since the dialog opened.',
   },
   {
     at: 'cribl/accel/provision.ts#deleteSaved',

@@ -31,7 +31,9 @@ import {
   WIDE_BODY_MULTIPLIER,
   creditsFor,
   estimateCpuSeconds,
+  EMPTY_SET_PROVENANCE,
   estimateEntrySaving,
+  estimateScheduleSetCost,
   estimateWorkspaceSaving,
   measuredCpuSeconds,
   runsPerDay,
@@ -199,6 +201,37 @@ describe('the workspace total', () => {
     const w = estimateWorkspaceSaving()
     expect(w.savedCredits.low).toBeGreaterThan(20)
     expect(w.savedCredits.high).toBeLessThan(100)
+  })
+})
+
+describe('a set of schedules — what each dashboard switch shows', () => {
+  it('states the charge the schedules themselves bill, banded, from each run’s own band', () => {
+    const ids = ['gno_lake_30d_c1d', 'gno_sample_2m_c1h'] as const
+    const cost = estimateScheduleSetCost(ids)
+    const lo = ids.reduce((n, id) => { const e = estimateEntrySaving(id); return n + e.scheduledRun.band.low * e.scheduledRunsPerDay }, 0)
+    const hi = ids.reduce((n, id) => { const e = estimateEntrySaving(id); return n + e.scheduledRun.band.high * e.scheduledRunsPerDay }, 0)
+    expect(cost.chargeCpuSeconds).toEqual({ low: lo, high: hi })
+    expect(cost.chargeCredits).toEqual({ low: creditsFor(lo), high: creditsFor(hi) })
+    expect(cost.chargeCpuSeconds.low).toBeLessThan(cost.chargeCpuSeconds.high)
+  })
+
+  it('never hands back a figure without its basis and its sentence', () => {
+    for (const e of MANIFEST) {
+      const cost = estimateScheduleSetCost([e.id])
+      expect(['measured', 'modelled']).toContain(cost.basis)
+      expect(cost.provenance.length).toBeGreaterThan(40)
+      expect(cost.saving.entries.map((x) => x.id)).toEqual([e.id])
+    }
+    const all = estimateScheduleSetCost(MANIFEST.map((e) => e.id))
+    expect(all.basis).toBe('mixed')
+    expect(all.provenance).toContain(all.saving.provenance)
+  })
+
+  it('says an empty set bills nothing, rather than printing a zero', () => {
+    const cost = estimateScheduleSetCost([])
+    expect(cost.basis).toBe('none')
+    expect(cost.chargeCredits).toEqual({ low: 0, high: 0 })
+    expect(cost.provenance).toBe(EMPTY_SET_PROVENANCE)
   })
 })
 

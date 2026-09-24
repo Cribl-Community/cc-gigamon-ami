@@ -711,8 +711,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/version',
     scope: 'product',
-    site: 'provision.ts headCommit',
-    why: 'Read the newest commit in the Leader’s config repo, to tell whether the group is running it.',
+    site: 'provision.ts commitHistory',
+    why: 'Read the recent commit history of the Leader’s config repo: its HEAD, to tell whether the group is running it, and the commits between the group’s running commit and HEAD, which are the ones a deploy would put live.',
   },
   {
     method: 'GET',
@@ -725,8 +725,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/version/files',
     scope: 'product',
-    site: 'provision.ts filesChangedSince',
-    why: 'Read which files moved since the commit this group is running, so "there is a commit to deploy" means one of ours and not somebody else’s work on another group.',
+    site: 'provision.ts filesInCommit',
+    why: 'Read which files each commit this group has not deployed moved — the endpoint answers for one commit, not a range — so "there is a commit to deploy" means one touching this group and not somebody else’s work on another group.',
   },
   {
     method: 'POST',

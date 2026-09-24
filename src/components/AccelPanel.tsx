@@ -84,8 +84,21 @@
 // `background`, so a refusal recorded during them is never attributed to a
 // button somebody pressed (cribl/authz.ts, `denialSince`). Every write in this
 // file is reached from a <ConfirmDialog>'s <GatedControl> and from nowhere else.
+//
+// ── THE SWITCHES (owner decision 2026-09-24) ────────────────────────────────
+// Acceleration is a default, switchable per dashboard tab and for everything at
+// once. The switch row sits above the table because it is the control most
+// people want; the table stays for the one-search view. A switch never writes:
+// flipping it computes `togglePlan()` (cribl/accel/tabs.ts) and opens a
+// <ConfirmDialog> naming exactly the saved searches the flip will pause or
+// resume and the cost of exactly those; the confirm is a <GatedControl
+// write="accel.pause">, because it is the same PATCH Pause sends. A flip with
+// nothing to write opens no dialog and says why beside the switch. Each
+// switch's position is READ from the saved searches, never remembered — see
+// tabs.ts for what that costs and why it is worth it.
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Switch } from '@capra/core'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GateNote, GatedControl } from './GatedControl'
 import { InfoTip } from './InfoTip'
@@ -118,7 +131,21 @@ import {
   rowActionName,
   rowNote,
   scheduleCostLine,
+  setCostWords,
   showOwnerColumn,
+  SWITCHES_LEAD,
+  SWITCHES_LEAD_TIP,
+  switchName,
+  switchStateWords,
+  planResumes,
+  tabCostWords,
+  toggleConsequences,
+  toggleCostLine,
+  toggleDoneWords,
+  toggleNothingWords,
+  toggleResources,
+  toggleTitle,
+  toggleUndo,
   type Health,
   type RowAction,
 } from './accelPanelCopy'
@@ -135,6 +162,7 @@ import {
   removalPlan,
   removeAcceleration,
   resumeAcceleration,
+  setAccelSchedules,
   type AccelRow,
   type AccelState,
   type AccelStep,
@@ -142,7 +170,19 @@ import {
 } from '../cribl/accel/provision'
 import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/accel/status'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
-import { estimateWorkspaceSaving } from '../cribl/accel/estimate'
+import { estimateScheduleSetCost, estimateWorkspaceSaving, type ScheduleSetCost } from '../cribl/accel/estimate'
+import {
+  ACCEL_TABS,
+  flipPlan,
+  masterReading,
+  ownSchedulesOfTab,
+  schedulesOfTab,
+  sharedSchedulesOfTab,
+  tabReadings,
+  type AccelTabKey,
+  type SwitchReading,
+  type TogglePlan,
+} from '../cribl/accel/tabs'
 
 // ── The screen ──────────────────────────────────────────────────────────────
 
@@ -160,13 +200,43 @@ type Confirming =
   | { kind: 'apply' }
   | { kind: 'remove' }
   | { kind: 'schedule'; id: AccelId; enable: boolean }
+  | { kind: 'toggle'; plan: TogglePlan }
+
+/** What each tab's switch ALONE decides — the searches only that tab reads.
+ *  From the manifest, so computed once rather than on every render. A shared
+ *  search is not on any tab's line (review 2026-09-24, defect 5): Findings'
+ *  switch does not stop the overview scan while Capacity, Web & API or Data
+ *  Flow is on, so its saving is not Findings' to claim. */
+const TAB_OWN_COST: Readonly<Record<AccelTabKey, ScheduleSetCost>> = Object.fromEntries(
+  ACCEL_TABS.map((t) => [t.key, estimateScheduleSetCost(ownSchedulesOfTab(t.key))]),
+) as Record<AccelTabKey, ScheduleSetCost>
+const TOTAL_COST: ScheduleSetCost = estimateScheduleSetCost(MANIFEST.map((e) => e.id))
+
+/** The ⓘ beside one switch: what it reads, the shared searches' own cost and
+ *  which dashboards keep each one running, and the provenance of the figures. */
+function switchTipText(key: AccelTabKey | 'master'): string {
+  if (key === 'master') return `Covers all ${TOTAL_COST.ids.length} scheduled searches: ${setCostWords(TOTAL_COST)}. ${TOTAL_COST.provenance}`
+  const own = TAB_OWN_COST[key]
+  const shared = sharedSchedulesOfTab(key).map((id) => {
+    const cost = estimateScheduleSetCost([id])
+    const others = ACCEL_TABS.filter((t) => t.key !== key && schedulesOfTab(t.key).includes(id)).map((t) => t.label)
+    return `${id} (${setCostWords(cost)}) is shared with ${others.join(', ')} and keeps running while any of them is on, so it is not on this line. `
+  })
+  const ownWords = own.ids.length ? `Its own: ${own.ids.join(', ')}. ` : 'It has no scheduled search of its own. '
+  const sentences = [...new Set([own.provenance, ...sharedSchedulesOfTab(key).map((id) => estimateScheduleSetCost([id]).provenance)])]
+  return `${ownWords}${shared.join('')}${sentences.join(' ')}`
+}
+const TAB_TIP: Readonly<Record<AccelTabKey, string>> = Object.fromEntries(
+  ACCEL_TABS.map((t) => [t.key, switchTipText(t.key)]),
+) as Record<AccelTabKey, string>
+const MASTER_TIP = switchTipText('master')
 
 export function AccelPanel() {
   const [state, setState] = useState<AccelState | null>(null)
   const [status, setStatus] = useState<AccelStatus[] | null>(null)
   const [me, setMe] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [running, setRunning] = useState<'apply' | 'remove' | 'schedule' | null>(null)
+  const [running, setRunning] = useState<'apply' | 'remove' | 'schedule' | 'toggle' | null>(null)
   // One slot, like Guided Setup's: two prompts about the same searches with
   // opposite answers is how the wrong button gets pressed, and one slot cannot
   // hold both.
@@ -175,11 +245,14 @@ export function AccelPanel() {
   const [leftBehind, setLeftBehind] = useState<RemoveResult['left']>([])
   const [stillPresent, setStillPresent] = useState<readonly string[]>([])
   const alive = useRef(true)
+  // Why the last flip opened no dialog, beside the switch that was flipped.
+  const [nothing, setNothing] = useState<{ key: AccelTabKey | 'master'; text: string } | null>(null)
 
   const applyGate = useWriteGate('accel.apply')
   const pauseGate = useWriteGate('accel.pause')
   const removeGate = useWriteGate('accel.remove')
 
+  const switchesHeadId = useId()
   const presetName = useId()
   const savingsId = useId()
   const parquetId = useId()
@@ -329,6 +402,50 @@ export function AccelPanel() {
     }
   }
 
+  // Read from the saved searches as they are — never from a stored preference.
+  const readings = state && readError === null ? tabReadings(state) : null
+  const master = state && readError === null ? masterReading(state) : null
+  const switchBlocked = running !== null || loading || state === null || readError !== null
+
+  /** A flip. Computes the plan and opens the confirmation; writes nothing.
+   *  Which way it goes is `flipPlan`'s decision, from what the switch reads
+   *  now — a Mixed switch goes off (review 2026-09-24, defect 3). */
+  const onFlip = (key: AccelTabKey | 'master') => {
+    if (switchBlocked || state === null) return
+    const plan = flipPlan(state, key)
+    const why = toggleNothingWords(plan)
+    if (why !== null) {
+      setNothing({ key, text: why })
+      return
+    }
+    setNothing(null)
+    setConfirming({ kind: 'toggle', plan })
+  }
+
+  const onToggle = async (plan: TogglePlan) => {
+    setRunning('toggle')
+    setConfirming(null)
+    setSteps([])
+    try {
+      // Exactly the ids the dialog named, each with the state it showed.
+      const results = await setAccelSchedules(plan.changes.map((c) => ({ id: c.id, from: c.from, to: c.to })))
+      if (!alive.current) return
+      const failed = results.filter((r) => !r.ok || r.raced)
+      if (failed.length) {
+        pushToast({ kind: 'error', text: `Acceleration: ${failed.map((r) => `${r.id} — ${r.detail ?? 'Cribl refused the change.'}`).join(' · ')}` })
+      } else {
+        pushToast({ kind: 'done', text: toggleDoneWords(plan, results.map((r) => r.id)) })
+      }
+      await refresh()
+    } catch (err) {
+      pushToast({ kind: 'error', text: `Acceleration could not be switched: ${err instanceof Error ? err.message : String(err)}` })
+    } finally {
+      if (alive.current) setRunning(null)
+    }
+  }
+
+  const togglingPlan = confirming?.kind === 'toggle' ? confirming.plan : null
+
   const scheduleTarget = confirming?.kind === 'schedule' ? MANIFEST.find((e) => e.id === confirming.id) ?? null : null
 
   return (
@@ -337,6 +454,40 @@ export function AccelPanel() {
         {ACCEL_LEAD}
         <InfoTip text={ACCEL_LEAD_TIP} />
       </p>
+
+      <div className="ac-switches" role="group" aria-labelledby={switchesHeadId}>
+        {/* A heading and an ⓘ, no second lead line: the panel already has its
+            one (Guided Setup's declutter, 2026-09-24). */}
+        <div className="ac-switches-head">
+          <h4 className="ac-estimate-head" id={switchesHeadId}>By dashboard</h4>
+          <InfoTip text={`${SWITCHES_LEAD} ${SWITCHES_LEAD_TIP}`} />
+        </div>
+        <SwitchRow
+          label="Every dashboard"
+          name={switchName('master')}
+          reading={master}
+          costWords={setCostWords(TOTAL_COST)}
+          tip={MASTER_TIP}
+          note={nothing?.key === 'master' ? nothing.text : null}
+          master
+          onFlip={() => onFlip('master')}
+        />
+        <ul className="ac-switch-rows">
+          {ACCEL_TABS.map((t) => (
+            <li key={t.key}>
+              <SwitchRow
+                label={t.label}
+                name={switchName(t.key)}
+                reading={readings?.[t.key] ?? null}
+                costWords={tabCostWords(t.key, TAB_OWN_COST[t.key])}
+                tip={TAB_TIP[t.key]}
+                note={nothing?.key === t.key ? nothing.text : null}
+                onFlip={() => onFlip(t.key)}
+              />
+            </li>
+          ))}
+        </ul>
+      </div>
 
       <fieldset className="ac-presets">
         <legend className="ac-presets-legend">Preset</legend>
@@ -649,6 +800,27 @@ export function AccelPanel() {
         />
       )}
 
+      {togglingPlan !== null && (
+        <ConfirmDialog
+          isOpen
+          title={toggleTitle(togglingPlan)}
+          resources={toggleResources(togglingPlan)}
+          costLine={toggleCostLine(togglingPlan, estimateScheduleSetCost(togglingPlan.changes.map((c) => c.id)))}
+          consequences={toggleConsequences(togglingPlan)}
+          undo={toggleUndo(togglingPlan)}
+          onCancel={() => setConfirming(null)}
+          confirm={
+            <GatedControl
+              write="accel.pause"
+              label={planResumes(togglingPlan) ? 'Yes, resume them' : 'Yes, pause them'}
+              busyLabel={planResumes(togglingPlan) ? 'Resuming…' : 'Pausing…'}
+              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              run={() => onToggle(togglingPlan)}
+            />
+          }
+        />
+      )}
+
       {scheduleTarget !== null && confirming?.kind === 'schedule' && (
         <ConfirmDialog
           isOpen
@@ -685,6 +857,46 @@ export function AccelPanel() {
         />
       )}
     </Panel>
+  )
+}
+
+interface SwitchRowProps {
+  label: string
+  name: string
+  reading: SwitchReading | null
+  /** The cost line — for a tab, only what its switch alone decides. */
+  costWords: string
+  tip: string
+  note: string | null
+  master?: boolean
+  onFlip: () => void
+}
+
+/**
+ * One switch: the tab's name, its state in words, and what its schedules cost.
+ *
+ * The switch shows on only when every schedule it can change is running; Mixed
+ * and Not set up are said in words beside it, because a two-position control
+ * cannot say them. Which way a flip goes is decided by the parent from the
+ * reading, not from `checked`: a Mixed switch is drawn unchecked and still
+ * flips OFF. It is never given the HTML `disabled` attribute — Capra's Switch
+ * would announce it unavailable without the reason — so a flip while the page
+ * is busy is refused in `onFlip` instead, and nothing is written either way: a
+ * flip only ever opens a confirmation.
+ */
+function SwitchRow({ label, name, reading, costWords, tip, note, master, onFlip }: SwitchRowProps) {
+  const descId = useId()
+  const checked = reading?.state === 'on'
+  return (
+    <div className={master ? 'ac-switch ac-switch-master' : 'ac-switch'}>
+      <Switch aria-label={name} aria-describedby={descId} checked={checked} onChange={onFlip} />
+      <span className="ac-switch-label">{label}</span>
+      <span className="ac-switch-state" id={descId}>
+        {reading ? switchStateWords(reading) : 'Checking…'} · {costWords}
+      </span>
+      <InfoTip text={tip} />
+      {note && <span className="ac-switch-note" role="status">{note}</span>}
+    </div>
   )
 }
 

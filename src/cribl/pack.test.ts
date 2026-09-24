@@ -344,19 +344,23 @@ describe('the published 0.1.0 pack is still named', () => {
   })
 })
 
-// AFTER THE MERGE WITH main. main's src/queries/stackIds.ts lists a
-// `pack-0.1.0` stack built from constants that this branch now gives 0.2.0
-// values (PACK_SAMPLE_ROUTE_ID, PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID,
-// PACK_PUBLISHED). A merge that fixes only the removed names still compiles,
-// and the 0.1.0 row silently shows 0.2.0 ids. Until that file exists on this
-// branch the glob is empty and this is skipped; once it does, it holds both
-// stacks to what was shipped.
+// main's src/queries/stackIds.ts lists a `pack-0.1.0` stack that was built
+// from constants this branch gives 0.2.0 values (PACK_SAMPLE_ROUTE_ID,
+// PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID, PACK_PUBLISHED). A merge that
+// fixed only the removed names still compiled, and the 0.1.0 row silently
+// showed 0.2.0 ids. This holds both stacks to what was shipped. It was skipped
+// until the merge brought the file; it is not skippable now, because a glob
+// that stops matching (a rename, a move) would otherwise switch it off quietly.
 interface MergedStack { key: string; status: string; paths: readonly Obj[] }
 const stackIdsModule = Object.values(
   import.meta.glob<{ STACKS: readonly MergedStack[] }>('../queries/stackIds.ts', { eager: true }),
 )[0]
 
-describe.skipIf(!stackIdsModule)('Data Flow\'s stack list names each pack release\'s own ids', () => {
+describe('Data Flow\'s stack list names each pack release\'s own ids', () => {
+  it('is there to check', () => {
+    expect(stackIdsModule, 'src/queries/stackIds.ts moved or was renamed; point the glob above at it').toBeDefined()
+  })
+
   const stack = (key: string) => stackIdsModule!.STACKS.find((s) => s.key === key)
 
   it('pack-0.1.0 is the published 0.1.0 ids, released', () => {

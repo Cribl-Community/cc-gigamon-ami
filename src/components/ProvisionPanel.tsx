@@ -210,6 +210,8 @@ export function ProvisionPanel() {
   // callers re-read the store — otherwise a re-check right after a commit could
   // race the PUT and read back stale data.
   const commitsRef = useRef<CommitMemory>({})
+  /** Which `refresh()` may still set `pending`; see there. */
+  const pendingSeq = useRef(0)
   const applyCommits = useCallback(async (next: CommitMemory) => {
     commitsRef.current = next
     setCommits(next)
@@ -278,15 +280,20 @@ export function ProvisionPanel() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      // The undeployed-commit check is a side question — three GETs that answer
-      // "is there something this group committed but never ran". It rides along
-      // with the status check, and its own failure must not blank the resource
-      // rows, so it swallows rather than rejects.
-      const [live, undeployed, paths, old, ep, groupsNow, inputs] = await Promise.all([
+      // The undeployed-commit check is a side question — GETs that answer "is
+      // there something this group committed but never ran", one `/version/files`
+      // per commit the group is behind. It starts with the status check, but the
+      // rows do not wait for it: awaited together, a group forty commits behind
+      // held the rows behind forty reads. Its own failure must not blank the
+      // resource rows either, so it swallows rather than rejects.
+      // Landing after the rows, it can also land after a NEWER refresh — for
+      // another group — so only the latest request's answer is kept.
+      const seq = ++pendingSeq.current
+      void pendingDeploy(group).catch(() => null).then((h) => { if (seq === pendingSeq.current) setPending(h) })
+      const [live, paths, old, ep, groupsNow, inputs] = await Promise.all([
         checkStatus(group),
-        pendingDeploy(group).catch(() => null),
-        // Same shape and the same reason: a read whose only job is to make a
-        // confirmation specific must not be able to blank the resource rows.
+        // Same reason: a read whose only job is to make a confirmation specific
+        // must not be able to blank the resource rows.
         pendingConfigPaths().catch(() => null),
         checkLegacyStatus(group).catch(() => null),
         readHttpEndpoint(group).catch(() => null),
@@ -296,7 +303,6 @@ export function ProvisionPanel() {
         groupInputs(group).catch(() => null),
       ])
       setStatus(live)
-      setPending(undeployed)
       setPendingPaths(paths)
       setLegacy(old)
       setEndpoint(ep)
@@ -358,6 +364,9 @@ export function ProvisionPanel() {
     // dropping `isOpen`, which also hands focus back to the trigger it came from.
     setConfirming(null)
     setPending(null)
+    // …and an undeployed-commit read still in flight for the old group must
+    // not put its answer back.
+    pendingSeq.current++
     setPendingPaths(null)
     setLegacy(null)
     setEndpoint(null)
