@@ -10,8 +10,11 @@
 # no checks at all.
 #
 # Nothing here bumps a version or packages anything — `npm run package` writes
-# the new version to package.json as its first act, and publishing is the tag
-# workflow's job alone.
+# the new version to package.json as its first act. Publishing belongs to the
+# two tag workflows alone: release.yml publishes the APP on a `v*` tag, and
+# pack-release.yml publishes the onboarding PACK on a `gigamon-pack-v*` tag.
+# The pack step below only validates, so a broken pack is red on the pull
+# request rather than on the tag.
 name: CI
 
 on:
@@ -40,11 +43,14 @@ jobs:
       # it exists this is also the ⓘ freeze, which fails if any query string,
       # the ⓘ prose, or the query a panel points at has moved.
       - run: npm test --if-present
+      # The onboarding pack: samples reproduce, and the pack validates.
+      - run: npm run pack:check
       # The asset-size budget: the JS a first page load downloads, the largest
       # lazy chunk, and the total, against asset-budget.json. Reads the dist/
       # and chunk graph the build step wrote, so it must come after the build.
-      # It comes after the tests too: a failed step skips every step below it,
-      # and an over-budget PR must still show whether its tests pass.
+      # It comes after the tests and the pack check too: a failed step skips
+      # every step below it, and an over-budget PR must still show whether its
+      # tests pass and its pack validates.
       # No `if:` and no `continue-on-error` on this step — src/assetBudget.test.ts
       # reads this file as steps and fails if either appears.
       - run: npm run assets:budget

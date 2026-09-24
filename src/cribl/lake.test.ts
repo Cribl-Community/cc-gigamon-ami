@@ -34,6 +34,7 @@ import {
   LAKE_ADDRESSING,
   listDatasets,
   listInputs,
+  listPackInputs,
   listLocalEngines,
   listRoutes,
   listStreamGroupsCurrent,
@@ -267,6 +268,52 @@ describe('listInputs', () => {
     stub({ [`/m/${GROUP}/system/inputs`]: [200, { items: [{ id: 'in_syslog' }] }] })
     expect((await listInputs(GROUP)).value?.[0].connectedOutputs).toEqual([])
   })
+
+  it('counts a port spelled as a string, and says so when a port cannot be read at all', async () => {
+    stub({
+      [`/m/${GROUP}/system/inputs`]: [200, { items: [
+        { id: 'a', port: '20003' },
+        { id: 'b', tcpPort: 5514, udpPort: 5514 },
+        { id: 'c', port: 'twenty' },
+        { id: 'd', port: 20004, __template_port: 'HTTP_PORT' },
+        { id: 'e' },
+      ] }],
+    })
+    const got = (await listInputs(GROUP)).value ?? []
+    expect(got.map((i) => [i.id, i.ports, i.portUnknown])).toEqual([
+      ['a', [20003], false],
+      ['b', [5514, 5514], false],
+      ['c', [], true],
+      ['d', [20004], true],
+      ['e', [], false],
+    ])
+  })
+
+  it('reads the breaker rulesets each source names', async () => {
+    stub({ [`/m/${GROUP}/system/inputs`]: [200, { items: [{ id: 'a', breakerRulesets: ['x', 7, 'y'] }, { id: 'b' }] }] })
+    expect((await listInputs(GROUP)).value?.map((i) => i.breakerRulesets)).toEqual([['x', 'y'], []])
+  })
+})
+
+describe('listPackInputs', () => {
+  it('reads the sources inside every installed pack, and says which pack', async () => {
+    stub({
+      [`/m/${GROUP}/packs`]: [200, { items: [{ id: 'p1' }, { id: 'p2' }] }],
+      [`/m/${GROUP}/p/p1/system/inputs`]: [200, { items: [{ id: 'in_a', type: 'http_raw', port: 20005 }] }],
+      [`/m/${GROUP}/p/p2/system/inputs`]: [200, { items: [] }],
+    })
+    const got = await listPackInputs(GROUP)
+    expect(got.outcome).toBe('ok')
+    expect(got.value?.map((i) => [i.pack, i.id, i.ports])).toEqual([['p1', 'in_a', [20005]]])
+  })
+
+  it('fails as a whole when one pack cannot be read, rather than answering with part of the group', async () => {
+    stub({
+      [`/m/${GROUP}/packs`]: [200, { items: [{ id: 'p1' }] }],
+      [`/m/${GROUP}/p/p1/system/inputs`]: [403, { message: 'no' }],
+    })
+    expect((await listPackInputs(GROUP)).outcome).not.toBe('ok')
+  })
 })
 
 describe('listRoutes', () => {
@@ -393,6 +440,11 @@ describe('listStreamGroupsCurrent', () => {
     expect((await listStreamGroupsCurrent()).value?.[0]).toEqual({ id: 'default', name: 'default', configVersion: 'abc123', onPrem: false })
   })
 
+  it('reads a group record with no onPrem as "does not say", never as Cribl-managed', async () => {
+    stub({ '/products/stream/groups': [200, { items: [{ id: 'g1', onPrem: true }, { id: 'g2' }] }] })
+    expect((await listStreamGroupsCurrent()).value?.map((x) => x.onPrem)).toEqual([true, null])
+  })
+
   it('falls back to the id when a group has no name, and reports no configVersion as null', async () => {
     stub({ '/products/stream/groups': [200, { items: [{ id: 'g2' }] }] })
     expect((await listStreamGroupsCurrent()).value?.[0]).toMatchObject({ name: 'g2', configVersion: null })
@@ -415,6 +467,7 @@ describe('every read handles a refusal the same way', () => {
     ['getSearchDataset', () => getSearchDataset()],
     ['getDestination', () => getDestination(GROUP)],
     ['listInputs', () => listInputs(GROUP)],
+    ['listPackInputs', () => listPackInputs(GROUP)],
     ['listRoutes', () => listRoutes(GROUP)],
     ['listLocalEngines', () => listLocalEngines()],
     ['listStreamGroupsCurrent', () => listStreamGroupsCurrent()],

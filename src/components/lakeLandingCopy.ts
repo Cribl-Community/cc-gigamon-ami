@@ -44,6 +44,77 @@ import type { DestinationConfirmContext, RetentionConfirmContext } from '../crib
  */
 export const INGEST_ANCHOR_ID = 'gs-ingest-panel'
 
+// ── What the panel says before anybody presses anything ─────────────────────
+//
+// One lead line and a visible warning; everything else a row used to say in a
+// paragraph under it is behind the ⓘ on that row's label (the owner's call,
+// 2026-09-24: "some (i) icons instead of so many words on the screen"). The
+// retention warning stays on screen because it is the one thing a reader must
+// know before touching the panel; the confirmations are unchanged.
+
+/** The one line under the panel title. */
+export const LAKE_LEAD = 'The live settings of the Cribl Lake objects the dashboards read.'
+
+/** Visible, always, beside the lead. The short form of the irreversible edit. */
+export const LAKE_RETENTION_WARNING = 'Lowering retention deletes data and can’t be undone.'
+
+/** Behind the ⓘ at the end of the lead. */
+export const LAKE_LEAD_TIP =
+  'Three settings can be changed here — retention, the description, and how objects are written — and each shows you its before-and-after to confirm first. ' +
+  'Cribl Lake datasets are under no version control, so unlike a destination change there is no commit to revert a retention decrease.'
+
+/** Row label ⓘs this module owns; the term definitions are cribl/landing.ts's LANDING_TERMS. */
+export const ROW_TIPS = Object.freeze({
+  retention:
+    'How long Cribl Lake keeps data in this dataset, counted from when it was uploaded rather than from the event’s timestamp. Raising it keeps data longer from now on; lowering it deletes everything older than the new window, for everyone reading the dataset.',
+  // History (kept out of the tip): the format move was planned as a later
+  // phase's migration of a month of history, and measured on 2026-09-21 to be
+  // creation-only — a PATCH to `format` answers 200, stores, and does nothing.
+  objectFormat:
+    'The file format objects are written in. It is set when a Cribl Lake dataset is created and cannot be changed afterwards, so moving to another format means a new dataset and migrating its history — not something this panel does. This release lands JSON.',
+  storage:
+    'A Cribl-managed Lake dataset has no storage location or storage class to change, so there is nothing here to edit.',
+  objectsWritten:
+    'How often the gigamon_lake destination closes an object: sooner makes new flows searchable sooner, later gives every search fewer, larger objects to open.',
+  objectsWrittenEdit:
+    'Pick a setting under “Adjust how objects are written”, then press Change. Applying it commits this group’s outputs.yml and deploys, which restarts the group’s Worker Processes.',
+})
+
+/** The words a row shows where a control would be, for a setting that has none. */
+export const ROW_MARKERS = Object.freeze({
+  objectFormat: 'fixed at creation',
+  storage: 'not a setting',
+})
+
+/** Inside the collapsed "Adjust how objects are written". */
+export const ADJUST_NOTE =
+  'Nothing here is applied until you press Change on the “How objects are written” row and confirm the before-and-after.'
+
+// ── Create mode (no dataset yet) ────────────────────────────────────────────
+
+export const CREATE_LEAD =
+  'No dataset exists yet, so these are choices rather than an editor. The onboarding panel above creates the dataset.'
+
+export const CREATE_LEAD_TIP =
+  'The choices are stored for this install in this app’s own settings (app/settings/lake_landing). The onboarding panel above creates the dataset and the destination.'
+
+export const CREATE_SAVE_NOTE = 'Saves to this app’s own store. Creates nothing in Cribl.'
+
+/** The two format tiles' descriptions. What this release writes is said on both. */
+export const FORMAT_TILES = Object.freeze({
+  json:
+    'One JSON record per line, gzipped. A search reads whole objects, so a query that needs three fields still pays for all of them. This is what this release writes.',
+  parquet:
+    'Columnar, so a search reads only the columns it names — but it can take several times the storage of the gzipped JSON it replaces. Choosing it records the intention only; this release still writes JSON.',
+})
+
+/** The tenant's partition-field limit, as the second line of the storage row's value. */
+export function partitionLimitWords(max: number | null | undefined): string {
+  return max != null
+    ? `up to ${max} partition field${max === 1 ? '' : 's'} per dataset`
+    : 'partition-field limit not reported'
+}
+
 /** Past this, a measurement renders muted: it has stopped being a claim about
  *  now, and the relative age beside it says so in words as well. */
 export const STALE_AFTER_MS = 60 * 60 * 1000

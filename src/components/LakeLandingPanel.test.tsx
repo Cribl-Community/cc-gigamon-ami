@@ -58,6 +58,10 @@ import { LakeLandingPanel } from './LakeLandingPanel'
 import {
   INGEST_ANCHOR_ID,
   LAG_CPU_SECONDS,
+  LAKE_LEAD,
+  LAKE_LEAD_TIP,
+  LAKE_RETENTION_WARNING,
+  ROW_TIPS,
   PARTITION_CPU_SECONDS,
   PARTITION_GATE,
   READER_GATE,
@@ -341,6 +345,24 @@ const controlIn = (label: string, name: string) =>
   [...(rowNamed(label)?.querySelectorAll<HTMLButtonElement>('button') ?? [])].find(
     (b) => (b.textContent ?? '').trim() === name || b.getAttribute('aria-label') === name,
   )
+
+/** The explanation behind a row label's ⓘ — its accessible name, which is how a
+ *  keyboard or screen-reader user reaches it — or null when the row has none. */
+const tipOn = (label: string) =>
+  rowNamed(label)?.querySelector('th[scope="row"] .infotip')?.getAttribute('aria-label') ?? null
+
+/** What is on the page with every ⓘ closed: the body's text minus the tips'. */
+const visibleText = () => {
+  const copy = document.body.cloneNode(true) as HTMLElement
+  copy.querySelectorAll('.infotip-pop').forEach((p) => p.remove())
+  return (copy.textContent ?? '').replace(/\s+/g, ' ')
+}
+
+/** Anything that reads as this project's own history rather than as help. */
+const INTERNAL_HISTORY = /\b(P-S\d+|A-SP\d+|A-D\d+|I-D\d+|Phase \d)\b|\d+(\.\d+)?x faster|105 seconds|49 of 85/
+/** The same, plus a bare date — for the tips, which are static text. The page as
+ *  a whole legitimately prints the dataset's own metrics date. */
+const TIP_HISTORY = new RegExp(`${INTERNAL_HISTORY.source}|\\d{4}-\\d\\d-\\d\\d`)
 
 const buttonNamed = (name: string) =>
   [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(
@@ -674,16 +696,39 @@ describe('the nine reads', () => {
     expect(after.map((c) => c.path)).toEqual([DESTINATION])
   })
 
-  it('offers exactly three InfoTips, on the three terms that need defining', async () => {
-    // §2.4 rejected eight ⓘ icons down the left edge by name. The read map on
-    // the panel title is where "where did this value come from" is answered.
+  it('puts each row’s explanation behind an ⓘ on that row’s label', async () => {
+    // §2.4 once rejected eight ⓘ icons down the left edge. The owner reversed
+    // that on 2026-09-24 — "some (i) icons instead of so many words on the
+    // screen" — so the paragraphs that sat under the rows are now the ⓘ on the
+    // label each one explains. The read map on the panel title is still where
+    // "where did this value come from" is answered.
     stubWorkspace()
     await mount()
-    const tips = [...document.body.querySelectorAll('.infotip')].map((t) => t.getAttribute('aria-label'))
-    expect(tips).toHaveLength(3)
-    expect(tips).toContain(LANDING_TERMS.landingLag)
-    expect(tips).toContain(LANDING_TERMS.accelerationTier)
-    expect(tips).toContain(LANDING_TERMS.searchV2)
+    expect(tipOn('Landing lag')).toBe(LANDING_TERMS.landingLag)
+    expect(tipOn('Search engine')).toBe(LANDING_TERMS.accelerationTier)
+    expect(tipOn('Search reader')).toContain(LANDING_TERMS.searchV2)
+    expect(tipOn('Retention')).toBe(ROW_TIPS.retention)
+    expect(tipOn('Object format')).toBe(ROW_TIPS.objectFormat)
+    expect(tipOn('Storage location')).toBe(ROW_TIPS.storage)
+    expect(tipOn('How objects are written')).toContain(ROW_TIPS.objectsWritten)
+    expect(tipOn('How objects are written')).toContain('restarts the group’s Worker Processes')
+    // And none of them, nor anything else on the panel, is this project's own
+    // history: spike ids, phases, decision numbers, measurement dates.
+    const tips = [...document.body.querySelectorAll('.infotip')].map((t) => t.getAttribute('aria-label') ?? '')
+    for (const tip of tips) expect(tip).not.toMatch(TIP_HISTORY)
+    expect(bodyText().match(INTERNAL_HISTORY)?.[0]).toBeUndefined()
+  })
+
+  it('keeps one short lead line and the irreversible warning on screen', async () => {
+    stubWorkspace()
+    await mount()
+    const text = visibleText()
+    expect(text).toContain(LAKE_LEAD)
+    expect(text).toContain(LAKE_RETENTION_WARNING)
+    // The rest of what the intro said is one ⓘ away, not gone.
+    const lead = [...document.body.querySelectorAll('.gs-intro .infotip')].map((t) => t.getAttribute('aria-label'))
+    expect(lead).toContain(LAKE_LEAD_TIP)
+    expect(LAKE_LEAD_TIP).toContain('no commit to revert')
   })
 
   it('points a missing dataset at the panel above it, not at a route', async () => {
@@ -704,13 +749,16 @@ describe('the spike-gated rows', () => {
     await mount()
     expect(rowLabels()).toContain('Search reader')
     // P-S7 reported on 2026-09-21 and the dataset is already on v2, so the row
-    // must not say "yet" any more than the partitions row may.
-    expect(bodyText()).toContain('already on Federated Search v2')
-    expect(bodyText()).not.toContain('P-S7 has to report first')
-    // The two traps an admin needs before anyone builds a control here: the
-    // cold-start cost, and that the undo is not free.
-    expect(bodyText()).toContain('105 seconds')
-    expect(bodyText()).toContain('breakerRulesets')
+    // must not say "yet" any more than the partitions row may. The reason is
+    // the label's ⓘ; the row itself carries a short marker.
+    expect(tipOn('Search reader')).toContain('already on Federated Search v2')
+    expect(tipOn('Search reader')).not.toContain('yet')
+    expect(rowNamed('Search reader')?.textContent).toContain('not editable here')
+    // The cold-start cost and the breakerRulesets undo trap are for whoever
+    // builds a control here, not for a customer: they live in the comment on
+    // SPIKE_GATED in cribl/landing.ts, and must not be on the page.
+    expect(bodyText()).not.toContain('105 seconds')
+    expect(bodyText()).not.toContain('P-S7')
     // Nothing on screen offers to change it.
     expect(buttonNamed('Switch to v2')).toBeUndefined()
   })
@@ -721,8 +769,10 @@ describe('the spike-gated rows', () => {
     expect(rowLabels()).toContain('Partitions')
     // The row no longer names a spike, because none is owed. It says the thing
     // that is actually true and permanent, and it does NOT say "yet".
-    expect(bodyText()).toContain('partitions are fixed when a Lake dataset is created')
-    expect(bodyText()).not.toContain('P-S9 has to report first')
+    expect(tipOn('Partitions')).toContain('fixed when a Lake dataset is created')
+    expect(tipOn('Partitions')).not.toContain('yet')
+    expect(rowNamed('Partitions')?.textContent).toContain('fixed at creation')
+    expect(bodyText()).not.toContain('P-S9')
     expect(controlIn('Partitions', `Measure the partition candidates for gigamon_ami — ${costLabel(PARTITION_CPU_SECONDS)}`)).toBeTruthy()
   })
 })
@@ -1110,16 +1160,20 @@ describe('create mode', () => {
     const text = bodyText()
     expect(text).toContain('JSON, gzipped')
     expect(text).toContain('Parquet')
-    expect(text).toContain('PLAIN with SNAPPY')
-    expect(text).toContain('storage bill can grow')
+    // The benefit and the cost, both in the customer's terms. The encoding
+    // detail (PLAIN with SNAPPY) is in the comment beside the tiles.
+    expect(text).toContain('reads only the columns it names')
+    expect(text).toContain('several times the storage')
   })
 
   it('promises nothing it cannot keep about Parquet', async () => {
     // This release always lands JSON, and whether a Parquet destination even
-    // writes into a `format:json` dataset is P-S1's and P-S5's to answer.
+    // writes into a `format:json` dataset is P-S1's and P-S5's to answer —
+    // which the tile no longer says by spike id.
     stubWorkspace({ noDataset: true })
     await mount()
-    expect(bodyText()).toContain('records the intention and changes nothing today')
+    expect(bodyText()).toContain('records the intention only; this release still writes JSON')
+    expect(bodyText().match(INTERNAL_HISTORY)?.[0]).toBeUndefined()
   })
 
   it('writes only this app’s own document when the choices are saved', async () => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { GatedControl } from './GatedControl'
+import { InfoTip } from './InfoTip'
 import { Panel } from './Panel'
 import {
   DEFAULT_CAP_TIERS, MAX_CAP_SECONDS, MIN_CAP_SECONDS, capTiersInForce, type CapTier,
@@ -25,7 +26,7 @@ import { CAP_RANGE_TEXT, capsSource, loadSearchCaps, saveSearchCaps, type CapsSo
  * on looking at the broken version. The panel says so beside the button rather
  * than in a modal after it.
  *
- * THE RISK RUNS BOTH WAYS and the copy below says both, because an input box
+ * THE RISK RUNS BOTH WAYS and the ⓘ on the lead line says both, because an input box
  * with a number in it invites exactly one of the two mistakes: too low stops
  * panels that were merely slow, too high lets one runaway query bill for its
  * whole window.
@@ -77,6 +78,21 @@ function fieldError(text: string): string | null {
   if (n > MAX_CAP_SECONDS) return `Too high — ${MAX_CAP_SECONDS} s is the most this app will set; past about an hour a limit stops being one.`
   return null
 }
+
+// The panel's standing words. One lead line on screen; the rest behind an ⓘ
+// (Guided Setup's declutter, 2026-09-24). The shipped caps were sized against
+// the demo feed, which is what "a small feed" below means.
+const LIMITS_LEAD =
+  'Cribl stops each of this app’s queries after the seconds below, chosen by the time range the panel reads.'
+
+const LIMITS_LEAD_TIP =
+  'The defaults suit a small feed: on a busier tenant a panel reads more data in the same time, so one that keeps reporting its time limit needs a bigger number here, not a bug fix. ' +
+  'Too low and slow panels stop returning anything; too high and one runaway query bills for its whole window, in CPU-seconds that run well ahead of wall-clock seconds.'
+
+const SAVE_SCOPE_TIP =
+  'Saving replaces this app’s own setting, app/settings/search_caps. It changes nothing in your Cribl configuration and touches no source, pipeline, route or dataset.'
+
+const RESET_TIP = 'Reset to defaults only fills the boxes in. Nothing is saved until you press Save for everyone.'
 
 const SOURCE_TEXT: Record<CapsSource, string> = {
   default: 'the built-in defaults — nothing is saved for this install yet',
@@ -155,15 +171,10 @@ export function SearchLimitsPanel() {
       title="Search running-time limits"
       info="Every query this app submits is prefixed with set max_running_time_per_search=<seconds>, chosen from this table by the time range the panel reads. Cribl stops the job when it reaches that, and the panel names the limit rather than reporting a plain failure. Nothing here changes what a query returns — only how long Cribl lets it run before stopping it."
     >
+      {/* One lead line; the rest is behind the ⓘ. */}
       <p className="gs-intro">
-        Cribl stops each of this app’s queries after the number of seconds below, chosen by the time
-        range the panel is reading. The shipped numbers are sized against the demo feed: on a busier
-        tenant the same panel reads more data in the same wall time, so a panel that keeps reporting
-        its time limit is asking for a bigger number here, not for a bug fix.
-        <strong> The risk runs both ways.</strong> Too low and panels that were only slow stop
-        returning anything, which looks like a broken dashboard rather than a budget setting. Too high
-        and one runaway query bills for its whole window — and it bills in CPU-seconds, which run well
-        ahead of wall-clock seconds because the engine fans each query out across the dataset.
+        {LIMITS_LEAD}
+        <InfoTip text={LIMITS_LEAD_TIP} />
       </p>
 
       <div className="sl-rows">
@@ -202,8 +213,7 @@ export function SearchLimitsPanel() {
 
       <p className="gs-action-note">
         In force now: {inForce.map((t) => `${t.capSeconds} s`).join(' · ')} — {SOURCE_TEXT[source]}.
-        Saving replaces the app-wide setting <code>app/settings/search_caps</code>; it changes nothing
-        in your Cribl configuration, and does not touch any source, pipeline, route or dataset.
+        <InfoTip text={SAVE_SCOPE_TIP} />
       </p>
 
       <div className="sl-actions">
@@ -237,7 +247,8 @@ export function SearchLimitsPanel() {
             button. The reason belongs under the control it is about; this says
             the thing that is true whether or not the numbers are valid. */}
         <span className="sl-actions-note">
-          Applies to every viewer of this app. Reset only fills the boxes in — nothing is saved until you press Save.
+          Applies to every viewer of this app.
+          <InfoTip text={RESET_TIP} />
         </span>
       </div>
 

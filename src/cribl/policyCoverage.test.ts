@@ -44,7 +44,8 @@
 // are for.
 //
 // IF THIS TEST FAILS, read which check it is:
-//   • transports        — a new way to reach the network appeared in src/
+//   • transports        — a new way to reach the network appeared in src/, or a
+//                         transport is reached under an alias the scan cannot see
 //   • unresolved        — a call site whose path this test cannot work out
 //   • scan ↔ manifest   — the code calls something paths.ts does not name, or
 //                         paths.ts names something the code no longer calls
@@ -57,12 +58,13 @@
 // decoration, so the reasons are asserted too.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { SEARCH_GROUP } from './config'
-import { API_CALLS, LEFT_BEHIND, type ApiCall, type Method, type Provisioned } from './paths'
+import { PACK_ID } from './pack'
+import { API_CALLS, LEFT_BEHIND, UNREACHED_MODULES, type ApiCall, type Method, type Provisioned } from './paths'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const POLICIES = 'config/policies.yml'
@@ -331,8 +333,40 @@ interface ModuleConsts {
   aliases: Map<string, string>
 }
 
-function moduleConsts(src: string): ModuleConsts {
-  const values = new Map<string, string>()
+/**
+ * The single-quoted string constants a module imports from a sibling module in
+ * src/, by the local name they are imported under. Only a plain `'literal'`
+ * crosses the boundary: a template or an alias in the other file would need
+ * that file's own constants to mean anything, and `:x` is the honest answer for
+ * it here.
+ *
+ * WHY THIS EXISTS. A pack path names the pack's ids, which live in pack.ts
+ * (pure data, loaded by the query extractor) rather than in the module that
+ * calls. Without this, `${PACK_HTTP_INPUT_ID}` read as `:x`, and the only way
+ * to make such a call checkable was to copy the id into the calling module.
+ */
+function importedConsts(file: string, src: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const m of src.matchAll(/^import\s+(?!type\s)\{([^}]*)\}\s*from\s*'(\.{1,2}\/[^']+)'/gm)) {
+    const [, names, spec] = m
+    const base = join(ROOT, dirname(file), spec)
+    const target = [`${base}.ts`, `${base}.tsx`].find((f) => existsSync(f))
+    if (!target) continue
+    const decl = /^export\s+const\s+([A-Za-z_$][\w$]*)(?:\s*:\s*string)?\s*=\s*('[^']*')\s*$/gm
+    const theirs = new Map([...stripComments(readFileSync(target, 'utf8')).matchAll(decl)].map((d) => [d[1], d[2]]))
+    for (const raw of names.split(',')) {
+      const one = raw.trim()
+      if (!one || one.startsWith('type ')) continue
+      const [name, alias] = one.split(/\s+as\s+/)
+      const value = theirs.get(name.trim())
+      if (value) out.set((alias ?? name).trim(), value)
+    }
+  }
+  return out
+}
+
+function moduleConsts(src: string, file?: string): ModuleConsts {
+  const values = new Map<string, string>(file ? importedConsts(file, src) : [])
   const arrows = new Map<string, string>()
   const aliases = new Map<string, string>()
   const decl = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?)\s*$/gm
@@ -394,6 +428,13 @@ function resolvePath(expr: string, consts: ModuleConsts): string | null {
     // breadth costs.
     return tail === null ? null : `/m/:gid${tail}`
   }
+  if (call.callee === 'packPath' && call.args.length >= 2) {
+    // packClient.ts's `packPath(group, tail)`: the same group placeholder, then
+    // this app's pack by its literal id — the only pack it ever writes inside.
+    // packClient.test.ts holds the function to this reading.
+    const tail = resolvePath(call.args[1], consts)
+    return tail === null ? null : `/m/:gid/p/${PACK_ID}${tail}`
+  }
   if (call.callee === 'searchUrl' && call.args.length === 1) {
     const tail = resolvePath(call.args[0], consts)
     return tail === null ? null : `/m/${SEARCH_GROUP}${tail}`
@@ -423,14 +464,55 @@ interface External {
 
 /** The callees that take a URL or an API path as an argument. Everything the app
  *  sends leaves through one of them. */
-const CALL_SITES = /(?<![A-Za-z0-9_$.])(capi|fetchRetry|fetch|api)\s*(?:<[\s\S]*?>)?\s*\(/g
+const TRANSPORTS = ['capi', 'fetchRetry', 'fetch', 'api'] as const
+const CALL_SITES = new RegExp(`(?<![A-Za-z0-9_$.])(${TRANSPORTS.join('|')})\\s*(?:<[\\s\\S]*?>)?\\s*\\(`, 'g')
+
+/**
+ * Every way `src` reaches a transport under a name CALL_SITES does not match, as
+ * the text that does it. Empty is the only acceptable answer for a module in src/.
+ *
+ * WHY REFUSE RATHER THAN RESOLVE. CALL_SITES matches a transport by its name,
+ * so `import { capi as mcapi }` and then `mcapi('DELETE', …)` was a call this
+ * file never saw — measured: a planted undeclared DELETE made that way passed
+ * every check here. Following aliases would mean following them through
+ * imports, namespaces, re-exports and rebinding, and each one this test failed
+ * to follow would be the same hole again. No module needs any of them, so
+ * none is allowed: an alias is refused here, and the call goes back to being
+ * written as `capi(…)`, which everything below can read.
+ *
+ * What counts: an aliased import or re-export (`capi as x`); a member call or
+ * index access by a transport's name (`ns.capi(…)`, `globalThis.fetch(…)`,
+ * `x['capi']`), which is how a namespace import or a global reaches one; a
+ * rebinding (`const send = capi`, `{ capi: send } = …`); and a dynamic import
+ * of the module that exports one.
+ */
+function transportAliases(src: string): string[] {
+  const s = stripComments(src)
+  const names = TRANSPORTS.join('|')
+  const found: string[] = []
+  for (const m of s.matchAll(/\b(?:import|export)\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const spec of m[1].split(',')) {
+      const one = new RegExp(`^\\s*(?:type\\s+)?(${names})\\s+as\\s+([A-Za-z_$][\\w$]*)\\s*$`).exec(spec)
+      if (one && one[1] !== one[2]) found.push(`${one[1]} as ${one[2]}`)
+    }
+  }
+  const patterns = [
+    new RegExp(`\\.\\s*(?:${names})\\s*(?:<[^>]*>)?\\s*\\(`, 'g'),
+    new RegExp(`\\[\\s*['"\`](?:${names})['"\`]\\s*\\]`, 'g'),
+    new RegExp(`\\b(?:const|let|var)\\s+[A-Za-z_$][\\w$]*\\s*(?::[^=]+)?=\\s*(?:${names})\\b(?!\\s*(?:<[^>]*>)?\\s*\\()`, 'g'),
+    new RegExp(`\\{[^{}=]*\\b(?:${names})\\s*:\\s*[A-Za-z_$][\\w$]*[^{}=]*\\}\\s*=[^=>]`, 'g'),
+    /\bimport\s*\(\s*['"`][^'"`]*\/capi['"`]\s*\)/g,
+  ]
+  for (const re of patterns) for (const m of s.matchAll(re)) found.push(m[0].replace(/\s+/g, ' ').trim())
+  return found
+}
 
 /** Anything that can put bytes on the network. The app has exactly one of them. */
 const NETWORK_PRIMITIVES = /(?<![A-Za-z0-9_$.])(fetch\s*\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|axios)/
 
 function scanFile(file: string): { hits: Hit[]; unresolved: Unresolved[]; external: External[] } {
   const src = stripComments(readFileSync(join(ROOT, file), 'utf8'))
-  const consts = moduleConsts(src)
+  const consts = moduleConsts(src, file)
   const hits: Hit[] = []
   const unresolved: Unresolved[] = []
   const external: External[] = []
@@ -495,7 +577,32 @@ const HITS: Hit[] = SCAN.flatMap((s) => s.hits).concat(
 const UNRESOLVED: Unresolved[] = SCAN.flatMap((s) => s.unresolved)
 const EXTERNAL: External[] = SCAN.flatMap((s) => s.external)
 
-const PRODUCT_CALLS = API_CALLS.filter((c) => c.scope === 'product')
+/**
+ * Every file a paths.ts entry says its call is made in: the first word of
+ * `site`, and each `*.ts`/`*.tsx` named inside its "(also …)". A function named
+ * there without a file is in the first one.
+ */
+function siteFiles(c: ApiCall): string[] {
+  const named = [c.site.split(' ')[0], ...[...c.site.matchAll(/(?<![\w/.-])([\w/-]+\.tsx?)/g)].map((m) => m[1])]
+  return [...new Set(named)]
+}
+
+/** Does this paths.ts entry name `file` (repo-relative) as one its call is in? */
+const namesFile = (c: ApiCall, file: string) => siteFiles(c).some((f) => file.endsWith(`/${f}`))
+
+/** Is `file` (repo-relative) a module on paths.ts `UNREACHED_MODULES`? */
+const onUnreachedList = (file: string) => UNREACHED_MODULES.some((u) => u.file === file)
+
+/** Does the entry describe this call site's endpoint and method? */
+const describes = (c: ApiCall, h: Hit) => sameShape(c.path, h.path) && (h.method === null || c.method === h.method)
+
+/** A call whose code no screen reaches yet (paths.ts `UNREACHED_MODULES`): every
+ *  file its `site` names is on that list. It is named in paths.ts like any other
+ *  call, and it is NOT granted: see the "calls nothing reaches yet" block below.
+ *  An entry that names a reachable file as well is an ordinary granted call. */
+const isUnreached = (c: ApiCall) => siteFiles(c).every((f) => UNREACHED_MODULES.some((u) => u.file.endsWith(`/${f}`)))
+const PRODUCT_CALLS = API_CALLS.filter((c) => c.scope === 'product' && !isUnreached(c))
+const PENDING_CALLS = API_CALLS.filter((c) => c.scope === 'product' && isUnreached(c))
 const APP_CALLS = API_CALLS.filter((c) => c.scope === 'app')
 
 const describeCall = (c: ApiCall) => `${c.method} ${c.path} (${c.site})`
@@ -517,6 +624,46 @@ describe('transports', () => {
       'src/cribl/jobCost.ts',
       'src/cribl/search.ts',
     ])
+  })
+
+  it('reaches no transport under another name, so every call is one CALL_SITES can see', () => {
+    const aliased = sourceFiles().flatMap((f) =>
+      transportAliases(readFileSync(join(ROOT, f), 'utf8')).map((a) => `${f}: ${a}`),
+    )
+    expect(
+      aliased,
+      'a transport is reached under a name this test does not scan for, so the call it makes is checked against ' +
+        'nothing. Call it by its own name — capi(…), not an alias of it.',
+    ).toEqual([])
+  })
+
+  it('catches a planted alias of a transport, in each form that would hide the call', () => {
+    // Each of these made a call the scan above never saw.
+    const planted = [
+      "import { capi as mcapi } from './capi'\nmcapi('DELETE', '/system/secrets')",
+      "export { capi as send } from './capi'",
+      "import * as t from './capi'\nt.capi('GET', '/x')",
+      "const send = capi\nsend('GET', '/x')",
+      "let f: typeof fetch = fetch",
+      "const { capi: send } = mod",
+      "globalThis.fetch('/x')",
+      "window['fetch']('/x')",
+      "const m = await import('./capi')",
+    ]
+    for (const src of planted) expect(transportAliases(src), src).not.toEqual([])
+  })
+
+  it('does not call an ordinary call of a transport an alias', () => {
+    const plain = [
+      "import { capi } from './capi'\nconst r = await capi('GET', '/x')",
+      "import { capi, type ApiResp } from './capi'",
+      "const r = await fetchRetry(url, init)",
+      "const rows = await api<Row[]>(url, init)",
+      "const res = await fetch(url, init)",
+      "const g = groupPath",
+      "// import { capi as mcapi } from './capi' — a comment",
+    ]
+    for (const src of plain) expect(transportAliases(src), src).toEqual([])
   })
 
   it('scans every module that can build a Cribl URL', () => {
@@ -609,6 +756,23 @@ describe('paths.ts against the source', () => {
     expect(wrong).toEqual([])
   })
 
+  it('names every call in the file that makes it, not merely somewhere', () => {
+    // A call is checked against config/policies.yml through the entry that
+    // names it, and whether that entry is granted or pending is decided by the
+    // files its `site` names. Matching a call to ANY entry of the same shape let
+    // a reachable module borrow a pending entry of packClient.ts's: the call
+    // counted as "not reached yet", needed no grant, and would 403 for every
+    // non-admin once installed. So an entry covers only calls in the files it
+    // names.
+    const unattributed = HITS.filter((h) => !API_CALLS.some((c) => describes(c, h) && namesFile(c, h.file)))
+      .map((h) => `${h.method ?? '?'} ${h.path} — called in ${h.file}, and no entry of that shape names that file`)
+    expect(
+      [...new Set(unattributed)],
+      'src/cribl/paths.ts has an entry of this shape, but not for the file that makes this call. Name the file in ' +
+        'that entry’s `site` (…(also <file>.ts <function>)) or add an entry for it — and the grant, if the file is reachable.',
+    ).toEqual([])
+  })
+
   it('explains every call in terms an admin approving it would recognise', () => {
     for (const c of API_CALLS) {
       expect(c.why.trim().length, `${describeCall(c)} has no real reason written against it`).toBeGreaterThan(40)
@@ -685,6 +849,145 @@ describe('config/policies.yml', () => {
   })
 })
 
+// ── What the running app can reach ───────────────────────────────────────────
+
+/**
+ * The module a relative import names, or null for anything that is not one of
+ * src/'s own .ts/.tsx files (a package, a stylesheet, an asset).
+ */
+function resolveImport(from: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null
+  const base = join(ROOT, dirname(from), spec)
+  for (const f of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
+    if (/\.tsx?$/.test(f) && existsSync(f)) return relative(ROOT, f).split('\\').join('/')
+  }
+  return null
+}
+
+/**
+ * Every module that runs when the app does: what `src/main.tsx` imports, and
+ * what those import, following static imports, re-exports and dynamic
+ * `import('…')`. An `import type` is not followed — it is erased and loads
+ * nothing. (Under `verbatimModuleSyntax` an `import { type A }` with only type
+ * specifiers still loads the module, so it IS followed.)
+ */
+function reachableFromMain(): Set<string> {
+  const seen = new Set<string>()
+  const queue = ['src/main.tsx']
+  const edges = [
+    /^\s*import\s+(?!type\s)[\w$*{},\s]*?\s*from\s*'([^']+)'/gm,
+    /^\s*import\s*'([^']+)'/gm,
+    /^\s*export\s+(?!type\s)(?:\*|\*\s+as\s+[\w$]+|\{[^}]*\})\s*from\s*'([^']+)'/gm,
+    /\bimport\(\s*'([^']+)'\s*\)/g,
+  ]
+  while (queue.length) {
+    const file = queue.shift() as string
+    if (seen.has(file)) continue
+    seen.add(file)
+    const src = stripComments(readFileSync(join(ROOT, file), 'utf8'))
+    for (const re of edges) {
+      for (const m of src.matchAll(re)) {
+        const next = resolveImport(file, m[1])
+        if (next && !seen.has(next)) queue.push(next)
+      }
+    }
+  }
+  return seen
+}
+
+const REACHABLE = reachableFromMain()
+
+describe('calls nothing reaches yet', () => {
+  // A module whose calls exist in the source but that nothing on screen can
+  // run — today, the onboarding pack client, written a slice ahead of its UI.
+  // Its calls are named in paths.ts (so the source scan above still proves that
+  // list complete) and are deliberately NOT granted in config/policies.yml: a
+  // grant is asked of an admin for something a user can press, and "declared
+  // but uncalled" would otherwise be satisfied by code no user reaches. These
+  // checks keep that exception from outliving its reason in either direction.
+
+  it('finds the app’s own modules from src/main.tsx, so the reachability check is not vacuous', () => {
+    // If the walker stopped following imports, every module would look
+    // unreached and the check below would pass for the wrong reason.
+    for (const f of ['src/App.tsx', 'src/cribl/capi.ts', 'src/cribl/provision.ts', 'src/cribl/search.ts', 'src/cribl/lake.ts']) {
+      expect(REACHABLE.has(f), `${f} should be reachable from src/main.tsx`).toBe(true)
+    }
+  })
+
+  it('keeps every module on the list out of the running app', () => {
+    const reached = UNREACHED_MODULES.filter((u) => REACHABLE.has(u.file)).map((u) => u.file)
+    expect(
+      reached,
+      'the app now imports these, so a user can reach their calls. Take the module off UNREACHED_MODULES in ' +
+        'src/cribl/paths.ts and grant its calls in config/policies.yml — this is the moment the grants are due.',
+    ).toEqual([])
+  })
+
+  it('grants none of their calls early', () => {
+    const early = PENDING_CALLS.filter((c) =>
+      DECLARED.some((d) => covers(d.object, c.path) && d.actions.includes(c.method) &&
+        // A grant another, reachable call already justifies is not early.
+        !PRODUCT_CALLS.some((p) => p.method === c.method && covers(d.object, p.path))),
+    ).map(describeCall)
+    expect(
+      early,
+      'config/policies.yml grants these, and only code nothing reaches calls them. Remove the grant until the UI ' +
+        'that calls them lands.',
+    ).toEqual([])
+  })
+
+  it('lists only modules that exist, make calls, and say why', () => {
+    for (const u of UNREACHED_MODULES) {
+      expect(existsSync(join(ROOT, u.file)), `${u.file} does not exist`).toBe(true)
+      expect(u.reason.trim().length, `${u.file}: an exception without a reason is decoration`).toBeGreaterThan(80)
+      expect(
+        PENDING_CALLS.some((c) => u.file.endsWith(`/${c.site.split(' ')[0]}`)),
+        `${u.file} makes no call paths.ts names — delete it from UNREACHED_MODULES`,
+      ).toBe(true)
+    }
+  })
+
+  it('grants every call made from a module that is not on the list', () => {
+    // Checked call site by call site, not entry by entry: which entry a call
+    // matches is not a fact about where it is made. Only a module on
+    // UNREACHED_MODULES may make an ungranted product call.
+    const ungranted = HITS.filter((h) => !onUnreachedList(h.file)).filter((h) => {
+      const mine = API_CALLS.filter((c) => describes(c, h) && namesFile(c, h.file))
+      if (mine.some((c) => c.scope === 'app')) return false
+      return !DECLARED.some((d) => covers(d.object, h.path) && (h.method === null || d.actions.includes(h.method)))
+    }).map((h) => `${h.method ?? '?'} ${h.path} — called in ${h.file}`)
+    expect(
+      [...new Set(ungranted)],
+      'a module the app can load makes these calls and config/policies.yml does not grant them — installed, each ' +
+        'is a 403 that only a non-admin sees.',
+    ).toEqual([])
+  })
+
+  it('keeps every call of a pending entry’s shape inside a module on the list', () => {
+    // The other half, and independent of how `site` is spelled: a call whose
+    // shape only a pending entry describes may be made from nowhere else.
+    const escaped = HITS.filter((h) => !onUnreachedList(h.file)).filter((h) => {
+      const shaped = API_CALLS.filter((c) => c.scope === 'product' && describes(c, h))
+      return shaped.length > 0 && shaped.every(isUnreached)
+    }).map((h) => `${h.method ?? '?'} ${h.path} — called in ${h.file}`)
+    expect(
+      [...new Set(escaped)],
+      'only a pending (not yet granted) entry describes these calls, and they are made outside UNREACHED_MODULES',
+    ).toEqual([])
+  })
+
+  it('runs every granted call from a module the app actually loads', () => {
+    // The other direction of the same claim: a call that IS granted sits in a
+    // module the running app imports. Otherwise the grant is for code no user
+    // reaches, and belongs on UNREACHED_MODULES instead.
+    const orphaned = PRODUCT_CALLS.filter((c) => {
+      const named = c.site.split(' ')[0]
+      return ![...REACHABLE].some((f) => f.endsWith(`/${named}`))
+    }).map(describeCall)
+    expect(orphaned).toEqual([])
+  })
+})
+
 describe('paired teardown', () => {
   it('can remove everything it creates', () => {
     const created = new Set(API_CALLS.map((c) => c.creates).filter(Boolean) as Provisioned[])
@@ -712,7 +1015,7 @@ describe('paired teardown', () => {
 
   it('pairs the routing table by resource rather than by method, because one call does both', () => {
     // The route is added and taken away by the same PATCH of the group's one
-    // routing table (provision.ts ensureRoute / removeSyslogStack). A teardown
+    // routing table (provision.ts ensureRoute / removeOnboardingStack). A teardown
     // check keyed on "a POST needs a DELETE" would report this forever and miss
     // the two that genuinely have no teardown.
     const route = API_CALLS.find((c) => c.creates === 'route')

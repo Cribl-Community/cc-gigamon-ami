@@ -57,7 +57,19 @@ export function buildTrendQuery(metric: MetricKey) {
 }
 
 /** p95 network vs application RTT, with the min–max band. */
-export const latencyQuery = q('| summarize net=percentile(tcp_rtt,95), net_lo=min(tcp_rtt), net_hi=max(tcp_rtt), app=percentile(tcp_rtt_app,95), app_lo=min(tcp_rtt_app), app_hi=max(tcp_rtt_app) by bin(_time, 1m) | sort by _time asc')
+/**
+ * The six latency aggregates the "Network vs app latency" panel draws, as a
+ * fragment — so the Lake landing parity check (src/queries/lakeLanding.ts)
+ * computes THESE characters over its window rather than a retyped copy.
+ * Percentile and min are the aggregates an absent-reads-as-zero column drags
+ * toward 0, and no rewrite of the KQL can undo that (an absent number and a
+ * real 0 are the same bytes). `latencyQuery` resolves to what it did before.
+ */
+export const LATENCY_AGGS =
+  'net=percentile(tcp_rtt,95), net_lo=min(tcp_rtt), net_hi=max(tcp_rtt), ' +
+  'app=percentile(tcp_rtt_app,95), app_lo=min(tcp_rtt_app), app_hi=max(tcp_rtt_app)'
+
+export const latencyQuery = q('| summarize ' + LATENCY_AGGS + ' by bin(_time, 1m) | sort by _time asc')
 
 // ── The fragment the hourly subnet snapshots are built from ─────────────────
 //

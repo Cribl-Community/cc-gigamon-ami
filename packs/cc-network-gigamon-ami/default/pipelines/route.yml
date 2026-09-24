@@ -1,0 +1,61 @@
+# Routes of the cc-network-gigamon-ami pack.
+#
+# THIS PATH IS THE CONTRACT: a pack's routes live at default/pipelines/route.yml
+# (measured: every bundled pack on a Leader lists <pack>/default/pipelines/route.yml,
+# and no routes.yml exists anywhere). A default/routes.yml is never read, and
+# `npm run pack:check` refuses one.
+#
+# Three routes and no catch-all: only this pack's two sources feed it.
+#   http   -> gigamon_ami_normalize -> gigamon_ami_json_lake    (gigamon_ami, JSON)      NOT final
+#   http   -> gigamon_ami_normalize -> gigamon_ami_parquet_lake (gigamon_ami_pq, Parquet) final
+#   sample -> gigamon_ami_normalize -> gigamon_ami_sample_lake  (gigamon_ami_sample)     final
+#
+# THE DUAL WRITE IS THE ORDER. The JSON route is not final, so each HTTP event
+# goes down it and on to the Parquet route, which is final. Put the Parquet
+# route first and the dashboards' dataset gets nothing.
+#
+# NO OUTPUT EXPRESSIONS. A route's `output` is the only place its events go:
+# `enableOutputExpression: true` with an `outputExpression` would let the sample
+# route write into gigamon_ami while still naming the sample destination, and
+# Lake has no row delete. `npm run pack:check` refuses either key, refuses a
+# DataGen route into any dataset but gigamon_ami_sample, and refuses a
+# *_to_parquet route into anything but a Parquet destination (and any other
+# route into one). src/cribl/pack.test.ts compares each route here whole.
+#
+# UNMEASURED: the value of __inputId for an input inside a pack. The filters
+# below assume it is `<type>:<id>`, as it is for a global input. The proof
+# install has to confirm it; a wrong filter drops the data silently.
+id: default
+groups: {}
+comments: []
+routes:
+  - id: gigamon_ami_http_to_json
+    name: gigamon_ami_http_to_json
+    final: false
+    disabled: false
+    filter: __inputId=='http_raw:in_gigamon_ami_http'
+    pipeline: gigamon_ami_normalize
+    output: gigamon_ami_json_lake
+    description: Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami)
+    clones: []
+    enableOutputExpression: false
+  - id: gigamon_ami_http_to_parquet
+    name: gigamon_ami_http_to_parquet
+    final: true
+    disabled: false
+    filter: __inputId=='http_raw:in_gigamon_ami_http'
+    pipeline: gigamon_ami_normalize
+    output: gigamon_ami_parquet_lake
+    description: Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami_pq, Parquet)
+    clones: []
+    enableOutputExpression: false
+  - id: gigamon_ami_sample
+    name: gigamon_ami_sample
+    final: true
+    disabled: false
+    filter: __inputId=='datagen:in_gigamon_ami_sample'
+    pipeline: gigamon_ami_normalize
+    output: gigamon_ami_sample_lake
+    description: Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)
+    clones: []
+    enableOutputExpression: false

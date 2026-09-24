@@ -1,0 +1,8 @@
+{
+  "name": "cc-network-gigamon-ami",
+  "version": "0.2.0",
+  "displayName": "Gigamon AMI onboarding",
+  "author": "Cribl Community",
+  "description": "Receives Gigamon Application Metadata Intelligence (AMI) records from Gigamon AMX over Raw HTTP and lands them in Cribl Lake for the Gigamon Network Observability app, as JSON and as a Parquet copy. Includes an optional, disabled-by-default source of synthetic sample flows.",
+  "minLogStreamVersion": "4.17.0"
+}

@@ -1,21 +1,31 @@
 {
-  "about": "Limits for scripts/asset-budget.mjs (npm run assets:budget), in bytes of JavaScript as written to dist/. Each is about 7% above what feat/route-code-splitting measured at e728bb7 on 2026-09-24; largestLazyRaw is about 10% above, because that chunk is Guided Setup, which another branch is rewriting. Raising a limit is allowed: say what grew and why in the commit.",
+  "about": "Limits for scripts/asset-budget.mjs (npm run assets:budget), in bytes of JavaScript as written to dist/. initialRaw, initialGzip and totalRaw are about 7% above what feat/route-code-splitting measured at e728bb7 on 2026-09-24, and were left alone when main (0e7048a) was merged in: they still pass. largestLazyRaw is about 7% above the merge's own measurement, raised from 149000 because that chunk is Guided Setup and main's Raw HTTP onboarding, pack client, stack-id and Guided Setup declutter work landed in it (+27983 B raw, 135532 -> 163515). Raising a limit is allowed: say what grew and why in the commit.",
   "measured": {
-    "commit": "e728bb7",
+    "commit": "merge of main 0e7048a into feat/route-code-splitting",
     "date": "2026-09-24",
-    "initialRaw": 938444,
-    "initialGzip": 288286,
-    "entryRaw": 835181,
-    "entryGzip": 254230,
-    "largestLazyRaw": 135532,
+    "initialRaw": 948690,
+    "initialGzip": 291607,
+    "entryRaw": 837382,
+    "entryGzip": 255049,
+    "largestLazyRaw": 163515,
     "largestLazyFile": "GuidedSetup",
-    "totalRaw": 1408780,
+    "totalRaw": 1448063,
     "totalChunks": 36
   },
   "budgets": {
     "initialRaw": 1005000,
     "initialGzip": 309000,
-    "largestLazyRaw": 149000,
+    "largestLazyRaw": 175000,
     "totalRaw": 1510000
+  },
+  "measuredBefore": {
+    "commit": "e728bb7",
+    "initialRaw": 938444,
+    "initialGzip": 288286,
+    "entryRaw": 835181,
+    "entryGzip": 254230,
+    "largestLazyRaw": 135532,
+    "totalRaw": 1408780,
+    "totalChunks": 36
   }
 }

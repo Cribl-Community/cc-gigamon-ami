@@ -1,0 +1,74 @@
+# Destinations of the cc-network-gigamon-ami pack.
+#
+# All three are Cribl Lake destinations with the settings of landing.ts's
+# DEFAULT_PROFILE, exactly as destinationSpec() builds them; only the id, the
+# dataset and (for the Parquet copy) the format and onBackpressure differ.
+# src/cribl/pack.test.ts fails if they drift. No dataset is in the pack: Cribl has no pack-scoped
+# dataset, so the app creates them, and removing the pack never deletes one.
+#
+#   gigamon_ami_json_lake    -> gigamon_ami         JSON. Every dashboard reads it.
+#   gigamon_ami_parquet_lake -> gigamon_ami_pq      Parquet. The same records.
+#   gigamon_ami_sample_lake  -> gigamon_ami_sample  JSON. Sample data only.
+#
+# PENDING (test (g), owner decision D-10), and pack.test.ts refuses a release
+# while it says so: gigamon_ami_parquet_lake ships `automaticSchema: true` as a
+# placeholder, NOT a decision between automatic and explicit schema; and the
+# partition fields of gigamon_ami_pq, which the app sets when it creates that
+# dataset, are undecided. See PACK_PENDING in src/cribl/pack.ts.
+#
+# THE PARQUET COPY DROPS, IT DOES NOT BLOCK. Both Lake destinations are fed by
+# the one HTTP input. With `block`, a stalled Parquet writer (gigamon_ami_pq not
+# created yet, or a schema change it cannot write) would push back on that
+# input and stop gigamon_ami too, the dataset every dashboard reads. With
+# `drop` the Parquet copy loses those events and the JSON feed keeps flowing.
+# The JSON and sample destinations keep the profile's `block`. `npm run
+# pack:check` refuses a Parquet destination that blocks. UNMEASURED: the proof
+# install has to show a missing gigamon_ami_pq leaving gigamon_ami flowing.
+# Revisit when the dashboards read the Parquet copy, since then its losses
+# would matter as much as the JSON copy's do now.
+#
+# No `pipeline` key: DEFAULT_PROFILE has dropRaw false, which unbinds it. No
+# `compress` on the Parquet one: Cribl ignores it for Parquet (landing.ts).
+outputs:
+  gigamon_ami_json_lake:
+    type: cribl_lake
+    destPath: gigamon_ami
+    format: json
+    storageLocationId: cribl_lake
+    maxFileSizeMB: 5
+    maxFileOpenTimeSec: 60
+    maxFileIdleTimeSec: 15
+    onBackpressure: block
+    compress: gzip
+  gigamon_ami_parquet_lake:
+    type: cribl_lake
+    destPath: gigamon_ami_pq
+    format: parquet
+    storageLocationId: cribl_lake
+    maxFileSizeMB: 5
+    maxFileOpenTimeSec: 60
+    maxFileIdleTimeSec: 15
+    onBackpressure: drop
+    automaticSchema: true
+    parquetVersion: PARQUET_2_6
+    parquetDataPageVersion: DATA_PAGE_V2
+    parquetRowGroupLength: 10000
+    parquetPageSize: 1MB
+    enableStatistics: true
+    enableWritePageIndex: true
+    enablePageChecksum: false
+    shouldLogInvalidRows: true
+    maxOpenFiles: 250
+    baseFileName: "`CriblOut`"
+    systemFields:
+      - cribl_pipe
+  gigamon_ami_sample_lake:
+    type: cribl_lake
+    destPath: gigamon_ami_sample
+    format: json
+    storageLocationId: cribl_lake
+    maxFileSizeMB: 5
+    maxFileOpenTimeSec: 60
+    maxFileIdleTimeSec: 15
+    onBackpressure: block
+    compress: gzip

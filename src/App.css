@@ -1235,17 +1235,20 @@ body {
    one — the global ring below is the indicator. */
 .infotip:hover, .infotip:focus-visible { color: var(--gm-fg); }
 .infotip-pop {
-  position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-  width: max-content; max-width: 280px; white-space: normal;
+  /* Fixed, and placed by InfoTip.tsx from the icon's rect: `.panel` is
+     `overflow: hidden`, and an absolute pop on a panel's first line was cut off
+     at the card's edge. `top`/`left` arrive inline when the tip opens. */
+  position: fixed; z-index: 60; top: 0; left: 0;
+  width: max-content; max-width: min(320px, calc(100vw - 24px));
+  /* pre-wrap: a line break authored in a tip string is kept, not folded to a space. */
+  white-space: pre-wrap; overflow-wrap: anywhere; text-align: left;
   background: var(--gm-panel-2); color: var(--gm-fg); border: 1px solid var(--gm-border);
   border-radius: 8px; padding: var(--gm-sp-8) var(--gm-sp-10); font-size: var(--gm-fs-12); font-weight: token('core.fontWeight.normal');
   line-height: 1.45; text-transform: none; letter-spacing: normal; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
   opacity: 0; visibility: hidden; transition: opacity 0.12s ease; pointer-events: none;
 }
-.infotip:hover .infotip-pop, .infotip:focus-visible .infotip-pop { opacity: 1; visibility: visible; }
-.infotip-bottom { bottom: auto; top: calc(100% + 8px); }
-.infotip-left { bottom: auto; top: 50%; left: auto; right: calc(100% + 8px); transform: translateY(-50%); }
-.infotip-right { bottom: auto; top: 50%; left: calc(100% + 8px); transform: translateY(-50%); }
+.infotip-open { color: var(--gm-fg); }
+.infotip-open .infotip-pop { opacity: 1; visibility: visible; }
 
 /* ---------- Toggles / small segments ---------- */
 .toggle-row { display: flex; flex-wrap: wrap; gap: var(--gm-sp-24); align-items: center; }
@@ -1502,7 +1505,7 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 .gs-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--gm-sp-18); align-items: start; }
 @media (max-width: 780px) { .gs-grid { grid-template-columns: 1fr; } }
 
-.gs-group-picker {
+.gs-group-picker, .gs-port-picker {
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--gm-sp-10);
   padding: var(--gm-sp-12) var(--gm-sp-14); margin: 0 0 var(--gm-sp-16);
   background: var(--gm-panel-2); border: 1px solid var(--gm-border); border-radius: var(--gm-radius);
@@ -1517,8 +1520,8 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
   padding: var(--gm-sp-6) var(--gm-sp-10); cursor: pointer; min-width: 200px;
 }
 .gs-group-select:disabled { opacity: 0.5; cursor: default; }
-.gs-group-hint { flex: 1 1 260px; min-width: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.5; }
-.gs-group-hint code { font-family: var(--gm-mono); font-size: var(--gm-fs-11); }
+/* The port picker is typed into, not chosen from. */
+.gs-port-input { cursor: text; }
 
 .gs-checklist { border: 1px solid var(--gm-border); border-radius: var(--gm-radius); overflow: hidden; }
 .gs-checklist-head {
@@ -2181,6 +2184,23 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
    (see AccelPanel.tsx), so it is still reachable and still announced. */
 .ac-preset-off .ac-preset-name { color: var(--gm-fg-subtle); }
 .ac-preset-off input { opacity: 0.5; }
+
+/* The per-dashboard switches (owner decision 2026-09-24). One line each: the
+   switch, the tab's name, its state and cost in words, and the ⓘ. The state
+   line wraps under the name on a narrow screen rather than pushing the page
+   sideways; the note a no-op flip leaves takes its own line. */
+.ac-switches {
+  display: flex; flex-direction: column; gap: var(--gm-sp-8);
+  margin: 0 0 var(--gm-sp-16); padding: var(--gm-sp-12) var(--gm-sp-14);
+  border: 1px solid var(--gm-border); border-radius: var(--gm-radius);
+}
+.ac-switches-head { display: flex; align-items: center; gap: var(--gm-sp-4); }
+.ac-switch-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--gm-sp-6); }
+.ac-switch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gm-sp-4) var(--gm-sp-10); min-width: 0; }
+.ac-switch-master { padding-bottom: var(--gm-sp-8); border-bottom: 1px solid var(--gm-border); }
+.ac-switch-label { font-size: var(--gm-fs-13); font-weight: token('core.fontWeight.medium'); color: var(--gm-fg); }
+.ac-switch-state { flex: 1 1 260px; min-width: 0; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); line-height: 1.45; font-variant-numeric: tabular-nums; }
+.ac-switch-note { flex-basis: 100%; font-size: var(--gm-fs-12); color: var(--gm-fg); line-height: 1.45; max-width: 82ch; }
 
 /* Guided Setup's two data tables — Acceleration's schedules and the Lake landing
    read map — scroll inside their own box rather than the page. Named `.gs-` and

@@ -37,7 +37,7 @@
 // NOTHING HERE CREATES A REAL SAVED SEARCH. The first real Apply is a human's
 // click in Preview.
 
-import { LAKE_HELD_QUERY } from '../../queries/dataFlow'
+import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY, METRICS_QUERY } from '../../queries/dataFlow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
@@ -54,7 +54,9 @@ import {
   removeAcceleration,
   removalPlan,
   resumeAcceleration,
+  setAccelSchedules,
 } from './provision'
+import { togglePlan } from './tabs'
 import { accelWritesSettled } from './store'
 
 const BASE = '/capi'
@@ -685,6 +687,109 @@ describe('pause and resume', () => {
   })
 })
 
+describe('the switches write a subset, each with its whole body', () => {
+  // The per-dashboard and master switches end in `setAccelSchedules`. The subset
+  // is the point — a switch for Capacity must not touch DNS — and A-SP23 applies
+  // to every object in it exactly as it does to one.
+  const CAP_OWN: AccelId[] = ['gno_app_l4_c1h', 'gno_talkers_src_c1h']
+
+  it('PATCHes exactly the searches the plan names, and nothing else', async () => {
+    const extras: Record<string, Record<string, unknown>> = {}
+    for (const id of CAP_OWN) extras[id] = await correctPlusExtras(id)
+    const { calls } = stubWorkspace({ saved: await allCorrect(extras) })
+    const plan = togglePlan(await readAccelState(), { kind: 'tab', tab: 'capacity', on: false })
+    expect(plan.changes.map((c) => c.id)).toEqual(CAP_OWN)
+
+    const before = calls.length
+    const results = await setAccelSchedules(plan.changes.map((c) => ({ id: c.id, from: c.from, to: c.to })))
+    expect(results.map((r) => [r.id, r.ok, r.enabled])).toEqual(CAP_OWN.map((id) => [id, true, false]))
+    const patches = writes(calls.slice(before))
+    expect(patches.map((c) => `${c.method} ${c.path}`)).toEqual(CAP_OWN.map((id) => `PATCH ${SAVED}/${id}`))
+
+    for (const [i, id] of CAP_OWN.entries()) {
+      const body = bodyOf(patches[i])
+      const entry = accelEntry(id)
+      // The whole body: schedule fields the PATCH would otherwise delete, the
+      // top-level fields, and the ones this app knows nothing about.
+      expect(body.schedule).toMatchObject({ enabled: false, cronSchedule: entry.cron, tz: 'UTC', keepLastN: entry.keepLastN })
+      expect(body.query).toBe(entry.body)
+      expect(body.earliest).toBe(entry.earliest)
+      expect(body.latest).toBe(entry.latest)
+      expect(body.description).toBeTruthy()
+      expect(body.chartConfig).toEqual({ type: 'bar' })
+    }
+  })
+
+  it('resumes a subset the same way', async () => {
+    const paused: Record<string, Record<string, unknown>> = {}
+    for (const e of MANIFEST) {
+      const obj = await correctPlusExtras(e.id)
+      paused[e.id] = { ...obj, schedule: { ...(obj.schedule as Record<string, unknown>), enabled: false } }
+    }
+    const { calls } = stubWorkspace({ saved: paused })
+    const plan = togglePlan(await readAccelState(), { kind: 'tab', tab: 'dns-health', on: true })
+    const before = calls.length
+    await setAccelSchedules(plan.changes.map((c) => ({ id: c.id, from: c.from, to: c.to })))
+    const patches = writes(calls.slice(before))
+    expect(patches.map((c) => c.path)).toEqual(['gno_dns_resolver_c1h', 'gno_dns_overall_c1h'].map((id) => `${SAVED}/${id}`))
+    for (const c of patches) {
+      expect(bodyOf(c).schedule).toMatchObject({ enabled: true, tz: 'UTC' })
+      expect(bodyOf(c).chartConfig).toEqual({ type: 'bar' })
+    }
+  })
+
+  it('leaves alone a search that changed after the confirmation opened', async () => {
+    // The dialog said it was running; somebody paused it since. Writing
+    // `enabled: false` over it is harmless here, but the same guard stops a
+    // resume the confirmation never described — so it refuses, and says so.
+    const obj = await correct(LAKE)
+    const { calls } = stubWorkspace({ saved: { [LAKE]: { ...obj, schedule: { ...(obj.schedule as Record<string, unknown>), enabled: false } } } })
+    const [r] = await setAccelSchedules([{ id: LAKE, from: true, to: false }])
+    expect(r.ok).toBe(false)
+    expect(r.detail).toContain('changed after the confirmation')
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('stops at the first refusal and reports the rest as not sent', async () => {
+    // Review 2026-09-24, defect 7: the comment promised that a refusal on the
+    // first said something about the rest before they were sent; the loop sent
+    // every one anyway, each to be refused the same way.
+    const { calls } = stubWorkspace({ saved: await allCorrect(), status: { [`PATCH ${SAVED}/gno_app_l4_c1h`]: 403 } })
+    const results = await setAccelSchedules([
+      { id: 'gno_app_l4_c1h', from: true, to: false },
+      { id: 'gno_talkers_src_c1h', from: true, to: false },
+      { id: 'gno_web_host_c1h', from: true, to: false },
+    ])
+    expect(writes(calls).map((c) => c.path)).toEqual([`${SAVED}/gno_app_l4_c1h`])
+    expect(results.map((r) => [r.id, r.ok, r.sent])).toEqual([
+      ['gno_app_l4_c1h', false, true],
+      ['gno_talkers_src_c1h', false, false],
+      ['gno_web_host_c1h', false, false],
+    ])
+    expect(results[1].detail).toContain('not sent')
+  })
+
+  it('carries on past a row that merely changed since the dialog opened', async () => {
+    const obj = await correct(LAKE)
+    const { calls } = stubWorkspace({
+      saved: await allCorrect({ [LAKE]: { ...obj, schedule: { ...(obj.schedule as Record<string, unknown>), enabled: false } } }),
+    })
+    const results = await setAccelSchedules([
+      { id: LAKE, from: true, to: false },
+      { id: 'gno_pipeline_c1h', from: true, to: false },
+    ])
+    expect(results.map((r) => r.ok)).toEqual([false, true])
+    expect(writes(calls).map((c) => c.path)).toEqual([`${SAVED}/gno_pipeline_c1h`])
+  })
+
+  it('refuses an id that is not in the manifest without sending anything', async () => {
+    const { calls } = stubWorkspace()
+    const [r] = await setAccelSchedules([{ id: 'gno_not_ours' as AccelId, from: true, to: false }])
+    expect(r.ok).toBe(false)
+    expect(calls).toEqual([])
+  })
+})
+
 describe('remove', () => {
   it('deletes both and confirms they are gone', async () => {
     const { calls } = stubWorkspace({ saved: await allCorrect() })
@@ -874,9 +979,94 @@ describe('the Lake total follows the dataset’s retention', () => {
     expect(body.name).toBe('GNO Lake total 365 days')
   })
 
+  // The Lake total's write-counter query as it was before the counters were
+  // built from src/queries/stackIds.ts: it named today's destination only, so
+  // once the onboarding pack carries the data it reads short. A schedule
+  // applied by that release still runs this string, and has to read as drift.
+  const PRE_STACK_LIST_LAKE_TOTAL =
+    'dataset="cribl_metrics" | summarize ' +
+    'total_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
+    'total_bytes=sum(iif(metric=="total.out_bytes" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0))'
+  const appliedBeforeTheStackList = async () => {
+    const base = accelEntry(LAKE)
+    return (await accelSavedSearch({
+      ...base,
+      body: PRE_STACK_LIST_LAKE_TOTAL,
+      panels: base.panels.map((p) => ({ ...p, display: PRE_STACK_LIST_LAKE_TOTAL })),
+    })) as unknown as Record<string, unknown>
+  }
+
+  it('reports a schedule still running the pre-pack write-counter query as drifted', async () => {
+    expect(LAKE_TOTAL_QUERY).not.toBe(PRE_STACK_LIST_LAKE_TOTAL)
+    stubWorkspace({ saved: { [LAKE]: await appliedBeforeTheStackList() }, lake: lakeList(30, 30) })
+    const row = (await readAccelState()).rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('differs')
+    expect(row.differences).toContain('the query it runs')
+    expect(row.differences).toContain('the query the panel shows for it')
+    // Same retention, same window: only the body moved.
+    expect(row.differences).not.toContain('the window it reads')
+  })
+
+  it('writes the stack-list query over it on Re-apply', async () => {
+    const { calls } = stubWorkspace({
+      saved: { [LAKE]: await appliedBeforeTheStackList(), [SAMPLE]: await correct(SAMPLE) },
+      lake: lakeList(30, 30),
+    })
+    await applyAcceleration()
+    const body = bodyOf(savedCalls(calls).find((c) => c.method === 'PATCH' && c.body?.id === LAKE))
+    expect(body.query).toBe(LAKE_TOTAL_QUERY)
+  })
+
   it('sees no drift on a 30-day tenant whose schedule matches the default', async () => {
     stubWorkspace({ saved: { [LAKE]: await correct(LAKE) }, lake: lakeList(30, 30) })
     const state = await readAccelState()
     expect(state.rows.find((r) => r.id === LAKE)!.state).toBe('enabled')
+  })
+})
+
+describe('the hourly pipeline-telemetry schedule follows the stack list', () => {
+  const PIPELINE = 'gno_pipeline_c1h'
+  // METRICS_QUERY as it was before the counters were built from
+  // src/queries/stackIds.ts: the demo feed's objects only. An hourly schedule
+  // applied by that release still runs this string, so after the onboarding
+  // pack carries the data its Sources, Processing and Destinations plates read
+  // short. It has to read as drift, and Re-apply has to replace it.
+  const PRE_STACK_LIST_METRICS =
+    'dataset="cribl_metrics" | summarize ' +
+    'src_events=sum(iif(metric=="pipe.in_events" and namespace=="data_insights" and from_input=="datagen:in_gigamon_datagen", value, 0)), ' +
+    'pipe_events=sum(iif(metric=="pipe.out_events" and namespace=="data_insights" and id=="gigamon_ami", value, 0)), ' +
+    'dst_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
+    'dst_bytes=sum(iif(metric=="total.out_bytes" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
+    'blocked=sum(iif(metric=="blocked.outputs", value, 0)), ' +
+    'backpressure=sum(iif(metric=="backpressure.outputs", value, 0))'
+  const appliedBeforeTheStackList = async () => {
+    const base = accelEntry(PIPELINE)
+    return (await accelSavedSearch({
+      ...base,
+      body: PRE_STACK_LIST_METRICS,
+      panels: base.panels.map((p) => ({ ...p, display: PRE_STACK_LIST_METRICS })),
+    })) as unknown as Record<string, unknown>
+  }
+
+  it('reports a schedule still running the demo-only counters as drifted', async () => {
+    expect(METRICS_QUERY).not.toBe(PRE_STACK_LIST_METRICS)
+    stubWorkspace({ saved: { [PIPELINE]: await appliedBeforeTheStackList() } })
+    const row = (await readAccelState()).rows.find((r) => r.id === PIPELINE)!
+    expect(row.state).toBe('differs')
+    expect(row.differences).toContain('the query it runs')
+    expect(row.differences).toContain('the query the panel shows for it')
+    expect(row.differences).not.toContain('the window it reads')
+  })
+
+  it('writes the stack-list query over it on Re-apply', async () => {
+    const { calls } = stubWorkspace({ saved: { [PIPELINE]: await appliedBeforeTheStackList() } })
+    await applyAcceleration()
+    const body = bodyOf(savedCalls(calls).find((c) => c.method === 'PATCH' && c.body?.id === PIPELINE))
+    expect(body.query).toBe(METRICS_QUERY)
+  })
+
+  it('sees no drift when the schedule runs today’s body', async () => {
+    stubWorkspace({ saved: { [PIPELINE]: await correct(PIPELINE) } })
+    expect((await readAccelState()).rows.find((r) => r.id === PIPELINE)!.state).toBe('enabled')
   })
 })
