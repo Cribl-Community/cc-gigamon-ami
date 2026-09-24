@@ -97,6 +97,26 @@ describe('snapshotNote', () => {
     }
   })
 
+  it('names a switched-off or drifted schedule as the reason a panel is live', () => {
+    // Review 2026-09-24: a paused schedule's panel used to say "schedule
+    // overdue — check the schedule". It is live now, and says why.
+    for (const outcome of ['paused', 'drifted', 'unscheduled'] as const) {
+      const note = snapshotNote({ source: 'live', outcome, at: null, stale: false }, NOW)
+      expect(note!.tone).toBe('live')
+      expect(note!.title).toBe(NOTES[outcome])
+    }
+    expect(snapshotNote({ source: 'live', outcome: 'paused', at: null, stale: false }, NOW)!.text).toBe('live · its schedule is paused')
+  })
+
+  it('does not say "nothing stored" at a moment whose runs answered an older query', () => {
+    // There ARE runs from that time; they are not shown because they came from
+    // a query the ⓘ no longer describes. "Nothing stored" would be false.
+    const note = snapshotNote({ source: 'none', outcome: 'drifted-at', at: null, stale: false, nearestAt: NOW - 3_600_000 }, NOW)
+    expect(note!.text).toBe('stored runs are from an older query')
+    expect(note!.tone).toBe('absent')
+    expect(note!.title).toBe(NOTES['drifted-at'])
+  })
+
   it('falls back to live words rather than dating a run it cannot date', () => {
     // read.ts already refuses to return an undated stored result — an undated
     // number cannot be labelled, and the label is the whole safety argument.

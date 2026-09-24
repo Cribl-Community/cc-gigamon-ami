@@ -12,12 +12,17 @@
 import { beforeEach } from 'vitest'
 
 beforeEach(async () => {
-  const [{ forgetRunHistory }, { forgetArtifacts }, { forgetLakeFacts }] = await Promise.all([
+  const [{ forgetRunHistory }, { forgetArtifacts }, { forgetLakeFacts }, { forgetAccelServing }] = await Promise.all([
     import('./cribl/accel/status'),
     import('./cribl/accel/read'),
     import('./cribl/lakeWindowRead'),
+    // The saved-search verdicts (accel/serving.ts): AccelPanel publishes the
+    // state it read, and a Pause in one test must not send the next test's
+    // panels live.
+    import('./cribl/accel/serving'),
   ])
   forgetRunHistory()
   forgetArtifacts()
   forgetLakeFacts()
+  forgetAccelServing()
 })

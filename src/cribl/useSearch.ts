@@ -73,6 +73,7 @@ import { readAccelRows, type AccelOutcome, type AccelSource } from './accel/read
 import { useAccelModeHydrated } from './accel/mode'
 import { useSelectedSnapshot } from './accel/selection'
 import { forgetRunHistory } from './accel/status'
+import { SERVES_LIVE, useAccelServing } from './accel/serving'
 import { markData, markStart } from './devTrace'
 import { useDataMode } from './dataMode'
 
@@ -264,6 +265,17 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   // showing a past state must not re-run on a timer.
   const asOf = accel !== null && addressable && mode === 'snapshot' && moment !== null ? moment : undefined
   const atMoment = asOf !== undefined
+  // WHAT THE SAVED SEARCH ITSELF SAYS (accel/serving.ts): paused, drifted from
+  // the query this panel's ⓘ shows, or gone. Any of the three sends the newest-
+  // run read live with its own sentence — a switched-off schedule used to leave
+  // its panels reading the last run for days under "check the schedule", while
+  // the confirmation that switched it off had priced them live. Asked only by a
+  // hook the schedule would otherwise answer; `unknown` changes nothing.
+  const servingAsked = accel !== null && addressable && (snapshotServed || atMoment)
+  const servingNow = useAccelServing(servingAsked ? accel : null)
+  const waitingForServing = servingNow === 'pending'
+  const serving = servingNow === 'pending' ? 'unknown' : servingNow
+  const scheduleLive = SERVES_LIVE.has(serving)
   const pinned = earliest !== undefined || snapshotServed || atMoment
   // A snapshot-served hook with no window of its own takes the scheduled run's,
   // so the live fallback reads the same window the schedule does — whichever
@@ -289,7 +301,10 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   // put one KV round trip in front of all thirty-seven of them for nothing —
   // against an app whose whole brief is to feel fast. accel/mode.ts caps the
   // wait at HYDRATE_DEADLINE_MS for the two that do.
-  const waitingForMode = accel !== null && !modeKnown
+  // The saved-search read is held for the same reason and capped the same way
+  // (HYDRATE_DEADLINE_MS): a paused entry's panel that read its stored run first
+  // and then re-ran live would be two answers, the first one under a nag.
+  const waitingForMode = accel !== null && (!modeKnown || waitingForServing)
   // A panel that has not run yet still holds its cost slot: deferral is about
   // WHEN a query is submitted, not whether. The auto-refresh cost label answers
   // "what does a refresh of this tab cost", and every deferred panel will have
@@ -302,7 +317,8 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // in, the button would quote the Lake total's 9,297.7 CPU-s for a press
     // that no longer runs it. If its schedule has no readable run the panel
     // does fall back to live, and says so in its own caption.
-    willRun: enabled && !(snapshotInLive && accel !== null && accelEnabled && addressable),
+    // …unless its schedule is paused, drifted or gone: then Live runs it.
+    willRun: enabled && !(snapshotInLive && accel !== null && accelEnabled && addressable && !scheduleLive),
     // What this panel's own query costs run live, for the session in which it
     // has only ever been served from its schedule and so has measured nothing
     // itself. Measured runs, not the regressor — see accel/estimate.ts.
@@ -395,7 +411,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // states and must not be renderable as the same words.
     const read: Promise<PanelRead> =
       accel !== null
-        ? readAccelRows(accel, { live, enabled: snapshotServed, asOf, tail, limit, signal: controller.signal, costSlot }).then(
+        ? readAccelRows(accel, { live, enabled: snapshotServed, serving, asOf, tail, limit, signal: controller.signal, costSlot }).then(
             (r) => ({ ...r, runWindow: r.source === 'schedule' ? (r.run?.earliest ?? null) : null }),
           )
         : live().then((rows) => ({ data: rows, source: 'live' as const, outcome: null, at: null, stale: false, note: null, nearestAt: null }))
@@ -440,7 +456,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // which is how this effect started reporting two warnings again after the
     // snapshot work added the explanation above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, accel, snapshotServed, asOf, tail, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
+  }, [text, accel, snapshotServed, serving, asOf, tail, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }

@@ -169,6 +169,7 @@ import {
   type RemoveResult,
 } from '../cribl/accel/provision'
 import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/accel/status'
+import { publishAccelServing } from '../cribl/accel/serving'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
 import { estimateScheduleSetCost, estimateWorkspaceSaving, type ScheduleSetCost } from '../cribl/accel/estimate'
 import {
@@ -279,6 +280,9 @@ export function AccelPanel() {
         readAccelState(),
         allAccelStatus().catch(() => null),
       ])
+      // The panels read the same answer (accel/serving.ts): a Pause, a switch
+      // or a Re-check is heard by every accelerated panel from this one read.
+      publishAccelServing(next)
       if (!alive.current) return
       setState(next)
       setStatus(runs)
@@ -329,6 +333,7 @@ export function AccelPanel() {
         (s) => setSteps((prev) => [...prev, s]),
         state === null ? undefined : approvedWrites(state),
       )
+      publishAccelServing(result.state)
       if (!alive.current) return
       setState(result.state)
       const failed = result.steps.filter((s) => s.action === 'error' || s.action === 'refused')
@@ -359,6 +364,7 @@ export function AccelPanel() {
     setStillPresent([])
     try {
       const result = await removeAcceleration((s) => setSteps((prev) => [...prev, s]))
+      publishAccelServing(result.state)
       if (!alive.current) return
       setState(result.state)
       setLeftBehind(result.left)

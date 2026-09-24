@@ -233,7 +233,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/${SEARCH_GROUP}/search/saved/:id`,
     scope: 'product',
     site: 'accel/provision.ts deleteSaved',
-    why: 'Remove one of this app’s scheduled searches again, from the confirmed Remove button — the only way a customer can stop the recurring spend this app started, since uninstalling the app leaves the schedules running. It deletes only an id matching `gno_` that is in this release’s manifest AND carries this app’s own stamp; a saved search with the same name that this app did not create is reported and left alone.',
+    why: 'Remove one of this app’s scheduled searches again, from the confirmed Remove button. The per-dashboard and master switches PAUSE the recurring spend (a PATCH, above); Remove is what deletes the scheduled searches themselves, and uninstalling the app leaves them in place either way. It deletes only an id matching `gno_` that is in this release’s manifest AND carries this app’s own stamp; a saved search with the same name that this app did not create is reported and left alone.',
     removes: 'accel_saved_search',
   },
 

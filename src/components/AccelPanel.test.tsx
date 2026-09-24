@@ -44,6 +44,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { forgetRunHistory } from '../cribl/accel/status'
+import { accelServing } from '../cribl/accel/serving'
 import { resetDenials } from '../cribl/authz'
 import { accelEntry, accelSavedSearch, MANIFEST } from '../cribl/accel/manifest'
 import { applyPlan, readAccelState, removalPlan, type AccelRow } from '../cribl/accel/provision'
@@ -703,6 +704,19 @@ describe('a confirmed write', () => {
     // …and the fields this app knows nothing about ride back out with it.
     expect(patch?.body?.chartConfig).toEqual({ type: 'bar' })
     expect(patch?.body?.query).toBe(accelEntry(LAKE).body)
+  })
+
+  it('tells the panels about a Pause the moment it lands, from the read the table already made', async () => {
+    // Review 2026-09-24, defect 1: the dialog says the panels go live. They do
+    // only if the read path hears about it — accel/serving.ts, fed here, with
+    // no second read of the saved searches.
+    stubWorkspace({ saved: { [LAKE]: await stored(LAKE) } })
+    await mount()
+    expect(accelServing(LAKE)).toBe('scheduled')
+    await press(buttonNamed(rowActionName('pause', accelEntry(LAKE))))
+    await press(buttonNamed('Yes, pause it'))
+    await settle()
+    expect(accelServing(LAKE)).toBe('paused')
   })
 })
 

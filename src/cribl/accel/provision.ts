@@ -416,13 +416,18 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
   // and what Apply writes — is resolved against the tenant, not the constant.
   // An unreadable retention leaves the manifest's default: nothing is written
   // on a window nobody chose.
-  const entries = resolvedManifest(await readLakeWindow())
-  const [intended, recorded] = await Promise.all([
-    Promise.all(entries.map((e) => accelSavedSearch(e))),
-    loadAccelState(),
-  ])
+  //
+  // THE THREE READS ARE INDEPENDENT, SO THEY OVERLAP. This used to be the Lake
+  // read, then the KV read, then the list — three round trips in series. That
+  // was only Guided Setup's table waiting; since accel/serving.ts, every
+  // accelerated panel on a cold load can wait on this too (up to its deadline),
+  // so it now costs one round trip rather than three.
+  const listP = capi('GET', `${SAVED_PATH}?${listQuery()}`, undefined, { background, signal: opts.signal })
+  const [lake, recorded] = await Promise.all([readLakeWindow(), loadAccelState()])
+  const entries = resolvedManifest(lake)
+  const intended = await Promise.all(entries.map((e) => accelSavedSearch(e)))
 
-  const list = await capi('GET', `${SAVED_PATH}?${listQuery()}`, undefined, { background, signal: opts.signal })
+  const list = await listP
   if (isDenial(list.status)) {
     return blindState(entries, intended, true, 'This account cannot list Cribl Search saved searches, so the scheduled searches this app owns cannot be checked.')
   }

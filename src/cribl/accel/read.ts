@@ -94,6 +94,7 @@ import type { CostSlot } from '../jobCost'
 import { beginQuery, endQuery } from '../inflight'
 import { accelEntry, isAccelId, type AccelEntry, type AccelId } from './manifest'
 import { evaluateTail, parseTail } from './tail'
+import type { ServingVerdict } from './serving'
 import { cronIntervalMs, listRuns, nearestRun, runAtOrBefore, runMeta, snapshotTimeline, type AccelRun } from './status'
 
 /** The virtual table a stored result is read from. Named in query text only. */
@@ -288,6 +289,19 @@ export type AccelOutcome =
   | 'unreadable'
   /** Acceleration is switched off for this entry. */
   | 'off'
+  /** The saved search's schedule is off — Pause, or a tab or master switch in
+   *  Guided Setup. Its old runs are still readable for days; they are not read,
+   *  because the confirmation that paused it said these panels go live. */
+  | 'paused'
+  /** The saved search runs a different query or window than the one this
+   *  panel's ⓘ shows (a release changed the body and nobody has re-applied).
+   *  Its runs are not read: the ⓘ must describe the query the number came from. */
+  | 'drifted'
+  /** No saved search serves this entry any more, or one with no schedule. */
+  | 'unscheduled'
+  /** A past moment was asked for on a drifted entry. Every stored run there came
+   *  from the older query, and a moment never falls back to live — so nothing. */
+  | 'drifted-at'
   /** A past moment was asked for and this entry has no run at or before it. The
    *  live query deliberately did NOT run — see AccelSource's `none`. */
   | 'no-run-at'
@@ -317,6 +331,12 @@ export const NOTES: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   'aged-out': 'No stored result is still available, so the live query ran.',
   unreadable: 'The stored result could not be read, so the live query ran.',
   off: 'Acceleration is off for this panel, so the live query ran.',
+  paused: 'The scheduled search that serves this panel is paused, so the live query ran.',
+  drifted:
+    'The scheduled search that serves this panel still runs an older query than the one shown here, so the live query ran. Re-apply acceleration in Guided Setup to schedule this one.',
+  unscheduled: 'No scheduled search serves this panel now, so the live query ran.',
+  'drifted-at':
+    'The stored runs for this panel came from an older query than the one shown here, so none is shown. Re-apply acceleration in Guided Setup, or switch to Live.',
   'no-run-at':
     'This panel has no stored run from the time you picked. Running its query now would answer about the present under a label saying otherwise, so it did not run.',
   unshaped:
@@ -374,6 +394,14 @@ export interface AccelReadOptions<T> {
   /** False sends every read straight to the live query. The customer's off
    *  switch lives in accel/store.ts; this is where its answer is honoured. */
   enabled?: boolean
+  /**
+   * What the saved search itself says about this entry (accel/serving.ts).
+   * `paused`, `drifted` and `unscheduled` send the newest-run read live, each
+   * with its own sentence; a past moment on a `drifted` entry shows nothing.
+   * Omitted, or `scheduled`/`unknown`, reads exactly as before — a verdict
+   * nobody could read must not move a panel's bill.
+   */
+  serving?: ServingVerdict
   /** KQL appended after the `jobName` predicate. */
   tail?: string
   signal?: AbortSignal
@@ -628,6 +656,11 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   // the off switch — see `asOf`. Nothing below this line can reach the live
   // query with a moment selected.
   if (opts.asOf !== undefined) {
+    // A DRIFTED ENTRY'S STORED RUNS ALL CAME FROM THE OLDER QUERY, and a moment
+    // never falls back to live, so there is nothing true to show. A PAUSED
+    // entry's past runs are still read: they are what that query answered at
+    // that time, and the moment is the reader asking about exactly then.
+    if (opts.serving === 'drifted') return absent(entry, 'drifted-at', [], opts, null)
     // A SHARED SCAN'S PANEL IS CUT OUT OF AN ARTIFACT BY ITS TAIL, evaluated
     // here (tail.ts) because an artifact cannot run KQL. A tail outside that
     // grammar would hand the panel the whole scan — another panel's columns
@@ -648,6 +681,8 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
     })
   }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
+  const unserved = unservedOutcome(opts.serving)
+  if (unserved !== null) return fallback(entry, unserved, live, opts)
 
   // THE FAST PATH: read the newest run's artifact by id, which submits no job.
   // Null means "not this way" — every such case falls through to the
@@ -709,6 +744,7 @@ export async function readAccelFieldSummaries(
   const entry = accelEntry(id)
   const live = opts.live ?? (() => liveFieldSummaries(entry, opts))
   if (opts.asOf !== undefined) {
+    if (opts.serving === 'drifted') return absent(entry, 'drifted-at', { fields: [], sampled: 0 }, opts, null)
     return atMoment(entry, opts, opts.asOf, { fields: [], sampled: 0 }, {
       // A scheduled run's artifact is ROWS, and no query names it, so
       // `/field-summaries` cannot be pointed at one. The summaries are computed
@@ -725,6 +761,8 @@ export async function readAccelFieldSummaries(
     })
   }
   if (opts.enabled === false) return fallback(entry, 'off', live, opts)
+  const unserved = unservedOutcome(opts.serving)
+  if (unserved !== null) return fallback(entry, unserved, live, opts)
 
   // THE FAST PATH, as on the rows path: summarise the newest run's artifact,
   // which submits no job. Null falls through to the job below, unchanged. See
@@ -1236,6 +1274,14 @@ async function diagnose(id: AccelId, opts: { signal?: AbortSignal }): Promise<Ac
   // keeps A-D15 whole: a stored-result read carries no prefixes at all.
   if (last.outcome === 'failed' || last.outcome === 'canceled') return 'run-failed'
   return 'aged-out'
+}
+
+/** The outcome a saved-search verdict sends the newest-run read live with, or
+ *  null when the stored run may be read. `unknown` is null on purpose: see
+ *  accel/serving.ts on why an unreadable list must not move anybody's bill. */
+function unservedOutcome(serving: ServingVerdict | undefined): AccelOutcome | null {
+  if (serving === 'paused' || serving === 'drifted' || serving === 'unscheduled') return serving
+  return null
 }
 
 async function fallback<T>(

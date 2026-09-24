@@ -33,6 +33,7 @@ import { useCostSlot } from '../cribl/jobCost'
 import { accelEntry, type AccelId } from '../cribl/accel/manifest'
 import { readAccelFieldSummaries, readAccelRows, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
 import { useSelectedSnapshot } from '../cribl/accel/selection'
+import { useAccelServing, type ServingVerdict } from '../cribl/accel/serving'
 import { useAccelEnabled } from '../cribl/useSearch'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
@@ -206,6 +207,13 @@ export function FieldExplorer() {
   // about 04:20, and the "Run live" chip is hidden while one is picked for the
   // same reason <Panel> hides its own.
   const moment = useSelectedSnapshot()
+  // What each saved search says (accel/serving.ts): a paused, drifted or removed
+  // schedule sends its panel live, as useSearch does for every other tab. Not
+  // held back while the first read is pending — this tab never waited on the
+  // mode either — so a verdict that lands later re-runs the one it changes.
+  const known = (v: ServingVerdict | 'pending'): ServingVerdict => (v === 'pending' ? 'unknown' : v)
+  const sampleServing = known(useAccelServing(SAMPLE_ACCEL))
+  const presenceServing = known(useAccelServing(PRESENCE_ACCEL))
   // This panel's row in the header's census. It is a <Panel> like any other, but
   // it builds its state from readAccelFieldSummaries rather than from useSearch,
   // so the `snapshot` prop is assembled by hand here. Without it the In-feed
@@ -243,6 +251,7 @@ export function FieldExplorer() {
     setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelFieldSummaries(SAMPLE_ACCEL, {
       enabled: accelOn,
+      serving: sampleServing,
       asOf: moment ?? undefined,
       signal: ctrl.signal,
       live: () => runFieldSummaries(FEED_SAMPLE_QUERY, {
@@ -273,7 +282,7 @@ export function FieldExplorer() {
     // the identical stored rows. `sampleWindowKey` is what puts it back in the
     // key the moment the reader asks for live.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, moment, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
+  }, [accelOn, moment, sampleServing, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
 
   // Whole-window presence counts for the AMI coverage view (accurate for rare
   // fields — one count() per field rather than a sample, which is why it is
@@ -288,6 +297,7 @@ export function FieldExplorer() {
     setPresence((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelRows(PRESENCE_ACCEL, {
       enabled: accelOn,
+      serving: presenceServing,
       asOf: moment ?? undefined,
       signal: ctrl.signal,
       live: () => runSearch(PRESENCE_QUERY, {
@@ -336,7 +346,7 @@ export function FieldExplorer() {
     // it: the picker cannot change what comes back from a stored run, so
     // re-running on a range change would submit a job to receive identical rows.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, moment, presenceWindowKey, presenceRefreshKey, nonce, presenceCost])
+  }, [accelOn, moment, presenceServing, presenceWindowKey, presenceRefreshKey, nonce, presenceCost])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {

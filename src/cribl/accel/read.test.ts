@@ -908,6 +908,49 @@ describe('the live fallback', () => {
   })
 })
 
+// Review 2026-09-24, defects 1 and 5: what the saved search itself says
+// (accel/serving.ts). A paused schedule's last runs stay readable for days; its
+// panel must run live, as the switch's confirmation said and priced. A drifted
+// one's runs answered an older query than the ⓘ shows.
+describe('what the saved search says', () => {
+  for (const serving of ['paused', 'drifted', 'unscheduled'] as const) {
+    it(`sends a ${serving} entry live, reading no stored run and naming why`, async () => {
+      const { submits, urls } = stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+      const read = await readAccelRows(LAKE, { serving, now: NOW })
+      expect(read.source).toBe('live')
+      expect(read.outcome).toBe(serving)
+      expect(read.stale).toBe(false)
+      expect(read.note).toBe(NOTES[serving])
+      expect(read.data).toEqual([LIVE])
+      expect(vtSubmit(submits)).toBeUndefined()
+      expect(urls.some((u) => u.includes('/results') && !u.includes('job-')), 'an artifact was read').toBe(false)
+    })
+  }
+
+  for (const serving of ['scheduled', 'unknown'] as const) {
+    it(`reads the stored run as before when the verdict is ${serving}`, async () => {
+      const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+      const read = await readAccelRows(LAKE, { serving, now: NOW })
+      expect(read.source).toBe('schedule')
+      expect(liveSubmit(submits)).toBeUndefined()
+    })
+  }
+
+  it('does the same on the field-summaries path', async () => {
+    stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+    const live = vi.fn(async () => ({ fields: [], sampled: 0 }))
+    const read = await readAccelFieldSummaries(LAKE, { serving: 'paused', live, now: NOW })
+    expect(read.outcome).toBe('paused')
+    expect(live).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the viewer’s own Live ahead of it: `off` is the sentence when both apply', async () => {
+    stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { enabled: false, serving: 'paused', now: NOW })
+    expect(read.outcome).toBe('off')
+  })
+})
+
 describe('field summaries', () => {
   const field = (name: string, over: Partial<FieldSummary> = {}): FieldSummary => ({
     name,
@@ -1377,6 +1420,24 @@ describe('reading the state at a chosen moment', () => {
 
     expect(read.source).toBe('schedule')
     expect(read.outcome).toBe('fresh')
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('shows nothing at a moment on a DRIFTED entry — every run there answered the older query', async () => {
+    const { submits, urls } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, serving: 'drifted', now: NOW })
+    expect(read.source).toBe('none')
+    expect(read.outcome).toBe('drifted-at')
+    expect(read.data).toEqual([])
+    expect(liveSubmit(submits), 'a picked moment ran the live query').toBeUndefined()
+    expect(fetchedRun(urls, R0820)).toBe(false)
+  })
+
+  it('still reads a moment on a PAUSED entry — that run is what the query answered then', async () => {
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, serving: 'paused', now: NOW })
+    expect(read.source).toBe('schedule')
+    expect(read.at).toBe(NOW - 2 * HOUR)
     expect(liveSubmit(submits)).toBeUndefined()
   })
 

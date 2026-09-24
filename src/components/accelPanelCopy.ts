@@ -381,7 +381,7 @@ export const ACCEL_LEAD =
 
 export const ACCEL_LEAD_TIP =
   'It adds no new number to any screen: it changes where existing numbers come from, and each panel’s ⓘ still shows the query behind its figure, because that query is what ran. ' +
-  'The schedules bill whether or not anybody opens the app, and uninstalling the app does not stop them — Remove acceleration does.'
+  'The schedules bill whether or not anybody opens the app, and uninstalling the app does not stop them. The switches here pause them — per dashboard or all at once — and the panels they fed run their live queries again; Remove acceleration deletes the scheduled searches outright.'
 
 /** The one preset on offer. The words are behind its ⓘ; the name is the label. */
 export const SAVINGS_PRESET_TIP =

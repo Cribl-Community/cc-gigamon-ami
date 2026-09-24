@@ -205,8 +205,9 @@ policies:
   #   * nothing here runs on load, on render or on a timer.
   #
   # DELETE is not optional. Removing the app does not remove these searches —
-  # the platform gives an app no uninstall hook (I-D28) — so the Remove button
-  # is the only way a customer stops the spend, and this is the grant it needs.
+  # the platform gives an app no uninstall hook (I-D28). The switches in Guided
+  # Setup PAUSE the spend (the PATCH above); the Remove button is the only way a
+  # customer deletes the searches themselves, and this is the grant it needs.
   #
   # GET on the collection lists the whole workspace's saved searches, not just
   # ours: their names, queries and schedules, wherever the caller's own role

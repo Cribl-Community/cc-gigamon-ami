@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { forgetRunHistory } from '../cribl/accel/status'
+import { refreshAccelServing } from '../cribl/accel/serving'
 
 export interface TimeRange {
   label: string
@@ -60,6 +61,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     // very click meant to show it. Auto-refresh ticks do not clear it; the TTL
     // is already shorter than the shortest interval.
     forgetRunHistory()
+    // …and whether each schedule is still on is a thing a person may have
+    // changed from another browser. Re-read on the click, never on a tick.
+    refreshAccelServing()
     setRefreshNonce((n) => n + 1)
     setManualRefreshNonce((n) => n + 1)
     setLastRefresh(Date.now())
