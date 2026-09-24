@@ -43,7 +43,7 @@
 // to "writes" — because it is true and it is what somebody is actually asking.
 
 import {
-  SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID, SYSLOG_SOURCE_ID,
+  LAKE_DATASET_ID, SYSLOG_PIPELINE_ID, SYSLOG_PORT, SYSLOG_ROUTE_ID, SYSLOG_SOURCE_ID,
   type CommitScope,
 } from '../cribl/provision'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
@@ -164,3 +164,62 @@ export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination
     ...DEPLOY_CONSEQUENCES,
   ]
 }
+
+// ── What the panel says before anybody presses anything ─────────────────────
+//
+// The page used to open on a 120-word paragraph, a three-sentence hint under
+// the group picker and five long bullets. The owner's call (2026-09-24): one
+// short lead line per panel, and the rest behind an ⓘ on the thing it
+// explains. None of these is a confirmation — the dialogs still say everything
+// a write needs said, and nothing here replaces them.
+
+/** The one line under the panel title. */
+export const PROVISION_LEAD =
+  `Creates a Syslog source, pipeline and route in the worker group below, landing Gigamon AMX data in the Cribl Lake dataset ${LAKE_DATASET_ID}.`
+
+/** The rest of what the old intro said, behind the ⓘ at the end of the lead. */
+export const PROVISION_LEAD_TIP =
+  'Only this app’s own objects are written: whatever is missing is created, and its pipeline, source and route entry are overwritten where they differ from this release. The demo DataGen feed is never edited. ' +
+  'The commit that follows takes whole files — inputs.yml, pipelines/route.yml and outputs.yml each hold every object of their kind in the group — and the confirmation names them and anything already uncommitted in them.'
+
+/** Beside the "Worker group" label; replaces the hint that sat after the picker. */
+export const GROUP_TIP =
+  `The source, pipeline, route and destination are created, committed and deployed in this group. The Lake dataset ${LAKE_DATASET_ID} is shared and belongs to no group. Your pick is remembered, so this tab opens on it next time.`
+
+/** Under the Deploy button. Short, because the confirmation says the rest. */
+export const deployNote = (group: string): string => `Commits and deploys to ${group}. You review every change first.`
+
+/** One line of "What gets created & things to know": a short label and its ⓘ. */
+export interface SetupFact {
+  label: string
+  tip: string
+}
+
+export const SETUP_FACTS: readonly SetupFact[] = Object.freeze([
+  {
+    label: `Pipeline ${SYSLOG_PIPELINE_ID} — same fields as the demo feed`,
+    tip:
+      'Extracts the JSON payload from the syslog message, then applies the same numeric casts and derived fields ' +
+      '(http_server_ms, tcp_reset, subnets, l4_proto, byte and packet totals) as the demo gigamon_ami pipeline, so every dashboard reads the same fields.',
+  },
+  {
+    label: `Route ${SYSLOG_ROUTE_ID} — this source only`,
+    tip:
+      `Inserted above the catch-all default route, filtered to __inputId=='syslog:${SYSLOG_SOURCE_ID}' and marked final, so it only touches this source’s data and no other route changes.`,
+  },
+  {
+    label: `Open port ${SYSLOG_PORT} (TCP/UDP) on the worker group’s ingress`,
+    tip:
+      `On Cribl.Cloud, native data ports are firewalled by default. Open TCP/UDP ${SYSLOG_PORT} on the Worker Group’s ingress, or run an on-prem or Edge worker Gigamon can reach, before real data can arrive.`,
+  },
+  {
+    label: 'Expects AMI records as JSON',
+    tip:
+      'The parse step expects AMI records as JSON. If your AMX exports CEF instead, swap the parse function for a CEF parser — the field names must match the ones the dashboards query.',
+  },
+  {
+    label: 'Idle until Gigamon sends to it',
+    tip:
+      'With nothing pointed at it, the source shows healthy at 0 events per second. The DataGen demo keeps the dashboards populated meanwhile.',
+  },
+])

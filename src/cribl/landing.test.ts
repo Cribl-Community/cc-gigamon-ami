@@ -760,9 +760,16 @@ describe('the refusals', () => {
         expect(note).not.toContain('yet')
         expect(gate.spikes).toEqual([])
       } else {
-        expect(note).toContain(gate.spikes[0])
+        // A customer reads this behind an ⓘ: it says what is unknown, never
+        // which internal spike owes the answer.
+        expect(note).toContain(gate.unknown)
+        expect(note).not.toContain(gate.spikes[0])
         expect(gate.spikes.length).toBeGreaterThan(0)
       }
+      // The note, and the marker the row shows in its place, carry no project
+      // history: the evidence lives in the comment above SPIKE_GATED.
+      expect(note).not.toMatch(/\b(P-S\d+|Phase \d)\b|2026-\d\d-\d\d|\d+(\.\d+)?x\b/)
+      expect(gate.marker.split(' ').length).toBeLessThanOrEqual(4)
     }
   })
 })

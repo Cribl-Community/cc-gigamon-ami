@@ -50,8 +50,9 @@
 //
 // ── WHAT IS NOT BUILT, AND IT IS A DELIVERABLE RATHER THAN A TODO ───────────
 // No reader toggle and no partitions editor. Both are gated on spikes that have
-// not run (P-S5, P-S7, P-S9). Their rows render the LIVE value read-only with
-// `spikeGateNote()` naming what has to be measured first — the same refusal
+// not run (P-S5, P-S7, P-S9). Their rows render the LIVE value read-only with a
+// short marker in the Change column and `spikeGateNote()` behind the label's ⓘ
+// (Guided Setup's declutter, 2026-09-24, moved it off the screen) — the same refusal
 // Phase 1 made of <DiffTable> and <Unavailable> rather than guess, in the same
 // voice. `SPIKE_GATED` in cribl/landing.ts is the single source of those
 // sentences, so the panel and the module cannot drift.
@@ -77,7 +78,18 @@ import { pushToast } from './Toast'
 // Every word and unit this panel prints lives next door, pure and DOM-free, so a
 // test can read a sentence without rendering a screen — see that file's header.
 import {
+  ADJUST_NOTE,
+  CREATE_LEAD,
+  CREATE_LEAD_TIP,
+  CREATE_SAVE_NOTE,
+  FORMAT_TILES,
   INGEST_ANCHOR_ID,
+  LAKE_LEAD,
+  LAKE_LEAD_TIP,
+  LAKE_RETENTION_WARNING,
+  ROW_MARKERS,
+  ROW_TIPS,
+  partitionLimitWords,
   LAG_CPU_SECONDS,
   PARTITION_CPU_SECONDS,
   PARTITION_GATE,
@@ -216,6 +228,7 @@ function LandingRowView({
   row,
   value,
   action,
+  marker,
   extraNote,
   onRetry,
 }: {
@@ -225,6 +238,9 @@ function LandingRowView({
   row: LandingRow<unknown>
   value: ReactNode
   action?: ReactNode
+  /** Two-to-four words in the Change column for a setting this panel cannot
+   *  change ("fixed at creation"). The reason is the label's ⓘ. */
+  marker?: string
   extraNote?: ReactNode
   onRetry: (key: RowKey) => void
 }) {
@@ -247,6 +263,8 @@ function LandingRowView({
           )}
         </td>
         <td className="dtable-actions">
+          {row.state === 'value' && marker && <span className="ac-noaction">{marker}</span>}
+          {row.state === 'value' && marker && action ? ' ' : null}
           {row.state === 'value' && action}
           {recoverable && (
             <button
@@ -706,12 +724,11 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
       infoLabel="Where every value on this panel came from"
       infoDialogLabel="The read map for “How data lands in Cribl Lake”"
     >
+      {/* One lead line and the short irreversible warning; the rest is behind
+          the ⓘ (lakeLandingCopy.ts). */}
       <p className="gs-intro">
-        This panel reports the live Cribl Lake objects the dashboards read, and lets you change three
-        of them. Nothing is written until you press Apply and read the before-and-after in the
-        confirmation. <strong>A retention decrease is the one change that cannot be undone</strong> —
-        Cribl Lake datasets are under no version control, so unlike a destination edit there is no
-        commit to revert.
+        {LAKE_LEAD} <strong>{LAKE_RETENTION_WARNING}</strong>
+        <InfoTip text={LAKE_LEAD_TIP} />
       </p>
 
       {rows.dataset.state === 'absent' && (
@@ -768,6 +785,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
             <LandingRowView
               rowKey="dataset"
               label="Retention"
+              tip={ROW_TIPS.retention}
               row={rows.dataset}
               onRetry={retryRow}
               value={<>{liveRetention === null ? 'not reported' : `${liveRetention} days`}</>}
@@ -850,21 +868,18 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
             <LandingRowView
               rowKey="dataset"
               label="Object format"
+              tip={ROW_TIPS.objectFormat}
               row={rows.dataset}
               onRetry={retryRow}
               value={<>{dataset?.format ?? 'not reported'}</>}
-              extraNote={
-                <span>
-                  Not editable here: this release always lands JSON. Changing the format moves a month
-                  of history and is Phase 4’s migration, which is a different kind of change from
-                  anything on this panel.
-                </span>
-              }
+              marker={ROW_MARKERS.objectFormat}
             />
 
             <LandingRowView
               rowKey="dataset"
               label="Partitions"
+              tip={PARTITION_GATE ? spikeGateNote(PARTITION_GATE) : undefined}
+              marker={PARTITION_GATE?.marker}
               row={rows.dataset}
               onRetry={retryRow}
               value={
@@ -891,10 +906,8 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
               }
               extraNote={
                 <>
-                  {PARTITION_GATE && <span>{spikeGateNote(PARTITION_GATE)}</span>}
                   {partitionStatsMeasured ? (
                     <span>
-                      {' '}
                       Candidates, measured{' '}
                       <span className={partitionsStale ? 'll-stale' : undefined}>
                         {relativeAge(partitionStatsMeasured.at, now)}
@@ -909,7 +922,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
                       .
                     </span>
                   ) : (
-                    <span> Candidates: not measured.</span>
+                    <span>Candidates: not measured.</span>
                   )}
                 </>
               }
@@ -918,19 +931,16 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
             <LandingRowView
               rowKey="lakeConfig"
               label="Storage location"
+              tip={ROW_TIPS.storage}
               row={rows.lakeConfig}
               onRetry={retryRow}
-              value={<>Cribl Lake, managed by Cribl</>}
-              extraNote={
-                <span>
-                  Not a setting: a Cribl-managed Lake dataset exposes no storage location and no
-                  storage class to change, so there is nothing here to edit and no disabled box
-                  pretending otherwise.{' '}
-                  {lakeConfig?.maxAcceleratedFieldsCount != null
-                    ? `This tenant allows ${lakeConfig.maxAcceleratedFieldsCount} partition field${lakeConfig.maxAcceleratedFieldsCount === 1 ? '' : 's'} on a dataset.`
-                    : 'This tenant did not report a partition-field limit.'}
+              value={
+                <span className="ac-serves">
+                  <span className="ac-serves-name">Cribl Lake, managed by Cribl</span>
+                  <span className="ac-serves-id">{partitionLimitWords(lakeConfig?.maxAcceleratedFieldsCount)}</span>
                 </span>
               }
+              marker={ROW_MARKERS.storage}
             />
 
             <LandingRowView
@@ -944,11 +954,11 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
             <LandingRowView
               rowKey="searchDataset"
               label="Search reader"
-              tip={LANDING_TERMS.searchV2}
+              tip={READER_GATE ? `${LANDING_TERMS.searchV2} ${spikeGateNote(READER_GATE)}` : LANDING_TERMS.searchV2}
               row={rows.searchDataset}
               onRetry={retryRow}
               value={<>{searchDataset?.searchVersion ?? 'not reported'}</>}
-              extraNote={READER_GATE ? <span>{spikeGateNote(READER_GATE)}</span> : null}
+              marker={READER_GATE?.marker}
             />
 
             {/* LABELLED "Search engine", NOT "Acceleration tier". It used to be
@@ -1018,6 +1028,11 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
             <LandingRowView
               rowKey="destination"
               label="How objects are written"
+              tip={
+                effectiveMode === 'edit'
+                  ? `${ROW_TIPS.objectsWritten} ${ROW_TIPS.objectsWrittenEdit}`
+                  : ROW_TIPS.objectsWritten
+              }
               row={rows.destination}
               onRetry={retryRow}
               value={
@@ -1041,15 +1056,6 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
                       unavailable={busy ?? (flushChanged ? null : NO_CHANGE_NOTE)}
                       run={applyDestination}
                     />
-                  </span>
-                ) : null
-              }
-              extraNote={
-                effectiveMode === 'edit' ? (
-                  <span>
-                    Pick a flush setting under “Adjust how objects are written” below, then press
-                    Change. Applying it commits this group’s <code>outputs.yml</code> and deploys,
-                    which restarts the group’s Worker Processes.
                   </span>
                 ) : null
               }
@@ -1129,11 +1135,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
             >
               Drop the raw copy of each event before it is written (pipeline {PREP_PIPELINE_ID})
             </Checkbox>
-            <p className="ac-note">
-              Nothing here is applied until you press Change on the “How objects are written” row
-              above and read the before-and-after. That confirmation names every feed writing through
-              the destination and says that deploying restarts this group’s Worker Processes.
-            </p>
+            <p className="ac-note">{ADJUST_NOTE}</p>
           </div>
         </Collapse>
       )}
@@ -1419,9 +1421,8 @@ function CreateChoices({
   return (
     <div className="ac-presets">
       <p className="ac-note">
-        Nothing exists yet, so this is a set of choices rather than an editor. They are stored for
-        this install at <code>app/settings/lake_landing</code>; the onboarding panel above is what
-        creates the dataset and the destination.
+        {CREATE_LEAD}
+        <InfoTip text={CREATE_LEAD_TIP} />
       </p>
 
       <RadioGroup
@@ -1431,16 +1432,15 @@ function CreateChoices({
         onChange={(e) => onProfile((p) => ({ ...p, format: e.target.value as LandingFormat }))}
         aria-label="How objects are written into the dataset"
       >
-        <RadioTile
-          value="json"
-          description="One JSON record per line, gzipped. Every Cribl Search query reads whole objects, so a query that needs three fields still pays for all of them — and it is what every measurement in this app was taken against. This is what this release writes."
-        >
+        {/* History kept out of the tiles: every cost measurement in this app
+            was taken against the JSON dataset, and the Parquet move was a later
+            phase's migration waiting on spikes P-S1 and P-S5. Cribl's automatic
+            schema writes Parquet PLAIN with SNAPPY, which is why it can be
+            several times the size of the gzipped JSON it replaces. */}
+        <RadioTile value="json" description={FORMAT_TILES.json}>
           JSON, gzipped
         </RadioTile>
-        <RadioTile
-          value="parquet"
-          description="Columnar, so a query reads only the columns it names — the search saving this whole plan exists for. It costs storage: Cribl’s automatic schema writes PLAIN with SNAPPY, and an uncompressed-encoding column store can be several times the size of the gzipped JSON it replaces, so the storage bill can grow while the search bill falls. Choosing it here records the intention and changes nothing today; this release still writes JSON, and the migration that applies it is Phase 4’s, waiting on P-S1 and P-S5."
-        >
+        <RadioTile value="parquet" description={FORMAT_TILES.parquet}>
           Parquet
         </RadioTile>
       </RadioGroup>
@@ -1483,8 +1483,8 @@ function CreateChoices({
             Drop the raw copy of each event before it is written (pipeline {PREP_PIPELINE_ID})
           </Checkbox>
           <p className="ac-note">
-            Partitions and the Federated Search reader are not offered here.{' '}
-            {PARTITION_GATE ? spikeGateNote(PARTITION_GATE) : ''} {READER_GATE ? spikeGateNote(READER_GATE) : ''}
+            Partitions and the Federated Search reader are not offered here.
+            {PARTITION_GATE && <InfoTip text={spikeGateNote(PARTITION_GATE)} />}
           </p>
         </div>
       </Collapse>
@@ -1493,10 +1493,7 @@ function CreateChoices({
         <button type="button" className="btn" onClick={onSave}>
           Save these choices
         </button>
-        <span className="ac-note">
-          This writes one document in this app’s own store. It creates nothing in Cribl and changes no
-          Cribl configuration.
-        </span>
+        <span className="ac-note">{CREATE_SAVE_NOTE}</span>
       </div>
       {storeRefused && (
         <p className="sl-note sl-note-warn" role="status">

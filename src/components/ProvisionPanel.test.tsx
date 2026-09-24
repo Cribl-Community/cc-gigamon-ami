@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { ProvisionPanel } from './ProvisionPanel'
+import { GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, deployNote } from './provisionPanelCopy'
 
 const GROUP = 'default'
 const OTHERS_WORK = `groups/${GROUP}/local/cribl/inputs.yml`
@@ -155,6 +156,40 @@ describe('the pending-file list the Guided Setup confirmation names', () => {
 
     expect(bodyText()).toContain(OTHERS_WORK)
     expect(bodyText()).toContain('somebody else’s unfinished work')
+  })
+})
+
+describe('what the panel says before anything is pressed', () => {
+  // The intro was 120 words and the group hint three sentences (declutter,
+  // 2026-09-24). What moved behind an ⓘ must still be reachable — the ⓘ's
+  // accessible name IS the text — and the commit-reach warning in particular
+  // must survive the move, because it is the one thing the old intro said about
+  // somebody else's configuration.
+  const tipsIn = (selector: string) =>
+    [...document.body.querySelectorAll(`${selector} .infotip`)].map((t) => t.getAttribute('aria-label'))
+
+  it('shows one lead line, with the rest one ⓘ away', async () => {
+    stubLeader()
+    await mount()
+    const lead = document.body.querySelector('.gs-intro')
+    expect(lead?.firstChild?.textContent).toBe(PROVISION_LEAD)
+    expect(PROVISION_LEAD.split(/\s+/).length).toBeLessThanOrEqual(25)
+    expect(tipsIn('.gs-intro')).toEqual([PROVISION_LEAD_TIP])
+    expect(PROVISION_LEAD_TIP).toContain('inputs.yml')
+    expect(PROVISION_LEAD_TIP).toContain('never edited')
+  })
+
+  it('explains the worker group beside its label, not in a paragraph after the picker', async () => {
+    stubLeader()
+    await mount()
+    expect(tipsIn('.gs-group-picker')).toEqual([GROUP_TIP])
+    expect(document.body.querySelector('.gs-group-hint')).toBeNull()
+  })
+
+  it('still says, beside Deploy, that nothing is written before the review', async () => {
+    stubLeader()
+    await mount()
+    expect(bodyText()).toContain(deployNote(GROUP))
   })
 })
 

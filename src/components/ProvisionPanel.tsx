@@ -66,7 +66,10 @@ import {
   SYSLOG_SOURCE_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID,
   LAKE_DESTINATION_ID, LAKE_DATASET_ID, SYSLOG_PORT,
 } from '../cribl/provision'
-import { deployConsequences, removeConsequences } from './provisionPanelCopy'
+import {
+  GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, deployConsequences, deployNote, removeConsequences,
+} from './provisionPanelCopy'
+import { InfoTip } from './InfoTip'
 import {
   loadCommitMemory, saveCommitMemory, loadSetupGroup, saveSetupGroup, type CommitMemory,
 } from '../cribl/setupMemory'
@@ -458,30 +461,21 @@ export function ProvisionPanel() {
         title="Guided setup — onboard live Gigamon AMI over Syslog"
         note={<span className={`env-chip ${IS_INSTALLED ? 'env-installed' : 'env-dev'}`}>{IS_INSTALLED ? 'Cribl' : 'dev preview'}</span>}
       >
+        {/* One lead line; the rest is behind the ⓘ (provisionPanelCopy.ts). */}
         <p className="gs-intro">
-          This provisions the <strong>real-world onboarding path</strong> into the selected Cribl Stream{' '}
-          <code>{group}</code> worker group: a <strong>Syslog source</strong> your Gigamon Application
-          Metadata Exporter (AMX) points at, a <strong>pipeline</strong> that parses and normalizes the
-          AMI records, a <strong>route</strong>, and the <strong>Cribl Lake</strong> dataset{' '}
-          <code>{LAKE_DATASET_ID}</code> these dashboards already read. It writes{' '}
-          <strong>only its own objects</strong> — creating what is missing, overwriting the pipeline,
-          source and route entry where they have drifted from this release, and never editing the demo
-          DataGen feed. Real flows land in the same dataset, so the existing dashboards light up
-          automatically. The <strong>commit</strong> that follows is wider than the write: Git takes
-          whole files, and <code>inputs.yml</code>, <code>pipelines/route.yml</code> and <code>outputs.yml</code>{' '}
-          each hold every object of their kind in the group. The confirmation names them and says what
-          Cribl reports already uncommitted in them.
+          {PROVISION_LEAD}
+          <InfoTip text={PROVISION_LEAD_TIP} />
         </p>
 
         <div className="gs-group-picker">
           <label htmlFor="gs-group-select" className="gs-group-label">Worker group</label>
+          <InfoTip text={GROUP_TIP} />
           <select
             id="gs-group-select"
             className="gs-group-select"
             value={group}
             disabled={running !== null}
             onChange={(e) => void pickGroup(e.target.value)}
-            title="The Stream worker group the onboarding stack reads, creates, or removes"
           >
             {/* The remembered group and the group list arrive independently, and
                 a remembered group can outlive the group itself. Either way the
@@ -493,11 +487,6 @@ export function ProvisionPanel() {
               </option>
             ))}
           </select>
-          <span className="gs-group-hint">
-            The source, pipeline, route &amp; destination are created here and committed/deployed to this
-            group. The Lake dataset <code>{LAKE_DATASET_ID}</code> is shared and group-independent.
-            The group you pick is remembered for you, so this tab opens on it next time.
-          </span>
         </div>
 
         <div className="gs-grid">
@@ -583,10 +572,7 @@ export function ProvisionPanel() {
                 there is a refusal to report, its "Yes" button is gone. The note
                 belongs here, beside the trigger the user is now looking at. */}
             <GateNote write="syslog_stack.apply" />
-            <p className="gs-action-note">
-              Creates any missing resources, then commits &amp; deploys to the <code>{group}</code> group.
-              You'll get to review exactly what changes first.
-            </p>
+            <p className="gs-action-note">{deployNote(group)}</p>
             {unreadable.length > 0 && (
               <p className="gs-action-note gs-action-warn">
                 Cribl refused to let this app read part of <code>{group}</code>{' '}
