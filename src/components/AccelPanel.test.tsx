@@ -72,6 +72,7 @@ import {
   removeResources,
   rowAction,
   rowActionName,
+  rowNote,
   showOwnerColumn,
   switchName,
   toggleNothingWords,
@@ -496,6 +497,22 @@ describe('what a confirmation names', () => {
     for (const leave of plan.willLeave) expect(named.some((id) => leave.label.includes(id))).toBe(false)
   })
 
+  it('does not offer to overwrite the Lake total while its window cannot be resolved, and says why', async () => {
+    // Verifier, 2026-09-24, defect 2. This stub's Lake API answers 404, so what
+    // this release "intends" for the Lake total is the manifest's DEFAULT
+    // window. A dialog offering to write that over the stored search would
+    // replace a window chosen from the tenant's retention with one nobody chose.
+    stubWorkspace({ saved: { [LAKE]: await drifted(LAKE), [SAMPLE]: await stored(SAMPLE) } })
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('differs')
+    expect(applyResources(state).map((r) => r.id)).not.toContain(LAKE)
+    const note = rowNote(row, healthOf(row.state, null))
+    expect(note).toContain('retention could not be read')
+    expect(note).toContain('Apply leaves it as it is')
+    expect(note).not.toContain('Apply overwrites it')
+  })
+
   it('offers to delete only what this app can prove it created', async () => {
     stubWorkspace({ saved: { [LAKE]: await foreign(LAKE), [SAMPLE]: await stored(SAMPLE) } })
     const state = await readAccelState()
@@ -710,13 +727,16 @@ describe('a confirmed write', () => {
     // Review 2026-09-24, defect 1: the dialog says the panels go live. They do
     // only if the read path hears about it — accel/serving.ts, fed here, with
     // no second read of the saved searches.
-    stubWorkspace({ saved: { [LAKE]: await stored(LAKE) } })
+    // The sample, not the Lake total: this stub's Lake API answers 404, and a
+    // Lake entry whose window could not be resolved has no body verdict at all
+    // (`unknown` — provision.ts `windowUnresolved`), which is not this test.
+    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
     await mount()
-    expect(accelServing(LAKE)).toBe('scheduled')
-    await press(buttonNamed(rowActionName('pause', accelEntry(LAKE))))
+    expect(accelServing(SAMPLE)).toBe('scheduled')
+    await press(buttonNamed(rowActionName('pause', accelEntry(SAMPLE))))
     await press(buttonNamed('Yes, pause it'))
     await settle()
-    expect(accelServing(LAKE)).toBe('paused')
+    expect(accelServing(SAMPLE)).toBe('paused')
   })
 })
 

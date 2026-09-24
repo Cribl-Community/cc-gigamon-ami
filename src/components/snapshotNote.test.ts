@@ -117,6 +117,20 @@ describe('snapshotNote', () => {
     expect(note!.title).toBe(NOTES['drifted-at'])
   })
 
+  it('says a re-applied entry has not run the new query yet, and offers the first run that did', () => {
+    // Verifier, 2026-09-24, defect 3: a run from before Re-apply answered the
+    // older query. Live on the newest read; nothing, with the nearest run of
+    // the new query, at a picked moment.
+    const live = snapshotNote({ source: 'live', outcome: 'reapplied', at: null, stale: false }, NOW)
+    expect(live!.tone).toBe('live')
+    expect(live!.title).toBe(NOTES.reapplied)
+    const at = snapshotNote({ source: 'none', outcome: 'reapplied-at', at: null, stale: false, nearestAt: NOW - 3_600_000 }, NOW)
+    expect(at!.tone).toBe('absent')
+    expect(at!.text).toMatch(/^the run from then is from an older query · nearest /)
+    expect(at!.title).toBe(NOTES['reapplied-at'])
+    expect(snapshotNote({ source: 'none', outcome: 'reapplied-at', at: null, stale: false, nearestAt: null }, NOW)!.text).toBe('the run from then is from an older query')
+  })
+
   it('falls back to live words rather than dating a run it cannot date', () => {
     // read.ts already refuses to return an undated stored result — an undated
     // number cannot be labelled, and the label is the whole safety argument.

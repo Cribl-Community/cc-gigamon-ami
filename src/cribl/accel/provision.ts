@@ -80,6 +80,7 @@ import { APP_VERSION } from '../config'
 import { currentUserId } from '../user'
 import { readLakeWindow } from '../lakeWindowRead'
 import {
+  LAKE_ENTRY_ID,
   MANIFEST,
   resolvedManifest,
   accelEntry,
@@ -97,6 +98,7 @@ import {
   recordAccelWrites,
   wasWrittenHere,
   type AccelCreation,
+  type AccelStateDoc,
 } from './store'
 
 // ── Addressing ──────────────────────────────────────────────────────────────
@@ -239,23 +241,29 @@ export function carriesOwnerMark(description: string | null): boolean {
  * past. What is compared is the MANIFEST version, which moves only when the
  * shape of what gets written changes.
  */
-function differences(want: AccelSavedSearch, raw: StoredSavedSearch): string[] {
+function differences(want: AccelSavedSearch, raw: StoredSavedSearch, windowKnown = true): string[] {
   const out = new Set<string>()
   // Ours always parses — it is the string accel/manifest.ts just built.
   const mine = parseStamp(want.description) as AccelStamp
   const theirs = parseStamp(str(raw.description))
   if (!theirs) out.add('the app stamp in its description')
   else {
-    if (theirs.bodySha !== mine.bodySha) out.add('the query it runs')
-    if (theirs.displaySha !== mine.displaySha) out.add('the query the panel shows for it')
+    // The two digests, the query, the name and the window are all functions of
+    // the Lake window (manifest.ts `resolveEntry`). With the window unresolved
+    // `want` holds the manifest's DEFAULT, and a comparison against it is a
+    // comparison against a value nobody chose — see `windowUnresolved`.
+    if (windowKnown && theirs.bodySha !== mine.bodySha) out.add('the query it runs')
+    if (windowKnown && theirs.displaySha !== mine.displaySha) out.add('the query the panel shows for it')
     if (theirs.serves !== mine.serves) out.add('which panel it serves')
     if (theirs.manifestVersion !== mine.manifestVersion) {
       out.add(`the manifest version it was written to (v${theirs.manifestVersion})`)
     }
   }
-  if (str(raw.query) !== want.query) out.add('the query it runs')
-  if (str(raw.name) !== want.name) out.add('its name')
-  if (str(raw.earliest) !== want.earliest || str(raw.latest) !== want.latest) out.add('the window it reads')
+  if (windowKnown) {
+    if (str(raw.query) !== want.query) out.add('the query it runs')
+    if (str(raw.name) !== want.name) out.add('its name')
+    if (str(raw.earliest) !== want.earliest || str(raw.latest) !== want.latest) out.add('the window it reads')
+  }
   // A private saved search serves only the person who owns it; every other
   // viewer's panel would silently read nothing at all.
   if (raw.isPrivate === true) out.add('its visibility — private, so other viewers would see nothing')
@@ -303,6 +311,35 @@ export interface AccelRow {
   /** The object as read. A writer must re-read before PATCHing it; this is for
    *  showing, not for sending. */
   stored: StoredSavedSearch | null
+  /**
+   * The Lake entry, read while the dataset's retention could not be.
+   *
+   * Its query, window, name and digests are functions of that retention
+   * (manifest.ts `resolveEntry`), so `intended` then holds the manifest's
+   * 30-day DEFAULT — which on any tenant whose retention or method differs is
+   * not what the saved search should run. Verifier, 2026-09-24, defect 2: the
+   * comparison against it reported a correct schedule as `differs`, which sent
+   * the Lake card's most expensive query live (accel/serving.ts) and offered a
+   * Re-apply that would have written the default window over the correct one.
+   * The overwrite predates serving.ts.
+   *
+   * So while this is set, nothing that depends on the window is compared, the
+   * read path gets no verdict about the body (`unknown`), and no write replaces
+   * the stored object (`approvedWrites`, `applyPlan`, `applyAcceleration`).
+   * Creating an ABSENT entry on the default is still allowed: that replaces
+   * nothing, and once the retention reads, the row shows the difference.
+   *
+   * Optional so hand-built rows in tests need not carry it; `readAccelState`
+   * always sets it.
+   */
+  windowUnresolved?: boolean
+  /**
+   * When this install last wrote the query or window this search runs
+   * (accel/store.ts `bodyAt`), or null when its record says nothing. A run that
+   * began before it answered an older query; accel/read.ts refuses it.
+   * Optional for hand-built rows; `readAccelState` always sets it.
+   */
+  bodyAt?: number | null
 }
 
 /** A `gno_` saved search in the workspace that this release's manifest does not
@@ -379,6 +416,7 @@ function blindState(
   intended: AccelSavedSearch[],
   denied: boolean,
   error: string,
+  recorded: AccelStateDoc,
 ): AccelState {
   return {
     rows: entries.map((entry, i) => ({
@@ -392,6 +430,10 @@ function blindState(
       recorded: false,
       intended: intended[i],
       stored: null,
+      windowUnresolved: false,
+      // The list told us nothing, but this install's own record still says when
+      // it wrote each query — and a refused list must not lift that bound.
+      bodyAt: recorded.created[entry.id]?.bodyAt ?? null,
     })),
     orphans: [],
     denied,
@@ -414,8 +456,9 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
   // the dataset's retention and its query the method that covers it
   // (src/queries/lakeWindow.ts), so what is intended — and so what counts as drift,
   // and what Apply writes — is resolved against the tenant, not the constant.
-  // An unreadable retention leaves the manifest's default: nothing is written
-  // on a window nobody chose.
+  // An unreadable retention leaves the manifest's default, and the Lake row is
+  // marked `windowUnresolved`: nothing is compared against, or written over a
+  // stored search from, a window nobody chose.
   //
   // THE THREE READS ARE INDEPENDENT, SO THEY OVERLAP. This used to be the Lake
   // read, then the KV read, then the list — three round trips in series. That
@@ -429,14 +472,14 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
 
   const list = await listP
   if (isDenial(list.status)) {
-    return blindState(entries, intended, true, 'This account cannot list Cribl Search saved searches, so the scheduled searches this app owns cannot be checked.')
+    return blindState(entries, intended, true, 'This account cannot list Cribl Search saved searches, so the scheduled searches this app owns cannot be checked.', recorded)
   }
   if (!accepted(list)) {
-    return blindState(entries, intended, false, `Cribl answered ${list.status} — ${errText(list)}`)
+    return blindState(entries, intended, false, `Cribl answered ${list.status} — ${errText(list)}`, recorded)
   }
   const items = itemsOf(list.body)
   if (!items) {
-    return blindState(entries, intended, false, 'Cribl returned a saved-search list this app could not read.')
+    return blindState(entries, intended, false, 'Cribl returned a saved-search list this app could not read.', recorded)
   }
 
   const total = num((list.body as { totalCount?: unknown }).totalCount)
@@ -468,7 +511,8 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
     const description = raw ? str(raw.description) : null
     const ours = carriesOwnerMark(description)
     const wasRecorded = wasWrittenHere(recorded, entry.id)
-    const diffs = raw && (ours || wasRecorded) ? differences(want, raw) : []
+    const windowUnresolved = entry.id === LAKE_ENTRY_ID && lake === null
+    const diffs = raw && (ours || wasRecorded) ? differences(want, raw, !windowUnresolved) : []
     rows.push({
       id: entry.id,
       entry,
@@ -480,6 +524,8 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
       recorded: wasRecorded,
       intended: want,
       stored: raw,
+      windowUnresolved,
+      bodyAt: recorded.created[entry.id]?.bodyAt ?? null,
     })
   }
 
@@ -609,7 +655,9 @@ export type ApprovedWrites = Readonly<Record<string, 'absent' | 'differs'>>
 export function approvedWrites(state: AccelState): ApprovedWrites {
   const out: Record<string, 'absent' | 'differs'> = {}
   for (const row of state.rows) {
-    if (row.state === 'absent' || row.state === 'differs') out[row.id] = row.state
+    if (row.state === 'absent') out[row.id] = row.state
+    // Never an overwrite from a window nobody resolved — see `windowUnresolved`.
+    else if (row.state === 'differs' && !row.windowUnresolved) out[row.id] = row.state
   }
   return out
 }
@@ -693,6 +741,10 @@ export async function applyAcceleration(
       step({ id: row.id, action: 'skipped', detail: 'this app could not read what is there, so it wrote nothing' })
       continue
     }
+    if (row.state === 'differs' && row.windowUnresolved) {
+      step({ id: row.id, action: 'skipped', detail: UNRESOLVED_WHY })
+      continue
+    }
     if (row.state === 'foreign') {
       step({
         id: row.id,
@@ -705,7 +757,7 @@ export async function applyAcceleration(
       const r = await createSaved(intended)
       if (accepted(r)) {
         step({ id: row.id, action: 'created' })
-        written[row.id] = creationRecord(intended, by)
+        written[row.id] = creationRecord(intended, by, true)
       } else {
         step({ id: row.id, action: 'error', detail: errText(r) })
       }
@@ -729,7 +781,14 @@ export async function applyAcceleration(
       const r = await patchSaved(row.id, body)
       if (accepted(r)) {
         step({ id: row.id, action: 'updated', detail: row.differences.join('; ') })
-        written[row.id] = creationRecord(intended, by)
+        // Whether the QUERY the search runs changed — against the object this
+        // PATCH replaced, not against the digest in its description, which is
+        // free text. A cron-only correction keeps the earlier `bodyAt`.
+        const bodyChanged =
+          str(cur.raw.query) !== intended.query ||
+          str(cur.raw.earliest) !== intended.earliest ||
+          str(cur.raw.latest) !== intended.latest
+        written[row.id] = creationRecord(intended, by, bodyChanged)
       } else {
         step({ id: row.id, action: 'error', detail: errText(r) })
       }
@@ -752,9 +811,27 @@ export async function applyAcceleration(
   // Re-read, so what a screen shows afterwards is the workspace and not this
   // run's own optimism — and so a write that answered 200 and did nothing (see
   // A-SP23) is visible rather than reported as success.
-  const state = unchanged ? before : await readAccelState({ background: false })
+  const reread = unchanged ? before : await readAccelState({ background: false })
+  // WHAT THIS RUN WROTE IS KNOWN HERE, whatever the store did with it: the
+  // record above is not awaited and can be refused (always, on the localhost
+  // dev page), and the re-read may beat it. The panels hear this state
+  // (AccelPanel → publishAccelServing), and a `bodyAt` missing from it would
+  // serve the old query's runs under the new ⓘ until the next reload.
+  const prior = new Map(before.rows.map((r) => [r.id, r.bodyAt ?? null]))
+  const state: AccelState = Object.keys(written).length
+    ? {
+        ...reread,
+        rows: reread.rows.map((r) =>
+          written[r.id] ? { ...r, bodyAt: written[r.id].bodyAt ?? prior.get(r.id) ?? r.bodyAt ?? null } : r,
+        ),
+      }
+    : reread
   return { steps, unchanged, state }
 }
+
+/** Why a Lake row with an unresolved window is left alone. */
+const UNRESOLVED_WHY =
+  'the Lake dataset’s retention could not be read, so this app does not know which window this search should read, and wrote nothing'
 
 /**
  * The corrective PATCH's schedule.
@@ -772,10 +849,12 @@ function mergeScheduleFromIntended(
   return { ...(stored ?? {}), ...accelPostBody(entry, '').schedule, enabled }
 }
 
-function creationRecord(intended: AccelSavedSearch, by: string | null): AccelCreation {
+function creationRecord(intended: AccelSavedSearch, by: string | null, bodyChanged: boolean): AccelCreation {
   const stamp = parseStamp(intended.description) as AccelStamp
+  const at = Date.now()
   return {
-    at: Date.now(),
+    ...(bodyChanged ? { bodyAt: at } : {}),
+    at,
     appVersion: APP_VERSION,
     manifestVersion: stamp.manifestVersion,
     bodySha: stamp.bodySha,
@@ -1067,6 +1146,10 @@ export function applyPlan(state: AccelState): AccelPlan {
         willWrite.push(`${label(row.entry)} — create, running ${row.entry.cron} ${row.entry.tz}`)
         break
       case 'differs':
+        if (row.windowUnresolved) {
+          willLeave.push({ label: label(row.entry), why: UNRESOLVED_WHY })
+          break
+        }
         willWrite.push(`${label(row.entry)} — overwrite, because ${row.differences.join(' and ')} differ${row.differences.length === 1 ? 's' : ''} from what this release writes`)
         break
       case 'foreign':

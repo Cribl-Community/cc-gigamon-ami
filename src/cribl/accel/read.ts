@@ -302,6 +302,13 @@ export type AccelOutcome =
   /** A past moment was asked for on a drifted entry. Every stored run there came
    *  from the older query, and a moment never falls back to live — so nothing. */
   | 'drifted-at'
+  /** The newest run began before this install last rewrote the query the saved
+   *  search runs (`appliedAt`): it answered the OLDER query, so it is not read
+   *  and the live query runs until a run of the new one exists. */
+  | 'reapplied'
+  /** A past moment was asked for and the run from then began before that
+   *  write. It answered the older query, and a moment never falls back to live. */
+  | 'reapplied-at'
   /** A past moment was asked for and this entry has no run at or before it. The
    *  live query deliberately did NOT run — see AccelSource's `none`. */
   | 'no-run-at'
@@ -337,6 +344,10 @@ export const NOTES: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   unscheduled: 'No scheduled search serves this panel now, so the live query ran.',
   'drifted-at':
     'The stored runs for this panel came from an older query than the one shown here, so none is shown. Re-apply acceleration in Guided Setup, or switch to Live.',
+  reapplied:
+    'The scheduled search that serves this panel was changed to the query shown here and has not run it yet, so the live query ran.',
+  'reapplied-at':
+    'The stored run from that time came from the query this panel used before acceleration was re-applied, so it is not shown.',
   'no-run-at':
     'This panel has no stored run from the time you picked. Running its query now would answer about the present under a label saying otherwise, so it did not run.',
   unshaped:
@@ -402,6 +413,14 @@ export interface AccelReadOptions<T> {
    * nobody could read must not move a panel's bill.
    */
   serving?: ServingVerdict
+  /**
+   * When this install last wrote the query the saved search runs
+   * (accel/store.ts `bodyAt`, via accel/serving.ts), or null/omitted when
+   * nothing records it. A run that BEGAN before it answered the older query:
+   * the newest-run read falls back to live (`reapplied`), a moment shows
+   * nothing (`reapplied-at`). Verifier, 2026-09-24, defect 3.
+   */
+  appliedAt?: number | null
   /** KQL appended after the `jobName` predicate. */
   tail?: string
   signal?: AbortSignal
@@ -688,7 +707,8 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   // Null means "not this way" — every such case falls through to the
   // `$vt_results` read below, unchanged. See `newestArtifact`.
   const artifact = await newestArtifact(entry, opts)
-  if (artifact !== null) return artifact
+  if (artifact === 'reapplied') return fallback(entry, 'reapplied', live, opts)
+  if (artifact !== null) return notBeforeApply(entry, artifact, live, opts)
 
   let answered
   try {
@@ -724,7 +744,7 @@ export async function readAccelRows(id: AccelId, opts: AccelReadOptions<Row[]> =
   }
 
   const sourceJobId = str(result.rows[0][COL_JOB_ID])
-  return dated(entry, stripVirtualColumns(result.rows), sourceJobId, key, live, opts)
+  return notBeforeApply(entry, await dated(entry, stripVirtualColumns(result.rows), sourceJobId, key, live, opts), live, opts)
 }
 
 /**
@@ -768,7 +788,8 @@ export async function readAccelFieldSummaries(
   // which submits no job. Null falls through to the job below, unchanged. See
   // `newestArtifactSummaries`.
   const artifact = await newestArtifactSummaries(entry, opts)
-  if (artifact !== null) return artifact
+  if (artifact === 'reapplied') return fallback(entry, 'reapplied', live, opts)
+  if (artifact !== null) return notBeforeApply(entry, artifact, live, opts)
 
   let answered
   try {
@@ -809,7 +830,7 @@ export async function readAccelFieldSummaries(
     // widest real field.
     sampled: result.sampled,
   }
-  return dated(entry, data, sourceJobId, key, live, opts)
+  return notBeforeApply(entry, await dated(entry, data, sourceJobId, key, live, opts), live, opts)
 }
 
 // ── The newest run, read as an artifact ─────────────────────────────────────
@@ -858,12 +879,12 @@ export async function readAccelFieldSummaries(
  * control, a panel's own refresh and Re-check drop it (`forgetRunHistory`), so
  * the newest run is the newest one at the moment somebody asked.
  */
-async function newestArtifact(entry: AccelEntry, opts: AccelReadOptions<Row[]>): Promise<AccelRead<Row[]> | null> {
+async function newestArtifact(entry: AccelEntry, opts: AccelReadOptions<Row[]>): Promise<AccelRead<Row[]> | 'reapplied' | null> {
   const tail = opts.tail
   if (tail !== undefined && parseTail(tail) === null) return null
   return spinning(async () => {
     const found = await newestRunArtifact(entry, opts)
-    if (found === null) return null
+    if (found === null || found === 'reapplied') return found
     const data = shapeRows(tail, found.read, opts.limit)
     return data === null ? null : servedBy(entry, data, found.run, opts)
   })
@@ -892,12 +913,12 @@ async function newestArtifact(entry: AccelEntry, opts: AccelReadOptions<Row[]>):
 async function newestArtifactSummaries(
   entry: AccelEntry,
   opts: AccelReadOptions<FieldSummariesResult>,
-): Promise<AccelRead<FieldSummariesResult> | null> {
+): Promise<AccelRead<FieldSummariesResult> | 'reapplied' | null> {
   const tail = opts.tail
   if (tail !== undefined && parseTail(tail) === null) return null
   return spinning(async () => {
     const found = await newestRunArtifact(entry, opts)
-    if (found === null) return null
+    if (found === null || found === 'reapplied') return found
     if (found.read.rows.length !== found.read.totalEventCount) return null
     const rows = shapeRows(tail, found.read, undefined)
     if (rows === null || rows.length === 0) return null
@@ -951,8 +972,8 @@ function servedBy<T>(entry: AccelEntry, data: T, run: AccelRun & { at: number },
  */
 async function newestRunArtifact(
   entry: AccelEntry,
-  opts: { signal?: AbortSignal },
-): Promise<{ run: AccelRun & { at: number }; read: ArtifactRead } | null> {
+  opts: { signal?: AbortSignal; appliedAt?: number | null },
+): Promise<{ run: AccelRun & { at: number }; read: ArtifactRead } | 'reapplied' | null> {
   // The shared history page — one request per page for every entry, so this is
   // usually a cache hit rather than a round trip. UNFILTERED, on purpose: the
   // timeline's view drops failed runs, and the newest run failing is a fact
@@ -973,6 +994,9 @@ async function newestRunArtifact(
   if (newest && !newest.running && (newest.outcome === 'failed' || newest.outcome === 'canceled')) return null
   const run = listed.runs.find((r) => !r.running && r.outcome === 'completed' && r.at !== null)
   if (!run || run.at === null) return null
+  // A run of the OLDER query is not downloaded only to be refused, and the
+  // `$vt_results` path is not asked either: its newest run is this same one.
+  if (predatesApply(run, opts.appliedAt)) return 'reapplied'
 
   // The id is the address, so it is checked before it is used — the same two
   // guards `atMoment` applies. `isRunOf` has already filtered by this entry;
@@ -1051,6 +1075,14 @@ async function atMoment<T, R>(
   }
   const run = runAtOrBefore(mine, asOf)
   if (!run) return absent(entry, 'no-run-at', empty, opts, nearestRun(mine, asOf)?.at ?? null)
+  // THE RUN FROM THEN ANSWERED THE OLDER QUERY (verifier, 2026-09-24, defect
+  // 3). Its rows are real, but not rows of the query the ⓘ now shows; offered
+  // instead is the first run of the new one, when there is one. Runs are
+  // newest first, so that is the last one not predating the write.
+  if (predatesApply(run, opts.appliedAt)) {
+    const after = mine.runs.filter((r) => !predatesApply(r, opts.appliedAt))
+    return absent(entry, 'reapplied-at', empty, opts, after.length ? (after[after.length - 1].at ?? null) : null)
+  }
 
   // The id is the address now, so it is checked before it is used rather than
   // after. `listRuns` filters by this entry already; this is the second signal,
@@ -1282,6 +1314,52 @@ async function diagnose(id: AccelId, opts: { signal?: AbortSignal }): Promise<Ac
 function unservedOutcome(serving: ServingVerdict | undefined): AccelOutcome | null {
   if (serving === 'paused' || serving === 'drifted' || serving === 'unscheduled') return serving
   return null
+}
+
+/**
+ * What a verdict makes a read DO — the only part of it a caller should re-run
+ * on. Null means "read the stored run as if there were no verdict".
+ *
+ * Verifier, 2026-09-24, defect 1: `useSearch` and Field Explorer keyed their
+ * effects on the raw verdict, so `unknown` → `scheduled` (a boot read that
+ * missed the hold's deadline; Field Explorer, which does not hold; a Refresh
+ * whose list read failed, the other way) re-ran every panel for a change that
+ * altered nothing it does — and a re-run of a panel that had fallen back live
+ * is a second billed live job. A moment only ever acts on `drifted`; the
+ * newest-run read acts on the three `unservedOutcome` names, each of which is
+ * its own caption, so a change between two of them still re-runs to say so.
+ */
+export function servingEffect(serving: ServingVerdict | undefined, atMoment: boolean): AccelOutcome | null {
+  if (atMoment) return serving === 'drifted' ? 'drifted-at' : null
+  return unservedOutcome(serving)
+}
+
+/**
+ * When a run BEGAN — the moment the saved search's query was taken for it. A
+ * run created before a PATCH ran the query from before it, however late it
+ * finished, so creation comes first and completion (`at`) last.
+ */
+export function runBegan(run: AccelRun): number | null {
+  return run.createdAt ?? run.startedAt ?? run.at
+}
+
+/** Whether a run answered a query this install has since rewritten. False when
+ *  nothing records a write: an older record bounds nothing, as before. */
+function predatesApply(run: AccelRun | null, appliedAt: number | null | undefined): boolean {
+  if (run === null || appliedAt === null || appliedAt === undefined) return false
+  const began = runBegan(run)
+  return began !== null && began < appliedAt
+}
+
+/** A stored-run answer, unless its run predates the recorded write — then live. */
+async function notBeforeApply<T>(
+  entry: AccelEntry,
+  read: AccelRead<T>,
+  live: () => Promise<T>,
+  opts: AccelReadOptions<T>,
+): Promise<AccelRead<T>> {
+  if (read.source !== 'schedule' || !predatesApply(read.run, opts.appliedAt)) return read
+  return fallback(entry, 'reapplied', live, opts)
 }
 
 async function fallback<T>(

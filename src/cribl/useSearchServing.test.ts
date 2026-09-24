@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider, useDashboard } from '../app/DashboardContext'
 import { resetAccelMode } from './accel/mode'
 import { accelEntry, accelSavedSearch, type AccelId } from './accel/manifest'
-import type { AccelState, StoredSavedSearch } from './accel/provision'
+import type { AccelRow, AccelState, StoredSavedSearch } from './accel/provision'
 import { loadAccelServing, publishAccelServing } from './accel/serving'
 import { NOTES } from './accel/read'
 import { resetDataMode, setDataMode } from './dataMode'
@@ -74,7 +74,7 @@ const storedReads = () => submits.filter((s) => s.includes('$vt_results'))
 const liveRuns = () => submits.filter((s) => !s.includes('$vt_results'))
 
 /** A state read in which the Lake entry's saved search is `stored`. */
-async function stateWith(stored: StoredSavedSearch | null): Promise<AccelState> {
+async function stateWith(stored: StoredSavedSearch | null, extra: Partial<AccelRow> = {}): Promise<AccelState> {
   const entry = accelEntry(LAKE)
   const intended = await accelSavedSearch(entry)
   return {
@@ -90,6 +90,7 @@ async function stateWith(stored: StoredSavedSearch | null): Promise<AccelState> 
         recorded: true,
         intended,
         stored,
+        ...extra,
       },
     ],
     orphans: [],
@@ -109,8 +110,8 @@ async function asWritten(patch: { enabled?: boolean; query?: string } = {}): Pro
   }
 }
 
-async function publish(stored: StoredSavedSearch | null): Promise<void> {
-  const state = await stateWith(stored)
+async function publish(stored: StoredSavedSearch | null, extra: Partial<AccelRow> = {}): Promise<void> {
+  const state = await stateWith(stored, extra)
   await act(async () => { publishAccelServing(state) })
 }
 
@@ -283,3 +284,78 @@ describe('the page’s Refresh', () => {
   })
 })
 
+
+// ── WHAT RE-RUNS A PANEL ────────────────────────────────────────────────────
+// Verifier, 2026-09-24, defect 1. The raw verdict was in the effect's key, so
+// ANY change re-ran the panel — including `unknown` → `scheduled`, which is
+// what a boot read that missed the hold's deadline, a cold Field Explorer and
+// a Refresh whose list read failed all produce. Neither end of that changes
+// what the read does, and a re-run of a panel that had fallen back live is a
+// second billed live job. The key is now what the verdict makes the read DO.
+describe('a verdict change that does not change what the read does', () => {
+  it('unknown → scheduled (the saved-search read landed after the hold) does not re-run', async () => {
+    await render()
+    expect(submits).toHaveLength(1)
+    await publish(await asWritten())
+    await settle()
+    expect(submits, 'the panel re-ran for a verdict that changed nothing it does').toHaveLength(1)
+  })
+
+  it('scheduled → unknown (a Refresh whose list read failed) does not re-run', async () => {
+    await publish(await asWritten())
+    await render()
+    expect(submits).toHaveLength(1)
+    const state = await stateWith(await asWritten())
+    await act(async () => { publishAccelServing({ ...state, error: 'Cribl answered 500' }) })
+    await settle()
+    expect(submits).toHaveLength(1)
+  })
+
+  it('scheduled → paused re-runs exactly once', async () => {
+    await publish(await asWritten())
+    await render()
+    await publish(await asWritten({ enabled: false }))
+    await settle()
+    expect(submits).toHaveLength(2)
+    expect(liveRuns()).toHaveLength(1)
+  })
+})
+
+// ── A RUN FROM BEFORE THE QUERY WAS RE-APPLIED ──────────────────────────────
+// Verifier, 2026-09-24, defect 3. `bodyAt` is when this install last wrote the
+// query the saved search runs (accel/state). The stub's newest run was created
+// a minute before NOW.
+describe('a run from before the query was re-applied', () => {
+  it('runs live when the newest run began before the recorded write', async () => {
+    await publish(await asWritten(), { bodyAt: NOW })
+    await render()
+    expect(liveRuns()).toHaveLength(1)
+    expect(seen!.source).toBe('live')
+    expect(seen!.outcome).toBe('reapplied')
+  })
+
+  it('reads the stored run when that run began after the write', async () => {
+    await publish(await asWritten(), { bodyAt: NOW - 120_000 })
+    await render()
+    expect(liveRuns()).toEqual([])
+    expect(seen!.source).toBe('schedule')
+  })
+
+  it('re-runs once, live, when a write recorded after the run on screen is heard', async () => {
+    await render()
+    expect(seen!.source).toBe('schedule')
+    await publish(await asWritten(), { bodyAt: NOW })
+    await settle()
+    expect(liveRuns()).toHaveLength(1)
+    expect(seen!.outcome).toBe('reapplied')
+    await settle()
+    expect(liveRuns(), 'the panel kept re-running').toHaveLength(1)
+  })
+
+  it('does not re-run when the recorded write is older than the run on screen', async () => {
+    await render()
+    await publish(await asWritten(), { bodyAt: NOW - 120_000 })
+    await settle()
+    expect(submits).toHaveLength(1)
+  })
+})

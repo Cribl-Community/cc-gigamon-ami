@@ -215,6 +215,12 @@ export function showOwnerColumn(rows: readonly AccelRow[], me: string | null): b
 /** The extra sentence a row needs, or null. Rendered under the row rather than
  *  in a cell, because `.dtable` cells do not wrap. */
 export function rowNote(row: AccelRow, health: Health): string | null {
+  // Before the differences: with the Lake window unresolved they are only the
+  // ones that do not depend on it, and Apply will not write this row at all
+  // (provision.ts `windowUnresolved`), so "Apply overwrites it" would be false.
+  if (row.windowUnresolved && row.state !== 'absent') {
+    return `The Lake dataset’s retention could not be read, so whether this search reads the right window cannot be checked, and Apply leaves it as it is. Re-check once the Lake API answers.${row.state === 'differs' && row.differences.length ? ` Also edited since this app wrote it: ${row.differences.join('; ')}.` : ''}`
+  }
   if (row.state === 'differs' && row.differences.length) {
     return `Edited since this app wrote it: ${row.differences.join('; ')}. Apply overwrites it with what this release defines.`
   }
@@ -323,7 +329,7 @@ export function applyResources(state: AccelState): ConfirmResource[] {
         group: SEARCH_GROUP,
         detail: `${row.entry.name} · runs ${row.entry.cron} ${row.entry.tz} over ${row.entry.earliest} → ${row.entry.latest}, keeping the last ${row.entry.keepLastN} runs readable. Feeds ${row.entry.serves}.`,
       })
-    } else if (row.state === 'differs') {
+    } else if (row.state === 'differs' && !row.windowUnresolved) {
       out.push({
         action: 'replace',
         kind: SAVED_KIND,

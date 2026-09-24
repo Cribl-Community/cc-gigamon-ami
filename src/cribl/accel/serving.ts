@@ -62,7 +62,7 @@
 // workspace's full live bill, silently.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { AccelId } from './manifest'
 import { readAccelState, type AccelState } from './provision'
 import { HYDRATE_DEADLINE_MS } from './mode'
@@ -105,6 +105,13 @@ function verdictOf(row: AccelState['rows'][number]): ServingVerdict {
   // saved search that will never fire again. `enabled` merely ABSENT inside a
   // schedule is not read as off — nothing measured says what Cribl does with it.
   if (!raw.schedule || typeof raw.schedule !== 'object') return 'unscheduled'
+  // THE LAKE ENTRY WITH NO RESOLVED WINDOW (verifier, 2026-09-24, defect 2).
+  // `intended` is then the manifest's 30-day default, not what this tenant's
+  // retention calls for, so "it runs a different query" would be a comparison
+  // against a value nobody chose — and `drifted` would send the app's most
+  // expensive query live, in Live mode too. Paused and unscheduled are
+  // answered above because neither needs the window.
+  if (row.windowUnresolved) return 'unknown'
   // Compared against the object itself, whoever wrote it: a `foreign` search
   // under our id that happens to run our query still answers our panel
   // correctly, and one that runs anything else must not.
@@ -118,9 +125,18 @@ function verdictOf(row: AccelState['rows'][number]): ServingVerdict {
 // ── The store ───────────────────────────────────────────────────────────────
 
 let verdicts: ReadonlyMap<AccelId, ServingVerdict> | null = null
+/** Per entry, when this install last wrote the query it runs (accel/store.ts
+ *  `bodyAt`) — the bound accel/read.ts puts on which runs may answer. */
+let applied: ReadonlyMap<AccelId, number | null> = new Map()
+
+/** `bodyAt` per entry, from a state read. Pure; exported for tests. */
+export function appliedTimes(state: AccelState): ReadonlyMap<AccelId, number | null> {
+  return new Map(state.rows.map((r) => [r.id, r.bodyAt ?? null]))
+}
 /** True from the first load until it lands or its deadline passes. Only the
  *  FIRST load holds panels back; a re-read keeps answering with the verdicts it
- *  is replacing, and a panel whose verdict changes re-runs when it lands. */
+ *  is replacing, and a panel re-runs when it lands only if the new verdict
+ *  changes what its read DOES (read.ts `servingEffect`). */
 let pending = false
 let inFlight: Promise<void> | null = null
 /** Bumped by `forget`, so a read started before it cannot publish after it. */
@@ -140,6 +156,7 @@ export function publishAccelServing(state: AccelState): void {
   generation++
   inFlight = null
   verdicts = servingVerdicts(state)
+  applied = appliedTimes(state)
   if (pending) pending = false
   emit()
 }
@@ -171,6 +188,7 @@ export function loadAccelServing(): Promise<void> {
       (state) => {
         if (mine !== generation) return
         verdicts = servingVerdicts(state)
+        applied = appliedTimes(state)
       },
       () => {
         // A read that threw says nothing about the schedules. Keep what was
@@ -204,6 +222,7 @@ export function refreshAccelServing(): void {
 export function forgetAccelServing(): void {
   generation++
   verdicts = null
+  applied = new Map()
   pending = false
   inFlight = null
   emit()
@@ -234,4 +253,49 @@ export function useAccelServing(id: AccelId | null): ServingVerdict | 'pending' 
     () => (id === null ? 'unknown' : accelServing(id)),
     () => 'unknown',
   )
+}
+
+
+/** When this install last wrote the query the entry's saved search runs, or
+ *  null when nothing records it (never read, an older record, no store). */
+export function accelAppliedAt(id: AccelId): number | null {
+  return applied.get(id) ?? null
+}
+
+/** `accelAppliedAt`, reactively. Null in, null out. */
+export function useAccelAppliedAt(id: AccelId | null): number | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => (id === null ? null : accelAppliedAt(id)),
+    () => null,
+  )
+}
+
+/**
+ * A counter that rises once when the run ON SCREEN turns out to predate the
+ * entry's recorded write — the one case in which a newly heard `bodyAt` changes
+ * what a panel should show — and the setter a read reports that run through.
+ * A read keys its effect on `rerun` rather than on `bodyAt` itself.
+ *
+ * WHY NOT KEY ON `bodyAt` (verifier, 2026-09-24, defect 1). It arrives with the
+ * verdicts, so a panel that read before they landed — a cold load past the
+ * hold's deadline, Field Explorer, which does not hold — would re-run on EVERY
+ * arrival, including all the ones where the run it shows is newer than the
+ * write and nothing it would do differs. That re-run is a second billed job.
+ * Keyed on this, a panel re-runs exactly when the number on screen came from
+ * the older query, and only once: the re-run's answer is live or a newer run,
+ * which `shownBegan` then says.
+ *
+ * `shownBegan` is when the run the panel is showing began (read.ts
+ * `runBegan`), or null when it is not showing a stored run.
+ */
+export function useReappliedRerun(id: AccelId | null): { rerun: number; shown: (began: number | null) => void } {
+  const appliedAt = useAccelAppliedAt(id)
+  const [shownBegan, shown] = useState<number | null>(null)
+  const invalid = appliedAt !== null && shownBegan !== null && shownBegan < appliedAt
+  const [rerun, setRerun] = useState(0)
+  useEffect(() => {
+    if (invalid) setRerun((x) => x + 1)
+  }, [invalid])
+  return { rerun, shown }
 }
