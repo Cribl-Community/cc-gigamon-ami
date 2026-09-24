@@ -1207,43 +1207,114 @@ async function deployedVersion(group: string): Promise<string | null> {
   return typeof v === 'string' && v ? v : null
 }
 
-/** The newest commit in the leader's config repo, or null. */
-async function headCommit(): Promise<string | null> {
+/**
+ * How much of the history one read takes. The range a group has not deployed
+ * has to fit inside it, or `pendingDeploy` answers "could not tell" — a group
+ * fifty commits behind is not something to reason about from a status check.
+ * The request below spells the same number as a literal, because
+ * `policyCoverage.test.ts` resolves literal paths only.
+ */
+const HISTORY_PAGE = 50
+
+interface CommitRef { hash: string; refs: string }
+
+/** The newest commits in the leader's config repo, or null when unreadable. */
+async function commitHistory(): Promise<CommitRef[] | null> {
   // `offset` is not optional, whatever the spec says: `limit` without it is a
   // 400 on 4.20.1 ("missing 'offset' parameter", measured 2026-09-23). Without
   // it this always answered null, which silently disabled `undeployedHead`,
   // `pendingDeploy` and the stranded-commit recovery built on them.
-  const r = await capi('GET', '/version?offset=0&limit=5')
+  const r = await capi('GET', '/version?offset=0&limit=50')
   if (r.status !== 200) return null
-  const items = (r.body as { items?: Array<{ hash?: string; refs?: string }> })?.items || []
+  const items = (r.body as { items?: Array<{ hash?: unknown; refs?: unknown }> })?.items
+  if (!Array.isArray(items)) return null
+  return items
+    .filter((c) => typeof c?.hash === 'string' && c.hash !== '')
+    .map((c) => ({ hash: c.hash as string, refs: typeof c.refs === 'string' ? c.refs : '' }))
+    .slice(0, HISTORY_PAGE)
+}
+
+/** Where the Leader's HEAD sits in a history page, or -1 for an empty page. */
+function headIndex(items: CommitRef[]): number {
   // The history comes back newest-first, but a deploy is not something to bet on
   // an undocumented ordering: the newest commit is the one carrying
   // `HEAD -> <branch>` in its refs. Take that one, and fall back to the first
   // only when nothing says so. Getting this backwards would deploy an old commit
   // to a live group, which is a rollback nobody asked for.
-  const head = items.find((c) => typeof c.refs === 'string' && c.refs.includes('HEAD')) ?? items[0]
-  const hash = head?.hash
-  return typeof hash === 'string' && hash ? hash : null
+  const i = items.findIndex((c) => c.refs.includes('HEAD'))
+  return i >= 0 ? i : items.length ? 0 : -1
 }
 
-/** Config file paths that changed since `commit`, or null when the answer is
- *  unavailable — again, not the same as "none". */
-async function filesChangedSince(commit: string): Promise<string[] | null> {
+/**
+ * The paths a `GET /version/files` body names, or null when it cannot be read —
+ * which is not the same as "no files".
+ *
+ * TWO SHAPES. The app was written against a flat list — `{ items: [{ items:
+ * [{ name: 'groups/…/route.yml' }] }] }` — and on 2026-09-24 a 4.20.x
+ * Cribl.Cloud Leader answered with a NESTED TREE instead: one node per path
+ * segment, `children` on directories, `state` on files. Read flat, that tree is
+ * the single path `groups`, which `pathInGroup` counts as a repo-wide file and
+ * so as belonging to EVERY group. Both are walked here; a node's `name` (or
+ * `path`, which is what `/version/status` calls it) is joined onto its parent's.
+ */
+export function versionFilePaths(body: unknown): string[] | null {
+  const entries = (body as { items?: unknown } | null)?.items
+  if (!Array.isArray(entries)) return null
+  type Node = { name?: unknown; path?: unknown; children?: unknown }
+  const out: string[] = []
+  const walk = (node: Node, prefix: string) => {
+    const seg = typeof node?.name === 'string' ? node.name : typeof node?.path === 'string' ? node.path : ''
+    if (seg === '') return
+    const full = prefix ? `${prefix}/${seg}` : seg
+    // A directory: its files are its children's. An empty one names nothing —
+    // Git does not track directories.
+    if (Array.isArray(node.children)) {
+      for (const c of node.children as Node[]) walk(c, full)
+      return
+    }
+    out.push(full)
+  }
+  // One entry per answer — it carries `count` and, on the tree shape, the
+  // commit's own `commitMessage` — each holding the top-level nodes.
+  for (const entry of entries as Array<{ items?: unknown }>) {
+    if (!Array.isArray(entry?.items)) continue
+    for (const n of entry.items as Node[]) walk(n, '')
+  }
+  return out
+}
+
+/**
+ * The config file paths ONE commit changed, or null when unavailable.
+ *
+ * NOT "changed since". The spec calls this endpoint "files that changed since a
+ * commit", and this file used to believe it. Measured read-only on 2026-09-24:
+ * `/version/files?commit=506d36a` answered only `groups/default/local/cribl/
+ * inputs.yml` — exactly the one file `/version/show` diffs for that commit —
+ * although later commits changed `outputs.yml`; every answer carries that
+ * commit's own `commitMessage`; and asked of the deployed commit, it described
+ * what the group was already running. The range is the caller's to walk.
+ */
+async function filesInCommit(commit: string): Promise<string[] | null> {
   const r = await capi('GET', `/version/files?commit=${encodeURIComponent(commit)}`)
   if (r.status !== 200) return null
-  const groups = (r.body as { items?: Array<{ items?: Array<{ name?: string; path?: string }> }> })?.items
-  if (!Array.isArray(groups)) return null
-  const names: string[] = []
-  // Two levels: one entry per commit range, each holding the files it touched.
-  // `name` is what this endpoint calls the path; `/version/status` calls the same
-  // thing `path`, so both are read rather than assumed.
-  for (const entry of groups) {
-    for (const f of entry.items || []) {
-      const n = f.name ?? f.path
-      if (typeof n === 'string') names.push(n)
-    }
-  }
-  return names
+  return versionFilePaths(r.body)
+}
+
+/**
+ * The commits a group is running behind: everything after `deployed` up to and
+ * including `head`, from one history page. Null when the page does not hold
+ * both — the range cannot be bounded, and a guess at it is exactly the claim
+ * `pendingDeploy` must not make.
+ */
+function commitsAfter(items: CommitRef[], deployed: string, head: string): string[] | null {
+  const d = items.findIndex((c) => c.hash === deployed)
+  const h = items.findIndex((c) => c.hash === head)
+  if (d < 0 || h < 0 || d === h) return null
+  // Either order the page comes in: the range is what lies between the two,
+  // HEAD included and the deployed commit — already running — excluded.
+  return h < d
+    ? items.slice(h, d).map((c) => c.hash)
+    : items.slice(d + 1, h + 1).map((c) => c.hash)
 }
 
 /**
@@ -1259,10 +1330,13 @@ async function filesChangedSince(commit: string): Promise<string[] | null> {
  * `undeployedRange` is the shared read — the group's running commit and the
  * Leader's HEAD, or null when they match or either is unreadable.
  */
-async function undeployedRange(group: string): Promise<{ deployed: string; head: string } | null> {
-  const [deployed, head] = await Promise.all([deployedVersion(group), headCommit()])
-  if (!deployed || !head || deployed === head) return null
-  return { deployed, head }
+async function undeployedRange(
+  group: string,
+): Promise<{ deployed: string; head: string; history: CommitRef[] } | null> {
+  const [deployed, history] = await Promise.all([deployedVersion(group), commitHistory()])
+  const head = history?.[headIndex(history)]?.hash
+  if (!deployed || !history || !head || deployed === head) return null
+  return { deployed, head, history }
 }
 
 /**
@@ -1296,21 +1370,33 @@ export async function undeployedHead(group: string = DEFAULT_STREAM_GROUP): Prom
  * cannot distinguish this group from any other is not good enough. "Could not
  * tell" answers null, exactly like "nothing pending".
  *
- * Read-only: three GETs and no writes, so it is safe to ask on a status check.
+ * Read-only: two GETs, then one `/version/files` per commit the group is behind
+ * until one proves the claim — no writes, so it is safe to ask on a status check.
  */
 export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
   const range = await undeployedRange(group)
   if (!range) return null
   // The config repo is shared by every group, so a newer HEAD on its own only
-  // says that SOMEBODY committed something. Ask which files moved since the
-  // commit this group is running, and claim a pending deploy only when one of
+  // says that SOMEBODY committed something. Ask which files each commit this
+  // group has not deployed moved, and claim a pending deploy only when one of
   // them belongs to this group — otherwise every commit anywhere on the leader
-  // would light this up.
-  const changed = await filesChangedSince(range.deployed)
-  // Endpoint unavailable: no group evidence, so no claim.
-  if (changed === null) return null
-  if (!changed.some((p) => pathInGroup(p, group))) return null
-  return range.head
+  // would light this up. One read per commit, because `/version/files` answers
+  // for ONE commit (see `filesInCommit`): asked only about the deployed commit,
+  // as this used to, it described what the group was already running.
+  const behind = commitsAfter(range.history, range.deployed, range.head)
+  // The deployed commit is not in the page: no bounded range, so no claim.
+  if (!behind) return null
+  for (const hash of behind) {
+    const changed = await filesInCommit(hash)
+    // Unavailable for this commit: no evidence from it, but another commit's
+    // read can still prove the claim. If none does, the unread one might have
+    // been this group's, so the answer below is "could not tell" — null.
+    if (changed === null) continue
+    // The deploy moves the group to HEAD, carrying every commit in between, so
+    // proof from any of them is a pending deploy of HEAD.
+    if (changed.some((p) => pathInGroup(p, group))) return range.head
+  }
+  return null
 }
 
 /** Deploy one commit and report it as a step. Shared by the normal path and by

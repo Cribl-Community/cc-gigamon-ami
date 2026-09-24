@@ -44,7 +44,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
-  commitScope, deployAll, pendingConfigPaths, pendingDeploy, removeSyslogStack, undeployedHead,
+  commitScope, deployAll, pendingConfigPaths, pendingDeploy, removeSyslogStack, undeployedHead, versionFilePaths,
   ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
   SYSLOG_ROUTE_ID, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, DEFAULT_STREAM_GROUP,
   type PendingChange, type ResourceKey, type StepResult,
@@ -76,8 +76,19 @@ interface LeaderOpts {
   configVersion?: string
   /** Newest commit in the config repo. */
   head?: string
-  /** Files `/version/files` reports as changed since `configVersion`. */
+  /** Files the commits AFTER `configVersion` touched, folded into HEAD's own
+   *  commit when no `history` is given. `/version/files?commit=X` answers the
+   *  files commit X ITSELF changed (measured 2026-09-24, see `filesInCommit`),
+   *  so this is what HEAD's `/version/files` answers — and `configVersion`'s own
+   *  read answers nothing. */
   changedSince?: string[]
+  /** The commit history, NEWEST FIRST, each with the files that commit itself
+   *  touched. Overrides the `head`/`configVersion`/`changedSince` default. */
+  history?: Array<{ hash: string; refs?: string; files: string[] }>
+  /** Which body `/version/files` answers with: the flat list the app was written
+   *  against, or the nested tree a 4.20.x Cribl.Cloud Leader answered with on
+   *  2026-09-24. The tree is the default because it is what was measured. */
+  filesShape?: 'flat' | 'tree'
   /** The status `/version/files` answers with. 403 is the half-working Leader a
    *  run gets interrupted on, which is where a commit gets stranded. */
   filesStatus?: number
@@ -136,13 +147,39 @@ const weCommitted = (hash: string) => { ourCommits = { [GROUP]: { route: { hash,
 
 beforeEach(() => { ourCommits = {} })
 
+/**
+ * A `/version/files` body for one commit, in either shape a Leader has answered
+ * with. The tree is built the way the 2026-09-24 Leader built it: one node per
+ * path segment, `children` on directories, `state` on files.
+ */
+function filesBody(files: string[], shape: 'flat' | 'tree'): unknown {
+  if (shape === 'flat') return { items: [{ count: files.length, items: files.map((name) => ({ name, state: 'M' })) }], count: 1 }
+  type Node = { name: string; state?: string; children?: Node[] }
+  const roots: Node[] = []
+  for (const f of files) {
+    let level = roots
+    const segs = f.split('/')
+    segs.forEach((seg, i) => {
+      const leaf = i === segs.length - 1
+      let node = level.find((n) => n.name === seg)
+      if (!node) { node = leaf ? { name: seg, state: 'M' } : { name: seg, children: [] }; level.push(node) }
+      if (!leaf) level = node.children as Node[]
+    })
+  }
+  return { items: [{ count: 1, items: roots, commitMessage: 'm' }], count: 1 }
+}
+
 function stubLeader(opts: LeaderOpts = {}): Call[] {
   const {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
     configVersion = HEAD, head = HEAD, changedSince = [], filesStatus = 200, pendingStatus = 200,
+    filesShape = 'tree',
     pipeline = STALE_PIPELINE, source = STALE_SOURCE,
     pipelineBetweenReads, sourceBetweenReads, routesBetweenReads,
   } = opts
+  const history = opts.history ?? (head === configVersion
+    ? [{ hash: head, refs: 'HEAD -> main', files: [] as string[] }]
+    : [{ hash: head, refs: 'HEAD -> main', files: changedSince }, { hash: configVersion, files: [] as string[] }])
   const calls: Call[] = []
   let pipeReads = 0
   let sourceReads = 0
@@ -176,17 +213,18 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
 
     // Git.
     if (under('GET', '/version/files')) {
-      return filesStatus === 200
-        ? reply(200, { items: [{ count: changedSince.length, items: changedSince.map((name) => ({ name, state: 'M' })) }] })
-        : reply(filesStatus, { message: 'not granted' })
+      if (filesStatus !== 200) return reply(filesStatus, { message: 'not granted' })
+      const commit = new URLSearchParams(path.split('?')[1] ?? '').get('commit')
+      const files = history.find((c) => c.hash === commit)?.files ?? []
+      return reply(200, filesBody(files, filesShape))
     }
     if (under('GET', '/version?')) {
       // As the live endpoint answers (4.20.1, measured 2026-09-23): `limit`
       // without `offset` is a 400, "missing 'offset' parameter". The stub used
-      // to accept it, which is how headCommit shipped always returning null.
+      // to accept it, which is how the history read (then `headCommit`) shipped always returning null.
       const q = new URLSearchParams(path.split('?')[1] ?? '')
       if (q.has('limit') && !q.has('offset')) return reply(400, { message: "missing 'offset' parameter" })
-      return reply(200, { items: [{ hash: head, refs: 'HEAD -> main' }] })
+      return reply(200, { items: history.map(({ hash, refs = '' }) => ({ hash, refs })) })
     }
     if (at('GET', '/version/status')) {
       return pendingStatus === 200
@@ -933,12 +971,170 @@ describe('an undeployed commit', () => {
       })
       if (path.startsWith('/version/files')) return reply({ items: [{ items: [{ name: `groups/${GROUP}/local/cribl/pipelines/route.yml` }] }] })
       if (path.startsWith('/version?')) {
-        return reply({ items: [{ hash: 'oldest0000', refs: '' }, { hash: HEAD, refs: 'HEAD -> main' }] })
+        // Oldest first, and the deployed commit in the page so the range can be
+        // bounded: taking the first-listed commit as HEAD names 'oldest0000'.
+        return reply({ items: [{ hash: 'oldest0000', refs: '' }, { hash: DEPLOYED, refs: '' }, { hash: HEAD, refs: 'HEAD -> main' }] })
       }
       if (method === 'GET' && path === `/products/stream/groups/${GROUP}`) return reply({ items: [{ id: GROUP, configVersion: DEPLOYED }] })
       return reply({ items: [] })
     })
     expect(await pendingDeploy(GROUP)).toBe(HEAD)
+  })
+})
+
+// ── /version/files: WHAT IT ANSWERS, AND IN WHAT SHAPE ───────────────────────
+//
+// Measured read-only against a 4.20.x Cribl.Cloud Leader on 2026-09-24:
+//
+//   * THE SHAPE. `GET /version/files?commit=<hash>` answered a NESTED TREE — one
+//     node per path segment, `children` on directories, `state` on files — not
+//     the flat `{ name: 'groups/…/route.yml' }` list this file was written
+//     against. The flat reader yielded the single path `groups`, and
+//     `pathInGroup('groups', g)` is TRUE for every g (it contains no
+//     `groups/`), so the screen claimed EVERY group had a commit to deploy.
+//   * THE MEANING. It answers the files that ONE commit changed, not the files
+//     changed since it: for 506d36a it listed only inputs.yml, the same file
+//     `/version/show` diffs for that commit, although later commits changed
+//     outputs.yml; and each answer carries that commit's own `commitMessage`.
+//     Asked of the deployed commit, it describes what is already running.
+//
+// The literal body below is the one that Leader answered with.
+const LITERAL_TREE = {
+  items: [{
+    count: 1,
+    items: [{ name: 'groups', children: [{ name: 'default', children: [{ name: 'local', children: [{ name: 'cribl', children: [
+      { name: 'outputs.yml', state: 'M' },
+      { name: 'pipelines', children: [{ name: 'route.yml', state: 'M' }] },
+    ] }] }] }] }],
+    commitMessage: '...',
+  }],
+  count: 1,
+}
+
+describe('versionFilePaths', () => {
+  it('walks the nested tree a 4.20.x Leader answers with to full paths', () => {
+    expect(versionFilePaths(LITERAL_TREE)).toEqual([
+      'groups/default/local/cribl/outputs.yml',
+      'groups/default/local/cribl/pipelines/route.yml',
+    ])
+  })
+
+  it('still reads the flat list, by `name` or by `path`', () => {
+    expect(versionFilePaths({ items: [{ items: [{ name: 'groups/default/local/cribl/outputs.yml' }, { path: 'cribl.yml' }] }] }))
+      .toEqual(['groups/default/local/cribl/outputs.yml', 'cribl.yml'])
+  })
+
+  it('answers null for a body it cannot read, which is not "no files"', () => {
+    expect(versionFilePaths({})).toBe(null)
+    expect(versionFilePaths(null)).toBe(null)
+    expect(versionFilePaths({ items: [] })).toEqual([])
+  })
+})
+
+describe('pendingDeploy — one /version/files read per undeployed commit', () => {
+  const OURS = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+  const THEIRS = 'groups/other_group/local/cribl/pipelines/route.yml'
+  const MID = 'dddd000011112222dddd000011112222dddd0000'
+  const settled = { routes: [{ ...ROUTE_SPEC }, catchAll], configVersion: DEPLOYED }
+
+  it('claims the literal tree for the group it names', async () => {
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace(/^\/capi/, '')
+      const method = (init.method ?? 'GET').toUpperCase()
+      const reply = (value: unknown) => ({
+        ok: true, status: 200, statusText: 'OK',
+        text: async () => JSON.stringify(value), json: async () => value,
+      })
+      if (path === `/version/files?commit=${HEAD}`) return reply(LITERAL_TREE)
+      if (path.startsWith('/version/files')) return reply({ items: [{ count: 0, items: [] }], count: 1 })
+      if (path.startsWith('/version?')) return reply({ items: [{ hash: HEAD, refs: 'HEAD -> master' }, { hash: DEPLOYED, refs: '' }] })
+      if (method === 'GET' && path === `/products/stream/groups/${GROUP}`) return reply({ items: [{ id: GROUP, configVersion: DEPLOYED }] })
+      return reply({ items: [] })
+    })
+    expect(await pendingDeploy(GROUP)).toBe(HEAD)
+  })
+
+  it('does not claim a tree whose files all belong to another group', async () => {
+    // The defect: the flat reader turned this into the one path `groups`, which
+    // pathInGroup reads as a repo-wide file — so every group lit up.
+    // DEPLOYED carries the same tree so that the read the old code made (of the
+    // deployed commit) sees it too: this pins the shape, not the range.
+    stubLeader({ ...settled, history: [{ hash: HEAD, refs: 'HEAD -> main', files: [THEIRS] }, { hash: DEPLOYED, files: [THEIRS] }] })
+    expect(await pendingDeploy(GROUP)).toBe(null)
+  })
+
+  it('does not describe the commit the group is already running as pending', async () => {
+    // The deployed commit touched this group; nothing after it did. Asking
+    // `/version/files` about the deployed commit answers THAT commit's files.
+    stubLeader({ ...settled, filesShape: 'flat', history: [{ hash: HEAD, refs: 'HEAD -> main', files: [THEIRS] }, { hash: DEPLOYED, files: [OURS] }] })
+    expect(await pendingDeploy(GROUP)).toBe(null)
+  })
+
+  it('finds a commit to this group that is not the newest one', async () => {
+    const calls = stubLeader({ ...settled, filesShape: 'flat', history: [
+      { hash: HEAD, refs: 'HEAD -> main', files: [THEIRS] },
+      { hash: MID, files: [OURS] },
+      { hash: DEPLOYED, files: [] },
+    ] })
+    // The deploy moves the group to HEAD, which carries MID with it — so HEAD is
+    // the commit named, as it always was.
+    expect(await pendingDeploy(GROUP)).toBe(HEAD)
+    const asked = calls.filter((c) => c.path.startsWith('/version/files')).map((c) => c.path)
+    expect(asked, 'read the deployed commit, which is already running').not.toContain(`/version/files?commit=${DEPLOYED}`)
+  })
+
+  it('reads the tree shape the same way', async () => {
+    stubLeader({ ...settled, filesShape: 'tree', history: [
+      { hash: HEAD, refs: 'HEAD -> main', files: [THEIRS] },
+      { hash: MID, files: [OURS] },
+      { hash: DEPLOYED, files: [] },
+    ] })
+    expect(await pendingDeploy(GROUP)).toBe(HEAD)
+  })
+
+  it('answers null when the deployed commit is not in the history it read', async () => {
+    // The range cannot be bounded, so no claim — "could not tell" is null.
+    stubLeader({ ...settled, history: [{ hash: HEAD, refs: 'HEAD -> main', files: [OURS] }, { hash: MID, files: [] }] })
+    expect(await pendingDeploy(GROUP)).toBe(null)
+  })
+
+  it('walks the range from the deployed commit to HEAD even when the page lists oldest first', async () => {
+    stubLeader({ ...settled, history: [
+      { hash: DEPLOYED, files: [] },
+      { hash: MID, files: [OURS] },
+      { hash: HEAD, refs: 'HEAD -> main', files: [THEIRS] },
+    ] })
+    expect(await pendingDeploy(GROUP)).toBe(HEAD)
+  })
+
+  it('claims on proof from one commit when another cannot be read, and not otherwise', async () => {
+    // A failed read removes evidence; it cannot remove what another read found.
+    // With no proof anywhere, a failure is "could not tell".
+    // HEAD is the unreadable one, and it is read first: the proof is behind it.
+    const history = [
+      { hash: HEAD, refs: 'HEAD -> main', files: [] as string[] },
+      { hash: MID, files: [OURS] },
+      { hash: DEPLOYED, files: [] as string[] },
+    ]
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace(/^\/capi/, '')
+      const method = (init.method ?? 'GET').toUpperCase()
+      const reply = (status: number, value: unknown) => ({
+        ok: status < 300, status, statusText: 'OK',
+        text: async () => JSON.stringify(value), json: async () => value,
+      })
+      if (path === `/version/files?commit=${HEAD}`) return reply(500, { message: 'boom' })
+      if (path.startsWith('/version/files?commit=')) {
+        const h = path.split('=')[1]
+        return reply(200, filesBody(history.find((c) => c.hash === h)?.files ?? [], 'tree'))
+      }
+      if (path.startsWith('/version?')) return reply(200, { items: history.map(({ hash, refs = '' }) => ({ hash, refs })) })
+      if (method === 'GET' && path === `/products/stream/groups/${GROUP}`) return reply(200, { items: [{ id: GROUP, configVersion: DEPLOYED }] })
+      return reply(200, { items: [] })
+    })
+    expect(await pendingDeploy(GROUP)).toBe(HEAD)
+    history[1].files = [THEIRS]
+    expect(await pendingDeploy(GROUP), 'claimed a group commit when the unread commit could have been anybody’s').toBe(null)
   })
 })
 

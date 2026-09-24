@@ -227,7 +227,7 @@ export function ProvisionPanel() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      // The undeployed-commit check is a side question — three GETs that answer
+      // The undeployed-commit check is a side question — a few GETs that answer
       // "is there something this group committed but never ran". It rides along
       // with the status check, and its own failure must not blank the resource
       // rows, so it swallows rather than rejects.
