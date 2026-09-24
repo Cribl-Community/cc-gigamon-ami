@@ -57,7 +57,57 @@ export interface ProvisionConfirmContext {
   scope: CommitScope | null
   /** A commit this group has not deployed, from `pendingDeploy`. */
   undeployed: string | null
+  /** True when `pendingDeploy` had not answered yet as the dialog opened —
+   *  `undeployed` is then no answer at all, and the copy says so. */
+  undeployedChecking?: boolean
 }
+
+/**
+ * What the dialog says about a commit the group has not deployed, or null when
+ * there is none.
+ *
+ * FROZEN AT OPEN. `pendingDeploy` reads `/version/files` once per commit the
+ * group is behind, so it can still be out when somebody opens a dialog — and a
+ * sentence that appeared while the reader was already reading would be a claim
+ * changing underneath them. ProvisionPanel captures the answer as the dialog
+ * opens and passes that; "still checking" is worded about the moment of opening
+ * so it stays true however long the dialog is left open.
+ *
+ * Every dialog gets it, teardowns included: a removal commits and deploys too,
+ * and a deploy moves the group to a commit, carrying everything before it.
+ */
+export function undeployedSentence(ctx: ProvisionConfirmContext): string | null {
+  const { group, undeployed } = ctx
+  if (ctx.undeployedChecking) {
+    return (
+      `When this dialog opened, this app was still checking whether ${group} is behind a commit that touches it. If it is, this ` +
+      'press moves the group to the commit it creates, so that one and everything else committed since go live with it.'
+    )
+  }
+  // NOT "it also deploys commit #X", which was the old wording and denied by
+  // its own grammar what the deploy actually does. `pendingDeploy` returns the
+  // Leader's HEAD, and a deploy moves the group to it.
+  if (!undeployed) return null
+  return (
+    `${group} is behind commit #${undeployed.slice(0, 10)}, this Leader’s current HEAD, which it has never deployed. This press moves ` +
+    'the group to the commit it creates, so that one and everything else committed since go live with it.'
+  )
+}
+
+/**
+ * The one line beside Deploy when `pendingDeploy` proved something. All it
+ * proves is that SOME commit after the one this group runs moved one of its
+ * files — this app's failed deploy, or another admin's commit made in Cribl —
+ * so it says that and no more. It used to say "an earlier deploy did not
+ * finish", which names a cause nothing here established.
+ */
+export const behindNote = (group: string): string => `${group} is behind a commit that touches it.`
+
+/** The rest, one ⓘ away. `head` is what `pendingDeploy` returns: HEAD. */
+export const behindTip = (group: string, head: string): string =>
+  `A commit made on this Leader since ${group} was last deployed changes one of ${group}’s files — made by this app or by somebody ` +
+  `else in Cribl. Deploying moves the group to the commit this run creates on top of HEAD (#${head.slice(0, 10)}), so every commit ` +
+  'since the last deploy goes live with it.'
 
 /**
  * What Git already holds in the files this commit names.
@@ -153,22 +203,19 @@ export function leftAloneSentence(group: string, objects: readonly string[]): st
   )
 }
 
+const withUndeployed = (ctx: ProvisionConfirmContext): string[] => {
+  const line = undeployedSentence(ctx)
+  return line ? [line] : []
+}
+
 export function deployConsequences(ctx: ProvisionConfirmContext): string[] {
-  const { group, undeployed } = ctx
+  const { group } = ctx
   return [
     `This app writes only its own objects in ${group}: event breaker ruleset ${HTTP_BREAKER_ID}, pipeline ${HTTP_PIPELINE_ID}, Raw HTTP ` +
       `source ${HTTP_SOURCE_ID}, and the one ${HTTP_ROUTE_ID} entry in the routing table. It does not edit the demo DataGen source, and every other route keeps its place.`,
     carriesSentence(ctx, 'change'),
     pendingSentence(ctx),
-    ...(undeployed
-      // NOT "it also deploys commit #X", which was the old wording and denied
-      // by its own grammar what the deploy actually does. `pendingDeploy`
-      // returns the Leader's HEAD, and a deploy moves the group to it.
-      ? [
-          `${group} is behind commit #${undeployed.slice(0, 10)}, this Leader’s current HEAD, which it has never deployed. This press moves ` +
-            'the group to the commit it creates, so that one and everything else committed since go live with it.',
-        ]
-      : []),
+    ...withUndeployed(ctx),
     ...DEPLOY_CONSEQUENCES,
     HTTP_RESTART_PRECAUTION,
   ]
@@ -188,6 +235,7 @@ export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination
     `Cribl Lake destination ${keptDestination} and dataset ${keptDataset} are kept — they are shared, and the dashboards read that dataset.`,
     carriesSentence(ctx, 'removal'),
     pendingSentence(ctx),
+    ...withUndeployed(ctx),
     ...DEPLOY_CONSEQUENCES,
     HTTP_RESTART_PRECAUTION,
   ]

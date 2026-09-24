@@ -244,6 +244,8 @@ interface StackOpts {
   legacy?: 'present' | 'absent' | 'unreadable'
   /** Status per DELETE path. Default 200. */
   deleteStatus?: Record<string, number>
+  /** Offer a second worker group, OTHER, in the picker. Every read of it 404s. */
+  otherGroup?: boolean
 }
 
 function stubLeaderWithoutSource(opts: StackOpts = {}) {
@@ -281,7 +283,11 @@ function stubLeaderWithoutSource(opts: StackOpts = {}) {
       return reply(200, { items: [{ id: GROUP, name: GROUP, ...(onPrem === null ? {} : { onPrem }) }] })
     }
     if (at('GET', `/products/stream/groups/${GROUP}`)) return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
-    if (at('GET', '/master/groups')) return reply(200, { items: [{ id: GROUP, name: GROUP, type: 'stream' }] })
+    if (at('GET', '/master/groups')) {
+      return reply(200, {
+        items: [{ id: GROUP, name: GROUP, type: 'stream' }, ...(opts.otherGroup ? [{ id: OTHER, name: OTHER, type: 'stream' }] : [])],
+      })
+    }
     if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
     if (at('GET', `/m/${GROUP}/system/outputs/gigamon_lake`)) return reply(200, { items: [{ id: 'gigamon_lake' }] })
     if (at('GET', `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`)) return reply(200, { items: [{ ...HTTP_BREAKER_SPEC }] })
@@ -491,11 +497,206 @@ describe('removing the old Syslog objects', () => {
   })
 })
 
+// ── Two groups, and reads this test can hold ────────────────────────────────
+
+const OTHER = 'hyb'
+
+/** Pick a worker group in the panel's picker, as a person would. */
+async function pickGroup(id: string) {
+  await act(async () => {
+    const el = document.body.querySelector<HTMLSelectElement>('#gs-group-select')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!
+    setter.call(el, id)
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await settle()
+}
+
+/**
+ * Two groups with nothing of the stack in either: GROUP, Cribl-managed, and
+ * OTHER, hybrid. `hold(path)` makes every GET of that exact path wait until the
+ * returned function is called — the slow Leader a group switch races.
+ */
+function stubTwoGroups(opts: { groupBehind?: boolean } = {}) {
+  const holds = new Map<string, Promise<void>>()
+  const hold = (path: string) => {
+    let release = () => {}
+    holds.set(path, new Promise<void>((r) => { release = r }))
+    return () => release()
+  }
+  const sent: Array<{ method: string; path: string }> = []
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const method = (init.method ?? 'GET').toUpperCase()
+    const path = String(url).replace(/^\/capi/, '').split('?')[0]
+    sent.push({ method, path })
+    const reply = (status: number, value?: unknown) => {
+      const text = value === undefined ? '' : JSON.stringify(value)
+      return { ok: status >= 200 && status < 300, status, statusText: 'OK', text: async () => text, json: async () => JSON.parse(text) as unknown }
+    }
+    const held = method === 'GET' ? holds.get(path) : undefined
+    if (held) await held
+    const at = (m: string, p: string) => method === m && path === p
+    if (at('GET', '/version/status')) return reply(200, { items: [{ files: [] }] })
+    // Every commit GROUP is behind moved one of GROUP's own files.
+    if (at('GET', '/version/files')) {
+      return reply(200, { items: [{ count: 1, items: [{ name: `groups/${GROUP}/local/cribl/inputs.yml` }] }] })
+    }
+    if (at('GET', '/version')) return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }, { hash: 'bbbb2222', refs: '' }] })
+    if (at('GET', '/master/groups')) {
+      return reply(200, { items: [{ id: GROUP, name: GROUP, type: 'stream' }, { id: OTHER, name: OTHER, type: 'stream' }] })
+    }
+    if (at('GET', '/products/stream/groups')) {
+      return reply(200, { items: [{ id: GROUP, name: GROUP, onPrem: false }, { id: OTHER, name: OTHER, onPrem: true }] })
+    }
+    if (at('GET', `/products/stream/groups/${GROUP}`)) {
+      return reply(200, { items: [{ id: GROUP, configVersion: opts.groupBehind ? 'bbbb2222' : 'aaaa1111' }] })
+    }
+    if (at('GET', `/products/stream/groups/${OTHER}`)) return reply(200, { items: [{ id: OTHER, configVersion: 'aaaa1111' }] })
+    for (const gid of [GROUP, OTHER]) {
+      if (at('GET', `/m/${gid}/system/inputs`) || at('GET', `/m/${gid}/packs`)) return reply(200, { items: [] })
+    }
+    if (path.startsWith('/kvstore')) return method === 'GET' ? reply(404, '') : reply(200, '')
+    return reply(404, { message: `no stub for ${method} ${path}` })
+  })
+  return { hold, sent }
+}
+
+describe('switching worker groups while the old group’s reads are still out', () => {
+  it('does not let the group the viewer left decide the hosting of the group they picked', async () => {
+    // GROUP is Cribl-managed and OTHER is hybrid. GROUP's port read is slow, so
+    // its refresh is still out when the viewer picks OTHER — and lands after
+    // OTHER's. Its answer used to be applied: OTHER then read as Cribl-managed,
+    // its hybrid port 10080 as outside the managed range, and a deploy would
+    // have created a TLS source on Cribl's certificate in a hybrid group.
+    const { hold } = stubTwoGroups()
+    const release = hold(`/m/${GROUP}/system/inputs`)
+    await mount()
+    await pickGroup(OTHER)
+    expect(portInput()?.value).toBe('10080')
+    release()
+    await settle(10)
+
+    expect(document.body.querySelector('#gs-port-issue')?.textContent ?? null).toBeNull()
+    expect(buttonNamed('Deploy onboarding stack')?.getAttribute('aria-disabled')).toBeNull()
+    await press(buttonNamed('Deploy onboarding stack'))
+    expect(dialogText()).toContain(`group ${OTHER}`)
+    expect(dialogText()).toContain('without TLS')
+  })
+
+  it('does not let the group the viewer left say the group they picked has finished checking', async () => {
+    // Both groups are slow. GROUP's refresh ending must not clear `loading`
+    // while OTHER's is still out: Deploy would open on rows nobody has read.
+    const { hold } = stubTwoGroups()
+    const releaseGroup = hold(`/m/${GROUP}/system/inputs`)
+    const releaseOther = hold(`/m/${OTHER}/system/inputs`)
+    await mount()
+    await pickGroup(OTHER)
+    releaseGroup()
+    await settle(10)
+    expect(buttonNamed('Checking…'), 'the old group’s refresh cleared "Checking…" for the new one').toBeTruthy()
+    expect(buttonNamed('Deploy onboarding stack')?.getAttribute('aria-disabled')).toBe('true')
+    releaseOther()
+    await settle(10)
+    expect(buttonNamed('Re-check')).toBeTruthy()
+  })
+
+  it('does not show an undeployed commit of the group the viewer left under the group they picked', async () => {
+    // GROUP is behind a commit that touches it; OTHER is not. The proof for
+    // GROUP arrives after the viewer has moved to OTHER.
+    const { hold } = stubTwoGroups({ groupBehind: true })
+    const release = hold('/version/files')
+    await mount()
+    await pickGroup(OTHER)
+    release()
+    await settle(10)
+    expect(document.body.innerHTML).not.toContain('aaaa1111')
+    expect(bodyText()).not.toContain('behind a commit')
+  })
+})
+
+describe('the undeployed-commit note beside Deploy', () => {
+  it('says the group is behind a commit that touches it, not that an earlier deploy failed', async () => {
+    // `pendingDeploy` proves only that SOME commit after the deployed one moved
+    // one of this group's files — another admin's, as likely as this app's.
+    stubTwoGroups({ groupBehind: true })
+    await mount()
+    await settle(10)
+    expect(bodyText()).toContain(`${GROUP} is behind a commit that touches it`)
+    expect(bodyText()).not.toContain('did not finish')
+    // The detail, HEAD's hash included, is one ⓘ away.
+    const tips = [...document.body.querySelectorAll('.gs-action-warn .infotip')].map((t) => t.getAttribute('aria-label') ?? '')
+    expect(tips.join(' ')).toContain('aaaa1111')
+  })
+})
+
+describe('what the confirmation says about an undeployed commit', () => {
+  it('says the check was still running when it opened, and does not change when it lands', async () => {
+    const { hold } = stubTwoGroups({ groupBehind: true })
+    const release = hold('/version/files')
+    await mount()
+    await press(buttonNamed('Deploy onboarding stack'))
+    const opened = dialogText()
+    expect(opened).toContain(`still checking whether ${GROUP} is behind a commit that touches it`)
+    release()
+    await settle(10)
+    expect(dialogText(), 'the dialog’s claim changed underneath the reader').toBe(opened)
+  })
+
+  it('names the commit when the check had finished before it opened', async () => {
+    stubTwoGroups({ groupBehind: true })
+    await mount()
+    await settle(10)
+    await press(buttonNamed('Deploy onboarding stack'))
+    expect(dialogText()).toContain(`${GROUP} is behind commit #aaaa1111`)
+    expect(dialogText()).not.toContain('still checking')
+  })
+})
+
+describe('the confirm-time check of how the group is hosted', () => {
+  it('writes nothing when the group’s hosting changed after the dialog was opened', async () => {
+    // The dialog said "with TLS on Cribl’s certificate". By the time Yes is
+    // pressed the group record says hybrid. The panel's state is what the
+    // dialog was built from; it is not what a write may be built from.
+    const opts: StackOpts = { onPrem: false }
+    const leader = stubLeaderWithoutSource(opts)
+    await mount()
+    await press(buttonNamed('Deploy onboarding stack'))
+    expect(dialogText()).toContain('with TLS on Cribl’s certificate')
+    opts.onPrem = true
+    await press(buttonNamed(`Yes, deploy to ${GROUP}`))
+    await settle(20)
+    const writes = leader.sent.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))
+    expect(writes, 'a write went out on a hosting the dialog did not describe').toEqual([])
+    expect(bodyText()).toContain('Nothing was written')
+  })
+})
+
+describe('the auth token', () => {
+  it('is not shown again after the viewer leaves the group and comes back', async () => {
+    const leader = stubLeaderWithoutSource({ otherGroup: true })
+    await mount()
+    await deployThroughTheDialog()
+    const token = tokenOf(leader.created())
+    expect(bodyText()).toContain(token)
+    await pickGroup(OTHER)
+    await pickGroup(GROUP)
+    await settle(10)
+    expect(bodyText(), 'the token came back on returning to the group — it is shown once').not.toContain(token)
+  })
+})
+
 // ── What this file does not establish ───────────────────────────────────────
 //
 //   * THE PENDING-FILE READ ON THE TEARDOWN TRIGGERS. The two Remove dialogs
 //     are opened and confirmed above, but the re-read of Git status at open is
 //     asserted on the deploy trigger alone.
+//   * THE UNDEPLOYED-COMMIT SNAPSHOT ON THE TEARDOWN TRIGGERS. It is asserted
+//     rendered on the deploy dialog only; that both Remove dialogs carry the
+//     sentence is asserted on the strings (provisionPanelCopy.test.ts).
+//   * THAT A PRESS IS DROPPED WHEN A REFRESH STARTS UNDER ITS GIT READ.
+//     `openConfirm` opens nothing when the refresh sequence moved while
+//     `/version/status` was out; no test here holds that read open across a
+//     group change.
 //   * THAT A POST WITH `Authorization: <token>` IS ACCEPTED. The header line
 //     comes from openapi.json; proving it takes a POST to a live source, which
 //     is a write nothing in this suite (or its reviewers) may make.

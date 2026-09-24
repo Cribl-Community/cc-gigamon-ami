@@ -77,7 +77,8 @@ import {
 } from '../cribl/provision'
 import {
   AUTH_HEADER, ENDPOINT_INCOMPLETE, ENDPOINT_LEAD, ENDPOINT_TIP, GROUP_TIP, LEGACY_TIP, PORT_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP,
-  TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployConsequences, deployNote, leftAloneSentence, legacyNote, removeConsequences,
+  TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, behindNote, behindTip, deployConsequences, deployNote, leftAloneSentence, legacyNote,
+  removeConsequences,
 } from './provisionPanelCopy'
 import { InfoTip } from './InfoTip'
 import {
@@ -100,6 +101,11 @@ const RESOURCES: ResourceMeta[] = [
  *  both depend on it, and guessing either wrong leaves a source that cannot
  *  start or cannot be reached. */
 type Hosting = 'managed' | 'hybrid' | null
+
+/** The undeployed-commit answer as a dialog saw it: `known` false while the
+ *  check was still out. */
+interface UndeployedAtOpen { known: boolean; hash: string | null }
+const NOT_KNOWN: UndeployedAtOpen = { known: false, hash: null }
 
 /** The three confirmations this screen can open, one at a time. */
 type Confirming = 'deploy' | 'remove' | 'remove-legacy'
@@ -136,10 +142,13 @@ export function ProvisionPanel() {
   // One at a time, structurally: two prompts about the same group with opposite
   // answers is how the wrong button gets pressed, and one slot cannot hold both.
   const [confirming, setConfirming] = useState<Confirming | null>(null)
-  // A commit this group has not deployed — what an earlier run's failed deploy
-  // left behind. Read-only, and null when there is none or when it could not be
-  // determined.
+  // HEAD, when a commit this group has not deployed moves one of its files — an
+  // earlier run's failed deploy, or another admin's commit. Read-only, and null
+  // when there is none or when it could not be determined.
   const [pending, setPending] = useState<string | null>(null)
+  // What the open dialog says about it: the answer as it stood when the dialog
+  // opened, so a late answer cannot change the dialog under its reader.
+  const [pendingAtOpen, setPendingAtOpen] = useState<UndeployedAtOpen>(NOT_KNOWN)
   // What Git already reports uncommitted anywhere on the Leader, so the two
   // confirmations can say what rides along in the whole files this commit names
   // instead of asserting that nothing does. Null is "could not tell" and the
@@ -159,8 +168,9 @@ export function ProvisionPanel() {
   const [portText, setPortText] = useState('')
   // THE TOKEN, and the only place in the app it is ever held: set by the run
   // that created the source, shown once on the endpoint card, dropped on a
-  // group change, a teardown or a reload. Keyed by group so it is never shown
-  // under a group whose source it does not open.
+  // group change (the reset effect below), a teardown or a reload — so leaving
+  // the group and coming back does not show it a second time. Keyed by group
+  // too, so it is never shown under a group whose source it does not open.
   const [token, setToken] = useState<{ group: string; value: string } | null>(null)
   const [group, setGroup] = useState<string>(DEFAULT_STREAM_GROUP)
   const [groups, setGroups] = useState<StreamGroup[]>([{ id: DEFAULT_STREAM_GROUP, name: DEFAULT_STREAM_GROUP }])
@@ -210,8 +220,10 @@ export function ProvisionPanel() {
   // callers re-read the store — otherwise a re-check right after a commit could
   // race the PUT and read back stale data.
   const commitsRef = useRef<CommitMemory>({})
-  /** Which `refresh()` may still set `pending`; see there. */
-  const pendingSeq = useRef(0)
+  /** Which `refresh()` may still set state; see there. */
+  const refreshSeq = useRef(0)
+  /** The undeployed-commit answer for the current refresh, read by openConfirm. */
+  const pendingNow = useRef<UndeployedAtOpen>(NOT_KNOWN)
   const applyCommits = useCallback(async (next: CommitMemory) => {
     commitsRef.current = next
     setCommits(next)
@@ -277,7 +289,17 @@ export function ProvisionPanel() {
   // Re-check the live resource status for the current group. A successful
   // re-check leaves any lingering deploy/remove outcome for this group untouched
   // — it clears only when the user next deploys or removes.
+  //
+  // ONE SEQUENCE FOR THE WHOLE REFRESH. Every answer below arrives after an
+  // await, and by then the viewer may have picked another group — or pressed
+  // Re-check again. Only the latest refresh sets anything, `loading` included.
+  // It used to guard `pending` alone: a slow read for the group the viewer had
+  // left landed its status, hosting and ports under the group they had picked,
+  // and Deploy built a Cribl-managed TLS source for a hybrid group from them.
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeq.current
+    const current = () => seq === refreshSeq.current
+    pendingNow.current = NOT_KNOWN
     setLoading(true)
     try {
       // The undeployed-commit check is a side question — GETs that answer "is
@@ -288,8 +310,11 @@ export function ProvisionPanel() {
       // resource rows either, so it swallows rather than rejects.
       // Landing after the rows, it can also land after a NEWER refresh — for
       // another group — so only the latest request's answer is kept.
-      const seq = ++pendingSeq.current
-      void pendingDeploy(group).catch(() => null).then((h) => { if (seq === pendingSeq.current) setPending(h) })
+      void pendingDeploy(group).catch(() => null).then((h) => {
+        if (!current()) return
+        pendingNow.current = { known: true, hash: h }
+        setPending(h)
+      })
       const [live, paths, old, ep, groupsNow, inputs] = await Promise.all([
         checkStatus(group),
         // Same reason: a read whose only job is to make a confirmation specific
@@ -302,6 +327,7 @@ export function ProvisionPanel() {
         // listening in 20000–20010 is as much a collision as any other.
         groupInputs(group).catch(() => null),
       ])
+      if (!current()) return
       setStatus(live)
       setPendingPaths(paths)
       setLegacy(old)
@@ -314,9 +340,9 @@ export function ProvisionPanel() {
       // Offer a free port, but never overwrite one somebody is typing.
       setPortText((cur) => cur || String(suggestPort(host !== 'hybrid', used) ?? ''))
     } catch (e) {
-      setGroupErr(group, (e as Error).message)
+      if (current()) setGroupErr(group, (e as Error).message)
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [group, setGroupErr])
 
@@ -336,9 +362,23 @@ export function ProvisionPanel() {
    * that opens on the old list and swaps it underneath the reader is the same
    * untruth with a shorter window. It is one GET, and the button it came from
    * stays focusable throughout.
+   *
+   * THE UNDEPLOYED-COMMIT ANSWER IS CAPTURED, NOT AWAITED. `pendingDeploy` can
+   * take one `/version/files` read per commit the group is behind, and a button
+   * that opens nothing for that long is its own bug. So the dialog is handed the
+   * answer as it stands at open — "still checking" when it has not landed — and
+   * keeps it: a sentence appearing in an open dialog is a claim changing under
+   * its reader (provisionPanelCopy.ts, `undeployedSentence`).
+   *
+   * A refresh that starts while the Git read is out — a group change, above all
+   * — means the press was about a screen that is gone, so nothing opens.
    */
   const openConfirm = useCallback(async (which: Confirming) => {
-    setPendingPaths(await pendingConfigPaths().catch(() => null))
+    const seq = refreshSeq.current
+    const paths = await pendingConfigPaths().catch(() => null)
+    if (seq !== refreshSeq.current) return
+    setPendingPaths(paths)
+    setPendingAtOpen(pendingNow.current)
     setConfirming(which)
   }, [])
 
@@ -364,9 +404,12 @@ export function ProvisionPanel() {
     // dropping `isOpen`, which also hands focus back to the trigger it came from.
     setConfirming(null)
     setPending(null)
-    // …and an undeployed-commit read still in flight for the old group must
-    // not put its answer back.
-    pendingSeq.current++
+    // …and nothing a refresh for the old group still has in flight may put its
+    // answer back.
+    refreshSeq.current++
+    pendingNow.current = NOT_KNOWN
+    // The token is shown once. Coming back to this group is not a second time.
+    setToken(null)
     setPendingPaths(null)
     setLegacy(null)
     setEndpoint(null)
@@ -490,17 +533,20 @@ export function ProvisionPanel() {
   const deployScope = commitScope(group, ['source', 'breaker', 'pipeline', 'route', 'destination'], pendingPaths)
   const removeScope = commitScope(group, removeKeys, pendingPaths)
   const legacyScope = commitScope(group, legacyPresent, pendingPaths)
-  const deploySentences = deployConsequences({ group, scope: deployScope, undeployed: pending })
+  // What the dialogs say about an undeployed commit is what stood when the
+  // dialog opened — see openConfirm.
+  const undeployedCtx = { undeployed: pendingAtOpen.hash, undeployedChecking: !pendingAtOpen.known }
+  const deploySentences = deployConsequences({ group, scope: deployScope, ...undeployedCtx })
   const withLeftAlone = (lines: string[], unseen: readonly string[]) => {
     const note = leftAloneSentence(group, unseen)
     return note ? [note, ...lines] : lines
   }
   const removeSentences = withLeftAlone(
-    removeConsequences({ group, scope: removeScope, undeployed: pending }, LAKE_DESTINATION_ID, LAKE_DATASET_ID),
+    removeConsequences({ group, scope: removeScope, ...undeployedCtx }, LAKE_DESTINATION_ID, LAKE_DATASET_ID),
     [...httpUnseen, ...legacyUnseen],
   )
   const legacySentences = withLeftAlone(
-    removeConsequences({ group, scope: legacyScope, undeployed: pending }, LAKE_DESTINATION_ID, LAKE_DATASET_ID),
+    removeConsequences({ group, scope: legacyScope, ...undeployedCtx }, LAKE_DESTINATION_ID, LAKE_DATASET_ID),
     legacyUnseen,
   )
 
@@ -546,10 +592,31 @@ export function ProvisionPanel() {
     setRunning('deploy')
     setConfirming(null)
     resetOutcome(gid)
-    // What a NEW source is created with. Passed whether or not the source
-    // exists; deployAll reads it only when it has to create one.
-    const ingress = needsPort && hosting !== null ? { managed: hosting === 'managed', port } : undefined
     try {
+      // What a NEW source is created with, RE-DERIVED HERE for this group.
+      // `hosting` is panel state: it is what the dialog was built from, and it
+      // was read whenever the page last refreshed. A write is built from the
+      // group as it is now — and if that is not what the dialog described, the
+      // run stops before the first write rather than creating something nobody
+      // confirmed. deployAll reads `ingress` only when it has to create the
+      // source; ensureSource re-checks the port against the group again there.
+      let ingress: { managed: boolean; port: number } | undefined
+      if (needsPort) {
+        const [groupsNow, inputs] = await Promise.all([listStreamGroupsCurrent(), groupInputs(gid).catch(() => null)])
+        const rec = groupsNow.outcome === 'ok' ? groupsNow.value?.find((x) => x.id === gid) : undefined
+        const fresh: Hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
+        const problem = fresh === null
+          ? `this app could not tell whether ${gid} is Cribl-managed or hybrid.`
+          : fresh !== hosting
+            ? `${gid} now reads as ${fresh === 'managed' ? 'Cribl-managed' : 'hybrid'}, which is not what the confirmation described. Review it again.`
+            : portProblem(port, fresh === 'managed', inputs ? portsInUse(inputs) : null)
+        if (problem) {
+          setGroupErr(gid, `Nothing was written: ${problem}`)
+          await refresh()
+          return
+        }
+        ingress = { managed: fresh === 'managed', port }
+      }
       const results = await deployAll((r) => appendStep(gid, r), gid, pushToast, {
         ingress,
         onToken: (value) => setToken({ group: gid, value }),
@@ -763,10 +830,8 @@ export function ProvisionPanel() {
             )}
             {pending && (
               <p className="gs-action-note gs-action-warn">
-                Commit <code>#{pending.slice(0, 10)}</code> touches <code>{group}</code> and has not been
-                deployed to it — an earlier deploy did not finish. Deploying moves the group to the
-                commit this run creates, so that one goes live with it, and so does anything else
-                committed on this Leader since.
+                {behindNote(group)}
+                <InfoTip text={behindTip(group, pending)} />
               </p>
             )}
             {legacyPresent.length > 0 && (

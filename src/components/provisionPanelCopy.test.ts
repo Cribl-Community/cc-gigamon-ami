@@ -24,7 +24,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   AUTH_HEADER, ENDPOINT_LEAD, ENDPOINT_TIP, HTTP_RESTART_PRECAUTION, SETUP_FACTS, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING,
-  deployConsequences, legacyNote, LEGACY_TIP, leftAloneSentence, pendingSentence, removeConsequences,
+  behindNote, behindTip, deployConsequences, legacyNote, LEGACY_TIP, leftAloneSentence, pendingSentence, removeConsequences,
+  undeployedSentence,
 } from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
 import {
@@ -242,6 +243,41 @@ describe('the endpoint card and the old Syslog stack', () => {
   it('names every old Syslog object the teardown will remove', () => {
     for (const id of [LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID]) expect(LEGACY_TIP).toContain(id)
     expect(legacyNote(GROUP)).toContain(GROUP)
+  })
+})
+
+describe('what the three confirmations say about an undeployed commit', () => {
+  const HEAD = 'aaaa1111cccc2222'
+  const at = (undeployed: string | null, undeployedChecking = false) => ({ ...ctx([]), undeployed, undeployedChecking })
+  const removal = (c: ReturnType<typeof at>) => all(removeConsequences(c, 'gigamon_lake', 'gigamon_ami'))
+
+  it('names the commit in the teardown dialogs too, because a teardown deploys as well', () => {
+    // Both Remove dialogs commit and deploy (DEPLOY_CONSEQUENCES), so they move
+    // the group to HEAD exactly as Deploy does. They used to say nothing.
+    expect(removal(at(HEAD))).toContain(`${GROUP} is behind commit #${HEAD.slice(0, 10)}`)
+    expect(all(deployConsequences(at(HEAD)))).toContain(`${GROUP} is behind commit #${HEAD.slice(0, 10)}`)
+    expect(removal(at(null))).not.toContain('is behind')
+  })
+
+  it('says the check was still running, in every dialog, rather than saying nothing', () => {
+    for (const text of [all(deployConsequences(at(null, true))), removal(at(null, true))]) {
+      expect(text).toContain(`still checking whether ${GROUP} is behind a commit that touches it`)
+      expect(text).not.toContain('is behind commit #')
+    }
+  })
+
+  it('says it about when the dialog opened, so the sentence stays true while it is open', () => {
+    expect(undeployedSentence(at(null, true))).toContain('When this dialog opened')
+  })
+})
+
+describe('the undeployed-commit note beside Deploy', () => {
+  it('claims only what pendingDeploy proves: a commit that touches the group, not a failed deploy', () => {
+    expect(behindNote(GROUP)).toBe(`${GROUP} is behind a commit that touches it.`)
+    const tip = behindTip(GROUP, 'aaaa1111cccc2222')
+    expect(tip).toContain('#aaaa1111cc')
+    expect(tip).toContain('somebody else')
+    expect(`${behindNote(GROUP)} ${tip}`).not.toMatch(/did not finish|failed/)
   })
 })
 
