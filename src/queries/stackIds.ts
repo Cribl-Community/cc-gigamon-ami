@@ -75,10 +75,16 @@ export interface Stack {
   key: string
   /** Where the objects live: the worker group's own config, or inside the pack. */
   scope: 'global' | 'pack'
-  /** Whether anything can run it today. `running` and `offered` are the only
-   *  ones a tenant can have; `unreleased` is built but not published,
-   *  `planned` is not built, and `pending` ids are not known yet. */
-  status: 'running' | 'offered' | 'released' | 'unreleased' | 'planned' | 'pending'
+  /** Whether anything can run it today, and how a tenant comes to have it.
+   *  `running` is running in this workspace; `offered` is what this release
+   *  offers to create; `retired` is what an earlier release of this app
+   *  created and this one only offers to remove, which a tenant may still run.
+   *  Those three are the ones the screen names. `released` is a published pack
+   *  release a tenant may have installed — counted, but not named on screen
+   *  until it is. `unreleased` is built but not published, `planned` is not
+   *  built, and `pending` ids are not known yet. Every one of them is COUNTED:
+   *  the status decides only what the screen names (SHOWN_PATHS below). */
+  status: 'running' | 'offered' | 'retired' | 'released' | 'unreleased' | 'planned' | 'pending'
   what: string
   paths: readonly StackPath[]
 }
@@ -104,7 +110,7 @@ export const STACKS: readonly Stack[] = [
     // it is still counted and still named.
     key: 'global-legacy-syslog',
     scope: 'global',
-    status: 'offered',
+    status: 'retired',
     what: "The Syslog onboarding earlier releases of Guided Setup created (provision.ts's LEGACY_SYSLOG_*). It shares the demo's Lake destination.",
     paths: [
       { route: 'gigamon_ami_syslog', input: 'syslog:in_gigamon_syslog', pipeline: 'gigamon_syslog', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
@@ -219,13 +225,14 @@ const listed = (xs: readonly string[]): string =>
 //
 // The queries count every stack above, so they are right the day a pack is
 // installed. The words on screen name only the stacks a tenant can have today
-// (the demo feed and Guided Setup's onboarding), so a viewer is never told
+// (the demo feed, Guided Setup's onboarding and the Syslog onboarding earlier
+// releases created), so a viewer is never told
 // about an object no release has shipped, nor how a planned one will work.
 // The query in the ⓘ still shows every id it counts; the sentence below
 // accounts for the rest in one clause.
 
 const SHOWN_PATHS: readonly StackPath[] = STACKS
-  .filter((s) => s.status === 'running' || s.status === 'offered')
+  .filter((s) => s.status === 'running' || s.status === 'offered' || s.status === 'retired')
   .flatMap((s) => s.paths)
   .filter((p) => p.dataset === COUNTED_DATASET)
 

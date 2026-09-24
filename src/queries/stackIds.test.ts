@@ -159,6 +159,18 @@ describe('the stack list', () => {
     expect(COUNTED_DATASET).toBe(LAKE_DATASET)
   })
 
+  it('calls the old Syslog stack retired, and still counts and names it, because tenants may still run it', () => {
+    // No release creates it any more — this one only offers to remove it — so
+    // "offered" was wrong. It is not gone either: a tenant that ran an earlier
+    // release can still be sending through it, and a counter that skipped it
+    // would read short while looking complete.
+    const legacy = STACKS.find((s) => s.key === 'global-legacy-syslog')!
+    expect(legacy.status).toBe('retired')
+    for (const p of legacy.paths) expect(COUNTED_PATHS).toContain(p)
+    expect(SHOWN_INPUTS).toContain(LEGACY_SYSLOG_SOURCE_ID)
+    expect(SHOWN_PIPELINES).toContain(LEGACY_SYSLOG_PIPELINE_ID)
+  })
+
   it('names the Syslog stack earlier releases of Guided Setup wrote', () => {
     const syslog = STACKS.find((s) => s.key === 'global-legacy-syslog')!.paths[0]
     expect(syslog).toEqual({
@@ -226,9 +238,10 @@ describe('the stage ⓘ prose', () => {
   const PROSE = [COUNTED_SOURCES_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_DESTINATIONS_PROSE]
   const bare = (v: string) => v.slice(v.indexOf(':') + 1)
 
-  it('names only objects a tenant can have today: the running and offered stacks', () => {
-    const shown = STACKS.filter((s) => s.status === 'running' || s.status === 'offered').flatMap((s) => s.paths)
-    const unshown = STACKS.filter((s) => s.status !== 'running' && s.status !== 'offered').flatMap((s) => s.paths)
+  it('names only objects a tenant can have today: the running, offered and retired stacks', () => {
+    const today = (s: (typeof STACKS)[number]) => s.status === 'running' || s.status === 'offered' || s.status === 'retired'
+    const shown = STACKS.filter(today).flatMap((s) => s.paths)
+    const unshown = STACKS.filter((s) => !today(s)).flatMap((s) => s.paths)
     const ids = (ps: readonly StackPath[]) => new Set(ps.flatMap((p) => [bare(p.input), p.pipeline, bare(p.output)]))
     const allowed = ids(shown)
     const forbidden = [...ids(unshown)].filter((id) => !allowed.has(id))
