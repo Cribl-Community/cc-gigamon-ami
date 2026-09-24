@@ -10,9 +10,10 @@
 //   install from the pinned URL with custom functions refused, and read the
 //   version and a known object back.
 //
-//   OWNERSHIP ON REMOVE. A DELETE goes out only for this pack id at a version
-//   this app published; anything else is kept, and an unreadable pack list is
-//   "kept", never "not installed".
+//   OWNERSHIP ON REMOVE AND UPGRADE. A DELETE or an upgrade goes out only for
+//   this pack id at a version this app published AND installed from that
+//   version's release (the pack list's `source`); anything else is kept, and an
+//   unreadable pack list is "kept", never "not installed".
 //
 //   WHOLE-BODY PATCHES OF A PACK SOURCE. The endpoint deletes what a PATCH
 //   omits, so the body must be the live source with only the named keys
@@ -23,7 +24,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  PACK_HTTP_INPUT_ID, PACK_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION,
+  PACK_HTTP_INPUT_ID, PACK_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packReleaseUrl,
 } from './pack'
 
 type Client = typeof import('./packClient')
@@ -41,12 +42,17 @@ const SAMPLE_INPUT = `${P}/system/inputs/${PACK_SAMPLE_INPUT_ID}`
 
 interface Call { method: string; path: string; body: unknown }
 
+interface Listed { id: string; version?: string; source?: string }
+
+/** This pack as the pack list reports a copy installed from this app's release of `version`. */
+const ours = (version: string): Listed => ({ id: PACK_ID, version, source: packReleaseUrl(version) })
+
 interface Leader {
   /** Installed packs as `/packs` lists them. */
-  packs?: Array<{ id: string; version?: string }>
+  packs?: Listed[]
   packsStatus?: number
   /** What `/packs` lists after a POST or PATCH of our pack. */
-  packsAfterWrite?: Array<{ id: string; version?: string }>
+  packsAfterWrite?: Listed[]
   /** The pack's sources, as `/p/<pack>/system/inputs` lists them and the item
    *  GETs return them. */
   packInputs?: Array<Record<string, unknown>>
@@ -68,6 +74,12 @@ interface Leader {
   /** `/version/status` before and after the commit. */
   pending?: string[]
   pendingAfterCommit?: string[]
+  /** `POST /version/commit` answers with no hash ("nothing to commit"). */
+  commitNothing?: boolean
+  /** The group's deployed configVersion, and the Leader's HEAD. */
+  deployed?: string
+  head?: string
+  deployStatus?: number
 }
 
 let calls: Call[] = []
@@ -128,9 +140,11 @@ function leader(o: Leader = {}): void {
     }
     if (at('POST', '/version/commit')) {
       committed = true
-      return reply(200, { items: [{ commit: HASH }] })
+      return reply(200, { items: [o.commitNothing ? {} : { commit: HASH }] })
     }
-    if (at('PATCH', `/products/stream/groups/${GROUP}/deploy`)) return reply(200, { items: [] })
+    if (at('PATCH', `/products/stream/groups/${GROUP}/deploy`)) return reply(o.deployStatus ?? 200, { items: [] })
+    if (at('GET', `/products/stream/groups/${GROUP}`) && o.deployed) return reply(200, { items: [{ id: GROUP, configVersion: o.deployed }] })
+    if (at('GET', '/version') && o.head) return reply(200, { items: [{ hash: o.head, refs: 'HEAD -> main' }] })
     return reply(599, { message: `fake Leader has no route for ${method} ${path}` })
   })
 }
@@ -163,11 +177,21 @@ async function today(): Promise<Client> {
   return import('./packClient')
 }
 
-/** The client with 0.2.0's release recorded: pack.ts's two constants swapped,
- *  nothing else. */
+/** The client with 0.2.0's release recorded: pack.ts's three release
+ *  constants moved as a release moves them, nothing else. */
 async function withRelease(): Promise<Client> {
   vi.resetModules()
-  vi.doMock('./pack', async (orig) => ({ ...(await orig<typeof import('./pack')>()), PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32) }))
+  vi.doMock('./pack', async (orig) => ({
+    ...(await orig<typeof import('./pack')>()),
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', PACK_VERSION]),
+  }))
+  return import('./packClient')
+}
+
+/** The client with pack.ts's constants overridden. */
+async function withPack(over: Record<string, unknown>): Promise<Client> {
+  vi.resetModules()
+  vi.doMock('./pack', async (orig) => ({ ...(await orig<typeof import('./pack')>()), ...over }))
   return import('./packClient')
 }
 
@@ -175,6 +199,7 @@ beforeEach(() => { calls = [] })
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.doUnmock('./pack')
+  vi.doUnmock('./setupMemory')
 })
 
 describe('packPath', () => {
@@ -201,7 +226,7 @@ describe('the release gate', () => {
 
   it('refuses to upgrade today, and sends nothing at all', async () => {
     const c = await today()
-    leader({ packs: [{ id: PACK_ID, version: '0.1.0' }] })
+    leader({ packs: [ours('0.1.0')] })
     expect((await c.upgradePack(GROUP))[0].action).toBe('skipped')
     expect(calls).toEqual([])
   })
@@ -210,7 +235,7 @@ describe('the release gate', () => {
     const c = await withRelease()
     expect(c.installRefusal()).toBeNull()
     expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', PACK_VERSION])
-    leader({ packsAfterWrite: [{ id: PACK_ID, version: PACK_VERSION }], packInputs: [liveHttp(), liveSample()] })
+    leader({ packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp(), liveSample()] })
     const steps = await c.installPack(GROUP)
     expect(sent('POST', PACKS)?.body).toEqual({ id: PACK_ID, source: PACK_URL, allowCustomFunctions: false })
     expect(steps.map((s) => [s.key, s.action])).toEqual([['pack', 'created'], ['verify', 'exists']])
@@ -228,36 +253,36 @@ describe('the release gate', () => {
 
   it('reports an install whose read-back shows another version as failed', async () => {
     const c = await withRelease()
-    leader({ packsAfterWrite: [{ id: PACK_ID, version: '0.1.0' }], packInputs: [liveHttp()] })
+    leader({ packsAfterWrite: [ours('0.1.0')], packInputs: [liveHttp()] })
     const steps = await c.installPack(GROUP)
     expect(steps[1]).toMatchObject({ key: 'verify', action: 'error', detail: expect.stringMatching(/0\.1\.0, not 0\.2\.0/) })
   })
 
   it('reports an install whose known object is missing as failed', async () => {
     const c = await withRelease()
-    leader({ packsAfterWrite: [{ id: PACK_ID, version: PACK_VERSION }], packInputs: [] })
+    leader({ packsAfterWrite: [ours(PACK_VERSION)], packInputs: [] })
     expect((await c.installPack(GROUP))[1]).toMatchObject({ key: 'verify', action: 'error' })
   })
 
   it('will not install over an installed copy', async () => {
     const c = await withRelease()
-    leader({ packs: [{ id: PACK_ID, version: '0.1.0' }] })
+    leader({ packs: [ours('0.1.0')] })
     expect((await c.installPack(GROUP))[0]).toMatchObject({ action: 'error', detail: expect.stringMatching(/upgrade it instead/) })
     expect(writes()).toEqual([])
   })
 
   it('upgrades a published 0.1.0 in place, and leaves an unpublished or current version alone', async () => {
     const c = await withRelease()
-    leader({ packs: [{ id: PACK_ID, version: '0.1.0' }], packsAfterWrite: [{ id: PACK_ID, version: PACK_VERSION }], packInputs: [liveHttp()] })
+    leader({ packs: [ours('0.1.0')], packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp()] })
     const steps = await c.upgradePack(GROUP)
     expect(sent('PATCH', PACK)?.body).toEqual({ source: PACK_URL, allowCustomFunctions: false })
     expect(steps.map((s) => s.action)).toEqual(['updated', 'exists'])
 
-    leader({ packs: [{ id: PACK_ID, version: '0.1.5' }] })
+    leader({ packs: [ours('0.1.5')] })
     expect((await c.upgradePack(GROUP))[0]).toMatchObject({ action: 'error', detail: expect.stringMatching(/did not publish/) })
     expect(writes()).toEqual([])
 
-    leader({ packs: [{ id: PACK_ID, version: PACK_VERSION }] })
+    leader({ packs: [ours(PACK_VERSION)] })
     expect((await c.upgradePack(GROUP))[0].action).toBe('exists')
     expect(writes()).toEqual([])
   })
@@ -266,7 +291,7 @@ describe('the release gate', () => {
 describe('removePack', () => {
   it('deletes a copy this app published, by its own id', async () => {
     const c = await today()
-    leader({ packs: [{ id: 'other-pack', version: '1.0.0' }, { id: PACK_ID, version: '0.1.0' }] })
+    leader({ packs: [{ id: 'other-pack', version: '1.0.0' }, ours('0.1.0')] })
     expect(await c.removePack(GROUP)).toEqual({ key: 'pack', action: 'updated', detail: 'deleted' })
     expect(writes()).toEqual([{ method: 'DELETE', path: PACK, body: undefined }])
   })
@@ -274,7 +299,7 @@ describe('removePack', () => {
   it('keeps a version this app did not publish — including 0.2.0 before its release', async () => {
     const c = await today()
     for (const version of ['0.2.0', '9.9.9', undefined]) {
-      leader({ packs: [{ id: PACK_ID, version }] })
+      leader({ packs: [{ id: PACK_ID, version, source: version ? packReleaseUrl(version) : undefined }] })
       expect(await c.removePack(GROUP)).toMatchObject({ action: 'error', detail: expect.stringMatching(/^kept/) })
       expect(writes()).toEqual([])
     }
@@ -291,7 +316,7 @@ describe('removePack', () => {
 
   it('with 0.2.0 released, removes 0.2.0 too', async () => {
     const c = await withRelease()
-    leader({ packs: [{ id: PACK_ID, version: PACK_VERSION }] })
+    leader({ packs: [ours(PACK_VERSION)] })
     expect((await c.removePack(GROUP)).detail).toBe('deleted')
   })
 })
@@ -316,7 +341,7 @@ describe('readPackState', () => {
   it('reports version, objects and sources — whether a token is set, never the token', async () => {
     const c = await today()
     leader({
-      packs: [{ id: PACK_ID, version: '0.1.0' }],
+      packs: [ours('0.1.0')],
       packInputs: [liveHttp({ disabled: false, port: '20003', authTokensExt: [{ token: TOKEN, authType: 'manual' }] }), liveSample()],
     })
     const s = await c.readPackState(GROUP)
@@ -332,7 +357,7 @@ describe('readPackState', () => {
 
   it('reads a list it could not fetch as unreadable, not absent', async () => {
     const c = await today()
-    leader({ packs: [{ id: PACK_ID, version: '0.1.0' }], packInputsStatus: 500, objectsStatus: 403 })
+    leader({ packs: [ours('0.1.0')], packInputsStatus: 500, objectsStatus: 403 })
     const s = await c.readPackState(GROUP)
     expect(Object.values(s.objects).flatMap((o) => Object.values(o))).toEqual(Array(10).fill('unreadable'))
     expect(s.http).toBeNull()
@@ -342,11 +367,13 @@ describe('readPackState', () => {
 describe('the pack Raw HTTP source', () => {
   const others = { inputs: [{ id: 'in_other', type: 'http', port: 20000 }] }
 
-  it('configures it in ONE whole-body PATCH: live fields kept, server-owned dropped, port/token/TLS/enabled set', async () => {
+  it('configures it in ONE whole-body PATCH: live fields kept, server-owned dropped, port/token/enabled set, TLS kept', async () => {
     const c = await today()
     leader({ ...others, packInputs: [liveHttp()] })
     const step = await c.configureHttpInput(GROUP, { port: 20001, token: TOKEN, hosting: 'managed' })
-    expect(step).toEqual({ key: 'http_input', action: 'updated', detail: 'authTokensExt, disabled, port, tls' })
+    // The detail names what CHANGED: a managed group's source already has the
+    // pack's Cribl.Cloud TLS, which is sent back as it is.
+    expect(step).toEqual({ key: 'http_input', action: 'updated', detail: 'authTokensExt, disabled, port' })
     expect(writes()).toHaveLength(1)
     const { criblSourceProvenance: _drop, ...kept } = liveHttp()
     expect(sent('PATCH', HTTP_INPUT)?.body).toEqual({
@@ -392,7 +419,7 @@ describe('the pack Raw HTTP source', () => {
   it('does not count the pack source’s own port as taken, but does count other packs’', async () => {
     const c = await today()
     leader({
-      packs: [{ id: PACK_ID, version: '0.1.0' }, { id: 'other', version: '1.0.0' }],
+      packs: [ours('0.1.0'), { id: 'other', version: '1.0.0' }],
       otherPackInputs: { other: [{ id: 'in_x', port: 20002 }] },
       packInputs: [liveHttp({ port: 20004 })],
     })
@@ -449,11 +476,44 @@ describe('the pack Raw HTTP source', () => {
     expect(writes()).toEqual([])
   })
 
-  it('enables a source that has a token and a usable port, with TLS for the hosting', async () => {
+  // A certificate somebody added after the install is theirs. Enabling (or
+  // configuring again) must not put a hybrid group back on plaintext, or swap
+  // a managed group's own certificate for Cribl.Cloud's.
+  const CUSTOM_TLS = { disabled: false, minVersion: 'TLSv1.2', certPath: '/opt/cribl/certs/gigamon.crt', privKeyPath: '/opt/cribl/certs/gigamon.key' }
+
+  it('enables by changing only `disabled` when the source already has its own TLS', async () => {
+    const c = await today()
+    for (const hosting of ['hybrid', 'managed'] as const) {
+      leader({ packInputs: [liveHttp({ port: 20003, tls: CUSTOM_TLS, authTokensExt: [{ token: TOKEN }] })] })
+      expect(await c.enableHttpInput(GROUP, hosting)).toEqual({ key: 'http_input', action: 'updated', detail: 'disabled' })
+      expect(sent('PATCH', HTTP_INPUT)?.body).toMatchObject({ disabled: false, tls: CUSTOM_TLS })
+    }
+  })
+
+  it('enables with TLS for the hosting only when the source has no TLS block', async () => {
+    const c = await today()
+    leader({ packInputs: [liveHttp({ tls: undefined, authTokensExt: [{ token: TOKEN }] })] })
+    await c.enableHttpInput(GROUP, 'hybrid')
+    expect(sent('PATCH', HTTP_INPUT)?.body).toMatchObject({ disabled: false, tls: { disabled: true } })
+    leader({ packInputs: [liveHttp({ tls: undefined, authTokensExt: [{ token: TOKEN }] })] })
+    await c.enableHttpInput(GROUP, 'managed')
+    expect(sent('PATCH', HTTP_INPUT)?.body).toMatchObject({ tls: { certPath: '$CRIBL_CLOUD_CRT' } })
+  })
+
+  it('on a hybrid group, replaces the pack’s shipped Cribl.Cloud certificate, which does not exist there', async () => {
     const c = await today()
     leader({ packInputs: [liveHttp({ authTokensExt: [{ token: TOKEN }] })] })
     expect((await c.enableHttpInput(GROUP, 'hybrid')).action).toBe('updated')
     expect(sent('PATCH', HTTP_INPUT)?.body).toMatchObject({ disabled: false, tls: { disabled: true } })
+  })
+
+  it('configuring again keeps a certificate added since', async () => {
+    const c = await today()
+    for (const hosting of ['hybrid', 'managed'] as const) {
+      leader({ packInputs: [liveHttp({ tls: CUSTOM_TLS })] })
+      await c.configureHttpInput(GROUP, { port: hosting === 'managed' ? 20001 : 10080, token: TOKEN, hosting })
+      expect(sent('PATCH', HTTP_INPUT)?.body).toMatchObject({ tls: CUSTOM_TLS })
+    }
   })
 
   it('writes nothing when the pack source is not there, or its body cannot be read', async () => {
@@ -506,10 +566,12 @@ describe('committing the pack', () => {
     expect(c.packCommitScope(GROUP, null).unknown).toBe(true)
   })
 
+  const record = () => vi.fn(async (_hash: string, _message: string) => true)
+
   it('commits exactly those files, then deploys that commit', async () => {
     const c = await today()
     leader({ pending })
-    const steps = await c.commitAndDeployPack(GROUP, 'Gigamon AMI pack')
+    const steps = await c.commitAndDeployPack(GROUP, 'Gigamon AMI pack', { wrote: true, record: record() })
     expect(sent('POST', '/version/commit')?.body).toEqual({ message: 'Gigamon AMI pack', files: pending.slice(0, 2) })
     expect(steps.map((s) => [s.key, s.action])).toEqual([['commit', 'created'], ['deploy', 'created']])
   })
@@ -517,9 +579,61 @@ describe('committing the pack', () => {
   it('does not deploy a commit that left one of the pack’s files behind', async () => {
     const c = await today()
     leader({ pending, pendingAfterCommit: [pending[0]] })
-    const steps = await c.commitAndDeployPack(GROUP, 'm')
+    const steps = await c.commitAndDeployPack(GROUP, 'm', { wrote: true, record: record() })
     expect(steps.map((s) => s.action)).toEqual(['error'])
     expect(sent('PATCH', `/products/stream/groups/${GROUP}/deploy`)).toBeUndefined()
+  })
+
+  it('hands every pack commit’s hash to `record` — also when the deploy after it failed', async () => {
+    // deployStrandedCommit deploys only a hash in commit memory. Unrecorded, a
+    // pack commit whose deploy failed is "a commit this app did not make" on
+    // every later run, and the app can never deploy it.
+    const c = await today()
+    leader({ pending, deployStatus: 500 })
+    const rec = record()
+    const steps = await c.commitAndDeployPack(GROUP, 'm', { wrote: true, record: rec })
+    expect(steps.map((s) => [s.key, s.action])).toEqual([['commit', 'created'], ['deploy', 'error']])
+    expect(rec).toHaveBeenCalledTimes(1)
+    expect(rec).toHaveBeenCalledWith(HASH, 'm')
+  })
+
+  it('deploys that recorded commit on the next run, found under PACK_COMMIT_KEY', async () => {
+    vi.resetModules()
+    vi.doMock('./setupMemory', async (orig) => ({
+      ...(await orig<typeof import('./setupMemory')>()),
+      loadCommitMemory: async () => ({ [GROUP]: { onboarding_pack: { hash: HASH, message: 'm' } } }),
+    }))
+    const c: Client = await import('./packClient')
+    expect(c.PACK_COMMIT_KEY).toBe('onboarding_pack')
+    leader({ pending: [], commitNothing: true, deployed: 'cccc0000', head: HASH })
+    const rec = record()
+    const steps = await c.commitAndDeployPack(GROUP, 'm', { wrote: false, record: rec })
+    expect(steps.map((s) => [s.key, s.action])).toEqual([['commit', 'exists'], ['deploy', 'created']])
+    expect(sent('PATCH', `/products/stream/groups/${GROUP}/deploy`)?.body).toMatchObject({ version: HASH })
+    expect(rec).not.toHaveBeenCalled()
+  })
+
+  it('after a pack write, finds none of the pack’s files pending: an error, not "up to date" — nothing committed or deployed', async () => {
+    const c = await today()
+    leader({ pending: [`groups/${GROUP}/local/cribl/inputs.yml`], deployed: 'cccc0000', head: HASH })
+    const steps = await c.commitAndDeployPack(GROUP, 'm', { wrote: true, record: record() })
+    expect(steps).toEqual([{ key: 'commit', action: 'error', detail: expect.stringMatching(/none of its files/) }])
+    expect(writes()).toEqual([])
+  })
+
+  it('after a pack write, a commit that answers with no hash is an error, and nothing is deployed', async () => {
+    const c = await today()
+    leader({ pending: [], commitNothing: true, deployed: 'cccc0000', head: HASH })
+    const steps = await c.commitAndDeployPack(GROUP, 'm', { wrote: true, record: record() })
+    expect(steps.map((s) => [s.key, s.action])).toEqual([['commit', 'error']])
+    expect(sent('PATCH', `/products/stream/groups/${GROUP}/deploy`)).toBeUndefined()
+  })
+
+  it('with nothing written, nothing to commit is still "no changes"', async () => {
+    const c = await today()
+    leader({ pending: [`groups/${GROUP}/local/cribl/inputs.yml`] })
+    const steps = await c.commitAndDeployPack(GROUP, 'm', { wrote: false, record: record() })
+    expect(steps).toEqual([{ key: 'commit', action: 'exists', detail: 'no changes to commit' }])
   })
 })
 
@@ -529,5 +643,117 @@ describe('compareVersions', () => {
     expect(c.compareVersions('0.10.0', '0.9.9')).toBeGreaterThan(0)
     expect(c.compareVersions('0.2.0', '0.2.0')).toBe(0)
     expect(c.compareVersions('0.1.0', '0.2.0')).toBeLessThan(0)
+  })
+})
+
+describe('the published-versions list', () => {
+  it('is pack.ts’s hand-kept list, so moving PACK_VERSION on does not drop the release before it', async () => {
+    const c = await withPack({ PACK_VERSION: '0.3.0', PACK_PUBLISHED: false, PACK_SHA256: null, PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0']) })
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0'])
+    leader({ packs: [ours('0.2.0')] })
+    expect(await c.removePack(GROUP)).toEqual({ key: 'pack', action: 'updated', detail: 'deleted' })
+  })
+})
+
+describe('ownership: the id, a published version, AND this app’s release as the install source', () => {
+  const impostors: Listed[] = [
+    { id: PACK_ID, version: '0.1.0', source: 'https://github.com/someone/fork/releases/download/gigamon-pack-v0.1.0/cc-network-gigamon-ami-0.1.0.crbl' },
+    { id: PACK_ID, version: '0.1.0', source: 'cc-network-gigamon-ami-0.1.0.AbCdEfG.crbl' },
+    { id: PACK_ID, version: '0.1.0' },
+    { id: PACK_ID, version: '0.1.0', source: packReleaseUrl('0.2.0') },
+  ]
+
+  it('keeps a same-id copy at a published version that was not installed from that version’s release', async () => {
+    const c = await today()
+    for (const p of impostors) {
+      leader({ packs: [p] })
+      expect(await c.removePack(GROUP)).toMatchObject({ action: 'error', detail: expect.stringMatching(/^kept — .*release/) })
+      expect(writes()).toEqual([])
+    }
+  })
+
+  it('will not upgrade one either', async () => {
+    const c = await withRelease()
+    for (const p of impostors) {
+      leader({ packs: [p] })
+      expect((await c.upgradePack(GROUP))[0]).toMatchObject({ action: 'error', detail: expect.stringMatching(/^kept/) })
+      expect(writes()).toEqual([])
+    }
+  })
+
+  it('reports an install the pack list does not attribute to the release it was installed from', async () => {
+    const c = await withRelease()
+    leader({ packsAfterWrite: [{ id: PACK_ID, version: PACK_VERSION, source: 'somewhere-else.crbl' }], packInputs: [liveHttp()] })
+    expect((await c.installPack(GROUP))[1]).toMatchObject({ key: 'verify', action: 'error', detail: expect.stringMatching(/source/) })
+  })
+})
+
+describe('readPackState.current', () => {
+  it('is false for an installed copy of this build’s version that was never released — a dev build is not "up to date"', async () => {
+    const c = await today()
+    leader({ packs: [ours(PACK_VERSION)] })
+    expect(await c.readPackState(GROUP)).toMatchObject({ installed: true, version: PACK_VERSION, published: false, current: false })
+  })
+
+  it('is true only for the released copy, installed from its release', async () => {
+    const c = await withRelease()
+    leader({ packs: [ours(PACK_VERSION)] })
+    expect(await c.readPackState(GROUP)).toMatchObject({ published: true, fromRelease: true, current: true })
+    leader({ packs: [{ id: PACK_ID, version: PACK_VERSION, source: 'fork.crbl' }] })
+    expect(await c.readPackState(GROUP)).toMatchObject({ published: true, fromRelease: false, current: false })
+  })
+})
+
+describe('the sha256 gate', () => {
+  it('opens only on 64 lowercase hex characters', async () => {
+    for (const sha of ['x', 'ab'.repeat(31), 'AB'.repeat(32), `${'ab'.repeat(32)} `]) {
+      const c = await withPack({ PACK_PUBLISHED: true, PACK_SHA256: sha })
+      expect(c.installRefusal(), sha).toMatch(/sha256/)
+      leader()
+      expect((await c.installPack(GROUP))[0].action).toBe('skipped')
+      expect(calls).toEqual([])
+    }
+    const ok = await withPack({ PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32) })
+    expect(ok.installRefusal()).toBeNull()
+  })
+})
+
+describe('previewing a change to a pack source before it is sent', () => {
+  it('returns the before→after a confirmation shows, with GETs only, and never the token', async () => {
+    const c = await today()
+    leader({ packInputs: [liveHttp({ authTokensExt: [{ token: OLD_TOKEN, authType: 'manual' }] })] })
+    const preview = await c.previewPackInput(GROUP, { kind: 'configure', port: 10080, token: TOKEN, hosting: 'hybrid' })
+    expect(writes()).toEqual([])
+    if (!preview.ok) throw new Error(preview.step.detail)
+    expect(preview.key).toBe('http_input')
+    expect(Object.fromEntries(preview.diff.map((d) => [d.key, [d.kind, d.before, d.after]]))).toEqual({
+      authTokensExt: ['changed', 'a token is set (not shown)', 'a new token (not shown)'],
+      disabled: ['changed', true, false],
+      port: ['changed', 20005, 10080],
+      tls: ['changed', liveHttp().tls, { disabled: true }],
+    })
+    for (const secret of [TOKEN, OLD_TOKEN]) expect(JSON.stringify(preview)).not.toContain(secret.slice(0, 12))
+  })
+
+  it('previews "nothing changes" as an empty diff, and a refusal as the step the write would return', async () => {
+    const c = await today()
+    leader({ packInputs: [liveHttp({ port: 20004 })] })
+    expect(await c.previewPackInput(GROUP, { kind: 'port', port: 20004, hosting: 'managed' })).toEqual({ ok: true, key: 'http_input', diff: [] })
+    const refused = await c.previewPackInput(GROUP, { kind: 'port', port: 20004, hosting: null })
+    expect(refused).toMatchObject({ ok: false, step: { key: 'http_input', action: 'error' } })
+    expect(writes()).toEqual([])
+  })
+
+  it('applies an approved diff, and refuses — sending nothing — when the source moved after it was shown', async () => {
+    const c = await today()
+    leader({ packInputs: [liveHttp()] })
+    const preview = await c.previewPackInput(GROUP, { kind: 'port', port: 20003, hosting: 'managed' })
+    if (!preview.ok) throw new Error('refused')
+    expect(await c.applyPackInput(GROUP, { kind: 'port', port: 20003, hosting: 'managed' }, preview.diff)).toMatchObject({ action: 'updated' })
+
+    leader({ packInputs: [liveHttp({ port: 20007 })] })
+    const moved = await c.applyPackInput(GROUP, { kind: 'port', port: 20003, hosting: 'managed' }, preview.diff)
+    expect(moved).toMatchObject({ action: 'error', detail: expect.stringMatching(/changed after/) })
+    expect(writes()).toEqual([])
   })
 })

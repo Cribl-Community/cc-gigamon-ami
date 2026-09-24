@@ -131,8 +131,31 @@ export const packAssetName = (version: string): string => `${PACK_ID}-${version}
  * (measured 2026-09-23). The Leader makes this request, not the app, so no
  * `config/proxies.yml` entry is needed for it.
  */
-export const PACK_URL: string =
-  `https://github.com/Cribl-Community/cc-gigamon-ami/releases/download/${packTag(PACK_VERSION)}/${packAssetName(PACK_VERSION)}`
+export const PACK_URL: string = packReleaseUrl(PACK_VERSION)
+
+/**
+ * The release asset URL of one version of this pack. `PACK_URL` is this for
+ * `PACK_VERSION`; packClient.ts compares an installed copy's `source` with it,
+ * as the second sign that this app installed that copy. The 0.1.0 asset is at
+ * exactly this URL (read from the release, 2026-09-24).
+ */
+export function packReleaseUrl(version: string): string {
+  return `https://github.com/Cribl-Community/cc-gigamon-ami/releases/download/${packTag(version)}/${packAssetName(version)}`
+}
+
+/**
+ * EVERY VERSION OF THIS PACK THAT HAS BEEN RELEASED, KEPT BY HAND. The only
+ * versions packClient.ts will upgrade from or remove.
+ *
+ * APPEND-ONLY. A version that leaves this list becomes "a version this app did
+ * not publish" on every tenant still running it: Remove keeps it and Upgrade
+ * refuses it. That is why it is not derived from `PACK_VERSION` — moving
+ * `PACK_VERSION` to the next release must not drop the one before it. Add
+ * `PACK_VERSION` here in the same change that sets `PACK_PUBLISHED` and
+ * `PACK_SHA256`; pack.test.ts fails if the list and `PACK_PUBLISHED` disagree,
+ * and if any version it has ever held is missing.
+ */
+export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze(['0.1.0'])
 
 // ── Objects inside the pack. Each is referenced by these ids in the pack's YAML.
 

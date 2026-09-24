@@ -1884,10 +1884,21 @@ async function commitAndDeploy(
   markers: readonly string[],
   onStep: (r: StepResult) => void,
   onPhase: OnPhase,
+  nothingCommitted: string | null = null,
 ): Promise<StepResult[]> {
   const out: StepResult[] = []
 
+  // A caller that KNOWS it just changed something passes `nothingCommitted`:
+  // for it, finding nothing to commit is not "up to date", it is a change that
+  // will never be committed or deployed, and it is reported as the error it is.
+  // No stranded-commit repair either — this run's own change is what is missing.
+  const nothing = (r: StepResult): StepResult[] => {
+    out.push(r); onStep(r); onPhase({ kind: 'error', text: `Commit failed — ${r.detail}` })
+    return out
+  }
+
   if (files.length === 0) {
+    if (nothingCommitted !== null) return nothing({ key: 'commit', action: 'error', detail: nothingCommitted })
     const r: StepResult = { key: 'commit', action: 'exists', detail: 'no changes to commit' }
     out.push(r); onStep(r)
     return deployStrandedCommit(group, out, onStep, onPhase, 'Already up to date — nothing to deploy')
@@ -1903,6 +1914,9 @@ async function commitAndDeploy(
   const body = commit.body as { items?: Array<{ commit?: string }>; commit?: string }
   const hash = body?.items?.[0]?.commit || body?.commit
   if (!hash) {
+    if (nothingCommitted !== null) {
+      return nothing({ key: 'commit', action: 'error', detail: `Cribl committed nothing — ${nothingCommitted}` })
+    }
     const r: StepResult = { key: 'commit', action: 'exists', detail: 'nothing to commit' }
     out.push(r); onStep(r)
     return deployStrandedCommit(group, out, onStep, onPhase, 'No net changes — nothing to deploy')
@@ -1946,6 +1960,10 @@ async function commitAndDeploy(
  * re-read that refuses to deploy an incomplete commit, the stranded-commit
  * repair that deploys only a hash this app recorded).
  *
+ * `nothingCommitted`: the error to report when nothing gets committed, from a
+ * caller whose own write just succeeded. Null keeps Guided Setup's reading —
+ * nothing to commit is "up to date", and the stranded-commit repair runs.
+ *
  * THE ONE EXPORTED WAY IN, for a caller whose change is not one of Guided
  * Setup's resource files: the onboarding pack client (cribl/packClient.ts).
  * It exists so that client does not carry a second copy of this machinery.
@@ -1957,9 +1975,10 @@ export async function commitMatchingAndDeploy(
   constructed: readonly string[],
   onStep: (r: StepResult) => void = () => {},
   onPhase: OnPhase = noopPhase,
+  nothingCommitted: string | null = null,
 ): Promise<StepResult[]> {
   const files = await filesToCommitFor(group, markers, constructed)
-  return commitAndDeploy(message, group, files, markers, onStep, onPhase)
+  return commitAndDeploy(message, group, files, markers, onStep, onPhase, nothingCommitted)
 }
 
 /**

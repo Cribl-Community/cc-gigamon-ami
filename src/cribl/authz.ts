@@ -330,19 +330,19 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/packClient.ts#upgradePack',
     gates: ['onboarding_pack.upgrade'],
     surface: 'config',
-    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published, never downward.',
+    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward.',
   },
   {
     at: 'cribl/packClient.ts#removePack',
     gates: ['onboarding_pack.remove'],
     surface: 'config',
-    why: 'DELETE /packs/<id> uninstalls the pack — only when the installed id is this app’s and its version is one this app published.',
+    why: 'DELETE /packs/<id> uninstalls the pack — only when the installed id is this app’s, its version is one this app published, and the pack list names that version’s release as where it came from.',
   },
   {
     at: 'cribl/packClient.ts#patchPackInput',
     gates: ['onboarding_pack.install', 'onboarding_pack.configure'],
     surface: 'config',
-    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read inside this function with only the port, token, TLS or disabled flag changed. Install ends here too: a freshly installed Raw HTTP source is disabled with no token until this sets them.',
+    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read in the same call (readLive) with only the port, token, TLS or disabled flag changed — and nothing is sent when that read no longer gives the diff the confirmation showed. Install ends here too: a freshly installed Raw HTTP source is disabled with no token until this sets them.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------

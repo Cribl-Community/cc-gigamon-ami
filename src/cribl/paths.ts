@@ -480,14 +480,14 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
     site: 'packClient.ts upgradePack',
-    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published, and never downward.`,
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused.`,
   },
   {
     method: 'DELETE',
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
     site: 'packClient.ts removePack',
-    why: `Uninstall '${PACK_ID}' again, from a confirmed Remove — only when the installed pack is this app's id at a version this app published. The Lake datasets it wrote to are outside the pack and stay.`,
+    why: `Uninstall '${PACK_ID}' again, from a confirmed Remove — only when the installed pack is this app's id, at a version this app published, installed from that version's own GitHub release. The Lake datasets it wrote to are outside the pack and stay.`,
     removes: 'pack',
   },
   {
@@ -529,7 +529,7 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_HTTP_INPUT_ID}`,
     scope: 'product',
-    site: 'packClient.ts patchPackInput (also verifyInstalled)',
+    site: 'packClient.ts readLive (also verifyInstalled)',
     why: 'Read the pack’s Raw HTTP source whole before changing it, because its PATCH replaces the whole object; and read it back after an install, as proof the pack arrived.',
   },
   {
@@ -543,7 +543,7 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_SAMPLE_INPUT_ID}`,
     scope: 'product',
-    site: 'packClient.ts patchPackInput',
+    site: 'packClient.ts readLive',
     why: 'Read the pack’s sample DataGen whole before starting or stopping it, because its PATCH replaces the whole object.',
   },
   {

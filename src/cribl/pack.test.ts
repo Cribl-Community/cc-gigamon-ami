@@ -44,7 +44,7 @@ import {
   PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID,
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
-  PACK_SHA256, PACK_PUBLISHED, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_0_1_0,
+  PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_0_1_0,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -463,6 +463,27 @@ describe('the pinned pack', () => {
     // without a pin, fails here.
     expect(PACK_SHA256 === null).toBe(!PACK_PUBLISHED)
     if (PACK_SHA256 !== null) expect(PACK_SHA256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('keeps every version it ever released on PACK_PUBLISHED_VERSIONS, and PACK_VERSION exactly when it is released', () => {
+    // APPEND to EVER_RELEASED when a release is published; never remove from
+    // it. A version missing from the list is "not published" to every tenant
+    // running it: packClient.ts's Remove keeps it and its Upgrade refuses it.
+    const EVER_RELEASED = ['0.1.0']
+    for (const v of EVER_RELEASED) expect(PACK_PUBLISHED_VERSIONS, `${v} was released and has left the list`).toContain(v)
+    expect(PACK_PUBLISHED_VERSIONS).toContain(PACK_0_1_0.version)
+    expect(PACK_PUBLISHED_VERSIONS.includes(PACK_VERSION)).toBe(PACK_PUBLISHED)
+    expect(new Set(PACK_PUBLISHED_VERSIONS).size).toBe(PACK_PUBLISHED_VERSIONS.length)
+    for (const v of PACK_PUBLISHED_VERSIONS) expect(cmp(v, PACK_VERSION)).toBeLessThanOrEqual(0)
+    expect(Object.isFrozen(PACK_PUBLISHED_VERSIONS)).toBe(true)
+  })
+
+  it('names each version’s release asset the way PACK_URL does', () => {
+    expect(packReleaseUrl(PACK_VERSION)).toBe(PACK_URL)
+    // Read from the published release (gh release view gigamon-pack-v0.1.0), 2026-09-24.
+    expect(packReleaseUrl('0.1.0')).toBe(
+      'https://github.com/Cribl-Community/cc-gigamon-ami/releases/download/gigamon-pack-v0.1.0/cc-network-gigamon-ami-0.1.0.crbl',
+    )
   })
 
   it('uses a tag the app\'s marketplace release can never match', () => {
