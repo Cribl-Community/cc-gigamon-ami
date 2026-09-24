@@ -5,6 +5,8 @@
 // route through the Vite dev proxy at `/capi` (see vite.config.ts) which injects a
 // dev OAuth token. Either way the app just calls `fetch()` normally.
 
+import { retargetQuery } from '../queries/datasets'
+
 declare global {
   interface Window {
     CRIBL_API_URL?: string
@@ -47,6 +49,35 @@ export const LAKE_DATASET = 'gigamon_ami'
 export const STREAM_GROUP = 'default'
 
 /**
+ * The Lake dataset the app is reading right now: `LAKE_DATASET`, or the pack's
+ * sample dataset while the customer's holds no data.
+ *
+ * STATE, IN A MODULE OF CONSTANTS, ON PURPOSE. Everything that sends a query out
+ * of the app — the job body (search.ts), the deep link and the Copilot brief
+ * (below) — already imports this module and nothing lower. cribl/datasetTarget.ts
+ * owns the decision and is the only caller of `setActiveDataset`; this holds its
+ * answer where every exit can read it without importing the decision (which
+ * imports search.ts, which imports this). Starts on the customer's dataset,
+ * which is what the app did before sample data existed.
+ */
+let active: string = LAKE_DATASET
+
+/** Only cribl/datasetTarget.ts calls this. */
+export function setActiveDataset(dataset: string): void {
+  active = dataset
+}
+
+/** The dataset queries are being sent to. */
+export function activeDataset(): string {
+  return active
+}
+
+/** A query or brief written against `LAKE_DATASET`, addressed to the active dataset. */
+export function toActiveDataset(text: string): string {
+  return retargetQuery(text, active)
+}
+
+/**
  * Deep link to any Cribl UI page (Stream / Lake / Search), with the same origin
  * handling as searchUiUrl: installed → root-relative so it resolves to the
  * Leader host; dev preview → prefixed with the injected Cribl origin.
@@ -74,7 +105,9 @@ export function criblUiUrl(path: string): string {
  */
 export function criblInvestigateUrl(prompt: string): string {
   const origin = (typeof window !== 'undefined' && window.__CRIBL_SEARCH_ORIGIN) || ''
-  return `${origin}/search/agent?${new URLSearchParams({ q: prompt }).toString()}`
+  // The brief names the dataset in prose and in KQL; both follow the one the
+  // numbers came from, or the agent would investigate an empty dataset.
+  return `${origin}/search/agent?${new URLSearchParams({ q: toActiveDataset(prompt) }).toString()}`
 }
 
 /** Fully-qualified URL for a Cribl Search sub-path, e.g. `/search/jobs`. */
@@ -94,7 +127,8 @@ export function searchUrl(path: string): string {
 export function searchUiUrl(query: string, earliest: string, latest = 'now'): string {
   const origin = (typeof window !== 'undefined' && window.__CRIBL_SEARCH_ORIGIN) || ''
   const jobId = `link-${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
-  const params = new URLSearchParams({ q: query, et: earliest, lt: latest, tz: 'local' })
+  // The Search UI opens on the dataset the panel actually read — see `toActiveDataset`.
+  const params = new URLSearchParams({ q: toActiveDataset(query), et: earliest, lt: latest, tz: 'local' })
   return `${origin}/search/${jobId}?${params.toString()}`
 }
 

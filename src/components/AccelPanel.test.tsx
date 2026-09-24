@@ -51,6 +51,8 @@ import { accelWritesSettled } from '../cribl/accel/store'
 import { estimateWorkspaceSaving } from '../cribl/accel/estimate'
 import type { AccelStatus } from '../cribl/accel/status'
 import { AccelPanel } from './AccelPanel'
+import { SAMPLE_ACCEL_OFF } from './sampleDataCopy'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
 // The words are next door, pure and DOM-free — most of what this screen can get
 // wrong is a sentence rather than a tag, so most of what follows is a function
 // call rather than a render.
@@ -920,6 +922,58 @@ describe('the per-dashboard switches', () => {
     await press(switchNamed(switchName('master')))
     expect(dialog()).toBeNull()
     expect(savedWrites(calls)).toEqual([])
+  })
+})
+
+// ── While only sample data exists ───────────────────────────────────────────
+// Every schedule scans the customer's dataset, which is empty then. Nothing on
+// this panel may offer to turn one ON, and the panel says why (owner decision,
+// 2026-09-24). Off stays available: it is the state the rule asks for.
+describe('while only sample data exists', () => {
+  beforeEach(() => settleDatasetTarget(true))
+
+  it('says why above the switches', async () => {
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).toContain(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of the master opens no dialog, writes nothing, and says why beside it', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+    expect(document.body.querySelector('.ac-switch-master .ac-switch-note')?.textContent).toBe(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of a tab opens no dialog either', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('dns-health')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('an OFF flip still asks to pause', async () => {
+    stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()?.textContent ?? '').toContain('Yes, pause them')
+  })
+
+  it('offers no Review changes, which would create them running', async () => {
+    // Nothing created yet: Apply would have eighteen searches to write.
+    stubWorkspace({})
+    await mount()
+    expect(buttonNamed('Review changes…')).toBeUndefined()
+  })
+
+  it('offers no Resume on a paused row', async () => {
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(document.body.querySelector('button[aria-label^="Resume"]')).toBeNull()
+    expect(bodyText()).toContain('Off: sample data only')
   })
 })
 

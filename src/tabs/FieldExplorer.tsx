@@ -34,6 +34,7 @@ import { accelEntry, type AccelId } from '../cribl/accel/manifest'
 import { readAccelFieldSummaries, readAccelRows, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
 import { useSelectedSnapshot } from '../cribl/accel/selection'
 import { useAccelEnabled } from '../cribl/useSearch'
+import { useDatasetTarget } from '../cribl/datasetTarget'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
@@ -205,7 +206,14 @@ export function FieldExplorer() {
   // deliberately overrides `accelOn` — there is no live answer to a question
   // about 04:20, and the "Run live" chip is hidden while one is picked for the
   // same reason <Panel> hides its own.
-  const moment = useSelectedSnapshot()
+  //
+  // NEVER WHILE ONLY SAMPLE DATA EXISTS: a stored run is a run over the
+  // customer's dataset, and the header offers no moment to pick then anyway
+  // (cribl/dataMode.ts drops it). Said here as well because this tab calls the
+  // stored-result reads directly rather than through useSearch.
+  const target = useDatasetTarget()
+  const picked = useSelectedSnapshot()
+  const moment = target.sample ? null : picked
   // This panel's row in the header's census. It is a <Panel> like any other, but
   // it builds its state from readAccelFieldSummaries rather than from useSearch,
   // so the `snapshot` prop is assembled by hand here. Without it the In-feed
@@ -239,6 +247,9 @@ export function FieldExplorer() {
   // changes when the sample was taken and never what it means. The one exception
   // is "Run live", which is the reader asking for the picker's window back.
   useEffect(() => {
+    // Nothing is asked until the app knows which dataset answers — see
+    // cribl/datasetTarget.ts; useSearch holds every other panel the same way.
+    if (!target.known) return
     const ctrl = new AbortController()
     setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelFieldSummaries(SAMPLE_ACCEL, {
@@ -273,7 +284,7 @@ export function FieldExplorer() {
     // the identical stored rows. `sampleWindowKey` is what puts it back in the
     // key the moment the reader asks for live.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, moment, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
+  }, [accelOn, moment, sampleWindowKey, sampleRefreshKey, nonce, summariesCost, target.known, target.dataset])
 
   // Whole-window presence counts for the AMI coverage view (accurate for rare
   // fields — one count() per field rather than a sample, which is why it is
@@ -284,6 +295,7 @@ export function FieldExplorer() {
   // so turning it on changes when the answer was computed and never what it
   // means; with acceleration off it follows the picker, as it always did.
   useEffect(() => {
+    if (!target.known) return
     const ctrl = new AbortController()
     setPresence((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelRows(PRESENCE_ACCEL, {
@@ -336,7 +348,7 @@ export function FieldExplorer() {
     // it: the picker cannot change what comes back from a stored run, so
     // re-running on a range change would submit a job to receive identical rows.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, moment, presenceWindowKey, presenceRefreshKey, nonce, presenceCost])
+  }, [accelOn, moment, presenceWindowKey, presenceRefreshKey, nonce, presenceCost, target.known, target.dataset])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {

@@ -34,6 +34,7 @@
 // A pin is therefore a property of the QUESTION, not of the tenant's setup, and
 // stays true whichever target they pick.
 import { LAKE_DATASET } from './config'
+import { SAMPLE_DATASET } from '../queries/datasets'
 
 export type QueryTarget = 'lake-json' | 'lake-parquet' | 'lakehouse'
 
@@ -99,6 +100,20 @@ export interface TargetDatasets {
 }
 
 export const DEFAULT_DATASETS: TargetDatasets = Object.freeze({ json: LAKE_DATASET })
+
+/**
+ * What a query can be routed to while the customer's dataset holds no data and
+ * the app is reading the pack's sample instead (cribl/datasetTarget.ts).
+ *
+ * THE SAMPLE IS THE ARCHIVE OF RECORD THEN, pins included. A pin sends a query
+ * to the JSON archive because that is where the number beside it came from; on
+ * a sample-only install the number came from the sample, and a drill-down that
+ * opened the empty customer dataset instead would show nothing under a figure
+ * of thousands. There is no curated copy or engine for sample data, so every
+ * chosen target falls back to it, as `routeQuery` already does for anything not
+ * provisioned.
+ */
+export const SAMPLE_DATASETS: TargetDatasets = Object.freeze({ json: SAMPLE_DATASET })
 
 /**
  * Where one query actually runs.

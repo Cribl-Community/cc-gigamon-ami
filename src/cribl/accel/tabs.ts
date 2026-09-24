@@ -54,10 +54,15 @@
 //   * TODO(onboarding): installing acceleration as part of the onboarding run
 //     belongs to the branch rewriting onboarding; this module only switches
 //     schedules that Apply already created.
-//   * TODO(sample-data): "off while only sample data exists" needs the
-//     sample-data slice to say whether the dataset holds anything but the
-//     pack's samples. When it lands it is one more input to `scheduleEnabled`
-//     (a third condition beside the master switch), not a stored flag.
+//
+// ── WHILE ONLY SAMPLE DATA EXISTS ───────────────────────────────────────────
+// Every schedule scans the customer's dataset, so while it holds nothing
+// (cribl/datasetTarget.ts) a schedule is a charge for a stored run of nothing.
+// That is a third input to `scheduleEnabled`, beside the master switch and the
+// tabs — `realData` — and like them it is READ, never stored. With it false, no
+// flip turns anything on: an on flip plans no change and says why
+// (`refused: 'sample-only'`); an off flip still pauses, because off is the
+// state the rule asks for.
 
 import { MANIFEST, type AccelEntry, type AccelId } from './manifest'
 import type { AccelRow, AccelState } from './provision'
@@ -153,11 +158,20 @@ export const ALL_TABS_ON: TabSwitches = Object.freeze(
 )
 
 /**
- * THE RULE. A schedule is enabled iff the master switch is on AND at least one
- * tab it serves is on.
+ * THE RULE. A schedule is enabled iff the customer's dataset holds real data
+ * AND the master switch is on AND at least one tab it serves is on.
+ *
+ * `realData` defaults to true — every install before sample data existed, and
+ * every install once real data has landed.
  */
-export function scheduleEnabled(entry: AccelEntry, master: boolean, tabs: TabSwitches): boolean {
-  return master && tabsOfEntry(entry).some((k) => tabs[k])
+export function scheduleEnabled(entry: AccelEntry, master: boolean, tabs: TabSwitches, realData = true): boolean {
+  return realData && master && tabsOfEntry(entry).some((k) => tabs[k])
+}
+
+/** What a switch knows about the workspace beyond the saved searches. */
+export interface SwitchContext {
+  /** The app is reading the sample dataset: the customer's holds no data. */
+  sampleOnly?: boolean
 }
 
 // ── What is there now ───────────────────────────────────────────────────────
@@ -281,6 +295,8 @@ export interface TogglePlan {
   already: readonly AccelId[]
   /** Every tab whose switch reads differently afterwards, the target included. */
   tabsChanged: readonly { tab: AccelTabKey; before: SwitchState; after: SwitchState }[]
+  /** Why an ON flip plans nothing whatever the saved searches say, or null. */
+  refused: 'sample-only' | null
 }
 
 /**
@@ -291,7 +307,8 @@ export interface TogglePlan {
  * evidence excludes the target's own schedules), and only the target's own
  * schedules — or every schedule, for the master — are candidates to change.
  */
-export function togglePlan(state: AccelState, target: ToggleTarget): TogglePlan {
+export function togglePlan(state: AccelState, target: ToggleTarget, ctx: SwitchContext = {}): TogglePlan {
+  const realData = !ctx.sampleOnly
   const live = liveSchedules(state)
   const why = reasons(state)
   const scope: AccelId[] = target.kind === 'master' ? MANIFEST.map((e) => e.id) : schedulesOfTab(target.tab)
@@ -316,7 +333,7 @@ export function togglePlan(state: AccelState, target: ToggleTarget): TogglePlan 
     const now = live.get(entry.id)
     if (now === undefined) continue
     if (now === target.on) already.push(entry.id)
-    const to = scheduleEnabled(entry, master, tabs)
+    const to = scheduleEnabled(entry, master, tabs, realData)
     const served = tabsOfEntry(entry)
     // A flip moves schedules ONE way: an off flip never resumes, an on flip
     // never pauses (review 2026-09-24, defect 2). The rule can say otherwise
@@ -344,6 +361,7 @@ export function togglePlan(state: AccelState, target: ToggleTarget): TogglePlan 
     untouchable: scope.filter((id) => !live.has(id)).map((id) => ({ id, why: why.get(id) ?? 'not read yet' })),
     already,
     tabsChanged,
+    refused: !realData && target.on ? 'sample-only' : null,
   }
 }
 
@@ -358,13 +376,13 @@ export function togglePlan(state: AccelState, target: ToggleTarget): TogglePlan 
  * title and button say Resume. Unavailable asks for on, which changes nothing
  * and says why beside the switch.
  */
-export function flipPlan(state: AccelState, key: AccelTabKey | 'master'): TogglePlan {
+export function flipPlan(state: AccelState, key: AccelTabKey | 'master', ctx: SwitchContext = {}): TogglePlan {
   const r = key === 'master' ? masterReading(state) : tabReadings(state)[key]
   const target = (on: boolean): ToggleTarget => (key === 'master' ? { kind: 'master', on } : { kind: 'tab', tab: key, on })
-  if (r.state === 'on') return togglePlan(state, target(false))
+  if (r.state === 'on') return togglePlan(state, target(false), ctx)
   if (r.state === 'mixed') {
-    const off = togglePlan(state, target(false))
-    return off.changes.length ? off : togglePlan(state, target(true))
+    const off = togglePlan(state, target(false), ctx)
+    return off.changes.length ? off : togglePlan(state, target(true), ctx)
   }
-  return togglePlan(state, target(true))
+  return togglePlan(state, target(true), ctx)
 }

@@ -36,10 +36,12 @@ import {
   sharedSchedulesOfTab,
   tabsOfEntry,
   type AccelTabKey,
+  type SwitchContext,
   type SwitchReading,
   type SwitchState,
   type TogglePlan,
 } from '../cribl/accel/tabs'
+import { SAMPLE_ACCEL_OFF } from './sampleDataCopy'
 import { formatCost, formatRecurringCost } from '../lib/format'
 
 // ── The words, kept pure so a test can read them without a DOM ──────────────
@@ -166,11 +168,14 @@ export type RowAction =
    *  "unavailable" without ever saying why. */
   | { kind: 'none'; word: string }
 
-export function rowAction(row: AccelRow): RowAction {
+export function rowAction(row: AccelRow, ctx: SwitchContext = {}): RowAction {
   if (row.state === 'absent') return { kind: 'none', word: 'Not created' }
   if (row.state === 'foreign' || (!row.ours && !row.recorded)) return { kind: 'none', word: 'Not this app’s' }
   if (row.state === 'unreadable') return { kind: 'none', word: 'Unverified' }
   if (row.enabled === null) return { kind: 'none', word: 'No schedule' }
+  // While only sample data exists nothing is turned ON — the switches' rule
+  // (accel/tabs.ts). Pausing is still offered: off is what the rule asks for.
+  if (!row.enabled && ctx.sampleOnly) return { kind: 'none', word: 'Off: sample data only' }
   return row.enabled ? { kind: 'pause' } : { kind: 'resume' }
 }
 
@@ -614,6 +619,7 @@ export function toggleConsequences(plan: TogglePlan): string[] {
 /** Why a flip has nothing to write — said beside the switch instead of opening
  *  a confirmation for nothing. Null when there is something to write. */
 export function toggleNothingWords(plan: TogglePlan): string | null {
+  if (plan.refused === 'sample-only') return SAMPLE_ACCEL_OFF
   if (plan.changes.length) return null
   if (plan.kept.length) {
     const ids = plan.kept.map((k) => k.id).join(', ')

@@ -20,9 +20,12 @@ import {
   registerDataModeWriter,
   resetDataMode,
   setDataMode,
+  setSnapshotWithheld,
+  snapshotWithheld,
   subscribeDataMode,
   type DataModeSave,
 } from './dataMode'
+import { selectedSnapshot, setSelectedSnapshot } from './accel/selection'
 
 afterEach(() => resetDataMode())
 
@@ -158,5 +161,33 @@ describe('the data-source mode store', () => {
     }, 'live')
     await flush()
     expect(writes, 'loading the stored preference wrote it back').toEqual([])
+  })
+})
+
+describe('stepping aside while only sample data exists', () => {
+  it('reads Live everywhere, and says so through the subscription', () => {
+    let heard = 0
+    const stop = subscribeDataMode(() => { heard++ })
+    setSnapshotWithheld(true)
+    stop()
+    expect(heard).toBe(1)
+    expect(dataMode()).toBe('live')
+    expect(snapshotWithheld()).toBe(true)
+  })
+
+  it('writes nothing, and keeps the viewer’s own choice for when real data lands', () => {
+    const writes: string[] = []
+    registerDataModeWriter(async (m) => { writes.push(m); return true })
+    setSnapshotWithheld(true)
+    setSnapshotWithheld(false)
+    expect(writes).toEqual([])
+    expect(dataMode()).toBe('snapshot')
+    expect(dataModeSave()).toBe('unasked')
+  })
+
+  it('drops a picked moment, which only a stored run could answer', () => {
+    setSelectedSnapshot(1_789_600_000_000)
+    setSnapshotWithheld(true)
+    expect(selectedSnapshot()).toBeNull()
   })
 })

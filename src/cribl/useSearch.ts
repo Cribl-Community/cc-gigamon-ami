@@ -75,6 +75,7 @@ import { useSelectedSnapshot } from './accel/selection'
 import { forgetRunHistory } from './accel/status'
 import { markData, markStart } from './devTrace'
 import { useDataMode } from './dataMode'
+import { useDatasetTarget } from './datasetTarget'
 
 // `useAccelEnabled` was this module's export for the whole of Phase 2 and the
 // tabs import it from here. Same name, same boolean — it now reads
@@ -224,7 +225,17 @@ interface PanelRead {
 export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {}): UseSearchState {
   const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel, snapshotInLive = false } = opts
   const text = typeof query === 'string' ? query : query.query
-  const accel = (typeof query === 'string' ? undefined : query.accel) ?? opts.accel ?? null
+  // WHICH DATASET ANSWERS, and whether that is known yet (cribl/datasetTarget.ts).
+  // The query text stays as written — search.ts moves the job onto the sample
+  // dataset at submit — but the dataset is part of what this hook re-runs on.
+  const target = useDatasetTarget()
+  // WHILE ONLY SAMPLE DATA EXISTS, NO PANEL HAS A SCHEDULE. Every scheduled
+  // search scans the customer's dataset, so its stored run is a run over
+  // nothing; the panel is an ordinary live panel over the sample instead, and
+  // `outcome: null` says it never had one rather than that one failed.
+  // `snapshotInLive` and a picked moment go with it, because both read a
+  // stored run.
+  const accel = target.sample ? null : ((typeof query === 'string' ? undefined : query.accel) ?? opts.accel ?? null)
   const { range, refreshNonce, manualRefreshNonce, autoSeconds } = useDashboard()
   const mode = useDataMode()
   const modeKnown = useAccelModeHydrated()
@@ -290,11 +301,16 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
   // against an app whose whole brief is to feel fast. accel/mode.ts caps the
   // wait at HYDRATE_DEADLINE_MS for the two that do.
   const waitingForMode = accel !== null && !modeKnown
+  // EVERY panel waits for the dataset verdict, not only the accelerated ones:
+  // submitting to the customer's dataset and then again to the sample would be
+  // two jobs per panel on every sample-install load. datasetTarget.ts caps the
+  // wait at HOLD_DEADLINE_MS.
+  const waitingForTarget = !target.known
   // A panel that has not run yet still holds its cost slot: deferral is about
   // WHEN a query is submitted, not whether. The auto-refresh cost label answers
   // "what does a refresh of this tab cost", and every deferred panel will have
   // run by the first tick.
-  const active = enabled && !deferred && !waitingForMode
+  const active = enabled && !deferred && !waitingForMode && !waitingForTarget
   const costSlot = useCostSlot({
     autoRefresh: enabled && !pinned,
     // A panel that stays on its schedule in Live (`snapshotInLive`) costs
@@ -364,7 +380,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
       // Deferred, or waiting on the mode, is not finished: keep reporting
       // `loading` so the panel shows a spinner rather than "No results" for a
       // query nobody has asked yet.
-      setState((s) => ({ ...s, loading: enabled && (deferred || waitingForMode) }))
+      setState((s) => ({ ...s, loading: enabled && (deferred || waitingForMode || waitingForTarget) }))
       return
     }
     const controller = new AbortController()
@@ -440,7 +456,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // which is how this effect started reporting two warnings again after the
     // snapshot work added the explanation above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, accel, snapshotServed, asOf, tail, waitingForMode, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
+  }, [text, target.dataset, accel, snapshotServed, asOf, tail, waitingForMode, waitingForTarget, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }

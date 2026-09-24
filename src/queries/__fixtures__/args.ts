@@ -157,6 +157,22 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     buildL4Query: { over: PIVOT_AND_FILTER },
   },
 
+  'src/queries/datasets.ts': {
+    // The one rule that moves every ⓘ, job, deep link and Copilot brief onto the
+    // sample dataset. Each case is a shape the app really sends, and three of
+    // them are what the rule must NOT touch — a Stream id that starts with the
+    // dataset name, a dataset whose name extends it, and a stored-result read.
+    retargetQuery: {
+      cases:
+        "[{ label: 'a panel query, on the sample dataset', args: [REAL_DATA_PROBE_QUERY, SAMPLE_DATASET] }," +
+        " { label: 'a panel query, on the customer dataset', args: [REAL_DATA_PROBE_QUERY, REAL_DATASET] }," +
+        " { label: 'a Copilot brief', args: ['Investigate a finding in the Cribl Lake dataset \"' + REAL_DATASET + '\". Matching filter: dataset=\"' + REAL_DATASET + '\" tls_version<3', SAMPLE_DATASET] }," +
+        " { label: 'a Stream id beginning with the dataset name', args: ['dataset=\"cribl_metrics\" | where output==\"cribl_lake:' + REAL_DATASET + '_json\"', SAMPLE_DATASET] }," +
+        " { label: 'a dataset whose name extends it', args: ['dataset=\"' + REAL_DATASET + '_pq\" | limit 1', SAMPLE_DATASET] }," +
+        " { label: 'a stored-result read', args: ['dataset=\"$vt_results\" jobName=\"gno_overview_c1h\"', SAMPLE_DATASET] }]",
+    },
+  },
+
   'src/queries/dnsHealth.ts': {
     // A resolver name is runtime input; one documented example.
     resolverDrillQuery: { over: ["['10.0.0.53']"] },

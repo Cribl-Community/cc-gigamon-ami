@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { forgetRunHistory } from '../cribl/accel/status'
+import { recheckDatasetTarget } from '../cribl/datasetTarget'
 
 export interface TimeRange {
   label: string
@@ -60,6 +61,10 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     // very click meant to show it. Auto-refresh ticks do not clear it; the TTL
     // is already shorter than the shortest interval.
     forgetRunHistory()
+    // …and, while the app is reading the sample dataset, whether real data has
+    // landed since (cribl/datasetTarget.ts). A read, and only on this click —
+    // never on an auto-refresh tick.
+    recheckDatasetTarget()
     setRefreshNonce((n) => n + 1)
     setManualRefreshNonce((n) => n + 1)
     setLastRefresh(Date.now())

@@ -170,6 +170,8 @@ import {
 } from '../cribl/accel/provision'
 import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/accel/status'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
+import { useDatasetTarget } from '../cribl/datasetTarget'
+import { SAMPLE_ACCEL_OFF } from './sampleDataCopy'
 import { estimateScheduleSetCost, estimateWorkspaceSaving, type ScheduleSetCost } from '../cribl/accel/estimate'
 import {
   ACCEL_TABS,
@@ -248,6 +250,13 @@ export function AccelPanel() {
   // Why the last flip opened no dialog, beside the switch that was flipped.
   const [nothing, setNothing] = useState<{ key: AccelTabKey | 'master'; text: string } | null>(null)
 
+  // WHILE ONLY SAMPLE DATA EXISTS nothing here turns a schedule on — not a
+  // switch, not a row's Resume, not Review changes (which creates them
+  // running). Every schedule scans the customer's dataset, which is empty then.
+  // Pause and Remove stay: off is the state the rule asks for. Read, never
+  // stored (cribl/datasetTarget.ts).
+  const sampleOnly = useDatasetTarget().sample
+
   const applyGate = useWriteGate('accel.apply')
   const pauseGate = useWriteGate('accel.pause')
   const removeGate = useWriteGate('accel.remove')
@@ -305,7 +314,7 @@ export function AccelPanel() {
   const readError = state?.error ?? null
   const plan = state && readError === null ? applyPlan(state) : null
   const teardown = state && readError === null ? removalPlan(state) : null
-  const canApply = plan !== null && plan.willWrite.length > 0
+  const canApply = plan !== null && plan.willWrite.length > 0 && !sampleOnly
   const canRemove = teardown !== null && teardown.willDelete.length > 0
 
   const applyBlocked = running !== null || loading || applyGate.denied !== null
@@ -412,7 +421,7 @@ export function AccelPanel() {
    *  now — a Mixed switch goes off (review 2026-09-24, defect 3). */
   const onFlip = (key: AccelTabKey | 'master') => {
     if (switchBlocked || state === null) return
-    const plan = flipPlan(state, key)
+    const plan = flipPlan(state, key, { sampleOnly })
     const why = toggleNothingWords(plan)
     if (why !== null) {
       setNothing({ key, text: why })
@@ -462,6 +471,7 @@ export function AccelPanel() {
           <h4 className="ac-estimate-head" id={switchesHeadId}>By dashboard</h4>
           <InfoTip text={`${SWITCHES_LEAD} ${SWITCHES_LEAD_TIP}`} />
         </div>
+        {sampleOnly && <p className="ac-note" role="status">{SAMPLE_ACCEL_OFF}</p>}
         <SwitchRow
           label="Every dashboard"
           name={switchName('master')}
@@ -584,7 +594,7 @@ export function AccelPanel() {
               : rows.map((row) => {
                   const st = statusFor(row.id)
                   const health = healthOf(row.state, st)
-                  const action = rowAction(row)
+                  const action = rowAction(row, { sampleOnly })
                   const note = rowNote(row, health)
                   const owner = ownerOf(row)
                   return (

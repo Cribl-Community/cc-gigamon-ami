@@ -9,7 +9,7 @@
 //   aggregations: count(), sum(f), avg(f), min/max(f), count_distinct(f), percentile(f,95)
 //   NOT `dc()` — use count_distinct(). Sorting is `sort by <col> desc`.
 
-import { searchUrl, LAKE_DATASET } from './config'
+import { searchUrl, toActiveDataset, LAKE_DATASET } from './config'
 import { beginQuery, endQuery } from './inflight'
 import { recordJobCost, type CostSlot } from './jobCost'
 
@@ -37,6 +37,17 @@ export interface SearchOptions {
    * changed what those calls mean without anybody editing them.
    */
   reuse?: boolean
+  /**
+   * Run the query against the dataset it names, whatever the app is reading.
+   *
+   * Every other query follows the active dataset (config.ts): while only sample
+   * data exists, a panel written against `gigamon_ami` runs against the sample
+   * dataset. Two kinds of caller must not follow it — the probe that DECIDES
+   * which dataset is active (it asks about the customer's dataset by
+   * definition), and a measurement of how the customer's dataset lands, which
+   * is about that dataset and no other.
+   */
+  asWritten?: boolean
 }
 
 export interface SearchResult {
@@ -350,11 +361,16 @@ async function submitJob(
   latest: string | number,
   signal?: AbortSignal,
   reuse = false,
+  asWritten = false,
 ): Promise<string> {
+  // THE ONE PLACE A QUERY IS MOVED ONTO THE SAMPLE DATASET. Here rather than in
+  // each caller, so no panel, fallback or direct read can forget it; the ⓘ
+  // makes the same move for display (components/PanelInfo.tsx).
+  const executed = asWritten ? query : toActiveDataset(query)
   const created = await api<{ items: Array<{ id: string }> }>(searchUrl('/search/jobs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: withExecPrefix(query, earliest, reuse), earliest, latest }),
+    body: JSON.stringify({ query: withExecPrefix(executed, earliest, reuse), earliest, latest }),
   })
   const jobId = created.items?.[0]?.id
   if (!jobId) throw new Error('Cribl Search did not return a job id')
@@ -442,10 +458,10 @@ export async function runSearch(query: string, opts: SearchOptions = {}): Promis
 }
 
 async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<SearchResult> {
-  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs, timeoutMs, costSlot, reuse = false } = opts
+  const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs, timeoutMs, costSlot, reuse = false, asWritten = false } = opts
   const cap = capSecondsFor(earliest)
 
-  const jobId = await submitJob(query, earliest, latest, signal, reuse)
+  const jobId = await submitJob(query, earliest, latest, signal, reuse, asWritten)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
 
@@ -562,9 +578,9 @@ export async function runFieldSummaries(query: string, opts: SearchOptions = {})
 }
 
 async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): Promise<FieldSummariesResult> {
-  const { earliest = '-15m', latest = 'now', signal, pollMs, timeoutMs, costSlot, reuse = false } = opts
+  const { earliest = '-15m', latest = 'now', signal, pollMs, timeoutMs, costSlot, reuse = false, asWritten = false } = opts
   const cap = capSecondsFor(earliest)
-  const jobId = await submitJob(query, earliest, latest, signal, reuse)
+  const jobId = await submitJob(query, earliest, latest, signal, reuse, asWritten)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
   if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)
