@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 // The pack's YAML against the app's TypeScript specs, value for value.
 //
 // The pack under packs/cc-network-gigamon-ami/ is a second copy of objects the
@@ -16,7 +17,10 @@
 //   - the JSON route is NOT final, so the same event reaches the Parquet route
 //     after it; the Parquet route's description names its dataset.
 //   - the Parquet destination is the same profile with format parquet, pointed
-//     at gigamon_ami_pq. Its schema mode is PENDING (pack.ts `PACK_PENDING`).
+//     at gigamon_ami_pq, and `onBackpressure: drop` so it cannot stall the JSON
+//     feed. Its schema mode is PENDING (pack.ts `PACK_PENDING`).
+//   - the breaker's rule name and description are the pack's own: the global
+//     description is provision.ts's ownership stamp.
 //
 // Every comparison is whole-object: `toMatchObject` would let an added key (an
 // `outputExpression`, an auth token) pass unseen.
@@ -40,7 +44,7 @@ import {
   PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID,
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
-  PACK_SHA256, PACK_PUBLISHED, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING,
+  PACK_SHA256, PACK_PUBLISHED, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_0_1_0,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -122,10 +126,27 @@ describe('the pack HTTP input is provision.ts\'s Cribl-managed source, with the 
   })
 })
 
-describe('the pack breaker is HTTP_BREAKER_SPEC under the pack id', () => {
-  it('equals the global ruleset value for value', () => {
+describe('the pack breaker is HTTP_BREAKER_SPEC under the pack\'s own names', () => {
+  const pack = breakers[PACK_BREAKER_ID] as { description: string; rules: Obj[] }
+
+  it('equals the global ruleset value for value, but for its id, its rule names and its description', () => {
     expect(Object.keys(breakers)).toEqual([PACK_BREAKER_ID])
-    expect(breakers[PACK_BREAKER_ID]).toEqual(without(HTTP_BREAKER_SPEC, 'id'))
+    expect(without(pack as unknown as Obj, 'description', 'rules')).toEqual(without(HTTP_BREAKER_SPEC, 'id', 'description', 'rules'))
+    expect(pack.rules.map((r) => without(r, 'name'))).toEqual(HTTP_BREAKER_SPEC.rules.map((r) => without(r, 'name')))
+  })
+
+  it('names its rule for the pack, not after the global ruleset', () => {
+    // An operator reading the pack in the UI would otherwise see the global
+    // ruleset's id inside it.
+    const globalNames = new Set<string>([HTTP_BREAKER_ID, ...HTTP_BREAKER_SPEC.rules.map((r) => r.name)])
+    for (const r of pack.rules) expect(globalNames.has(r.name as string)).toBe(false)
+  })
+
+  it('does not carry the description provision.ts reads as its ownership stamp', () => {
+    // stampedBreaker() treats HTTP_BREAKER_SPEC.description as "this app wrote
+    // it". A pack ruleset listed beside the global one must never pass that test.
+    expect(pack.description).not.toBe(HTTP_BREAKER_SPEC.description)
+    expect(pack.description.trim()).not.toBe('')
   })
 })
 
@@ -167,8 +188,15 @@ describe('the pack Lake destinations are landing.ts\'s profile bodies', () => {
     expect(outputs[PACK_JSON_OUTPUT_ID].format).toBe('json')
   })
 
-  it('the Parquet destination is the same profile as Parquet, pointed at gigamon_ami_pq', () => {
-    expect(outputs[PACK_PARQUET_OUTPUT_ID]).toEqual(lakeOutput(PACK_PARQUET_DATASET_ID, 'parquet'))
+  it('the Parquet destination is the same profile as Parquet, pointed at gigamon_ami_pq, and drops rather than blocks', () => {
+    // The one documented difference. Both Lake destinations are fed by the one
+    // HTTP input; a blocked Parquet writer (gigamon_ami_pq not created yet, or
+    // a schema change it cannot write) would push back on that input and stop
+    // the JSON feed every dashboard reads. The Parquet copy loses events
+    // instead. UNMEASURED: the proof install has to show it.
+    expect(outputs[PACK_PARQUET_OUTPUT_ID]).toEqual({ ...lakeOutput(PACK_PARQUET_DATASET_ID, 'parquet'), onBackpressure: 'drop' })
+    expect((lakeOutput(PACK_PARQUET_DATASET_ID, 'parquet') as Obj).onBackpressure).toBe('block')
+    expect(outputs[PACK_JSON_OUTPUT_ID].onBackpressure).toBe('block')
     expect(outputs[PACK_PARQUET_OUTPUT_ID].format).toBe('parquet')
     // PENDING (test (g), D-10): automatic schema is the placeholder, not a decision.
     expect(outputs[PACK_PARQUET_OUTPUT_ID].automaticSchema).toBe(true)
@@ -256,6 +284,93 @@ describe('the PENDING decisions cannot ship in a release', () => {
       expect(Object.keys(PACK_PENDING)).toEqual([])
       for (const p of places) expect(text(p)).not.toMatch(/PENDING/)
     }
+  })
+
+  it('a pack release tag cannot pass this suite while anything is PENDING', () => {
+    // PACK_PUBLISHED is still false when a gigamon-pack-v* tag is pushed (it is
+    // set in a later PR), so the test above never fires at release. This one
+    // does: pack-release.yml runs this file, and GitHub sets GITHUB_REF_NAME to
+    // the tag. scripts/pack.mjs refuses the same thing under --expect-version.
+    const ref = process.env.GITHUB_REF_NAME ?? ''
+    if (ref.startsWith('gigamon-pack-v')) {
+      expect(Object.keys(PACK_PENDING)).toEqual([])
+      for (const p of places) expect(text(p)).not.toMatch(/PENDING/)
+    }
+  })
+})
+
+describe('the published 0.1.0 pack is still named', () => {
+  // 0.1.0 was released (gigamon-pack-v0.1.0, 2026-09-24) with a syslog input.
+  // A tenant that installed it can upgrade in place to 0.2.0, and whatever the
+  // upgrade leaves under the pack's local/ (a port override on in_gno_syslog,
+  // say) is findable only by these ids. They are literals on purpose: they
+  // describe bytes already published, which no later edit can change.
+  it('records every object id the 0.1.0 release shipped, as published', () => {
+    expect(PACK_0_1_0).toEqual({
+      version: '0.1.0',
+      tag: 'gigamon-pack-v0.1.0',
+      publishedAt: '2026-09-24T16:00:09Z',
+      sha256: '1fff07438e1974853ec9dfbbf570d8afad1136a3453741aeec7acae08af178ca',
+      inputs: { syslog: 'in_gno_syslog', sample: 'in_gno_sample' },
+      pipelines: { syslog: 'gno_syslog', sample: 'gno_sample' },
+      routes: { syslog: 'gno_syslog', sample: 'gno_sample' },
+      outputs: { lake: 'out_gno_lake', sample: 'out_gno_sample_lake' },
+      samples: ['gno_dns', 'gno_security', 'gno_services', 'gno_tls_apps', 'gno_web_api'],
+      sampleOriginField: 'gno_origin',
+      paths: [
+        { route: 'gno_syslog', input: 'syslog:in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:out_gno_lake', dataset: 'gigamon_ami' },
+        { route: 'gno_sample', input: 'datagen:in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:out_gno_sample_lake', dataset: 'gigamon_ami_sample' },
+      ],
+    })
+    expect(Object.isFrozen(PACK_0_1_0)).toBe(true)
+    expect(Object.isFrozen(PACK_0_1_0.paths[0])).toBe(true)
+    expect(packTag(PACK_0_1_0.version)).toBe(PACK_0_1_0.tag)
+  })
+
+  it('shares no object id with 0.2.0, so an upgrade\'s leftovers are told apart by id alone', () => {
+    const old = [
+      ...Object.values(PACK_0_1_0.inputs), ...Object.values(PACK_0_1_0.pipelines), ...Object.values(PACK_0_1_0.routes),
+      ...Object.values(PACK_0_1_0.outputs), ...PACK_0_1_0.samples,
+    ]
+    const current = new Set([
+      ...Object.keys(inputs), ...Object.keys(outputs), ...routes.map((r) => r.id as string),
+      ...pipelineDirs(), ...Object.keys(breakers), ...Object.keys(samples),
+    ])
+    expect(old.filter((id) => current.has(id))).toEqual([])
+  })
+
+  it('is not the version this build installs', () => {
+    expect(PACK_0_1_0.version).not.toBe(PACK_VERSION)
+  })
+})
+
+// AFTER THE MERGE WITH main. main's src/queries/stackIds.ts lists a
+// `pack-0.1.0` stack built from constants that this branch now gives 0.2.0
+// values (PACK_SAMPLE_ROUTE_ID, PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID,
+// PACK_PUBLISHED). A merge that fixes only the removed names still compiles,
+// and the 0.1.0 row silently shows 0.2.0 ids. Until that file exists on this
+// branch the glob is empty and this is skipped; once it does, it holds both
+// stacks to what was shipped.
+interface MergedStack { key: string; status: string; paths: readonly Obj[] }
+const stackIdsModule = Object.values(
+  import.meta.glob<{ STACKS: readonly MergedStack[] }>('../queries/stackIds.ts', { eager: true }),
+)[0]
+
+describe.skipIf(!stackIdsModule)('Data Flow\'s stack list names each pack release\'s own ids', () => {
+  const stack = (key: string) => stackIdsModule!.STACKS.find((s) => s.key === key)
+
+  it('pack-0.1.0 is the published 0.1.0 ids, released', () => {
+    expect(stack('pack-0.1.0')?.status).toBe('released')
+    expect(stack('pack-0.1.0')?.paths).toEqual(PACK_0_1_0.paths)
+  })
+
+  it('pack-0.2.0 is this build\'s pack ids', () => {
+    expect(stack('pack-0.2.0')?.status).toBe(PACK_PUBLISHED ? 'released' : 'unreleased')
+    expect(stack('pack-0.2.0')?.paths).toEqual([
+      { route: PACK_HTTP_JSON_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_JSON_OUTPUT_ID}`, dataset: PACK_LAKE_DATASET_ID },
+      { route: PACK_HTTP_PARQUET_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_PARQUET_OUTPUT_ID}`, dataset: PACK_PARQUET_DATASET_ID },
+      { route: PACK_SAMPLE_ROUTE_ID, input: `datagen:${PACK_SAMPLE_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_SAMPLE_OUTPUT_ID}`, dataset: PACK_SAMPLE_DATASET_ID },
+    ])
   })
 })
 

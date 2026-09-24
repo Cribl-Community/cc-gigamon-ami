@@ -36,6 +36,29 @@
 //     *_to_parquet route is the only kind that may reach a Parquet destination.
 //   - no object id (or route name) starts with `gno_`, which is reserved for
 //     the app's acceleration schedules.
+//   - every output is a Cribl Lake destination. A `router` or `default` output
+//     forwards to another output, so a sample route naming one would pass
+//     every route check above while its events landed in gigamon_ami.
+//   - the Parquet destination drops rather than blocks under backpressure: it
+//     shares one HTTP input with the JSON feed the dashboards read, and a
+//     blocked Parquet writer (its dataset not created yet, or a schema change
+//     it cannot write) would otherwise stop that feed too.
+//   - an input's routes are all reached: every route of an input but its last
+//     is not final, and its last is. That is the dual write: the JSON route
+//     first and not final, the Parquet route after it and final.
+//   - an http_raw input names at least one breaker ruleset (without one the
+//     POSTed array reaches the pipeline as one event), and any input-level
+//     `pipeline` exists in the pack.
+//   - RELEASE MODE. With --expect-version (what pack-release.yml passes when a
+//     tag is pushed), a pack file that still says PENDING is refused: a
+//     placeholder must not be published into every tenant that installs it.
+//     This lives here, in the step that builds the published bytes, because
+//     src/cribl/pack.ts's PACK_PUBLISHED is still false when the tag is pushed
+//     (it is set in a later PR), so a test keyed on it never fires at release.
+//
+// NOT CHECKED HERE, ONLY IN src/cribl/pack.test.ts (the release workflow runs
+// both): that each object equals the app's TypeScript spec value for value, and
+// the exact route order and ids.
 //
 // WHY THIS WRITES ITS OWN TAR. Three things measured in the delivery spike:
 //   - Cribl's extractor does not create missing parent directories, so the
@@ -91,6 +114,10 @@ const SAMPLE_DATASET = 'gigamon_ami_sample'
 const PARQUET_ROUTE_SUFFIX = '_to_parquet'
 /** Where a pack keeps its event breaker rulesets. UNMEASURED: see src/cribl/pack.ts. */
 const BREAKERS_FILE = 'default/breakers.yml'
+/** The only output type this pack ships. Anything else can forward elsewhere. */
+const OUTPUT_TYPES = new Set(['cribl_lake'])
+/** The word that marks an undecided placeholder (src/cribl/pack.ts `PACK_PENDING`). */
+const PENDING = /\bPENDING\b/
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
@@ -280,6 +307,16 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     if (manifest.cribl?.type === 'app') errors.push('package.json: cribl.type "app" would make this look like the app package')
   }
 
+  // 1b. Release mode: nothing PENDING may be published. Samples are generated
+  // data, not prose, so only the text a reader would read is searched.
+  if (expectVersion !== null) {
+    for (const f of files.filter((x) => !x.startsWith('data/'))) {
+      if (PENDING.test(packedBytes(join(dir, f)).toString('utf8'))) {
+        errors.push(`${f}: says PENDING; a release must not ship an undecided setting. Decide it, then remove the marker and its entry in src/cribl/pack.ts PACK_PENDING`)
+      }
+    }
+  }
+
   // 2. Every YAML file parses.
   const yml = {}
   for (const f of files.filter((x) => x.endsWith('.yml'))) yml[f] = parseYaml(dir, f, errors)
@@ -364,6 +401,9 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     // every route check still passed.
     if (input.connections !== undefined) errors.push(`${where}: connections (QuickConnect) bypass the pack's routes; send to routes instead`)
     if (input.sendToRoutes !== true) errors.push(`${where}: sendToRoutes must be true; the routes are the only path out of this pack`)
+    if (input.pipeline !== undefined && !files.includes(`default/pipelines/${input.pipeline}/conf.yml`)) {
+      errors.push(`${where}: pipeline "${input.pipeline}" has no default/pipelines/${input.pipeline}/conf.yml`)
+    }
     if (input.type === 'datagen') {
       if (input.disabled !== true) errors.push(`${where}: a DataGen must ship disabled: true`)
       const list = Array.isArray(input.samples) ? input.samples : []
@@ -396,6 +436,9 @@ export function checkPack(dir, { expectVersion = null } = {}) {
       if (!(Number.isInteger(p) && p >= PORT_MIN && p <= PORT_MAX)) {
         errors.push(`${where}: port ${JSON.stringify(p)} is outside ${PORT_MIN}-${PORT_MAX}, the ports a Cribl-managed group exposes`)
       }
+      if (!Array.isArray(input.breakerRulesets) || input.breakerRulesets.length === 0) {
+        errors.push(`${where}: an http_raw input must name a breaker ruleset; without one a POSTed JSON array reaches the pipeline as one event`)
+      }
       for (const b of Array.isArray(input.breakerRulesets) ? input.breakerRulesets : []) {
         if (!(b in breakers)) errors.push(`${where}: breaker ruleset "${b}" is not in ${BREAKERS_FILE}; a pack input must not depend on a global ruleset`)
       }
@@ -411,6 +454,12 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     if (!isPlainObject(o) || typeof o.type !== 'string') {
       errors.push(`${where}: must have a type`)
       continue
+    }
+    if (!OUTPUT_TYPES.has(o.type)) {
+      errors.push(`${where}: output type "${o.type}" is not one this pack may ship (${[...OUTPUT_TYPES].join(', ')}); a router or default output forwards to another output, past every route check`)
+    }
+    if (o.type === 'cribl_lake' && o.format === 'parquet' && o.onBackpressure !== 'drop') {
+      errors.push(`${where}: a Parquet destination must set onBackpressure: drop, not ${JSON.stringify(o.onBackpressure)}; it shares its input with the JSON feed the dashboards read, and blocking would stop that feed`)
     }
     if (o.type === 'cribl_lake') {
       const want = Object.hasOwn(DATASET_FORMATS, o.destPath) ? DATASET_FORMATS[o.destPath] : undefined
@@ -454,6 +503,29 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     if (parquetRoute && lake?.format !== 'parquet') errors.push(`${where}: a *${PARQUET_ROUTE_SUFFIX} route may only target a Parquet destination, not ${route?.output}`)
     if (!parquetRoute && lake?.format === 'parquet') errors.push(`${where}: only a *${PARQUET_ROUTE_SUFFIX} route may target the Parquet destination ${route?.output}`)
   }
+  // Every route of an input is reached. Routes run in order and a final route
+  // stops the event, so a final route ahead of another route of the same input
+  // silently starves it (the JSON route final: the Parquet copy gets nothing;
+  // the Parquet route first: the dashboards get nothing). The last route of an
+  // input is final, so its events go nowhere past this pack's routes.
+  const byInput = new Map()
+  for (const route of routes) {
+    const m = /^__inputId=='([a-z_]+):([A-Za-z0-9_-]+)'$/.exec(String(route?.filter))
+    if (!m) continue
+    if (!byInput.has(m[2])) byInput.set(m[2], [])
+    byInput.get(m[2]).push(route)
+  }
+  for (const [input, list] of byInput) {
+    list.forEach((route, i) => {
+      const where = `${ROUTES_FILE}: ${route?.id}`
+      const last = i === list.length - 1
+      if (!last && route.final !== false) {
+        errors.push(`${where}: final: ${JSON.stringify(route.final)}, so ${input}'s later route ${list.slice(i + 1).map((r) => r?.id).join(', ')} never runs; only an input's last route may be final`)
+      }
+      if (last && route.final !== true) errors.push(`${where}: the last route of ${input} must be final: true`)
+    })
+  }
+
   for (const f of files.filter((x) => /^default\/pipelines\/[^/]+\/conf\.yml$/.test(x))) {
     reserved(f, f.split('/')[2], errors)
     if (yml[f] !== undefined && !Array.isArray(yml[f]?.functions)) errors.push(`${f}: must have a functions list`)

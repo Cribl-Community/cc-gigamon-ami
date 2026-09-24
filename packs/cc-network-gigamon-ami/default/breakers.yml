@@ -6,6 +6,9 @@
 #   the pack's own id; src/cribl/pack.test.ts fails if the two drift. Its own id
 #   so the pack input never depends on, and never collides with, the global
 #   ruleset Guided Setup creates (gigamon_ami_json_array).
+#   Two more differences, both names: the rule is not named after the global
+#   ruleset, and the description is not the global one's, which provision.ts
+#   reads as the app's ownership stamp on the global ruleset (stampedBreaker).
 #
 # UNMEASURED: that a pack keeps its rulesets in default/breakers.yml and that a
 # pack input's breakerRulesets resolves against them. Cribl keeps the global
@@ -14,10 +17,10 @@
 # ruleset back from the Leader.
 gigamon_ami_http_json_array:
   lib: custom
-  description: "Gigamon AMI: one event per record of a POSTed JSON array"
+  description: "Gigamon AMI pack: one event per record of a POSTed JSON array"
   minRawLength: 256
   rules:
-    - name: gigamon_ami_json_array
+    - name: one_event_per_record
       condition: "true"
       type: json_array
       jsonExtractAll: true

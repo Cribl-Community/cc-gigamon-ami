@@ -15,7 +15,7 @@ Parquet copy in `gigamon_ami_pq`.
 | Route | `gigamon_ami_http_to_parquet` | HTTP → `gigamon_ami_parquet_lake`. |
 | Route | `gigamon_ami_sample` | Sample DataGen → `gigamon_ami_sample_lake`. |
 | Destination | `gigamon_ami_json_lake` | Cribl Lake → `gigamon_ami` (JSON) |
-| Destination | `gigamon_ami_parquet_lake` | Cribl Lake → `gigamon_ami_pq` (Parquet) |
+| Destination | `gigamon_ami_parquet_lake` | Cribl Lake → `gigamon_ami_pq` (Parquet). Drops events rather than blocking under backpressure, so it can never stop the JSON copy. |
 | Destination | `gigamon_ami_sample_lake` | Cribl Lake → `gigamon_ami_sample` (JSON) |
 
 No dataset is part of the pack, because Cribl has no pack-scoped dataset. The app creates them, and
@@ -45,8 +45,9 @@ certificate.
 
 ## Undecided: PENDING
 
-These are placeholders and not decisions. The pack must not be released while they are open, and
-the app's tests fail if it is marked published while this section says PENDING.
+These are placeholders and not decisions. The pack must not be released while they are open. A
+release build (`scripts/pack.mjs build --expect-version`, which the release workflow runs) refuses any
+pack file that says PENDING, and so do the app's tests on a release tag.
 
 - **PENDING: the Parquet schema mode.** `gigamon_ami_parquet_lake` ships `automaticSchema: true`.
   Whether it stays automatic or becomes an explicit schema waits on a schema-change test and an
@@ -80,6 +81,14 @@ These are left for the proof install on a real Leader:
 - **Unknown (f): whether the samples replay with `_time` as now.** Every sample in
   `default/samples.yml` has `isTemplate: false`, while every live DataGen sample seen on a Leader has
   `isTemplate: true`. The value stays as it is until the install shows which one is right.
+- **What an upgrade from 0.1.0 leaves behind.** 0.1.0 shipped a Syslog source, `in_gno_syslog`. An
+  in-place upgrade replaces the pack's `default/` files, but nobody has yet checked what stays in its
+  `local/` folder. A port set on that source after install could survive as a listener that no route
+  reads. The app keeps the 0.1.0 object ids so the install can find what is left.
+- **That the Parquet copy cannot stall the JSON feed.** `gigamon_ami_parquet_lake` drops events
+  under backpressure rather than blocking. It shares its source with `gigamon_ami_json_lake`, and a
+  blocked Parquet writer would otherwise stop the data every dashboard reads. The install has to show
+  `gigamon_ami` still filling while `gigamon_ami_pq` is missing.
 
 ## Releases
 

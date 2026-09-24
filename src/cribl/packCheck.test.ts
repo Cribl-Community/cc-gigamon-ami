@@ -8,7 +8,7 @@
 // and "directories before their contents" are claims about bytes.
 
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,6 +45,21 @@ const edit = (dir: string, rel: string, fn: (s: string) => string) => {
   writeFileSync(p, fn(readFileSync(p, 'utf8')))
 }
 
+/** The pack as it will be once every PENDING decision is taken: the markers gone. */
+const decided = (dir: string) => {
+  for (const rel of ['README.md', 'default/outputs.yml']) edit(dir, rel, (s) => s.replace(/PENDING/g, 'DECIDED'))
+}
+
+/** Move one route block (from `  - id: <id>` to the next route) to the front of the list. */
+const routeFirst = (id: string) => (s: string) => {
+  const start = s.indexOf(`  - id: ${id}\n`)
+  const next = s.indexOf('\n  - id: ', start + 1)
+  const block = s.slice(start, next === -1 ? undefined : next + 1)
+  const rest = s.slice(0, start) + (next === -1 ? '' : s.slice(next + 1))
+  const first = rest.indexOf('  - id: ')
+  return rest.slice(0, first) + block + rest.slice(first)
+}
+
 describe('pack.mjs check', () => {
   it('passes the committed pack', () => {
     const r = run(['check'])
@@ -53,10 +68,34 @@ describe('pack.mjs check', () => {
   }, 30_000)
 
   it('passes when the version matches the tag, and fails when it does not', () => {
-    expect(run(['check', '--expect-version', '0.2.0']).status).toBe(0)
-    const r = run(['check', '--expect-version', '9.9.9'])
+    expect(run(['check', '--expect-version', '0.2.0', '--dir', copyPack(decided)]).status).toBe(0)
+    const r = run(['check', '--expect-version', '9.9.9', '--dir', copyPack(decided)])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/does not match the expected "9\.9\.9"/)
+  }, 30_000)
+
+  // THE RELEASE GUARD. pack-release.yml builds with --expect-version, and
+  // PACK_PUBLISHED is still false at tag time (it is set in a later PR), so a
+  // test keyed on PACK_PUBLISHED never fires when a tag is pushed. The refusal
+  // has to live in the step that builds the published bytes.
+  it('refuses a release (--expect-version) while the pack still says PENDING', () => {
+    const r = run(['check', '--expect-version', '0.2.0'])
+    expect(r.status).toBe(1)
+    expect(r.out).toMatch(/README\.md: says PENDING; a release must not ship an undecided setting/)
+    expect(r.out).toMatch(/default\/outputs\.yml: says PENDING/)
+  }, 30_000)
+
+  it('builds nothing for a release while the pack still says PENDING', () => {
+    const out = mkdtempSync(join(tmpdir(), 'gigamon-crbl-'))
+    scratch.push(out)
+    const r = run(['build', '--expect-version', '0.2.0', '--out', out])
+    expect(r.status).toBe(1)
+    expect(r.out).toMatch(/says PENDING/)
+    expect(readdirSync(out)).toEqual([])
+  }, 30_000)
+
+  it('still checks and builds a PENDING pack when no release version is named', () => {
+    expect(run(['check']).status).toBe(0)
   }, 30_000)
 
   const cases: [string, (dir: string) => void, RegExp][] = [
@@ -200,6 +239,58 @@ describe('pack.mjs check', () => {
       'a destination into a dataset this pack does not write',
       (d) => edit(d, 'default/outputs.yml', (s) => s.replace('destPath: gigamon_ami_pq', 'destPath: gigamon_ami_other')),
       /gigamon_ami_parquet_lake: writes dataset "gigamon_ami_other", which is not one of this pack's datasets/,
+    ],
+    // Leak path D: an output that is not a Lake destination. A router or a
+    // default output forwards to another output, so a route naming it passes
+    // every check on the route while its events land somewhere else.
+    [
+      'the sample route pointed at a router that forwards to the customer\'s destination',
+      (d) => {
+        edit(d, 'default/outputs.yml', (s) => `${s}  gigamon_ami_sample_router:\n    type: router\n    rules:\n      - filter: "true"\n        output: gigamon_ami_json_lake\n        final: true\n`)
+        edit(d, 'default/pipelines/route.yml', (s) => s.replace('output: gigamon_ami_sample_lake', 'output: gigamon_ami_sample_router'))
+      },
+      /gigamon_ami_sample_router: output type "router" is not one this pack may ship \(cribl_lake\)/,
+    ],
+    [
+      'the sample route pointed at a default output naming the customer\'s destination',
+      (d) => {
+        edit(d, 'default/outputs.yml', (s) => `${s}  gigamon_ami_sample_default:\n    type: default\n    defaultId: gigamon_ami_json_lake\n`)
+        edit(d, 'default/pipelines/route.yml', (s) => s.replace('output: gigamon_ami_sample_lake', 'output: gigamon_ami_sample_default'))
+      },
+      /gigamon_ami_sample_default: output type "default" is not one this pack may ship \(cribl_lake\)/,
+    ],
+    // The Parquet copy must never hold up the JSON feed the dashboards read.
+    [
+      'a Parquet destination that blocks on backpressure',
+      (d) => edit(d, 'default/outputs.yml', (s) => s.replace(/(destPath: gigamon_ami_pq[\s\S]*?onBackpressure: )drop/, '$1block')),
+      /gigamon_ami_parquet_lake: a Parquet destination must set onBackpressure: drop/,
+    ],
+    // The dual write is the route order: every route of an input but its last
+    // is not final, and its last is.
+    [
+      'a JSON route that is final, so the Parquet route never sees the event',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace(/(id: gigamon_ami_http_to_json\n\s+name: gigamon_ami_http_to_json\n\s+final: )false/, '$1true')),
+      /gigamon_ami_http_to_json: final: true, so in_gigamon_ami_http's later route gigamon_ami_http_to_parquet never runs/,
+    ],
+    [
+      'the Parquet route placed before the JSON route',
+      (d) => edit(d, 'default/pipelines/route.yml', routeFirst('gigamon_ami_http_to_parquet')),
+      /gigamon_ami_http_to_parquet: final: true, so in_gigamon_ami_http's later route gigamon_ami_http_to_json never runs/,
+    ],
+    [
+      'an input whose last route is not final',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace(/(id: gigamon_ami_sample\n\s+name: gigamon_ami_sample\n\s+final: )true/, '$1false')),
+      /gigamon_ami_sample: the last route of in_gigamon_ami_sample must be final: true/,
+    ],
+    [
+      'an HTTP input that names no breaker ruleset (the POSTed array would reach the pipeline unsplit)',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/\n\s+breakerRulesets:\n\s+- gigamon_ami_http_json_array/, '')),
+      /in_gigamon_ami_http: an http_raw input must name a breaker ruleset/,
+    ],
+    [
+      'an input whose own pipeline the pack does not define',
+      (d) => edit(d, 'default/inputs.yml', (s) => s.replace(/(type: http_raw\n)/, '$1    pipeline: gigamon_ami_nowhere\n')),
+      /in_gigamon_ami_http: pipeline "gigamon_ami_nowhere" has no default\/pipelines\/gigamon_ami_nowhere\/conf\.yml/,
     ],
     [
       'a gno_-prefixed object id (the prefix is reserved for acceleration schedules)',

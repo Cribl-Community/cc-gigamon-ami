@@ -54,6 +54,15 @@
 //     on a Leader is `isTemplate: true`. The value is left as it is until an
 //     install shows which one stamps the current time on replay; do not
 //     change it on a guess.
+//   - what an in-place upgrade from 0.1.0 leaves behind. 0.1.0 is published
+//     (`PACK_0_1_0` below) and shipped a syslog input; `PATCH /packs/<id>
+//     {source}` upgrades in place, and nobody has read back what then remains
+//     under the pack's `local/` (an override on `in_gno_syslog`, such as a port
+//     set after install, could survive as a listener no route reads). The proof
+//     install upgrades a 0.1.0 install with a local override and lists
+//     `local/` afterwards, by the ids in `PACK_0_1_0`.
+//   - that the Parquet destination's `onBackpressure: drop` keeps gigamon_ami
+//     flowing while gigamon_ami_pq does not exist or cannot be written.
 
 /** The pack's id on the Leader. Never starts with `v` — see the tag note below. */
 export const PACK_ID = 'cc-network-gigamon-ami'
@@ -184,16 +193,61 @@ export const SAMPLE_ORIGIN_VALUE = 'sample'
  * the pack (or the dataset the app creates for it) carries today only so the
  * pack is complete; each value says what it is waiting for.
  *
- * pack.test.ts FAILS if `PACK_PUBLISHED` is true while this holds anything, or
- * while the pack's README or YAML still says PENDING: a release must not freeze
- * a guess into every tenant that installs it. Resolve an entry by deciding it,
- * changing the pack to match, and deleting the entry and its PENDING notes.
+ * A release must not freeze a guess into every tenant that installs it, and
+ * three things refuse one. `scripts/pack.mjs` under `--expect-version` (what
+ * pack-release.yml builds with) refuses any pack file that says PENDING: this is
+ * the guard that runs when a tag is pushed, because `PACK_PUBLISHED` is still
+ * false then. pack.test.ts fails on a `gigamon-pack-v*` GITHUB_REF_NAME while
+ * this holds anything, and fails if `PACK_PUBLISHED` is true while it does.
+ * Resolve an entry by deciding it, changing the pack to match, and deleting the
+ * entry and its PENDING notes.
  */
 export const PACK_PENDING: Readonly<Record<string, string>> = Object.freeze({
   parquet_schema_mode:
     `${PACK_PARQUET_OUTPUT_ID} ships automaticSchema: true. Automatic or explicit schema is undecided until the schema-change test (g) and owner decision D-10.`,
   parquet_partitions:
     `${PACK_PARQUET_DATASET_ID}'s partition fields are undecided (D-10). They are fixed when the app creates the dataset, so this blocks that create, not only the release.`,
+})
+
+/** One path an event takes through a pack: the shape Data Flow's stack list uses. */
+export interface PackPath {
+  readonly route: string
+  /** `<type>:<id>`, as `__inputId` and cribl_metrics name a source. */
+  readonly input: string
+  readonly pipeline: string
+  /** `<type>:<id>`, as cribl_metrics names a destination. */
+  readonly output: string
+  readonly dataset: string
+}
+
+/**
+ * THE PUBLISHED 0.1.0 PACK, AS SHIPPED. Released as `gigamon-pack-v0.1.0` on
+ * 2026-09-24 (the release's publishedAt and asset digest are below), with a
+ * syslog input and a sample DataGen. Every id is a literal read from that tag's
+ * pack source, not derived from the constants above: those name 0.2.0, and
+ * several kept their names while their values changed.
+ *
+ * WHY IT IS KEPT. A tenant that installed 0.1.0 can upgrade in place to 0.2.0.
+ * Anything the upgrade leaves under the pack's `local/` (see the header's
+ * proof-install list) can only be found, and removed, by these ids; Data Flow's
+ * stack list names 0.1.0's paths from `paths` here, never from the 0.2.0
+ * constants. Frozen, and pinned whole by pack.test.ts.
+ */
+export const PACK_0_1_0 = Object.freeze({
+  version: '0.1.0',
+  tag: 'gigamon-pack-v0.1.0',
+  publishedAt: '2026-09-24T16:00:09Z',
+  sha256: '1fff07438e1974853ec9dfbbf570d8afad1136a3453741aeec7acae08af178ca',
+  inputs: Object.freeze({ syslog: 'in_gno_syslog', sample: 'in_gno_sample' }),
+  pipelines: Object.freeze({ syslog: 'gno_syslog', sample: 'gno_sample' }),
+  routes: Object.freeze({ syslog: 'gno_syslog', sample: 'gno_sample' }),
+  outputs: Object.freeze({ lake: 'out_gno_lake', sample: 'out_gno_sample_lake' }),
+  samples: Object.freeze(['gno_dns', 'gno_security', 'gno_services', 'gno_tls_apps', 'gno_web_api']),
+  sampleOriginField: 'gno_origin',
+  paths: Object.freeze([
+    Object.freeze({ route: 'gno_syslog', input: 'syslog:in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:out_gno_lake', dataset: 'gigamon_ami' }),
+    Object.freeze({ route: 'gno_sample', input: 'datagen:in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:out_gno_sample_lake', dataset: 'gigamon_ami_sample' }),
+  ] as const satisfies readonly PackPath[]),
 })
 
 /**
