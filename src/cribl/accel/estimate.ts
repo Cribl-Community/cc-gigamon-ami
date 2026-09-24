@@ -738,3 +738,46 @@ export function estimateWorkspaceSaving(ids: readonly AccelId[] = MANIFEST.map((
       : MEASUREMENT_PROVENANCE,
   }
 }
+
+// ── A set of schedules: what they bill, and what they replace ───────────────
+//
+// The per-tab switches (cribl/accel/tabs.ts) each show their own cost, and the
+// confirmation behind a flip states the cost of exactly the schedules it
+// changes. Both are a SET of manifest entries, so both come through here — and
+// like everything else in this module the answer is never a bare number: the
+// charge carries its band, the basis it rests on, and the sentence a surface
+// must render beside it.
+
+export interface ScheduleSetCost {
+  ids: readonly AccelId[]
+  /** CPU-seconds a day the schedules THEMSELVES bill — the recurring charge a
+   *  switch turns on or off. Banded by each scheduled run's own band. */
+  chargeCpuSeconds: Span
+  chargeCredits: Span
+  /** What the same set replaces and saves, entry by entry. */
+  saving: WorkspaceSaving
+  /** What the charge rests on. `none` is the empty set: nothing billed. */
+  basis: EstimateBasis | 'mixed' | 'none'
+  /** Rendered beside, or behind the ⓘ of, any figure taken from this. */
+  provenance: string
+}
+
+export const EMPTY_SET_PROVENANCE = 'No scheduled search is involved, so nothing is charged and nothing is saved.'
+
+/** The charge and the saving of a set of schedules, each with its basis. */
+export function estimateScheduleSetCost(ids: readonly AccelId[]): ScheduleSetCost {
+  const saving = estimateWorkspaceSaving(ids)
+  const low = saving.entries.reduce((n, e) => n + e.scheduledRun.band.low * e.scheduledRunsPerDay, 0)
+  const high = saving.entries.reduce((n, e) => n + e.scheduledRun.band.high * e.scheduledRunsPerDay, 0)
+  const bases = new Set(saving.entries.map((e) => e.scheduledRun.basis))
+  const basis: ScheduleSetCost['basis'] = bases.size === 0 ? 'none' : bases.size > 1 ? 'mixed' : [...bases][0]
+  const sentences = ids.length === 0 ? [EMPTY_SET_PROVENANCE] : [...new Set([...saving.entries.map((e) => e.provenance), saving.provenance])]
+  return {
+    ids,
+    chargeCpuSeconds: { low, high },
+    chargeCredits: { low: creditsFor(low), high: creditsFor(high) },
+    saving,
+    basis,
+    provenance: sentences.join(' '),
+  }
+}

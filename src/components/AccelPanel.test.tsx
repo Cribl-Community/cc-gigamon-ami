@@ -72,7 +72,10 @@ import {
   rowAction,
   rowActionName,
   showOwnerColumn,
+  switchName,
+  toggleNothingWords,
 } from './accelPanelCopy'
+import { togglePlan } from '../cribl/accel/tabs'
 
 const BASE = '/capi'
 const SAVED = '/m/default_search/search/saved'
@@ -765,6 +768,158 @@ describe('the estimate on screen', () => {
     stubWorkspace()
     await mount()
     expect(bodyText()).toContain('views a day it costs more than it saves')
+  })
+})
+
+// ── The per-dashboard switches ──────────────────────────────────────────────
+
+/** Every manifest entry, stored as this release would write it, with a field
+ *  this app knows nothing about — and the named ones paused. */
+async function everyEntry(paused: readonly string[] = []): Promise<Record<string, Record<string, unknown>>> {
+  const out: Record<string, Record<string, unknown>> = {}
+  for (const e of MANIFEST) {
+    const want = (await accelSavedSearch(accelEntry(e.id))) as unknown as Record<string, unknown>
+    out[e.id] = {
+      ...want,
+      user: ME,
+      displayUsername: 'me@example.com',
+      chartConfig: { type: 'bar' },
+      schedule: { ...(want.schedule as Record<string, unknown>), enabled: !paused.includes(e.id) },
+    }
+  }
+  return out
+}
+
+const switchNamed = (name: string) =>
+  [...document.body.querySelectorAll<HTMLInputElement>('input[role="switch"]')].find((i) => i.getAttribute('aria-label') === name)
+const dialog = () => document.body.querySelector('[role="dialog"]')
+
+describe('the per-dashboard switches', () => {
+  it('writes nothing on load, and reads each switch from the saved searches', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(['gno_app_l4_c1h']) })
+    await mount()
+    expect(savedWrites(calls)).toEqual([])
+    expect(switchNamed(switchName('tcp-health'))?.checked).toBe(true)
+    // Capacity has one of its three paused: not on, and said in words.
+    expect(switchNamed(switchName('capacity'))?.checked).toBe(false)
+    expect(bodyText()).toContain('Mixed — 2 of 3 running')
+    expect(switchNamed(switchName('master'))?.checked).toBe(false)
+  })
+
+  it('shows each switch’s cost as a charge AND a saving, never a bare figure', async () => {
+    stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    const state = document.getElementById(switchNamed(switchName('dns-health'))?.getAttribute('aria-describedby') ?? '')
+    expect(state?.textContent).toMatch(/bills .*credits\/day · saves .*credits\/day/)
+  })
+
+  it('writes nothing when a switch is flipped, and the dialog names exactly the searches and the cost', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    await press(switchNamed(switchName('capacity')))
+    expect(savedWrites(calls)).toEqual([])
+    const text = dialog()?.textContent ?? ''
+    expect(text).toContain('gno_app_l4_c1h')
+    expect(text).toContain('gno_talkers_src_c1h')
+    // The shared scan is named as KEPT, and why — not as something paused.
+    expect(text).toContain('Kept running: gno_overview_c1h')
+    expect(text).toContain('Stops these schedules’ charge')
+    expect(text).toContain('Yes, pause them')
+    // No schedule the flip does not change is named as a resource.
+    for (const e of MANIFEST.filter((x) => !['gno_app_l4_c1h', 'gno_talkers_src_c1h', 'gno_overview_c1h'].includes(x.id))) {
+      expect(text).not.toContain(e.id)
+    }
+  })
+
+  it('pauses exactly those searches once confirmed, each with its whole body', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    await press(switchNamed(switchName('capacity')))
+    await press(buttonNamed('Yes, pause them'))
+    await settle()
+    const patches = savedWrites(calls)
+    expect(patches.map((c) => `${c.method} ${c.path}`)).toEqual(
+      ['gno_app_l4_c1h', 'gno_talkers_src_c1h'].map((id) => `PATCH ${SAVED}/${id}`),
+    )
+    for (const c of patches) {
+      const id = c.path.slice(SAVED.length + 1) as 'gno_app_l4_c1h'
+      expect(c.body?.schedule).toMatchObject({ enabled: false, cronSchedule: accelEntry(id).cron, tz: 'UTC', keepLastN: accelEntry(id).keepLastN })
+      expect(c.body?.chartConfig).toEqual({ type: 'bar' })
+      expect(c.body?.query).toBe(accelEntry(id).body)
+    }
+  })
+
+  it('opens no dialog for a flip that would write nothing, and says why beside the switch', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    await press(switchNamed(switchName('findings')))
+    expect(savedWrites(calls)).toEqual([])
+    expect(dialog()).toBeNull()
+    const state = await readAccelState()
+    const why = toggleNothingWords(togglePlan(state, { kind: 'tab', tab: 'findings', on: false }))
+    expect(why).toContain('gno_overview_c1h')
+    expect(bodyText()).toContain(why as string)
+  })
+
+  it('the master switch names every search it will resume', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(savedWrites(calls)).toEqual([])
+    const text = dialog()?.textContent ?? ''
+    for (const e of MANIFEST) expect(text).toContain(e.id)
+    expect(text).toContain('keeps no memory')
+    expect(text).toContain('Yes, resume them')
+  })
+
+  // Review 2026-09-24, defect 1: one entry a release added and nobody applied
+  // read the master as Mixed, and a Mixed master could only ask for on.
+  it('the master switch still pauses everything when one entry was never created', async () => {
+    const saved = await everyEntry()
+    delete saved.gno_sample_2m_c1h
+    const { calls } = stubWorkspace({ saved })
+    await mount()
+    expect(switchNamed(switchName('master'))?.checked).toBe(true)
+    expect(bodyText()).toContain('1 not switchable here')
+    await press(switchNamed(switchName('master')))
+    expect(savedWrites(calls)).toEqual([])
+    const text = dialog()?.textContent ?? ''
+    expect(text).toContain('Yes, pause them')
+    for (const e of MANIFEST.filter((x) => x.id !== 'gno_sample_2m_c1h')) expect(text).toContain(e.id)
+    // Defect 4: the master's undo names the master switch, not "this tab".
+    expect(text).toContain('Turning the master switch back on')
+    expect(text).not.toContain('on this tab')
+  })
+
+  // Defect 3: a Mixed switch goes OFF, the cheaper direction.
+  it('a Mixed tab flips off, pausing the rest, and never asks to resume first', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(['gno_web_h2_c1h']) })
+    await mount()
+    await press(switchNamed(switchName('web-api')))
+    expect(savedWrites(calls)).toEqual([])
+    const text = dialog()?.textContent ?? ''
+    expect(text).toContain('Yes, pause them')
+    expect(text).not.toContain('Yes, resume them')
+    for (const id of ['gno_web_host_c1h', 'gno_web_code_c1h', 'gno_web_trend_c1h']) expect(text).toContain(id)
+    // Defect 4: the one paused before is named as one turning the tab back on resumes too.
+    expect(text).toContain('gno_web_h2_c1h, which was already paused before this')
+  })
+
+  // Defect 5: a tab's line bills it only for what its switch alone decides.
+  it('bills Findings nothing of its own and names the shared scan', async () => {
+    stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    const state = document.getElementById(switchNamed(switchName('findings'))?.getAttribute('aria-describedby') ?? '')
+    expect(state?.textContent).toContain('no scheduled search of its own · shares gno_overview_c1h')
+    expect(state?.textContent).not.toMatch(/bills/)
+  })
+
+  it('offers no switch write while it cannot read the saved-search list', async () => {
+    const { calls } = stubWorkspace({ status: { [`GET ${SAVED}`]: 403 } })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
   })
 })
 
