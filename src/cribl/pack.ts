@@ -88,8 +88,10 @@ export const PACK_PUBLISHED: boolean = false
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
  * summary prints it. MUST BE SET before any code installs from `PACK_URL`:
- * the install path is to refuse bytes whose hash differs, so a replaced or
- * tampered asset cannot reach a Leader. Null only while no release exists
+ * packClient.ts `installRefusal` refuses to install or upgrade while it is
+ * null. That is a record, not a check of the bytes: the Leader downloads
+ * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
+ * sees the asset to hash it. Null only while no release exists
  * (`PACK_PUBLISHED` false).
  */
 export const PACK_SHA256: string | null = null

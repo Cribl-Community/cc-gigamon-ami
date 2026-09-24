@@ -40,6 +40,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { GATED_WRITES, WRITE_SITES, type WriteId } from '../cribl/authz'
+import { UNREACHED_MODULES } from '../cribl/paths'
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -229,12 +230,41 @@ describe('every configuration write has a gate', () => {
 describe('every gate is actually rendered', () => {
   it('puts a <GatedControl> on screen for each declared control', () => {
     const rendered = new Set(controls.declared)
-    const missing = (Object.keys(GATED_WRITES) as WriteId[]).filter((id) => !rendered.has(id))
+    const missing = (Object.keys(GATED_WRITES) as WriteId[]).filter((id) => !rendered.has(id) && !GATED_WRITES[id].unrendered)
     expect(
       missing,
       'A control is declared in GATED_WRITES but nothing renders a <GatedControl write="…"> for it. This is the link that catches ' +
         'a new write control shipping ungated: the write forced the declaration, and the declaration is now waiting for the button.',
     ).toEqual([])
+  })
+
+  it('drops `unrendered` from an id the moment a control renders it', () => {
+    const rendered = new Set(controls.declared)
+    const stale = (Object.keys(GATED_WRITES) as WriteId[]).filter((id) => GATED_WRITES[id].unrendered && rendered.has(id))
+    expect(stale, 'A <GatedControl> now renders these, so they are no longer unrendered — delete the marker.').toEqual([])
+  })
+
+  it('lets an id go unrendered only while nothing on screen reaches its writes', () => {
+    // `unrendered` is the one way past "every gate is rendered", so it is held to
+    // what makes it true: every write gated ONLY by unrendered ids lives in a
+    // module paths.ts lists as unreached — which policyCoverage.test.ts proves
+    // nothing the running app imports. A write a user can reach with no rendered
+    // control is exactly the silent failure this file exists to stop.
+    const unreached = (at: string) => UNREACHED_MODULES.some((u) => u.file === `src/${at.split('#')[0]}`)
+    const loose = WRITE_SITES.filter(
+      (s) => s.gates.length > 0 && s.gates.every((g) => GATED_WRITES[g]?.unrendered) && !unreached(s.at),
+    ).map((s) => s.at)
+    expect(loose, 'These writes are reachable and gated only by controls nobody renders.').toEqual([])
+    // And the converse: a write in an unreached module names only unrendered
+    // controls — a rendered one would be a button that cannot reach it.
+    const misnamed = WRITE_SITES.filter((s) => unreached(s.at) && s.gates.some((g) => !GATED_WRITES[g]?.unrendered)).map((s) => s.at)
+    expect(misnamed).toEqual([])
+    for (const id of Object.keys(GATED_WRITES) as WriteId[]) {
+      const why = GATED_WRITES[id].unrendered
+      if (!why) continue
+      expect(why.trim().length, `${id}: an unrendered control needs its reason`).toBeGreaterThan(40)
+      expect(WRITE_SITES.some((s) => s.gates.includes(id)), `${id} is unrendered and gates no write — delete it`).toBe(true)
+    }
   })
 
   it('accepts only declared ids on a <GatedControl>', () => {

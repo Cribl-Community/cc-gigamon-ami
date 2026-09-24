@@ -57,12 +57,13 @@
 // decoration, so the reasons are asserted too.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { SEARCH_GROUP } from './config'
-import { API_CALLS, LEFT_BEHIND, type ApiCall, type Method, type Provisioned } from './paths'
+import { PACK_ID } from './pack'
+import { API_CALLS, LEFT_BEHIND, UNREACHED_MODULES, type ApiCall, type Method, type Provisioned } from './paths'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const POLICIES = 'config/policies.yml'
@@ -331,8 +332,40 @@ interface ModuleConsts {
   aliases: Map<string, string>
 }
 
-function moduleConsts(src: string): ModuleConsts {
-  const values = new Map<string, string>()
+/**
+ * The single-quoted string constants a module imports from a sibling module in
+ * src/, by the local name they are imported under. Only a plain `'literal'`
+ * crosses the boundary: a template or an alias in the other file would need
+ * that file's own constants to mean anything, and `:x` is the honest answer for
+ * it here.
+ *
+ * WHY THIS EXISTS. A pack path names the pack's ids, which live in pack.ts
+ * (pure data, loaded by the query extractor) rather than in the module that
+ * calls. Without this, `${PACK_HTTP_INPUT_ID}` read as `:x`, and the only way
+ * to make such a call checkable was to copy the id into the calling module.
+ */
+function importedConsts(file: string, src: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const m of src.matchAll(/^import\s+(?!type\s)\{([^}]*)\}\s*from\s*'(\.{1,2}\/[^']+)'/gm)) {
+    const [, names, spec] = m
+    const base = join(ROOT, dirname(file), spec)
+    const target = [`${base}.ts`, `${base}.tsx`].find((f) => existsSync(f))
+    if (!target) continue
+    const decl = /^export\s+const\s+([A-Za-z_$][\w$]*)(?:\s*:\s*string)?\s*=\s*('[^']*')\s*$/gm
+    const theirs = new Map([...stripComments(readFileSync(target, 'utf8')).matchAll(decl)].map((d) => [d[1], d[2]]))
+    for (const raw of names.split(',')) {
+      const one = raw.trim()
+      if (!one || one.startsWith('type ')) continue
+      const [name, alias] = one.split(/\s+as\s+/)
+      const value = theirs.get(name.trim())
+      if (value) out.set((alias ?? name).trim(), value)
+    }
+  }
+  return out
+}
+
+function moduleConsts(src: string, file?: string): ModuleConsts {
+  const values = new Map<string, string>(file ? importedConsts(file, src) : [])
   const arrows = new Map<string, string>()
   const aliases = new Map<string, string>()
   const decl = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?)\s*$/gm
@@ -394,6 +427,13 @@ function resolvePath(expr: string, consts: ModuleConsts): string | null {
     // breadth costs.
     return tail === null ? null : `/m/:gid${tail}`
   }
+  if (call.callee === 'packPath' && call.args.length >= 2) {
+    // packClient.ts's `packPath(group, tail)`: the same group placeholder, then
+    // this app's pack by its literal id — the only pack it ever writes inside.
+    // packClient.test.ts holds the function to this reading.
+    const tail = resolvePath(call.args[1], consts)
+    return tail === null ? null : `/m/:gid/p/${PACK_ID}${tail}`
+  }
   if (call.callee === 'searchUrl' && call.args.length === 1) {
     const tail = resolvePath(call.args[0], consts)
     return tail === null ? null : `/m/${SEARCH_GROUP}${tail}`
@@ -430,7 +470,7 @@ const NETWORK_PRIMITIVES = /(?<![A-Za-z0-9_$.])(fetch\s*\(|XMLHttpRequest|EventS
 
 function scanFile(file: string): { hits: Hit[]; unresolved: Unresolved[]; external: External[] } {
   const src = stripComments(readFileSync(join(ROOT, file), 'utf8'))
-  const consts = moduleConsts(src)
+  const consts = moduleConsts(src, file)
   const hits: Hit[] = []
   const unresolved: Unresolved[] = []
   const external: External[] = []
@@ -495,7 +535,12 @@ const HITS: Hit[] = SCAN.flatMap((s) => s.hits).concat(
 const UNRESOLVED: Unresolved[] = SCAN.flatMap((s) => s.unresolved)
 const EXTERNAL: External[] = SCAN.flatMap((s) => s.external)
 
-const PRODUCT_CALLS = API_CALLS.filter((c) => c.scope === 'product')
+/** A call whose code no screen reaches yet (paths.ts `UNREACHED_MODULES`). It
+ *  is named in paths.ts like any other call, and it is NOT granted: see the
+ *  "calls nothing reaches yet" block below. */
+const isUnreached = (c: ApiCall) => UNREACHED_MODULES.some((u) => u.file.endsWith(`/${c.site.split(' ')[0]}`))
+const PRODUCT_CALLS = API_CALLS.filter((c) => c.scope === 'product' && !isUnreached(c))
+const PENDING_CALLS = API_CALLS.filter((c) => c.scope === 'product' && isUnreached(c))
 const APP_CALLS = API_CALLS.filter((c) => c.scope === 'app')
 
 const describeCall = (c: ApiCall) => `${c.method} ${c.path} (${c.site})`
@@ -682,6 +727,116 @@ describe('config/policies.yml', () => {
     for (const x of DECLARED_BUT_NOT_CALLED) {
       expect(x.reason.trim().length, `${x.action} ${x.object}: an exception without a reason is decoration`).toBeGreaterThan(40)
     }
+  })
+})
+
+// ── What the running app can reach ───────────────────────────────────────────
+
+/**
+ * The module a relative import names, or null for anything that is not one of
+ * src/'s own .ts/.tsx files (a package, a stylesheet, an asset).
+ */
+function resolveImport(from: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null
+  const base = join(ROOT, dirname(from), spec)
+  for (const f of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
+    if (/\.tsx?$/.test(f) && existsSync(f)) return relative(ROOT, f).split('\\').join('/')
+  }
+  return null
+}
+
+/**
+ * Every module that runs when the app does: what `src/main.tsx` imports, and
+ * what those import, following static imports, re-exports and dynamic
+ * `import('…')`. An `import type` is not followed — it is erased and loads
+ * nothing. (Under `verbatimModuleSyntax` an `import { type A }` with only type
+ * specifiers still loads the module, so it IS followed.)
+ */
+function reachableFromMain(): Set<string> {
+  const seen = new Set<string>()
+  const queue = ['src/main.tsx']
+  const edges = [
+    /^\s*import\s+(?!type\s)[\w$*{},\s]*?\s*from\s*'([^']+)'/gm,
+    /^\s*import\s*'([^']+)'/gm,
+    /^\s*export\s+(?!type\s)(?:\*|\*\s+as\s+[\w$]+|\{[^}]*\})\s*from\s*'([^']+)'/gm,
+    /\bimport\(\s*'([^']+)'\s*\)/g,
+  ]
+  while (queue.length) {
+    const file = queue.shift() as string
+    if (seen.has(file)) continue
+    seen.add(file)
+    const src = stripComments(readFileSync(join(ROOT, file), 'utf8'))
+    for (const re of edges) {
+      for (const m of src.matchAll(re)) {
+        const next = resolveImport(file, m[1])
+        if (next && !seen.has(next)) queue.push(next)
+      }
+    }
+  }
+  return seen
+}
+
+const REACHABLE = reachableFromMain()
+
+describe('calls nothing reaches yet', () => {
+  // A module whose calls exist in the source but that nothing on screen can
+  // run — today, the onboarding pack client, written a slice ahead of its UI.
+  // Its calls are named in paths.ts (so the source scan above still proves that
+  // list complete) and are deliberately NOT granted in config/policies.yml: a
+  // grant is asked of an admin for something a user can press, and "declared
+  // but uncalled" would otherwise be satisfied by code no user reaches. These
+  // checks keep that exception from outliving its reason in either direction.
+
+  it('finds the app’s own modules from src/main.tsx, so the reachability check is not vacuous', () => {
+    // If the walker stopped following imports, every module would look
+    // unreached and the check below would pass for the wrong reason.
+    for (const f of ['src/App.tsx', 'src/cribl/capi.ts', 'src/cribl/provision.ts', 'src/cribl/search.ts', 'src/cribl/lake.ts']) {
+      expect(REACHABLE.has(f), `${f} should be reachable from src/main.tsx`).toBe(true)
+    }
+  })
+
+  it('keeps every module on the list out of the running app', () => {
+    const reached = UNREACHED_MODULES.filter((u) => REACHABLE.has(u.file)).map((u) => u.file)
+    expect(
+      reached,
+      'the app now imports these, so a user can reach their calls. Take the module off UNREACHED_MODULES in ' +
+        'src/cribl/paths.ts and grant its calls in config/policies.yml — this is the moment the grants are due.',
+    ).toEqual([])
+  })
+
+  it('grants none of their calls early', () => {
+    const early = PENDING_CALLS.filter((c) =>
+      DECLARED.some((d) => covers(d.object, c.path) && d.actions.includes(c.method) &&
+        // A grant another, reachable call already justifies is not early.
+        !PRODUCT_CALLS.some((p) => p.method === c.method && covers(d.object, p.path))),
+    ).map(describeCall)
+    expect(
+      early,
+      'config/policies.yml grants these, and only code nothing reaches calls them. Remove the grant until the UI ' +
+        'that calls them lands.',
+    ).toEqual([])
+  })
+
+  it('lists only modules that exist, make calls, and say why', () => {
+    for (const u of UNREACHED_MODULES) {
+      expect(existsSync(join(ROOT, u.file)), `${u.file} does not exist`).toBe(true)
+      expect(u.reason.trim().length, `${u.file}: an exception without a reason is decoration`).toBeGreaterThan(80)
+      expect(
+        PENDING_CALLS.some((c) => u.file.endsWith(`/${c.site.split(' ')[0]}`)),
+        `${u.file} makes no call paths.ts names — delete it from UNREACHED_MODULES`,
+      ).toBe(true)
+    }
+  })
+
+  it('runs every granted call from a module the app actually loads', () => {
+    // The other direction of the same claim: a call that IS granted sits in a
+    // module the running app imports. Otherwise the grant is for code no user
+    // reaches, and belongs on UNREACHED_MODULES instead.
+    const orphaned = PRODUCT_CALLS.filter((c) => {
+      const named = c.site.split(' ')[0]
+      return ![...REACHABLE].some((f) => f.endsWith(`/${named}`))
+    }).map(describeCall)
+    expect(orphaned).toEqual([])
   })
 })
 

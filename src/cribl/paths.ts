@@ -51,6 +51,13 @@
 
 import { SEARCH_GROUP } from './config'
 import {
+  PACK_BREAKER_ID,
+  PACK_HTTP_INPUT_ID,
+  PACK_ID,
+  PACK_SAMPLE_DATASET_ID,
+  PACK_SAMPLE_INPUT_ID,
+} from './pack'
+import {
   HTTP_BREAKER_ID,
   HTTP_PIPELINE_ID,
   HTTP_SOURCE_ID,
@@ -93,7 +100,7 @@ export type Scope =
  * different group with a different teardown; what they share with the five is
  * only this: the app creates them, so it has to be able to remove them.
  */
-export type Provisioned = ResourceKey | 'commit' | 'accel_saved_search'
+export type Provisioned = ResourceKey | 'commit' | 'accel_saved_search' | 'pack'
 
 export interface ApiCall {
   method: Method
@@ -117,9 +124,37 @@ export interface ApiCall {
 }
 
 /**
- * THE CALL SURFACE. Every entry is reachable from a click in this app; nothing
- * here is speculative, and nothing the app calls is missing from it — the test
- * proves both against the source.
+ * A module whose calls are written but that nothing on screen reaches yet —
+ * no module `src/main.tsx` imports imports it.
+ *
+ * ITS CALLS ARE NAMED IN `API_CALLS` AND NOT GRANTED. The source scan still
+ * has to prove this list complete, so every call is here with its reason; but
+ * config/policies.yml is a grant an admin gives every user the app is shared
+ * with, and a grant for a button that does not exist is trust the app cannot
+ * use. policyCoverage.test.ts ("calls nothing reaches yet") fails if any of
+ * these calls is granted early, and fails the moment the running app imports a
+ * module still on this list — which is when the grants become due, in the same
+ * change as the UI.
+ */
+export interface Unreached {
+  /** Repo-relative path of the module. */
+  file: string
+  reason: string
+}
+
+export const UNREACHED_MODULES: readonly Unreached[] = [
+  {
+    file: 'src/cribl/packClient.ts',
+    reason:
+      'The onboarding pack client (install, upgrade, remove, and the pack source’s port, token, TLS and enable, then commit and deploy) is built a slice ahead of the Guided Setup UI that calls it. Until that UI lands nothing can press any of it, so none of its pack-scoped calls is asked of an admin yet.',
+  },
+]
+
+/**
+ * THE CALL SURFACE. Every entry is reachable from a click in this app, except
+ * those in `UNREACHED_MODULES`, which are written and not yet reachable —
+ * nothing here is otherwise speculative, and nothing the app calls is missing
+ * from it. The test proves all three against the source.
  */
 export const API_CALLS: readonly ApiCall[] = [
   // ── Cribl Search: what every dashboard panel does ─────────────────────────
@@ -415,7 +450,7 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/m/:gid/packs',
     scope: 'product',
-    site: 'lake.ts listPackInputs',
+    site: 'lake.ts listPackInputs (also packClient.ts readInstalled)',
     why: 'List the packs installed in the worker group, so Guided Setup can read the sources inside them. A pack source listens on a port like any other — the onboarding pack’s own Raw HTTP source uses the same 20000–20010 range a Cribl-managed group allows — and a pack’s sources have their own endpoint (openapi.json lists `/p/{pack}/system/inputs` apart from the group’s list). Read only.',
   },
   {
@@ -424,6 +459,99 @@ export const API_CALLS: readonly ApiCall[] = [
     scope: 'product',
     site: 'lake.ts listPackInputs',
     why: 'Read the sources inside each installed pack: their ports, so the new Raw HTTP source is not given one a pack source already listens on, and the event breaker rulesets they name, so Remove never deletes this app’s ruleset while a pack source still uses it. Read only; `:pack` is any installed pack’s id, because the port check has to see all of them.',
+  },
+  // ── The onboarding pack (src/cribl/packClient.ts) — NOT YET GRANTED ───────
+  // Every entry below sits in a module on UNREACHED_MODULES: written, tested,
+  // and reached by nothing on screen until Guided Setup's pack UI lands. They
+  // are not in config/policies.yml, and must not be until then — see
+  // UNREACHED_MODULES. Each pack-scoped path names this app's pack by its id
+  // and, where one object is meant, that object, so the grant when it comes is
+  // "this pack's two sources", never "any source in any pack".
+  {
+    method: 'POST',
+    path: '/m/:gid/packs',
+    scope: 'product',
+    site: 'packClient.ts installPack',
+    why: `Install the Gigamon AMI onboarding pack '${PACK_ID}' from its GitHub release into the worker group picked in Guided Setup, from a confirmation naming the pack, its version and the group. The Leader downloads the release itself; custom functions are refused. Only this pack id and only the release URL this app build pins.`,
+    creates: 'pack',
+  },
+  {
+    method: 'PATCH',
+    path: `/m/:gid/packs/${PACK_ID}`,
+    scope: 'product',
+    site: 'packClient.ts upgradePack',
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published, and never downward.`,
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/packs/${PACK_ID}`,
+    scope: 'product',
+    site: 'packClient.ts removePack',
+    why: `Uninstall '${PACK_ID}' again, from a confirmed Remove — only when the installed pack is this app's id at a version this app published. The Lake datasets it wrote to are outside the pack and stay.`,
+    removes: 'pack',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs`,
+    scope: 'product',
+    site: 'packClient.ts readPackState',
+    why: 'Read the pack’s two sources — whether each is there and enabled, the Raw HTTP source’s port and TLS, and whether it has a token (never the token itself) — for the status Guided Setup shows.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/lib/breakers/${PACK_BREAKER_ID}`,
+    scope: 'product',
+    site: 'packClient.ts readPackState',
+    why: 'Ask whether the pack’s event breaker ruleset is installed, since the Raw HTTP source splits nothing into events without it.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/pipelines`,
+    scope: 'product',
+    site: 'packClient.ts readPackState',
+    why: 'Ask whether the pack’s normalize pipeline is installed, for the pack’s status. Read only.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/routes`,
+    scope: 'product',
+    site: 'packClient.ts readPackState',
+    why: 'Ask whether the pack’s three routes are installed — the two that send HTTP data to the JSON and Parquet datasets, and the sample’s. Read only.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/outputs`,
+    scope: 'product',
+    site: 'packClient.ts readPackState',
+    why: 'Ask whether the pack’s three Cribl Lake destinations are installed. Read only.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_HTTP_INPUT_ID}`,
+    scope: 'product',
+    site: 'packClient.ts patchPackInput (also verifyInstalled)',
+    why: 'Read the pack’s Raw HTTP source whole before changing it, because its PATCH replaces the whole object; and read it back after an install, as proof the pack arrived.',
+  },
+  {
+    method: 'PATCH',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_HTTP_INPUT_ID}`,
+    scope: 'product',
+    site: 'packClient.ts patchPackInput',
+    why: 'Set what only an install can know on the pack’s Raw HTTP source — a free port, the auth token this app generates, TLS for the group’s hosting — and enable it. The body is the whole live source with those keys changed, because this endpoint deletes any field a PATCH omits.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_SAMPLE_INPUT_ID}`,
+    scope: 'product',
+    site: 'packClient.ts patchPackInput',
+    why: 'Read the pack’s sample DataGen whole before starting or stopping it, because its PATCH replaces the whole object.',
+  },
+  {
+    method: 'PATCH',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_SAMPLE_INPUT_ID}`,
+    scope: 'product',
+    site: 'packClient.ts patchPackInput',
+    why: `Start or stop the pack’s sample DataGen, an opt-in: it writes synthetic flows to ${PACK_SAMPLE_DATASET_ID}, never to the customer’s dataset. Only its \`disabled\` flag changes.`,
   },
   {
     method: 'POST',

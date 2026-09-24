@@ -325,7 +325,7 @@ export function scrubbedErrText(r: ApiResp, secrets: readonly string[]): string 
 
 /** The auth tokens a live source body holds — `authTokensExt[].token` and the
  *  older `authTokens[]` — so an error about that source can be scrubbed of them. */
-function tokensOf(source: Record<string, unknown> | null | undefined): string[] {
+export function tokensOf(source: Record<string, unknown> | null | undefined): string[] {
   if (!source) return []
   const ext = Array.isArray(source.authTokensExt) ? source.authTokensExt : []
   const old = Array.isArray(source.authTokens) ? source.authTokens : []
@@ -815,6 +815,16 @@ function fileMarker(key: CommitKey): string | null {
   }
 }
 
+/** Every file marker for these keys, the Lake dataset (no Git file) left out. */
+const markersFor = (keys: readonly CommitKey[]): string[] =>
+  keys.map(fileMarker).filter((m): m is string => m !== null)
+
+/** The pending paths that belong to `group` and match one of `markers` — the
+ *  one test every commit in this module scopes by, whatever made the change. */
+function matching(pending: readonly string[], group: string, markers: readonly string[]): string[] {
+  return pending.filter((p) => pathInGroup(p, group) && markers.some((m) => p.includes(m)))
+}
+
 /** True when a pending path belongs to the target group. Named groups carry a
  *  `groups/<group>/` segment; a group-rooted layout has no `groups/<x>/` at all. */
 function pathInGroup(path: string, group: string): boolean {
@@ -830,20 +840,33 @@ function pathInGroup(path: string, group: string): boolean {
  */
 async function filesToCommit(group: string, keys: CommitKey[]): Promise<string[]> {
   if (keys.length === 0) return []
-  const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
+  return filesToCommitFor(
+    group,
+    markersFor(keys),
+    keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null),
+  )
+}
+
+/**
+ * `filesToCommit` for any set of markers: the pending paths in `group` that
+ * match one, or — only when Git reported nothing at all — `constructed`, the
+ * paths a known layout says the change landed in. Shared with the onboarding
+ * pack client (cribl/packClient.ts), whose files are a pack directory rather
+ * than one of the resource files above.
+ */
+async function filesToCommitFor(group: string, markers: readonly string[], constructed: readonly string[]): Promise<string[]> {
+  if (markers.length === 0) return []
   let pending: string[] = []
   // A failed read and a clean tree both fall back to constructed paths here, as
   // they always have: this decides what to SEND, and the commit itself answers
   // "nothing to commit" when the guess was wrong. The caller that has to tell a
   // person keeps the two apart — see `pendingConfigPaths`.
   try { pending = (await pendingFiles()) ?? [] } catch { pending = [] }
-  const selected = pending.filter((p) => pathInGroup(p, group) && markers.some((m) => p.includes(m)))
+  const selected = matching(pending, group, markers)
   if (selected.length) return selected
   // Status unavailable/empty: best-effort constructed paths (matches the
   // `groups/<gid>/local/cribl/...` layout documented in the API examples).
-  if (pending.length === 0) {
-    return keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null)
-  }
+  if (pending.length === 0) return [...constructed]
   return selected
 }
 
@@ -914,10 +937,21 @@ export async function pendingConfigPaths(): Promise<string[] | null> {
 
 export function commitScope(group: string, keys: readonly CommitKey[], pending: readonly string[] | null): CommitScope {
   const carries = keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null)
-  if (pending === null) return { carries, alreadyDirty: [], elsewhere: [], unknown: true }
-  const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
-  const mine = (p: string) => pathInGroup(p, group) && markers.some((m) => p.includes(m))
-  return { carries, alreadyDirty: pending.filter(mine), elsewhere: pending.filter((p) => !mine(p)), unknown: false }
+  return commitScopeFor(group, carries, markersFor(keys), pending)
+}
+
+/** `commitScope` for any set of markers, with `carries` given rather than
+ *  derived from resource keys — the onboarding pack's scope is its directories
+ *  (cribl/packClient.ts `packCommitScope`). */
+export function commitScopeFor(
+  group: string,
+  carries: readonly string[],
+  markers: readonly string[],
+  pending: readonly string[] | null,
+): CommitScope {
+  if (pending === null) return { carries: [...carries], alreadyDirty: [], elsewhere: [], unknown: true }
+  const mine = new Set(matching(pending, group, markers))
+  return { carries: [...carries], alreadyDirty: [...mine], elsewhere: pending.filter((p) => !mine.has(p)), unknown: false }
 }
 
 // --- What the write actually sends, and what it changes -------------------
@@ -964,7 +998,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 /** Deep equality over the JSON these bodies are made of. Key order is not a
  *  difference; array order is. */
-function sameValue(a: unknown, b: unknown): boolean {
+export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
@@ -1050,7 +1084,7 @@ function mergeSpec(live: unknown, want: unknown): unknown {
  * The pipeline list is empty: `Pipeline` declares `id` and `conf` and nothing
  * the server owns.
  */
-const SOURCE_SERVER_OWNED: readonly string[] = ['criblSourceProvenance']
+export const SOURCE_SERVER_OWNED: readonly string[] = ['criblSourceProvenance']
 const PIPELINE_SERVER_OWNED: readonly string[] = []
 // `EventBreakerRuleset` declares nothing the server owns either.
 const BREAKER_SERVER_OWNED: readonly string[] = []
@@ -1113,7 +1147,7 @@ const unreadable = (what: string) =>
 
 /** The one object a Cribl GET of a named resource answers with, or null when the
  *  body is not the `{ items: [ … ] }` this app knows how to read. */
-function firstItem(r: ApiResp): Record<string, unknown> | null {
+export function firstItem(r: ApiResp): Record<string, unknown> | null {
   const items = (r.body as { items?: unknown[] })?.items
   const first = Array.isArray(items) ? items[0] : undefined
   return first !== null && typeof first === 'object' ? (first as Record<string, unknown>) : null
@@ -1847,7 +1881,7 @@ async function commitAndDeploy(
   message: string,
   group: string,
   files: string[],
-  keys: readonly CommitKey[],
+  markers: readonly string[],
   onStep: (r: StepResult) => void,
   onPhase: OnPhase,
 ): Promise<StepResult[]> {
@@ -1881,9 +1915,8 @@ async function commitAndDeploy(
   // of this run's still uncommitted means the commit is incomplete, and it is
   // not deployed. A status read that fails answers nothing either way, and the
   // deploy goes ahead as it always has.
-  const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
   const after = await pendingFiles().catch(() => null)
-  const leftBehind = (after ?? []).filter((p) => pathInGroup(p, group) && markers.some((m) => p.includes(m)))
+  const leftBehind = matching(after ?? [], group, markers)
   if (leftBehind.length) {
     const r: StepResult = {
       key: 'commit', action: 'error',
@@ -1904,6 +1937,29 @@ async function commitAndDeploy(
 
   await deployHash(group, hash, out, onStep, onPhase)
   return out
+}
+
+/**
+ * Commit the pending files in `group` that match `markers` — or `constructed`
+ * when Git reports nothing — and deploy that commit: `filesToCommitFor` then
+ * `commitAndDeploy`, with every guard those carry (an explicit file list, the
+ * re-read that refuses to deploy an incomplete commit, the stranded-commit
+ * repair that deploys only a hash this app recorded).
+ *
+ * THE ONE EXPORTED WAY IN, for a caller whose change is not one of Guided
+ * Setup's resource files: the onboarding pack client (cribl/packClient.ts).
+ * It exists so that client does not carry a second copy of this machinery.
+ */
+export async function commitMatchingAndDeploy(
+  message: string,
+  group: string,
+  markers: readonly string[],
+  constructed: readonly string[],
+  onStep: (r: StepResult) => void = () => {},
+  onPhase: OnPhase = noopPhase,
+): Promise<StepResult[]> {
+  const files = await filesToCommitFor(group, markers, constructed)
+  return commitAndDeploy(message, group, files, markers, onStep, onPhase)
 }
 
 /**
@@ -2024,7 +2080,7 @@ export async function deployAll(
     .filter((s) => (s.action === 'created' || s.action === 'updated') && groupFile(group, s.key as CommitKey))
     .map((s) => s.key as CommitKey)
   const files = await filesToCommit(group, touchedKeys)
-  const cd = await commitAndDeploy(deployCommitMessage(group, out), group, files, touchedKeys, onStep, onPhase)
+  const cd = await commitAndDeploy(deployCommitMessage(group, out), group, files, markersFor(touchedKeys), onStep, onPhase)
   const all = [...out, ...cd]
   logRun('onboarding_stack.applied', group, all)
   return all
@@ -2135,7 +2191,7 @@ export async function removeOnboardingStack(
   // Commit only the files whose resources we actually removed — matched against
   // the real Git status (deletions/modifications show up there too).
   const files = await filesToCommit(group, touched)
-  const cd = await commitAndDeploy(removeCommitMessage(group, touched), group, files, touched, onStep, onPhase)
+  const cd = await commitAndDeploy(removeCommitMessage(group, touched), group, files, markersFor(touched), onStep, onPhase)
   const all = [...out, ...cd]
   logRun('onboarding_stack.removed', group, all)
   return all

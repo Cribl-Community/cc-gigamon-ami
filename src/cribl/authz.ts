@@ -102,6 +102,10 @@ export type WriteId =
   | 'lake_landing.retention'
   | 'lake_landing.description'
   | 'lake_landing.destination'
+  | 'onboarding_pack.install'
+  | 'onboarding_pack.upgrade'
+  | 'onboarding_pack.remove'
+  | 'onboarding_pack.configure'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -111,6 +115,14 @@ export interface GatedWrite {
    * two controls cannot describe the same write differently.
    */
   does: string
+  /**
+   * Set only while NO control renders this id yet, and why: the write is built
+   * a slice ahead of its UI. gatedWrites.test.ts accepts a missing
+   * `<GatedControl>` for it only while every write it gates sits in a module on
+   * paths.ts `UNREACHED_MODULES` (nothing on screen can reach it), and fails as
+   * soon as a control renders the id with this still set.
+   */
+  unrendered?: string
 }
 
 /** The controls, and what each one is. */
@@ -188,6 +200,33 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
     surface: 'config',
     does: 'changing how objects are written to Cribl Lake, and deploying it',
   },
+  // The onboarding pack's four (cribl/packClient.ts). All `config`: each
+  // installs, edits or removes objects in a worker group and ends in a commit
+  // and a deploy. The UI is the next slice; until it renders them, each is
+  // `unrendered`, and the module is on paths.ts `UNREACHED_MODULES`.
+  'onboarding_pack.install': {
+    surface: 'config',
+    does: 'installing the Gigamon AMI onboarding pack',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
+  'onboarding_pack.upgrade': {
+    surface: 'config',
+    does: 'upgrading the Gigamon AMI onboarding pack',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
+  'onboarding_pack.remove': {
+    surface: 'config',
+    does: 'removing the Gigamon AMI onboarding pack',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
+  // ONE ID FOR THE PACK SOURCES' SETTINGS: port, token, TLS, enable and the
+  // sample's opt-in are all the same whole-body PATCH of a pack source, so a
+  // refusal of one is a refusal of all of them.
+  'onboarding_pack.configure': {
+    surface: 'config',
+    does: 'changing the onboarding pack’s sources',
+    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+  },
 }
 
 // --- Where the writes actually are ----------------------------------------
@@ -257,15 +296,15 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove', 'onboarding_pack.configure'],
     surface: 'config',
-    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both controls end here.',
+    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both Guided Setup controls end here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove', 'onboarding_pack.configure'],
     surface: 'config',
-    why: 'POST /version/commit writes a Git commit on the Leader. Both controls end here.',
+    why: 'POST /version/commit writes a Git commit on the Leader. Both Guided Setup controls end here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
   {
     at: 'cribl/provision.ts#removeOnboardingStack',
@@ -278,6 +317,32 @@ export const WRITE_SITES: readonly WriteSite[] = [
     gates: ['onboarding_stack.remove'],
     surface: 'config',
     why: 'DELETE removes the breaker ruleset in the teardown — only once its source is gone, only when it carries this app’s description, and only when no other source in the group, or in a pack, names it.',
+  },
+
+  // --- The onboarding pack (not yet reachable from any screen) -------------
+  {
+    at: 'cribl/packClient.ts#installPack',
+    gates: ['onboarding_pack.install'],
+    surface: 'config',
+    why: 'POST /packs installs the pack from its pinned GitHub release into the picked group — refused until that release exists and its sha256 is recorded, and refused when the pack is already there.',
+  },
+  {
+    at: 'cribl/packClient.ts#upgradePack',
+    gates: ['onboarding_pack.upgrade'],
+    surface: 'config',
+    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published, never downward.',
+  },
+  {
+    at: 'cribl/packClient.ts#removePack',
+    gates: ['onboarding_pack.remove'],
+    surface: 'config',
+    why: 'DELETE /packs/<id> uninstalls the pack — only when the installed id is this app’s and its version is one this app published.',
+  },
+  {
+    at: 'cribl/packClient.ts#patchPackInput',
+    gates: ['onboarding_pack.install', 'onboarding_pack.configure'],
+    surface: 'config',
+    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read inside this function with only the port, token, TLS or disabled flag changed. Install ends here too: a freshly installed Raw HTTP source is disabled with no token until this sets them.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------
