@@ -43,17 +43,18 @@ worker group exposes. TLS ships in the form a Cribl-managed group needs: Cribl's
 group Guided Setup turns TLS off. It then tells you the traffic is unencrypted until you add a
 certificate.
 
-## Undecided: PENDING
+## Decided on 2026-09-24
 
-These are placeholders and not decisions. The pack must not be released while they are open. A
-release build (`scripts/pack.mjs build --expect-version`, which the release workflow runs) refuses any
-pack file that says PENDING, and so do the app's tests on a release tag.
+Both settings below were placeholders until owner-approved measurements settled them.
 
-- **PENDING: the Parquet schema mode.** `gigamon_ami_parquet_lake` ships `automaticSchema: true`.
-  Whether it stays automatic or becomes an explicit schema waits on a schema-change test and an
-  owner decision.
-- **PENDING: the partition fields of `gigamon_ami_pq`.** A Lake dataset's layout is fixed when it
-  is created, and the app creates this one, so this has to be decided before that happens.
+- **The Parquet schema mode is automatic.** `gigamon_ami_parquet_lake` ships
+  `automaticSchema: true`. An explicit schema had no effect that could be observed: absent fields
+  got the same `""` fill, a field the schema did not list was still kept, and strings were stored in
+  a column the schema declared `INT64`.
+- **`gigamon_ami_pq` has no partition fields.** A Lake dataset's layout is fixed when it is created,
+  and the app creates this one. A partition on `protocol` pruned nothing on Search v2: a
+  `protocol=6` search read the same 63,249 events and 2.69 MB from the partitioned copy as from the
+  flat one. It also cost 172% of the flat copy with no filter, and 197% with other filters.
 
 ## Sample data
 

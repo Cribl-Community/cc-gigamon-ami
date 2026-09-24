@@ -216,22 +216,33 @@ export const SAMPLE_ORIGIN_VALUE = 'sample'
 /**
  * DECISIONS NOT TAKEN YET, and shipped as a placeholder. Each key is a setting
  * the pack (or the dataset the app creates for it) carries today only so the
- * pack is complete; each value says what it is waiting for.
+ * pack is complete; each value says what it is waiting for. EMPTY since
+ * 2026-09-24: both of 0.2.0's entries were decided, and moved to
+ * `PACK_DECISIONS` below with their evidence.
  *
  * A release must not freeze a guess into every tenant that installs it, and
  * three things refuse one. `scripts/pack.mjs` under `--expect-version` (what
- * pack-release.yml builds with) refuses any pack file that says PENDING: this is
- * the guard that runs when a tag is pushed, because `PACK_PUBLISHED` is still
- * false then. pack.test.ts fails on a `gigamon-pack-v*` GITHUB_REF_NAME while
- * this holds anything, and fails if `PACK_PUBLISHED` is true while it does.
- * Resolve an entry by deciding it, changing the pack to match, and deleting the
- * entry and its PENDING notes.
+ * pack-release.yml builds with) refuses any pack file that carries the marker
+ * word: this is the guard that runs when a tag is pushed, because
+ * `PACK_PUBLISHED` is still false then. pack.test.ts fails on a
+ * `gigamon-pack-v*` GITHUB_REF_NAME while this holds anything, and fails if
+ * `PACK_PUBLISHED` is true while it does. Add an entry, and the marker in the
+ * pack file concerned, whenever a future pack ships a placeholder; resolve it by
+ * deciding it, changing the pack to match, and moving it to `PACK_DECISIONS`.
  */
-export const PACK_PENDING: Readonly<Record<string, string>> = Object.freeze({
+export const PACK_PENDING: Readonly<Record<string, string>> = Object.freeze({})
+
+/**
+ * What used to be `PACK_PENDING`, as decided, one sentence of evidence each.
+ * Both were measured and owner-approved on 2026-09-24. The pack's README and
+ * default/outputs.yml say the same; pack.test.ts holds the pack and
+ * provision.ts `PARQUET_DATASET_SPEC` to them.
+ */
+export const PACK_DECISIONS: Readonly<Record<string, string>> = Object.freeze({
   parquet_schema_mode:
-    `${PACK_PARQUET_OUTPUT_ID} ships automaticSchema: true. Automatic or explicit schema is undecided until the schema-change test (g) and owner decision D-10.`,
+    `${PACK_PARQUET_OUTPUT_ID} keeps automaticSchema: true, because on 2026-09-24 an explicit parquetSchema had no observable effect: absent fields got the same "" fill, a field it did not list was still kept, and strings were stored in a column it declared INT64.`,
   parquet_partitions:
-    `${PACK_PARQUET_DATASET_ID}'s partition fields are undecided (D-10). They are fixed when the app creates the dataset, so this blocks that create, not only the release.`,
+    `${PACK_PARQUET_DATASET_ID} is created with no partition fields, because on 2026-09-24 a protocol partition on Search v2 pruned nothing (a protocol=6 search read the same 63,249 events and 2.69 MB from the partitioned and the flat twin) while costing 172% of the flat twin unfiltered and 197% under other filters.`,
 })
 
 /** One path an event takes through a pack: the shape Data Flow's stack list uses. */

@@ -10,11 +10,15 @@
 #   gigamon_ami_parquet_lake -> gigamon_ami_pq      Parquet. The same records.
 #   gigamon_ami_sample_lake  -> gigamon_ami_sample  JSON. Sample data only.
 #
-# PENDING (test (g), owner decision D-10), and pack.test.ts refuses a release
-# while it says so: gigamon_ami_parquet_lake ships `automaticSchema: true` as a
-# placeholder, NOT a decision between automatic and explicit schema; and the
-# partition fields of gigamon_ami_pq, which the app sets when it creates that
-# dataset, are undecided. See PACK_PENDING in src/cribl/pack.ts.
+# DECIDED 2026-09-24, owner-approved. Schema mode: gigamon_ami_parquet_lake
+# keeps `automaticSchema: true`, because an explicit parquetSchema had no
+# observable effect (absent fields got the same "" fill, a field it did not
+# list was still kept, strings were stored in a column it declared INT64).
+# Partitions: gigamon_ami_pq, which the app creates, has none, because a
+# protocol partition on Search v2 pruned nothing (protocol=6 read the same
+# 63,249 events and 2.69 MB on the partitioned and the flat twin) and cost 172%
+# of the flat twin unfiltered and 197% under other filters. See PACK_DECISIONS
+# in src/cribl/pack.ts.
 #
 # THE PARQUET COPY DROPS, IT DOES NOT BLOCK. Both Lake destinations are fed by
 # the one HTTP input. With `block`, a stalled Parquet writer (gigamon_ami_pq not

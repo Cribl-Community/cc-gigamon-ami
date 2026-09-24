@@ -45,9 +45,14 @@ const edit = (dir: string, rel: string, fn: (s: string) => string) => {
   writeFileSync(p, fn(readFileSync(p, 'utf8')))
 }
 
-/** The pack as it will be once every PENDING decision is taken: the markers gone. */
-const decided = (dir: string) => {
-  for (const rel of ['README.md', 'default/outputs.yml']) edit(dir, rel, (s) => s.replace(/PENDING/g, 'DECIDED'))
+/**
+ * The pack with an undecided setting in it: a PENDING marker in the README and
+ * in the Parquet destination's file, as 0.2.0 carried until 2026-09-24. The
+ * committed pack has none, so the release guard is exercised on this copy.
+ */
+const undecided = (dir: string) => {
+  edit(dir, 'README.md', (s) => `${s}\n- **PENDING: a setting nobody has decided.**\n`)
+  edit(dir, 'default/outputs.yml', (s) => `# PENDING: a setting nobody has decided.\n${s}`)
 }
 
 /** Move one route block (from `  - id: <id>` to the next route) to the front of the list. */
@@ -68,8 +73,8 @@ describe('pack.mjs check', () => {
   }, 30_000)
 
   it('passes when the version matches the tag, and fails when it does not', () => {
-    expect(run(['check', '--expect-version', '0.2.0', '--dir', copyPack(decided)]).status).toBe(0)
-    const r = run(['check', '--expect-version', '9.9.9', '--dir', copyPack(decided)])
+    expect(run(['check', '--expect-version', '0.2.0', '--dir', copyPack()]).status).toBe(0)
+    const r = run(['check', '--expect-version', '9.9.9', '--dir', copyPack()])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/does not match the expected "9\.9\.9"/)
   }, 30_000)
@@ -78,8 +83,14 @@ describe('pack.mjs check', () => {
   // PACK_PUBLISHED is still false at tag time (it is set in a later PR), so a
   // test keyed on PACK_PUBLISHED never fires when a tag is pushed. The refusal
   // has to live in the step that builds the published bytes.
-  it('refuses a release (--expect-version) while the pack still says PENDING', () => {
+  it('passes the committed pack as a 0.2.0 release: nothing in it is PENDING', () => {
     const r = run(['check', '--expect-version', '0.2.0'])
+    expect(r.out).not.toMatch(/PENDING/)
+    expect(r.status).toBe(0)
+  }, 30_000)
+
+  it('refuses a release (--expect-version) while the pack still says PENDING', () => {
+    const r = run(['check', '--expect-version', '0.2.0', '--dir', copyPack(undecided)])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/README\.md: says PENDING; a release must not ship an undecided setting/)
     expect(r.out).toMatch(/default\/outputs\.yml: says PENDING/)
@@ -88,14 +99,14 @@ describe('pack.mjs check', () => {
   it('builds nothing for a release while the pack still says PENDING', () => {
     const out = mkdtempSync(join(tmpdir(), 'gigamon-crbl-'))
     scratch.push(out)
-    const r = run(['build', '--expect-version', '0.2.0', '--out', out])
+    const r = run(['build', '--expect-version', '0.2.0', '--dir', copyPack(undecided), '--out', out])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/says PENDING/)
     expect(readdirSync(out)).toEqual([])
   }, 30_000)
 
-  it('still checks and builds a PENDING pack when no release version is named', () => {
-    expect(run(['check']).status).toBe(0)
+  it('still checks a PENDING pack when no release version is named', () => {
+    expect(run(['check', '--dir', copyPack(undecided)]).status).toBe(0)
   }, 30_000)
 
   const cases: [string, (dir: string) => void, RegExp][] = [

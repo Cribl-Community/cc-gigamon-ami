@@ -18,7 +18,8 @@
 //     after it; the Parquet route's description names its dataset.
 //   - the Parquet destination is the same profile with format parquet, pointed
 //     at gigamon_ami_pq, and `onBackpressure: drop` so it cannot stall the JSON
-//     feed. Its schema mode is PENDING (pack.ts `PACK_PENDING`).
+//     feed. Its schema mode is automatic, decided 2026-09-24 (pack.ts
+//     `PACK_DECISIONS`).
 //   - the breaker's rule name and description are the pack's own: the global
 //     description is provision.ts's ownership stamp.
 //
@@ -34,8 +35,9 @@ import {
   PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody,
   HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID, CLOUD_PORT_RANGE, tlsFor,
   LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
+  DATASET_SPEC, PARQUET_DATASET_SPEC,
 } from './provision'
-import { DEFAULT_PROFILE, destinationSpec, type LandingProfile } from './landing'
+import { DEFAULT_PROFILE, destinationSpec, pathFilterRows, type LandingProfile } from './landing'
 import {
   PACK_ID, PACK_VERSION, PACK_URL, packTag, packAssetName,
   PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_BREAKER_ID, PACK_PIPELINE_ID,
@@ -44,7 +46,7 @@ import {
   PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID,
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
-  PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_0_1_0,
+  PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_DECISIONS, PACK_0_1_0,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -198,8 +200,10 @@ describe('the pack Lake destinations are landing.ts\'s profile bodies', () => {
     expect((lakeOutput(PACK_PARQUET_DATASET_ID, 'parquet') as Obj).onBackpressure).toBe('block')
     expect(outputs[PACK_JSON_OUTPUT_ID].onBackpressure).toBe('block')
     expect(outputs[PACK_PARQUET_OUTPUT_ID].format).toBe('parquet')
-    // PENDING (test (g), D-10): automatic schema is the placeholder, not a decision.
+    // DECIDED 2026-09-24 (PACK_DECISIONS.parquet_schema_mode): automatic, and
+    // no explicit parquetSchema beside it.
     expect(outputs[PACK_PARQUET_OUTPUT_ID].automaticSchema).toBe(true)
+    expect(outputs[PACK_PARQUET_OUTPUT_ID]).not.toHaveProperty('parquetSchema')
   })
 
   it('the sample destination is the JSON profile pointed at the sample dataset', () => {
@@ -266,6 +270,51 @@ describe('the pack routes', () => {
     const sampleRoute = route(PACK_SAMPLE_ROUTE_ID)!
     expect(outputs[sampleRoute.output as string].destPath).toBe(PACK_SAMPLE_DATASET_ID)
     for (const r of routes.filter((x) => x.id !== PACK_SAMPLE_ROUTE_ID)) expect(r.filter).toBe(http)
+  })
+})
+
+describe('the Parquet dataset the onboarding run creates', () => {
+  it('is the dataset the Parquet destination writes to', () => {
+    expect(PARQUET_DATASET_SPEC.id).toBe(PACK_PARQUET_DATASET_ID)
+    expect(outputs[PACK_PARQUET_OUTPUT_ID].destPath).toBe(PARQUET_DATASET_SPEC.id)
+  })
+
+  it('is Parquet with NO partition fields: the key is absent, not an empty list', () => {
+    // DECIDED 2026-09-24 (PACK_DECISIONS.parquet_partitions). acceleratedFields
+    // is honoured only at creation, so this body is the whole of that decision.
+    expect(PARQUET_DATASET_SPEC.format).toBe('parquet')
+    expect(PARQUET_DATASET_SPEC).not.toHaveProperty('acceleratedFields')
+  })
+
+  it('keeps the default retention of gigamon_ami, and reads Parquet objects on Search v2', () => {
+    expect(PARQUET_DATASET_SPEC.retentionPeriodInDays).toBe(DEFAULT_PROFILE.retentionDays)
+    expect(PARQUET_DATASET_SPEC.retentionPeriodInDays).toBe(DATASET_SPEC.retentionPeriodInDays)
+    expect(PARQUET_DATASET_SPEC.searchConfig).toEqual({ searchVersion: 'v2', pathFilters: pathFilterRows(['parquet']) })
+  })
+
+  it('is exactly those keys, with a description of its own', () => {
+    expect(Object.keys(PARQUET_DATASET_SPEC).sort()).toEqual(['description', 'format', 'id', 'retentionPeriodInDays', 'searchConfig'])
+    expect(typeof PARQUET_DATASET_SPEC.description).toBe('string')
+    expect(PARQUET_DATASET_SPEC.description).not.toBe(DATASET_SPEC.description)
+  })
+
+  it('cannot be mutated by a caller', () => {
+    expect(Object.isFrozen(PARQUET_DATASET_SPEC)).toBe(true)
+    expect(Object.isFrozen(PARQUET_DATASET_SPEC.searchConfig)).toBe(true)
+  })
+})
+
+describe('the 0.2.0 decisions are taken', () => {
+  it('nothing is PENDING', () => {
+    expect(PACK_PENDING).toEqual({})
+  })
+
+  it('each former PENDING entry is recorded as a decision with its evidence', () => {
+    expect(Object.keys(PACK_DECISIONS).sort()).toEqual(['parquet_partitions', 'parquet_schema_mode'])
+    for (const why of Object.values(PACK_DECISIONS)) {
+      expect(why).toMatch(/2026-09-24/)
+      expect(why).not.toMatch(/PENDING/)
+    }
   })
 })
 
