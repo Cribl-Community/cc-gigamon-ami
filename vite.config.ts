@@ -5,6 +5,7 @@ import { join } from 'path'
 import react from '@vitejs/plugin-react'
 // @ts-ignore
 import { servePackageTgz } from './scripts/pkgutil.mjs'
+import { decideInitScript } from './scripts/devInitScript.ts'
 
 // App version from package.json, injected as a build-time constant so the UI
 // always shows the version being tested/shipped (stays in sync with packaging).
@@ -111,8 +112,10 @@ const injectScriptFromQueryPlugin = () => {
       });
     },
     transformIndexHtml(html: string, ctx: IndexHtmlTransformContext): IndexHtmlTransformResult{
-      const url = new URL(ctx.originalUrl ?? '/', 'https://localhost');
-      initScriptUrl = initScriptUrl || url.searchParams.get('init');
+      // This request's own ?init= wins; only a request with none reuses the last one seen.
+      // See scripts/devInitScript.ts for why the first one must not stick.
+      const init = decideInitScript(ctx.originalUrl, initScriptUrl);
+      initScriptUrl = init.cache;
       const root = process.cwd();
       let appName;
       try {
@@ -145,10 +148,10 @@ const injectScriptFromQueryPlugin = () => {
           injectTo: 'head-prepend' as const,
         });
       }
-      if (initScriptUrl) {
+      if (init.src) {
         tags.push({
           tag: 'script',
-          attrs: { src: initScriptUrl, type: 'text/javascript' },
+          attrs: { src: init.src, type: 'text/javascript' },
           injectTo: 'head-prepend' as const,
         });
       }
