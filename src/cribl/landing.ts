@@ -1281,13 +1281,21 @@ export function gateWords(gate: MetricsGate): string {
   }
 }
 
+// The definitions behind the ⓘ on the Lake landing panel's row labels. Read by a
+// customer, so they say what the setting is and why it is or is not editable —
+// never which spike measured it or when. That history is in the comments on
+// SPIKE_GATED below and in the plan, not on the screen.
+//
+// accelerationTier: an engine was measured (2026-09-22) serving only main and
+// metrics, and a gigamon_ami query with the engine fully ready still answered
+// cacheStatus "miss", reason "No Lakehouse Configured".
 export const LANDING_TERMS: Readonly<Record<'landingLag' | 'accelerationTier' | 'searchV2', string>> = Object.freeze({
   landingLag:
     'How far behind the newest record in the dataset is, measured when you press the button: the gap between now and the most recent event timestamp in the last five minutes. It is a single sample at one instant, not an average, which is why it is shown with the time it was taken.',
   accelerationTier:
-    'Whether this workspace has Cribl Search local engines. An engine serves the local_search ingest datasets — measured here as main and metrics — and does NOT accelerate a Cribl Lake dataset. Lake acceleration is a Lakehouse, which is a different feature: with an engine fully ready, a Lake search still reports "No Lakehouse Configured". A tenant with no engines is not misconfigured, it is the normal state, and every search in this app runs the same way it always has.',
+    'Whether this workspace has Cribl Search local engines. An engine serves Cribl Search’s own ingest datasets and does NOT accelerate a Cribl Lake dataset — that would take a Lakehouse, which is a different feature. A tenant with no engines is not misconfigured: it is the normal state, and every search in this app runs the same way either way.',
   searchV2:
-    'Federated Search v2 is the newer Cribl Search reader for Lake datasets. It is what can read a dataset holding both Parquet and JSON objects, which is why the Parquet migration needs it. Switching a dataset between readers changes nothing about the data itself.',
+    'Federated Search v2 is the newer Cribl Search reader for Lake datasets, and the one that can read a dataset holding both Parquet and JSON objects. Switching readers changes nothing about the data itself.',
 })
 
 /**
@@ -1344,6 +1352,12 @@ export interface SpikeGate {
   settled?: string
   /** What the panel shows instead. */
   instead: string
+  /**
+   * The two-to-four words the row shows where the control would be — the
+   * visible half of the refusal. The sentence (`spikeGateNote`) is behind the
+   * row label's ⓘ.
+   */
+  marker: string
 }
 
 /**
@@ -1359,37 +1373,63 @@ export interface SpikeGate {
  * Reading these out loud is also what stops the next session quietly building
  * them: the sentences say what would have to be measured first, not "later".
  */
+// `settled` and `unknown` are customer-facing (spikeGateNote renders them), so
+// they carry no spike ids, dates or benchmark figures. The evidence for each
+// answer is recorded here instead.
+//
+// THE READER. P-S5 answered the endpoint question on throwaway datasets, and
+// P-S7 flipped this dataset to v2 on 2026-09-21 and measured it over one frozen
+// 15-minute window: every value identical — additive columns, group keys, and
+// all 52 percentile values — and 3.7x to 12.7x faster, the largest gain on the
+// TCP latency chart (11.3 s to 0.9 s). Two things for whoever builds a control
+// here: the first v2 query after a flip cost 105 s and the twelve after it
+// averaged under a second, so one measurement on a freshly flipped dataset
+// reports a regression that is not there; and the flip drops breakerRulesets
+// from the Search-side dataset, so going back to v1 needs a full-body PATCH
+// there to restore it (the Lake side answers 400 for that field) — an undo
+// costs a grant the flip does not.
+//
+// PARTITIONS. P-S9 measured on 2026-09-21 that a PATCH adding acceleratedFields
+// to an existing dataset answers 200, stores the value and changes nothing:
+// every object written afterwards, before and after a Worker restart, landed
+// on the same unpartitioned path. A dataset CREATED with the field partitions
+// Hive-style (…/protocol=6/…) and prunes — a filter on it skipped 49 of 85
+// objects where the unpartitioned control skipped none. So an editor is
+// impossible on an existing dataset, not pending.
 export const SPIKE_GATED: readonly SpikeGate[] = Object.freeze([
   {
     control: 'Federated Search v1 → v2 toggle',
-    // Both spikes have now reported (2026-09-21), and this dataset is ALREADY
-    // on v2 — so there is nothing left for a toggle here to decide.
+    // Both spikes have reported, and this dataset is ALREADY on v2 — so there
+    // is nothing left for a toggle here to decide.
     spikes: [],
     unknown:
-      'Whether v2 on today’s JSON dataset returns identical rows without being slower. P-S7 answered it on 2026-09-21 and P-S5 answered the endpoint question the same day.',
+      'Whether the v2 reader returns identical rows from this JSON dataset without being slower than v1, measured on the live dataset rather than a copy.',
     settled:
-      'this dataset is already on Federated Search v2. P-S7 flipped it on 2026-09-21 and measured the result over one frozen 15-minute window: every value identical — additive columns, group keys, and all 52 percentile values — and between 3.7x and 12.7x faster, the largest gain on the TCP latency chart (11.3 s to 0.9 s). Two things worth knowing before anyone builds a control here. The first v2 query after a flip cost 105 seconds and the twelve after it averaged under a second, so a single measurement on a freshly flipped dataset reports a regression that is not there. And the flip drops breakerRulesets from the Search-side dataset: going back to v1 needs a full-body PATCH there to restore it, because the Lake side answers 400 for that field, so an undo costs a grant the flip does not.',
+      'This dataset is already on Federated Search v2, so this panel shows the reader rather than offering a switch.',
     instead: 'The live searchVersion, read from the Search-side dataset, shown as a value.',
+    marker: 'not editable here',
   },
   {
     control: 'Partition (acceleratedFields) editor',
-    // P-S9 reported on 2026-09-21 and the answer is not "now you can build it".
-    // The answer is that an editor is impossible on this build.
+    // P-S9's answer is not "now you can build it": an editor is impossible on
+    // an existing dataset. See the note above.
     spikes: [],
     unknown:
-      'Whether Cribl Lake prunes usefully by a partition at this scale, how far a partition multiplies the object count, and whether objects already written are re-partitioned or only new ones are. A partition change on a 30-day dataset becomes visible over weeks, so it cannot be tried and undone.',
+      'Whether Cribl Lake prunes usefully by a partition at this scale, how far a partition multiplies the object count, and whether objects already written are re-partitioned or only new ones are.',
     settled:
-      'partitions are fixed when a Lake dataset is created. P-S9 measured this on 2026-09-21: a PATCH adding acceleratedFields to an existing dataset answers 200 and stores the value, and then changes nothing — every object written afterwards, before and after a Worker restart, landed on the same unpartitioned path. A dataset CREATED with the field does partition, Hive-style (…/protocol=6/…), and does prune — a filter on it skipped 49 of 85 objects where the unpartitioned control skipped none. So this dataset’s partitions were decided when it was created and no editor here can change them; the choice exists only for a dataset this app creates.',
+      'Partitions (acceleratedFields) are fixed when a Lake dataset is created and cannot be changed afterwards. A partition lets a search that filters on that field skip whole objects; Measure shows which fields would suit a new dataset.',
     instead: 'The live acceleratedFields, shown as a value, with the candidate measurement available as a button.',
+    marker: 'fixed at creation',
   },
 ])
 
-/** One sentence naming why a control is absent, for the row that would have held
- *  it. Built from the table so the two cannot drift. */
+/** The sentence naming why a control is absent, for the ⓘ on the row that
+ *  would have held it. Built from the table so the two cannot drift. */
 export function spikeGateNote(gate: SpikeGate): string {
-  // "yet" is load-bearing. A control waiting on a spike may arrive; a control
-  // the product cannot support will not, and telling someone to wait for it is
-  // worse than telling them nothing.
-  if (gate.settled) return `Not editable here: ${gate.settled}`
-  return `Not editable here yet: ${gate.spikes.join(' and ')} ${gate.spikes.length > 1 ? 'have' : 'has'} to report first. ${gate.unknown}`
+  // "yet" is load-bearing. A control waiting on a measurement may arrive; a
+  // control the product cannot support will not, and telling someone to wait
+  // for it is worse than telling them nothing. No spike id either way: this is
+  // read by a customer, and an internal ticket name answers nothing for them.
+  if (gate.settled) return gate.settled
+  return `Not editable here yet: this has to be measured first. ${gate.unknown}`
 }

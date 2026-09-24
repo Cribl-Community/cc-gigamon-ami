@@ -22,9 +22,9 @@
 // opposite of what it should.
 
 import { describe, expect, it } from 'vitest'
-import { deployConsequences, pendingSentence, removeConsequences } from './provisionPanelCopy'
+import { SETUP_FACTS, deployConsequences, pendingSentence, removeConsequences } from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
-import { commitScope, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, type ResourceKey } from '../cribl/provision'
+import { commitScope, SYSLOG_PIPELINE_ID, SYSLOG_PORT, SYSLOG_SOURCE_ID, type ResourceKey } from '../cribl/provision'
 
 const GROUP = 'default'
 const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
@@ -144,6 +144,30 @@ describe('what the deploy confirmation claims about reach', () => {
 
   it('says nothing about a stranded deploy when there is none', () => {
     expect(all(deployConsequences(ctx([])))).not.toContain('never deployed')
+  })
+})
+
+describe('“What gets created & things to know”', () => {
+  it('is five short labels, each with its explanation behind an ⓘ', () => {
+    expect(SETUP_FACTS).toHaveLength(5)
+    for (const fact of SETUP_FACTS) {
+      expect(fact.label.split(/\s+/).length, fact.label).toBeLessThanOrEqual(10)
+      expect(fact.tip.length, fact.label).toBeGreaterThan(40)
+    }
+  })
+
+  it('still names the port to open and the ids the stack creates', () => {
+    const text = SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')
+    expect(text).toContain(String(SYSLOG_PORT))
+    expect(text).toContain(SYSLOG_PIPELINE_ID)
+    expect(text).toContain(`syslog:${SYSLOG_SOURCE_ID}`)
+    // The firewall step is the one a customer must act on, so it is the label,
+    // not only the tip.
+    expect(SETUP_FACTS.some((f) => f.label.includes(`port ${SYSLOG_PORT}`))).toBe(true)
+  })
+
+  it('says nothing about "the lab" — that was our demo workspace, not the customer’s', () => {
+    expect(SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')).not.toMatch(/\blab\b/i)
   })
 })
 

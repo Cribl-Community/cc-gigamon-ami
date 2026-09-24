@@ -88,12 +88,18 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
 import { GateNote, GatedControl } from './GatedControl'
+import { InfoTip } from './InfoTip'
 import { Panel } from './Panel'
 import { StatusPill } from './StatusPill'
 import { pushToast } from './Toast'
 // Every sentence and every figure this screen says lives next door, pure and
 // DOM-free. See that file's header for why it is not in here.
 import {
+  ACCEL_LEAD,
+  ACCEL_LEAD_TIP,
+  DEFAULT_VIEW_TIP,
+  DEFAULT_VIEW_UNAVAILABLE,
+  SAVINGS_PRESET_TIP,
   PILL_STATE,
   REMOVE_LITERAL,
   SAVED_KIND,
@@ -328,11 +334,8 @@ export function AccelPanel() {
   return (
     <Panel title="Acceleration — precompute the slow panels">
       <p className="gs-intro">
-        Two panels in this app run queries that dominate the workspace's Cribl Search bill: Data Flow's
-        30-day Lake total and Field Explorer's <em>In feed</em> browser. Acceleration runs each of them{' '}
-        <strong>once on a schedule</strong> and has the panel read that run's stored result instead.
-        It adds no new number to any screen — it changes where two existing numbers come from, and each
-        panel still shows the same query as the source of its figure, because that query is what ran.
+        {ACCEL_LEAD}
+        <InfoTip text={ACCEL_LEAD_TIP} />
       </p>
 
       <fieldset className="ac-presets">
@@ -348,11 +351,9 @@ export function AccelPanel() {
             onChange={() => {}}
           />
           <label className="ac-preset-text" htmlFor={savingsId}>
-            <span className="ac-preset-name">Savings only</span>
-            <span className="ac-preset-why">
-              Schedules only the two queries that were measured as expensive, at the cadence their answers
-              actually change at — daily for the 30-day total, hourly for the feed sample. There is no
-              cadence control in this release: a faster cron costs more and answers the same question.
+            <span className="ac-preset-name">
+              Savings only
+              <InfoTip text={SAVINGS_PRESET_TIP} />
             </span>
           </label>
         </div>
@@ -375,12 +376,14 @@ export function AccelPanel() {
             onClick={(e) => e.preventDefault()}
           />
           <label className="ac-preset-text" htmlFor={parquetId}>
-            <span className="ac-preset-name">Savings + the default view</span>
-            <span className="ac-preset-why" id={parquetWhyId}>
-              Not available yet — available after the Parquet migration, because it adds cost on today's
-              JSON dataset. Scheduling the panels each tab opens on would bill for a precomputed answer
-              far more often than the live queries it replaces, until the dataset is cheap to scan.
+            <span className="ac-preset-name">
+              Savings + the default view
+              <InfoTip text={DEFAULT_VIEW_TIP} />
             </span>
+            {/* Visible, and the radio's description: it is why the option
+                cannot be picked. "Available after the Parquet migration" used
+                to be here — a roadmap promise the plan no longer makes. */}
+            <span className="ac-preset-why" id={parquetWhyId}>{DEFAULT_VIEW_UNAVAILABLE}</span>
           </label>
         </div>
       </fieldset>

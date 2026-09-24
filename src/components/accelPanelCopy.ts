@@ -356,6 +356,31 @@ export const UNINSTALL_WARNING =
  *  gets pasted, which proves nothing. */
 export const REMOVE_LITERAL = 'remove acceleration'
 
+// ── What the panel says before anybody presses anything ─────────────────────
+//
+// One lead line, and the rest behind an ⓘ (Guided Setup's declutter,
+// 2026-09-24). The intro this replaces named "two panels" — true of Phase 2's
+// first release, and stale once the manifest grew to the entries it holds now.
+// The estimate block below the table is NOT moved behind an icon: see the
+// panel's header on why its provenance stays visible.
+
+export const ACCEL_LEAD =
+  'Runs the most expensive panel queries on a schedule, and has those panels read the stored result instead.'
+
+export const ACCEL_LEAD_TIP =
+  'It adds no new number to any screen: it changes where existing numbers come from, and each panel’s ⓘ still shows the query behind its figure, because that query is what ran. ' +
+  'The schedules bill whether or not anybody opens the app, and uninstalling the app does not stop them — Remove acceleration does.'
+
+/** The one preset on offer. The words are behind its ⓘ; the name is the label. */
+export const SAVINGS_PRESET_TIP =
+  'Schedules only the queries that are expensive to run live, each at the cadence its answer actually changes at. There is no cadence control: a faster schedule costs more and answers the same question.'
+
+/** The disabled preset's reason. Visible, because it is why the option cannot be picked. */
+export const DEFAULT_VIEW_UNAVAILABLE = 'Not available: on today’s JSON dataset it would cost more than it saves.'
+
+export const DEFAULT_VIEW_TIP =
+  'It would schedule the panels each tab opens on, billing for a precomputed answer far more often than the live queries it replaces, until the dataset is cheaper to scan.'
+
 /** What pausing or resuming one entry does to the bill, both ways round. */
 export function scheduleCostLine(saving: WorkspaceSaving, id: string, enable: boolean): string {
   const entry = saving.entries.find((e) => e.id === id)

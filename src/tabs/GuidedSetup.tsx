@@ -22,9 +22,8 @@ import { INGEST_ANCHOR_ID } from '../components/lakeLandingCopy'
 import { Panel } from '../components/Panel'
 import { ProvisionPanel } from '../components/ProvisionPanel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
-import {
-  SYSLOG_SOURCE_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID, SYSLOG_PORT,
-} from '../cribl/provision'
+import { InfoTip } from '../components/InfoTip'
+import { SETUP_FACTS } from '../components/provisionPanelCopy'
 
 export function GuidedSetup() {
   return (
@@ -40,34 +39,16 @@ export function GuidedSetup() {
         <ProvisionPanel />
       </div>
 
+      {/* Five short labels, each with its explanation behind an ⓘ. The words
+          are provisionPanelCopy.ts's, beside the rest of this stack's copy. */}
       <Panel title="What gets created & things to know">
         <ul className="gs-facts">
-          <li>
-            <strong>Pipeline <code>{SYSLOG_PIPELINE_ID}</code></strong> — extracts the JSON payload from the
-            syslog message, then applies the <em>same</em> numeric casts and derived fields
-            (<code>http_server_ms</code>, <code>tcp_reset</code>, subnets, <code>l4_proto</code>, byte/packet
-            totals) as the demo <code>gigamon_ami</code> pipeline, so field parity is guaranteed.
-          </li>
-          <li>
-            <strong>Route <code>{SYSLOG_ROUTE_ID}</code></strong> is prepended above the catch-all{' '}
-            <code>default</code> route, filtered to <code>__inputId=='syslog:{SYSLOG_SOURCE_ID}'</code> and
-            marked <em>final</em> — so it only touches this source's data and nothing else changes.
-          </li>
-          <li>
-            <strong>Ingress firewall.</strong> On Cribl.Cloud, native data ports are firewalled by default.
-            Open TCP/UDP <code>{SYSLOG_PORT}</code> on the Worker Group's ingress (or run an on-prem/Edge
-            worker Gigamon can reach on the LAN) before real data can arrive.
-          </li>
-          <li>
-            <strong>JSON assumption.</strong> The parse step expects AMI records as JSON. If your AMX is
-            configured for <em>CEF</em> export instead, swap the parse function for a CEF parser — the field
-            names must match those the dashboards query.
-          </li>
-          <li>
-            <strong>Lab note.</strong> No live data is connected in the lab, so the source sits idle (health
-            green, 0 EPS) until Gigamon points at it. The DataGen demo keeps the dashboards populated
-            meanwhile.
-          </li>
+          {SETUP_FACTS.map((fact) => (
+            <li key={fact.label}>
+              {fact.label}
+              <InfoTip text={fact.tip} />
+            </li>
+          ))}
         </ul>
       </Panel>
 

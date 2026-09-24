@@ -55,6 +55,8 @@ import { AccelPanel } from './AccelPanel'
 // wrong is a sentence rather than a tag, so most of what follows is a function
 // call rather than a render.
 import {
+  ACCEL_LEAD,
+  ACCEL_LEAD_TIP,
   PILL_STATE,
   REMOVE_LITERAL,
   UNINSTALL_WARNING,
@@ -714,8 +716,24 @@ describe('the preset list', () => {
     expect(off?.hasAttribute('disabled')).toBe(false)
     const why = off?.getAttribute('aria-describedby')
     expect(why).toBeTruthy()
-    expect(document.getElementById(why as string)?.textContent).toContain('after the Parquet migration')
-    expect(document.getElementById(why as string)?.textContent).toContain("JSON dataset")
+    // The reason stays visible and is the radio's description; the longer
+    // explanation is the ⓘ beside the preset's name.
+    expect(document.getElementById(why as string)?.textContent).toContain('Not available')
+    expect(document.getElementById(why as string)?.textContent).toContain('JSON dataset')
+    const tip = container.querySelector('.ac-preset-off .infotip')?.getAttribute('aria-label')
+    expect(tip).toContain('more often than the live queries it replaces')
+  })
+
+  it('keeps one lead line on screen and the rest behind its ⓘ', async () => {
+    // The declutter (2026-09-24) moved the intro's second half behind an ⓘ.
+    // What must survive the move is the warning that the schedules outlive an
+    // uninstall — reachable as the ⓘ's accessible name.
+    stubWorkspace()
+    await mount()
+    expect(container.querySelector('.gs-intro')?.firstChild?.textContent).toBe(ACCEL_LEAD)
+    const tip = container.querySelector('.gs-intro .infotip')?.getAttribute('aria-label')
+    expect(tip).toBe(ACCEL_LEAD_TIP)
+    expect(tip).toContain('uninstalling the app does not stop them')
   })
 
   it('leaves the unavailable preset unselected however hard it is clicked', async () => {
