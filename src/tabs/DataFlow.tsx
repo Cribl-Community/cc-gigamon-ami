@@ -5,7 +5,9 @@ import { criblUiUrl, STREAM_GROUP, LAKE_DATASET } from '../cribl/config'
 import { capSecondsFor } from '../cribl/search'
 import { accelEntry, type AccelId } from '../cribl/accel/manifest'
 import { LAKE_DEFAULT_WINDOW, windowDays } from '../queries/lakeWindow'
-import { COUNTED_DESTINATIONS_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE } from '../queries/stackIds'
+import {
+  COUNTED_DESTINATIONS_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE, SHOWN_INPUTS, SHOWN_OUTPUTS, SHOWN_PIPELINES,
+} from '../queries/stackIds'
 import { useLakeFacts } from '../cribl/lakeWindowRead'
 import { windowMinutes } from '../cribl/accel/estimate'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
@@ -147,7 +149,7 @@ const STAGES: Stage[] = [
     links: [{ href: 'https://docs.gigamon.com/', label: 'Gigamon docs ↗' }],
   },
   {
-    id: 'datagen', name: 'Cribl Stream · Source', kind: 'cribl', short: 'in_gigamon_datagen',
+    id: 'datagen', name: 'Cribl Stream · Source', kind: 'cribl', short: SHOWN_INPUTS.join(' · '),
     purpose:
       'Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a "last 15 minutes" window is always populated. ' +
       COUNTED_SOURCES_PROSE,
@@ -158,7 +160,7 @@ const STAGES: Stage[] = [
     links: [{ href: criblUiUrl(`/stream/m/${G}/inputs/datagen/in_gigamon_datagen`), label: 'DataGen source' }],
   },
   {
-    id: 'pipeline', name: 'Cribl Stream · Pipeline gigamon_ami', kind: 'cribl', short: 'cast + derive',
+    id: 'pipeline', name: 'Cribl Stream · Pipeline', kind: 'cribl', short: SHOWN_PIPELINES.join(' · '),
     purpose:
       'Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly. ' +
       COUNTED_PIPELINES_PROSE,
@@ -174,7 +176,7 @@ const STAGES: Stage[] = [
       'Durable, queryable storage. A Cribl Lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping history for the dataset’s retention period. The diagram splits the two halves: the Destinations plate reports what the selected window wrote; the Cribl Lake card reports what the dataset HOLDS over its whole retention period, independent of the range picker — the events counted over that period, and the size Cribl Lake reports the dataset occupies on disk. ' +
       COUNTED_DESTINATIONS_PROSE,
     detail: [
-      'Destination gigamon_lake (type cribl_lake) writes JSON to the gigamon_ami Lake dataset.',
+      `Destination ${SHOWN_OUTPUTS.join(', ')} (type cribl_lake) writes JSON to the ${LAKE_DATASET} Lake dataset.`,
       'Retention as set on the dataset (the Cribl Lake card states it); flushes every ~60s for near-live queries.',
     ],
     links: [

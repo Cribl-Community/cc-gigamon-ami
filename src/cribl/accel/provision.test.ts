@@ -37,7 +37,7 @@
 // NOTHING HERE CREATES A REAL SAVED SEARCH. The first real Apply is a human's
 // click in Preview.
 
-import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
+import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY, METRICS_QUERY } from '../../queries/dataFlow'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
@@ -916,5 +916,52 @@ describe('the Lake total follows the dataset’s retention', () => {
     stubWorkspace({ saved: { [LAKE]: await correct(LAKE) }, lake: lakeList(30, 30) })
     const state = await readAccelState()
     expect(state.rows.find((r) => r.id === LAKE)!.state).toBe('enabled')
+  })
+})
+
+describe('the hourly pipeline-telemetry schedule follows the stack list', () => {
+  const PIPELINE = 'gno_pipeline_c1h'
+  // METRICS_QUERY as it was before the counters were built from
+  // src/queries/stackIds.ts: the demo feed's objects only. An hourly schedule
+  // applied by that release still runs this string, so after the onboarding
+  // pack carries the data its Sources, Processing and Destinations plates read
+  // short. It has to read as drift, and Re-apply has to replace it.
+  const PRE_STACK_LIST_METRICS =
+    'dataset="cribl_metrics" | summarize ' +
+    'src_events=sum(iif(metric=="pipe.in_events" and namespace=="data_insights" and from_input=="datagen:in_gigamon_datagen", value, 0)), ' +
+    'pipe_events=sum(iif(metric=="pipe.out_events" and namespace=="data_insights" and id=="gigamon_ami", value, 0)), ' +
+    'dst_events=sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
+    'dst_bytes=sum(iif(metric=="total.out_bytes" and namespace=="data_insights" and output=="cribl_lake:gigamon_lake", value, 0)), ' +
+    'blocked=sum(iif(metric=="blocked.outputs", value, 0)), ' +
+    'backpressure=sum(iif(metric=="backpressure.outputs", value, 0))'
+  const appliedBeforeTheStackList = async () => {
+    const base = accelEntry(PIPELINE)
+    return (await accelSavedSearch({
+      ...base,
+      body: PRE_STACK_LIST_METRICS,
+      panels: base.panels.map((p) => ({ ...p, display: PRE_STACK_LIST_METRICS })),
+    })) as unknown as Record<string, unknown>
+  }
+
+  it('reports a schedule still running the demo-only counters as drifted', async () => {
+    expect(METRICS_QUERY).not.toBe(PRE_STACK_LIST_METRICS)
+    stubWorkspace({ saved: { [PIPELINE]: await appliedBeforeTheStackList() } })
+    const row = (await readAccelState()).rows.find((r) => r.id === PIPELINE)!
+    expect(row.state).toBe('differs')
+    expect(row.differences).toContain('the query it runs')
+    expect(row.differences).toContain('the query the panel shows for it')
+    expect(row.differences).not.toContain('the window it reads')
+  })
+
+  it('writes the stack-list query over it on Re-apply', async () => {
+    const { calls } = stubWorkspace({ saved: { [PIPELINE]: await appliedBeforeTheStackList() } })
+    await applyAcceleration()
+    const body = bodyOf(savedCalls(calls).find((c) => c.method === 'PATCH' && c.body?.id === PIPELINE))
+    expect(body.query).toBe(METRICS_QUERY)
+  })
+
+  it('sees no drift when the schedule runs today’s body', async () => {
+    stubWorkspace({ saved: { [PIPELINE]: await correct(PIPELINE) } })
+    expect((await readAccelState()).rows.find((r) => r.id === PIPELINE)!.state).toBe('enabled')
   })
 })

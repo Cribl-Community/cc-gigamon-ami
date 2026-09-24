@@ -13,6 +13,7 @@
 import { q } from '../cribl/search'
 import {
   COUNTED_INPUTS, COUNTED_OUTPUTS, DESTINATION_COUNTED_PATHS, METRIC_ALIASES, PIPELINE_COUNTED_PATHS,
+  SHARED_OUTPUTS, SHARED_PIPELINES,
 } from './stackIds'
 
 // ── Which objects the counters name ─────────────────────────────────────────
@@ -65,20 +66,28 @@ const RECEIVED = `metric=="total.in_events" and namespace=="data_insights" and $
 /**
  * Passed on by a pipeline, one count per event.
  *
+ * `from_input` is added to a term ONLY where the pipeline (or, below, the
+ * destination) is on more than one path. Whether a routed path's `pipe.*` and
+ * `total.out_*` rows carry `from_input` at all is unmeasured (only the
+ * QuickConnect path's were seen), and a filter on a dimension a row lacks
+ * silently reads 0. A pipeline or destination on one path needs no source to
+ * say which path it counted.
+ *
  * Where a source's (pipeline, source) pair is on only one path, the pipeline's
  * own `pipe.out_events` for that pair is one per event. Where the pair is on
  * two — the pack's JSON and Parquet routes both run gigamon_ami_normalize — the
  * pipeline counter is two per event and carries no dimension naming the route
  * (a routed path's `instance` is unmeasured), so that source is counted by what
  * the gigamon_ami destination received from it: `total.out_events` by
- * (source, destination), which names exactly one path.
+ * destination (and by source too only if that destination is shared), which
+ * names exactly one path.
  */
 const PROCESSED = 'namespace=="data_insights" and ' + anyOfAll([
   ...(PIPELINE_COUNTED_PATHS.length
-    ? [`metric=="pipe.out_events" and ${anyOfAll(PIPELINE_COUNTED_PATHS.map((p) => `${anyOf('id', [p.pipeline])} and ${anyOf('from_input', [p.input])}`))}`]
+    ? [`metric=="pipe.out_events" and ${anyOfAll(PIPELINE_COUNTED_PATHS.map((p) => SHARED_PIPELINES.includes(p.pipeline) ? `${anyOf('id', [p.pipeline])} and ${anyOf('from_input', [p.input])}` : anyOf('id', [p.pipeline])))}`]
     : []),
   ...(DESTINATION_COUNTED_PATHS.length
-    ? [`metric=="total.out_events" and ${anyOfAll(DESTINATION_COUNTED_PATHS.map((p) => `${anyOf('from_input', [p.input])} and ${anyOf('output', [p.output])}`))}`]
+    ? [`metric=="total.out_events" and ${anyOfAll(DESTINATION_COUNTED_PATHS.map((p) => SHARED_OUTPUTS.includes(p.output) ? `${anyOf('from_input', [p.input])} and ${anyOf('output', [p.output])}` : anyOf('output', [p.output])))}`]
     : []),
 ])
 

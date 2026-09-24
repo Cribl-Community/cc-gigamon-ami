@@ -45,8 +45,16 @@
 // measurement has to rule out before an alias goes in.)
 //
 // PURE DATA, loaded by the query extractor under plain Node: nothing here may
-// reach a .tsx or the network. Every export is frozen in __frozen__/display.json,
+// reach a .tsx or the network. ../cribl/pack is the one import, and it is pure
+// data too: the pack's ids are its contract (pack.test.ts holds them to the
+// pack YAML), so they are read from there rather than typed out again. Every export is frozen in __frozen__/display.json,
 // so a change to which ids are counted is a visible diff.
+
+import {
+  PACK_LAKE_DATASET_ID, PACK_LAKE_OUTPUT_ID, PACK_PUBLISHED, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID,
+  PACK_SAMPLE_OUTPUT_ID, PACK_SAMPLE_PIPELINE_ID, PACK_SAMPLE_ROUTE_ID, PACK_SYSLOG_INPUT_ID,
+  PACK_SYSLOG_PIPELINE_ID, PACK_SYSLOG_ROUTE_ID,
+} from '../cribl/pack'
 
 export interface StackPath {
   /** The route that carries this path, or null for a QuickConnect connection. */
@@ -67,8 +75,10 @@ export interface Stack {
   key: string
   /** Where the objects live: the worker group's own config, or inside the pack. */
   scope: 'global' | 'pack'
-  /** Whether anything can run it today. `pending` ids are not known yet. */
-  status: 'running' | 'offered' | 'released' | 'planned' | 'pending'
+  /** Whether anything can run it today. `running` and `offered` are the only
+   *  ones a tenant can have; `unreleased` is built but not published,
+   *  `planned` is not built, and `pending` ids are not known yet. */
+  status: 'running' | 'offered' | 'released' | 'unreleased' | 'planned' | 'pending'
   what: string
   paths: readonly StackPath[]
 }
@@ -108,13 +118,15 @@ export const STACKS: readonly Stack[] = [
     paths: [],
   },
   {
+    // The ids come from ../cribl/pack; the `<type>:` prefixes are the YAML's
+    // `type:` fields, which stackIds.test.ts reads to hold them equal.
     key: 'pack-0.1.0',
     scope: 'pack',
-    status: 'released',
+    status: PACK_PUBLISHED ? 'released' : 'unreleased',
     what: 'cc-network-gigamon-ami 0.1.0: Syslog and a sample DataGen, both shipped disabled.',
     paths: [
-      { route: 'gno_syslog', input: 'syslog:in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:out_gno_lake', dataset: 'gigamon_ami' },
-      { route: 'gno_sample', input: 'datagen:in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:out_gno_sample_lake', dataset: 'gigamon_ami_sample' },
+      { route: PACK_SYSLOG_ROUTE_ID, input: `syslog:${PACK_SYSLOG_INPUT_ID}`, pipeline: PACK_SYSLOG_PIPELINE_ID, output: `cribl_lake:${PACK_LAKE_OUTPUT_ID}`, dataset: PACK_LAKE_DATASET_ID },
+      { route: PACK_SAMPLE_ROUTE_ID, input: `datagen:${PACK_SAMPLE_INPUT_ID}`, pipeline: PACK_SAMPLE_PIPELINE_ID, output: `cribl_lake:${PACK_SAMPLE_OUTPUT_ID}`, dataset: PACK_SAMPLE_DATASET_ID },
     ],
   },
   {
@@ -170,12 +182,27 @@ export const PIPELINE_COUNTED_PATHS: readonly StackPath[] = COUNTED_PATHS.filter
  * the pack's JSON + Parquet dual-write. The pipeline runs once per path, and its
  * counter has no dimension naming the path (route instances are unmeasured), so
  * `pipe.out_events` would count each event twice. The destination's own counter
- * does name the path — `total.out_events` by (source, destination) — so the
- * Processing figure for these is what reached the gigamon_ami destination.
+ * does name the path — `total.out_events` by destination, plus the source only
+ * where that destination is shared (SHARED_OUTPUTS) — so the Processing figure
+ * for these is what reached the gigamon_ami destination.
  */
 export const DESTINATION_COUNTED_PATHS: readonly StackPath[] = COUNTED_PATHS.filter(
   (p) => !PIPELINE_COUNTED_PATHS.includes(p),
 )
+
+const onePath = (key: (p: StackPath) => string) => (p: StackPath): boolean =>
+  PATHS.filter((o) => key(o) === key(p)).length === 1
+
+/**
+ * Pipelines more than one path runs. Only for these does a pipeline counter
+ * need `from_input` to say which path it counted; every other pipeline is
+ * filtered by `id` alone. `from_input` on a ROUTED path's rows is unmeasured
+ * (see the header), so it is used only where a pipeline is shared.
+ */
+export const SHARED_PIPELINES: readonly string[] = uniq(PATHS.filter((p) => !onePath((o) => o.pipeline)(p)).map((p) => p.pipeline))
+
+/** Destinations more than one path writes: the same rule, for `output`. */
+export const SHARED_OUTPUTS: readonly string[] = uniq(PATHS.filter((p) => !onePath((o) => o.output)(p)).map((p) => p.output))
 
 /** A counter-name as a person reads it: `datagen:in_gigamon_datagen` → `in_gigamon_datagen`. */
 const bare = (v: string): string => v.slice(v.indexOf(':') + 1)
@@ -184,11 +211,36 @@ const bare = (v: string): string => v.slice(v.indexOf(':') + 1)
 const listed = (xs: readonly string[]): string =>
   xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`
 
+// ── WHAT THE SCREEN NAMES ───────────────────────────────────────────────────
+//
+// The queries count every stack above, so they are right the day a pack is
+// installed. The words on screen name only the stacks a tenant can have today
+// (the demo feed and Guided Setup's onboarding), so a viewer is never told
+// about an object no release has shipped, nor how a planned one will work.
+// The query in the ⓘ still shows every id it counts; the sentence below
+// accounts for the rest in one clause.
+
+const SHOWN_PATHS: readonly StackPath[] = STACKS
+  .filter((s) => s.status === 'running' || s.status === 'offered')
+  .flatMap((s) => s.paths)
+  .filter((p) => p.dataset === COUNTED_DATASET)
+
+/** The sources, pipelines and destinations a tenant can have today, bare ids.
+ *  The Data Flow stage headings and plates name these. */
+export const SHOWN_INPUTS: readonly string[] = uniq(SHOWN_PATHS.map((p) => bare(p.input)))
+export const SHOWN_PIPELINES: readonly string[] = uniq(SHOWN_PATHS.map((p) => p.pipeline))
+export const SHOWN_OUTPUTS: readonly string[] = uniq(SHOWN_PATHS.map((p) => bare(p.output)))
+
+/** The clause for counted paths the screen does not name, or nothing. */
+const LATER = COUNTED_PATHS.some((p) => !SHOWN_PATHS.includes(p))
+  ? ", plus the onboarding pack's once it is installed"
+  : ''
+
 /** The Sources plate's ⓘ line: which sources its figure adds up. */
-export const COUNTED_SOURCES_PROSE = `The Sources figure adds up every source with a path into ${COUNTED_DATASET}: ${listed(COUNTED_INPUTS.map(bare))}. Each event is counted once, where it arrives.`
+export const COUNTED_SOURCES_PROSE = `The Sources figure adds up every source with a path into ${COUNTED_DATASET}: ${listed(SHOWN_INPUTS)}${LATER}. Each event is counted once, where it arrives.`
 
 /** The Processing plate's ⓘ line. */
-export const COUNTED_PIPELINES_PROSE = `The Processing figure adds up the pipelines on those paths: ${listed(uniq(COUNTED_PATHS.map((p) => p.pipeline)))}. Where one source's events take two paths through the same pipeline (the pack's JSON and Parquet copies), the pipeline counts each event twice, so for that source the figure is what reached the ${COUNTED_DATASET} destination instead.`
+export const COUNTED_PIPELINES_PROSE = `The Processing figure adds up the pipelines on those paths: ${listed(SHOWN_PIPELINES)}${LATER}. Each event is counted once.`
 
 /** The Destinations plate's and the Cribl Lake card's ⓘ line. */
-export const COUNTED_DESTINATIONS_PROSE = `The write counters add up only the destinations that write ${COUNTED_DATASET}: ${listed(COUNTED_OUTPUTS.map(bare))}. The Parquet copy and the sample dataset are not counted, so writing both copies does not double the figure.`
+export const COUNTED_DESTINATIONS_PROSE = `The write counters add up only the destinations that write ${COUNTED_DATASET}: ${listed(SHOWN_OUTPUTS)}${LATER}. A copy written to any other dataset is not counted.`

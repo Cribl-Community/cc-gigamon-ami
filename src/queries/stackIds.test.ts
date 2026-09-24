@@ -7,11 +7,19 @@
 // were measured on 2026-09-24 (see ./stackIds.ts). That makes "nothing is
 // double-counted" a number this file checks, not an argument it takes on trust.
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 import { LAKE_DATASET } from '../cribl/config'
+import { PACK_ID, PACK_PUBLISHED, PACK_ROUTES_FILE } from '../cribl/pack'
 import { LAKE_DESTINATION_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID, SYSLOG_SOURCE_ID } from '../cribl/provision'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY } from './dataFlow'
-import { COUNTED_DATASET, COUNTED_PATHS, STACKS, type StackPath } from './stackIds'
+import {
+  COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
+  SHOWN_INPUTS, SHOWN_OUTPUTS, SHOWN_PIPELINES, STACKS, type StackPath,
+} from './stackIds'
 
 type Row = Record<string, string | number | null>
 
@@ -46,7 +54,11 @@ const NS = 'data_insights'
  * pipeline pass and one destination write — plus the null-namespace
  * aggregates that sit beside them in cribl_metrics and must never be summed.
  */
-function sourceRows(input: string, paths: readonly StackPath[], n: number): Row[] {
+function sourceRows(input: string, paths: readonly StackPath[], n: number, opts: { fromInput?: boolean } = {}): Row[] {
+  // `from_input` on a pipeline or destination row is measured on the
+  // QuickConnect path only; a ROUTED path may not carry it. `fromInput: false`
+  // models that, so a query that leans on it is caught here, not on a tenant.
+  const fi: Row = (opts.fromInput ?? true) ? { from_input: input } : {}
   const rows: Row[] = [
     { metric: 'total.in_events', namespace: NS, input, value: n },
     { metric: 'total.in_events', namespace: null, input, value: n },
@@ -54,11 +66,11 @@ function sourceRows(input: string, paths: readonly StackPath[], n: number): Row[
   ]
   for (const p of paths) {
     rows.push(
-      { metric: 'pipe.in_events', namespace: NS, id: p.pipeline, from_input: input, value: n },
-      { metric: 'pipe.out_events', namespace: NS, id: p.pipeline, from_input: input, value: n },
+      { metric: 'pipe.in_events', namespace: NS, id: p.pipeline, ...fi, value: n },
+      { metric: 'pipe.out_events', namespace: NS, id: p.pipeline, ...fi, value: n },
       { metric: 'pipe.out_events', namespace: null, id: p.pipeline, value: n },
-      { metric: 'total.out_events', namespace: NS, from_input: input, output: p.output, value: n },
-      { metric: 'total.out_bytes', namespace: NS, from_input: input, output: p.output, value: n * 10 },
+      { metric: 'total.out_events', namespace: NS, ...fi, output: p.output, value: n },
+      { metric: 'total.out_bytes', namespace: NS, ...fi, output: p.output, value: n * 10 },
       { metric: 'total.out_events', namespace: null, output: p.output, value: n },
     )
   }
@@ -66,14 +78,14 @@ function sourceRows(input: string, paths: readonly StackPath[], n: number): Row[
 }
 
 /** Every source in the list, each sending a different number of events. */
-function everyStackRunning(): { rows: Row[]; landed: number } {
+function everyStackRunning(opts: { fromInput?: boolean } = {}): { rows: Row[]; landed: number } {
   const byInput = new Map<string, StackPath[]>()
   for (const p of STACKS.flatMap((s) => s.paths)) byInput.set(p.input, [...(byInput.get(p.input) ?? []), p])
   const rows: Row[] = []
   let landed = 0
   let n = 7
   for (const [input, paths] of byInput) {
-    rows.push(...sourceRows(input, paths, n))
+    rows.push(...sourceRows(input, paths, n, opts))
     if (paths.some((p) => p.dataset === COUNTED_DATASET)) landed += n
     n = n * 3 + 1
   }
@@ -89,6 +101,16 @@ describe('the Data Flow counters count every stack, and each event once', () => 
     expect(m.pipe_events).toBe(landed)
     expect(m.dst_events).toBe(landed)
     expect(m.dst_bytes).toBe(landed * 10)
+  })
+
+  it('counts the same when routed rows carry no from_input dimension', () => {
+    // Unmeasured: whether a routed path's pipe.* and total.out_* rows name
+    // their source. Every destination and pipeline on a single path is
+    // filtered without it, so the answer must not move the figures.
+    const { rows, landed } = everyStackRunning({ fromInput: false })
+    const m = run(METRICS_QUERY, rows)
+    expect([m.src_events, m.pipe_events, m.dst_events, m.dst_bytes]).toEqual([landed, landed, landed, landed * 10])
+    expect(run(LAKE_TOTAL_QUERY, rows)).toEqual({ total_events: landed, total_bytes: landed * 10 })
   })
 
   it('holds the Lake card to gigamon_ami: a Parquet copy of every event does not double it', () => {
@@ -143,5 +165,54 @@ describe('the stack list', () => {
       output: `cribl_lake:${LAKE_DESTINATION_ID}`,
       dataset: LAKE_DATASET,
     })
+  })
+
+  it('names the pack 0.1.0 objects the pack YAML defines, type prefix included', () => {
+    const dir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'packs', PACK_ID)
+    const yml = (rel: string) => parse(readFileSync(join(dir, rel), 'utf8'))
+    const inputs = yml('default/inputs.yml').inputs as Record<string, { type: string }>
+    const outputs = yml('default/outputs.yml').outputs as Record<string, { type: string }>
+    const routes = yml(PACK_ROUTES_FILE).routes as { id: string; filter: string; pipeline: string; output: string }[]
+    const pack = STACKS.find((s) => s.key === 'pack-0.1.0')!
+    // Every route the YAML defines is a path here, and nothing else is.
+    expect(pack.paths.map((p) => p.route).sort()).toEqual(routes.map((r) => r.id).sort())
+    for (const p of pack.paths) {
+      const r = routes.find((x) => x.id === p.route)!
+      const inputId = Object.keys(inputs).find((id) => r.filter === `__inputId=='${inputs[id].type}:${id}'`)!
+      expect(inputId).toBeDefined()
+      expect(p.input).toBe(`${inputs[inputId].type}:${inputId}`)
+      expect(p.pipeline).toBe(r.pipeline)
+      expect(p.output).toBe(`${outputs[r.output].type}:${r.output}`)
+    }
+  })
+
+  it('does not call the pack released before its release exists', () => {
+    const pack = STACKS.find((s) => s.key === 'pack-0.1.0')!
+    expect(pack.status === 'released').toBe(PACK_PUBLISHED)
+  })
+})
+
+describe('the stage ⓘ prose', () => {
+  const PROSE = [COUNTED_SOURCES_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_DESTINATIONS_PROSE]
+  const bare = (v: string) => v.slice(v.indexOf(':') + 1)
+
+  it('names only objects a tenant can have today: the running and offered stacks', () => {
+    const shown = STACKS.filter((s) => s.status === 'running' || s.status === 'offered').flatMap((s) => s.paths)
+    const unshown = STACKS.filter((s) => s.status !== 'running' && s.status !== 'offered').flatMap((s) => s.paths)
+    const ids = (ps: readonly StackPath[]) => new Set(ps.flatMap((p) => [bare(p.input), p.pipeline, bare(p.output)]))
+    const allowed = ids(shown)
+    const forbidden = [...ids(unshown)].filter((id) => !allowed.has(id))
+    expect(forbidden.length).toBeGreaterThan(0)
+    for (const text of PROSE) for (const id of forbidden) expect(text).not.toMatch(new RegExp(`\\b${id}\\b`))
+    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen', 'in_gigamon_syslog'])
+    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami', 'gigamon_syslog'])
+    expect(SHOWN_OUTPUTS).toEqual(['gigamon_lake'])
+    for (const id of SHOWN_INPUTS) expect(COUNTED_SOURCES_PROSE).toContain(id)
+    for (const id of SHOWN_PIPELINES) expect(COUNTED_PIPELINES_PROSE).toContain(id)
+    for (const id of SHOWN_OUTPUTS) expect(COUNTED_DESTINATIONS_PROSE).toContain(id)
+  })
+
+  it('explains no mechanism that ships in no release', () => {
+    for (const text of PROSE) expect(text).not.toMatch(/Parquet|dual|same pipeline/i)
   })
 })

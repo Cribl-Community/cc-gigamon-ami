@@ -17,7 +17,7 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 187,
+    "modules": 192,
     "catalogs": 14,
     "states": 35,
     "passthrough": 3,
@@ -31,7 +31,7 @@
       },
       "s": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "7 entries · sha256 54e7fb35107bf457"
+        "value": "7 entries · sha256 6876f3a4ca37d4dc"
       }
     },
     "src/tabs/DnsHealth.tsx": {
@@ -201,7 +201,7 @@
     "src/queries/dataFlow.ts": {
       "LAKE_HELD_QUERY": "dataset=\"gigamon_ami\" | summarize total_events=count()",
       "LAKE_TOTAL_QUERY": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0))",
-      "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\" and from_input==\"datagen:in_gigamon_datagen\") or (id==\"gigamon_syslog\" and from_input==\"syslog:in_gigamon_syslog\") or (id==\"gno_syslog\" and from_input==\"syslog:in_gno_syslog\"))) or (metric==\"total.out_events\" and (from_input==\"http_raw:in_gigamon_ami_http\" and output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gno_syslog\"))) or (metric==\"total.out_events\" and (output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
       "VOLUME_AGGS": "events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "VOLUME_QUERY": "dataset=\"gigamon_ami\" | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
     },
@@ -327,16 +327,21 @@
     },
     "src/queries/stackIds.ts": {
       "COUNTED_DATASET": "gigamon_ami",
-      "COUNTED_DESTINATIONS_PROSE": "The write counters add up only the destinations that write gigamon_ami: gigamon_lake, out_gno_lake and gigamon_ami_json_lake. The Parquet copy and the sample dataset are not counted, so writing both copies does not double the figure.",
+      "COUNTED_DESTINATIONS_PROSE": "The write counters add up only the destinations that write gigamon_ami: gigamon_lake, plus the onboarding pack's once it is installed. A copy written to any other dataset is not counted.",
       "COUNTED_INPUTS": "4 entries · sha256 42112ae163e84741",
       "COUNTED_OUTPUTS": "3 entries · sha256 dd9c36a8165ba095",
       "COUNTED_PATHS": "4 entries · sha256 0aee846cae2b4db0",
-      "COUNTED_PIPELINES_PROSE": "The Processing figure adds up the pipelines on those paths: gigamon_ami, gigamon_syslog, gno_syslog and gigamon_ami_normalize. Where one source's events take two paths through the same pipeline (the pack's JSON and Parquet copies), the pipeline counts each event twice, so for that source the figure is what reached the gigamon_ami destination instead.",
-      "COUNTED_SOURCES_PROSE": "The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, in_gigamon_syslog, in_gno_syslog and in_gigamon_ami_http. Each event is counted once, where it arrives.",
+      "COUNTED_PIPELINES_PROSE": "The Processing figure adds up the pipelines on those paths: gigamon_ami and gigamon_syslog, plus the onboarding pack's once it is installed. Each event is counted once.",
+      "COUNTED_SOURCES_PROSE": "The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen and in_gigamon_syslog, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
       "DESTINATION_COUNTED_PATHS": "1 entries · sha256 8f84e60c22a3dc9e",
       "METRIC_ALIASES": "0 entries · sha256 4f53cda18c2baa0c",
       "PIPELINE_COUNTED_PATHS": "3 entries · sha256 fea2f20096503389",
-      "STACKS": "5 entries · sha256 2e121ff0c2f71569"
+      "SHARED_OUTPUTS": "1 entries · sha256 0b4cf50502e30a48",
+      "SHARED_PIPELINES": "1 entries · sha256 883a3f23a879507e",
+      "SHOWN_INPUTS": "2 entries · sha256 dcbe0d10f26bab8f",
+      "SHOWN_OUTPUTS": "1 entries · sha256 4e9df7934ccf10f3",
+      "SHOWN_PIPELINES": "2 entries · sha256 17ffe42a1bc73fbf",
+      "STACKS": "5 entries · sha256 4ab0bbbb05f2cfbd"
     },
     "src/queries/tcpHealth.ts": {
       "HEAT_METRIC_AGGS": "dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count)",
@@ -656,7 +661,7 @@
         "met": {
           "ref": "METRICS_QUERY",
           "shape": "query",
-          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\" and from_input==\"datagen:in_gigamon_datagen\") or (id==\"gigamon_syslog\" and from_input==\"syslog:in_gigamon_syslog\") or (id==\"gno_syslog\" and from_input==\"syslog:in_gno_syslog\"))) or (metric==\"total.out_events\" and (from_input==\"http_raw:in_gigamon_ami_http\" and output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gno_syslog\"))) or (metric==\"total.out_events\" and (output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
           "options": "{ accel: PIPELINE_ACCEL, accelEnabled }",
           "optionsValue": {
             "accel": "gno_pipeline_c1h"
@@ -696,7 +701,7 @@
         },
         "PanelInfo · s.purpose · datagen": {
           "ref": "s.purpose",
-          "about": "Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a \"last 15 minutes\" window is always populated. The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, in_gigamon_syslog, in_gno_syslog and in_gigamon_ami_http. Each event is counted once, where it arrives.",
+          "about": "Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a \"last 15 minutes\" window is always populated. The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen and in_gigamon_syslog, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
           "aboutHeading": "What this stage does",
           "links": [
             "DataGen source → /stream/m/default/inputs/datagen/in_gigamon_datagen"
@@ -704,7 +709,7 @@
         },
         "PanelInfo · s.purpose · pipeline": {
           "ref": "s.purpose",
-          "about": "Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly. The Processing figure adds up the pipelines on those paths: gigamon_ami, gigamon_syslog, gno_syslog and gigamon_ami_normalize. Where one source's events take two paths through the same pipeline (the pack's JSON and Parquet copies), the pipeline counts each event twice, so for that source the figure is what reached the gigamon_ami destination instead.",
+          "about": "Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly. The Processing figure adds up the pipelines on those paths: gigamon_ami and gigamon_syslog, plus the onboarding pack's once it is installed. Each event is counted once.",
           "aboutHeading": "What this stage does",
           "links": [
             "Pipeline editor → /stream/m/default/pipelines/gigamon_ami"
@@ -712,7 +717,7 @@
         },
         "PanelInfo · s.purpose · lake": {
           "ref": "s.purpose",
-          "about": "Durable, queryable storage. A Cribl Lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping history for the dataset’s retention period. The diagram splits the two halves: the Destinations plate reports what the selected window wrote; the Cribl Lake card reports what the dataset HOLDS over its whole retention period, independent of the range picker — the events counted over that period, and the size Cribl Lake reports the dataset occupies on disk. The write counters add up only the destinations that write gigamon_ami: gigamon_lake, out_gno_lake and gigamon_ami_json_lake. The Parquet copy and the sample dataset are not counted, so writing both copies does not double the figure.",
+          "about": "Durable, queryable storage. A Cribl Lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping history for the dataset’s retention period. The diagram splits the two halves: the Destinations plate reports what the selected window wrote; the Cribl Lake card reports what the dataset HOLDS over its whole retention period, independent of the range picker — the events counted over that period, and the size Cribl Lake reports the dataset occupies on disk. The write counters add up only the destinations that write gigamon_ami: gigamon_lake, plus the onboarding pack's once it is installed. A copy written to any other dataset is not counted.",
           "aboutHeading": "What this stage does",
           "links": [
             "Lake destination → /stream/m/default/outputs/cribl_lake/gigamon_lake",
@@ -737,7 +742,7 @@
         },
         "PanelInfo · selected.purpose": {
           "ref": "selected.purpose",
-          "about": "Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a \"last 15 minutes\" window is always populated. The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, in_gigamon_syslog, in_gno_syslog and in_gigamon_ami_http. Each event is counted once, where it arrives.",
+          "about": "Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a \"last 15 minutes\" window is always populated. The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen and in_gigamon_syslog, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
           "aboutHeading": "What this stage does",
           "links": [
             "DataGen source → /stream/m/default/inputs/datagen/in_gigamon_datagen"
