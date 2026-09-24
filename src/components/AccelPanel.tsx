@@ -129,6 +129,7 @@ import {
   removeResources,
   rowAction,
   rowActionName,
+  nothingToApplyWords,
   rowNote,
   scheduleCostLine,
   setCostWords,
@@ -661,11 +662,8 @@ export function AccelPanel() {
             <GateNote write="accel.apply" />
           </>
         )}
-        {plan !== null && plan.willWrite.length === 0 && (
-          <p className="gs-action-note">
-            Nothing to apply — every scheduled search this release defines is already exactly as it defines
-            it. A paused one is left paused; use Resume in its row.
-          </p>
+        {plan !== null && state && plan.willWrite.length === 0 && (
+          <p className="gs-action-note">{nothingToApplyWords(state)}</p>
         )}
         {canRemove && (
           <>

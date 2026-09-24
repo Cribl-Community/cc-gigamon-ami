@@ -66,6 +66,7 @@ import {
   creditSpanWords,
   healthOf,
   lastRunCostWords,
+  nothingToApplyWords,
   lastRunWhen,
   ownerOf,
   removeCostLine,
@@ -104,6 +105,18 @@ interface WorkspaceOpts {
   runs?: Record<string, Run[]>
   /** Billable CPU-seconds by job id. Absent means the metrics read 404s. */
   cpu?: Record<string, number>
+  /** The Lake API's dataset list. Absent means it answers 404, which leaves the
+   *  Lake total's window unresolved — and that entry neither created nor
+   *  overwritten (provision.ts `windowUnresolved`). */
+  lake?: unknown
+}
+
+/** A Lake API answering the way a working 30-day tenant's does. */
+const LAKE_30 = {
+  items: [
+    { id: 'gigamon_ami', retentionPeriodInDays: 30 },
+    { id: 'cribl_metrics', retentionPeriodInDays: 30 },
+  ],
 }
 
 function response(status: number, body: unknown) {
@@ -143,6 +156,10 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
       if (method === 'DELETE') return response(kv.delete(key) ? 200 : 404, '')
       const held = kv.get(key)
       return held === undefined ? response(404, '') : response(200, held)
+    }
+
+    if (path.endsWith('/lakes/default/datasets') && method === 'GET') {
+      return opts.lake ? response(200, opts.lake) : response(404, { message: 'no lake' })
     }
 
     if (path === JOBS && method === 'GET') {
@@ -487,7 +504,7 @@ describe('what a confirmation names', () => {
     // The guarantee cribl/accel/provision.ts asked for: a dialog that re-derives
     // its own list will eventually name a different set from the one the run
     // touches. Both directions.
-    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) }, lake: LAKE_30 })
     const state = await readAccelState()
     const plan = applyPlan(state)
     const named = applyResources(state).map((r) => r.id)
@@ -511,6 +528,39 @@ describe('what a confirmation names', () => {
     expect(note).toContain('retention could not be read')
     expect(note).toContain('Apply leaves it as it is')
     expect(note).not.toContain('Apply overwrites it')
+  })
+
+  it('does not offer to create an absent Lake total while its window cannot be resolved, and says why', async () => {
+    // Owner decision, 2026-09-24: a create on the default window starts a
+    // billed daily schedule reading a window nobody chose. This stub's Lake API
+    // answers 404.
+    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('absent')
+    expect(applyResources(state).map((r) => r.id)).not.toContain(LAKE)
+    expect(applyPlan(state).willLeave.some((l) => l.label.includes(LAKE))).toBe(true)
+    const note = rowNote(row, healthOf(row.state, null))
+    expect(note).toContain('retention could not be read')
+    expect(note).toContain('window')
+    expect(note).toContain('Apply does not create it')
+  })
+
+  it('does not call the workspace complete when the Lake total is only held back', async () => {
+    // With every other entry stored and the Lake read failing, the plan writes
+    // nothing — but "every scheduled search is already exactly as it defines
+    // it" would be false: one of them does not exist.
+    const saved: Record<string, Record<string, unknown>> = {}
+    for (const e of MANIFEST) if (e.id !== LAKE) saved[e.id] = await stored(e.id as typeof SAMPLE)
+    stubWorkspace({ saved })
+    const state = await readAccelState()
+    expect(applyPlan(state).willWrite).toEqual([])
+    const words = nothingToApplyWords(state)
+    expect(words).not.toContain('every scheduled search this release defines is already')
+    expect(words).toContain('retention could not be read')
+    // …and on a genuinely complete workspace the old sentence stands.
+    stubWorkspace({ saved: { ...saved, [LAKE]: await stored(LAKE) }, lake: LAKE_30 })
+    expect(nothingToApplyWords(await readAccelState())).toContain('every scheduled search this release defines is already exactly as it defines it')
   })
 
   it('offers to delete only what this app can prove it created', async () => {
@@ -692,7 +742,7 @@ describe('no write without a confirmation', () => {
 
 describe('a confirmed write', () => {
   it('creates both scheduled searches, and nothing else', async () => {
-    const { calls } = stubWorkspace()
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
     await mount()
     await press(buttonNamed('Review changes…'))
     await press(buttonNamed('Yes, create them'))

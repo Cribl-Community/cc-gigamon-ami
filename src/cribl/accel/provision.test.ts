@@ -472,7 +472,10 @@ describe('a refusal is a state, not a crash', () => {
 
 describe('apply', () => {
   it('creates both, with exactly the body the manifest defines', async () => {
-    const { calls } = stubWorkspace()
+    // The Lake API answers, as on a working tenant: with the retention
+    // unreadable Apply does not create the Lake entry at all (owner decision,
+    // 2026-09-24 — the ‘retention cannot be read’ cases below).
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
     const result = await applyAcceleration()
     expect(result.steps.map((s) => s.action)).toEqual(each('created'))
     expect(result.unchanged).toBe(false)
@@ -484,7 +487,7 @@ describe('apply', () => {
   })
 
   it('records what it wrote, so a later teardown can prove it is ours', async () => {
-    const { calls } = stubWorkspace()
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
     await applyAcceleration()
     await accelWritesSettled()
     const put = calls.find((c) => c.method === 'PUT' && c.path === '/kvstore/accel/state')
@@ -552,7 +555,7 @@ describe('apply', () => {
   })
 
   it('reports a rejected create as an error rather than claiming success', async () => {
-    const { calls } = stubWorkspace({ status: { [`POST ${SAVED}`]: 500 } })
+    const { calls } = stubWorkspace({ status: { [`POST ${SAVED}`]: 500 }, lake: LAKE_30 })
     const result = await applyAcceleration()
     expect(result.steps.map((s) => s.action)).toEqual(each('error'))
     expect(result.unchanged).toBe(true)
@@ -905,7 +908,7 @@ describe('what a confirmation is given to say', () => {
   it('names every search Apply will write, and what it will leave', async () => {
     const drifted = await correct(SAMPLE)
     drifted.latest = '-1m'
-    stubWorkspace({ saved: { [SAMPLE]: drifted } })
+    stubWorkspace({ saved: { [SAMPLE]: drifted }, lake: LAKE_30 })
     const plan = applyPlan(await readAccelState())
     expect(plan.willWrite).toEqual([
       'GNO Lake total 30 days (gno_lake_30d_c1d) — create, running 10 0 * * * UTC',
@@ -1143,6 +1146,62 @@ describe('the Lake entry while the dataset’s retention cannot be read', () => 
     const result = await applyAcceleration()
     expect(result.steps.find((s) => s.id === LAKE)?.action).toBe('skipped')
     expect(writes(calls).filter((c) => c.path.endsWith(LAKE))).toEqual([])
+  })
+
+  // Owner decision, 2026-09-24: an ABSENT Lake entry is not created on the
+  // default window either. A create replaces nothing, but it starts a daily
+  // billed schedule reading a window nobody chose — and on a tenant whose
+  // retention is not 30 days, the Lake card would then serve a figure for the
+  // wrong window, dated as if it were right.
+  it('does not create an absent Lake entry on the default window, and says why — the others are still created', async () => {
+    stubWorkspace() // nothing stored; no `lake`: the read 404s
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('absent')
+    expect(row.windowUnresolved).toBe(true)
+    // Not offered…
+    const approved = approvedWrites(state)
+    expect(approved[LAKE]).toBeUndefined()
+    const plan = applyPlan(state)
+    expect(plan.willWrite.some((w) => w.includes(LAKE))).toBe(false)
+    expect(plan.willLeave.find((l) => l.label.includes(LAKE))?.why).toContain('retention could not be read')
+    // …and not written if Apply runs, with or without the confirmation's set.
+    for (const set of [undefined, approved]) {
+      const { calls } = stubWorkspace() // a fresh, empty workspace each pass
+      const result = await applyAcceleration(() => {}, set)
+      const step = result.steps.find((s) => s.id === LAKE)
+      expect(step?.action).toBe('skipped')
+      expect(step?.detail).toContain('retention could not be read')
+      expect(writes(calls).filter((c) => c.method === 'POST' && c.body?.id === LAKE)).toEqual([])
+      // Every other entry is still created in the same Apply.
+      const posted = writes(calls).filter((c) => c.method === 'POST').map((c) => String(c.body?.id))
+      expect(posted.sort()).toEqual(idsExcept(LAKE).sort())
+    }
+  })
+
+  it('creates the absent Lake entry on the resolved window once the retention reads', async () => {
+    const { calls } = stubWorkspace({
+      lake: { items: [{ id: 'gigamon_ami', retentionPeriodInDays: 365 }, { id: 'cribl_metrics', retentionPeriodInDays: 30 }] },
+    })
+    const state = await readAccelState()
+    expect(state.rows.find((r) => r.id === LAKE)!.windowUnresolved).toBe(false)
+    expect(approvedWrites(state)[LAKE]).toBe('absent')
+    const result = await applyAcceleration(() => {}, approvedWrites(state))
+    expect(result.steps.find((s) => s.id === LAKE)?.action).toBe('created')
+    const want = (await applied365()) as { earliest: string; latest: string; query: string }
+    const body = bodyOf(writes(calls).find((c) => c.method === 'POST' && c.body?.id === LAKE))
+    expect(body.earliest).toBe(want.earliest)
+    expect(body.latest).toBe(want.latest)
+    expect(body.query).toBe(want.query)
+    expect(body.earliest, 'the create used the default window, not the resolved one').not.toBe(accelEntry(LAKE).earliest)
+    expect(writes(calls).filter((c) => c.method === 'POST').length).toBe(MANIFEST.length)
+  })
+
+  it('the switches cannot create it: a flip on an absent Lake entry sends no POST', async () => {
+    const { calls } = stubWorkspace()
+    const [r] = await setAccelSchedules([{ id: LAKE, from: false, to: true }])
+    expect(r.ok).toBe(false)
+    expect(writes(calls)).toEqual([])
   })
 
   it('compares the window again the moment the retention can be read', async () => {

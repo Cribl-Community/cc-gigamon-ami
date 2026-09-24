@@ -324,10 +324,13 @@ export interface AccelRow {
    * The overwrite predates serving.ts.
    *
    * So while this is set, nothing that depends on the window is compared, the
-   * read path gets no verdict about the body (`unknown`), and no write replaces
-   * the stored object (`approvedWrites`, `applyPlan`, `applyAcceleration`).
-   * Creating an ABSENT entry on the default is still allowed: that replaces
-   * nothing, and once the retention reads, the row shows the difference.
+   * read path gets no verdict about the body (`unknown`), and nothing is
+   * written for it (`approvedWrites`, `applyPlan`, `applyAcceleration`):
+   * neither an overwrite of the stored object nor — owner decision,
+   * 2026-09-24 — the create of an ABSENT one. A create replaces nothing, but
+   * it starts a billed daily schedule on a window nobody chose, and the Lake
+   * card would then serve that window's total, dated as if it were right.
+   * Once the retention reads again, Apply creates it on the resolved window.
    *
    * Optional so hand-built rows in tests need not carry it; `readAccelState`
    * always sets it.
@@ -457,8 +460,8 @@ export async function readAccelState(opts: ReadOpts = {}): Promise<AccelState> {
   // (src/queries/lakeWindow.ts), so what is intended — and so what counts as drift,
   // and what Apply writes — is resolved against the tenant, not the constant.
   // An unreadable retention leaves the manifest's default, and the Lake row is
-  // marked `windowUnresolved`: nothing is compared against, or written over a
-  // stored search from, a window nobody chose.
+  // marked `windowUnresolved`: nothing is compared against, written over a
+  // stored search from, or created on, a window nobody chose.
   //
   // THE THREE READS ARE INDEPENDENT, SO THEY OVERLAP. This used to be the Lake
   // read, then the KV read, then the list — three round trips in series. That
@@ -655,9 +658,10 @@ export type ApprovedWrites = Readonly<Record<string, 'absent' | 'differs'>>
 export function approvedWrites(state: AccelState): ApprovedWrites {
   const out: Record<string, 'absent' | 'differs'> = {}
   for (const row of state.rows) {
-    if (row.state === 'absent') out[row.id] = row.state
-    // Never an overwrite from a window nobody resolved — see `windowUnresolved`.
-    else if (row.state === 'differs' && !row.windowUnresolved) out[row.id] = row.state
+    // Never a write from a window nobody resolved — neither a create nor an
+    // overwrite. See `windowUnresolved`.
+    if (row.windowUnresolved) continue
+    if (row.state === 'absent' || row.state === 'differs') out[row.id] = row.state
   }
   return out
 }
@@ -722,6 +726,13 @@ export async function applyAcceleration(
 
   for (const row of before.rows) {
     const { entry, intended } = row
+    // A Lake row whose window nobody resolved is written in NO state — before
+    // the approved-set check, because the confirmation never named it, and
+    // "it changed while the dialog was open" would be the wrong reason.
+    if (row.windowUnresolved && (row.state === 'absent' || row.state === 'differs')) {
+      step({ id: row.id, action: 'skipped', detail: row.state === 'absent' ? UNRESOLVED_CREATE_WHY : UNRESOLVED_WHY })
+      continue
+    }
     // The approved-set check, before any of the state branches: a row that
     // moved between the dialog and this read is a row the dialog described
     // wrongly, whichever direction it moved in. Refused rather than re-asked —
@@ -739,10 +750,6 @@ export async function applyAcceleration(
     }
     if (row.state === 'unreadable') {
       step({ id: row.id, action: 'skipped', detail: 'this app could not read what is there, so it wrote nothing' })
-      continue
-    }
-    if (row.state === 'differs' && row.windowUnresolved) {
-      step({ id: row.id, action: 'skipped', detail: UNRESOLVED_WHY })
       continue
     }
     if (row.state === 'foreign') {
@@ -832,6 +839,10 @@ export async function applyAcceleration(
 /** Why a Lake row with an unresolved window is left alone. */
 const UNRESOLVED_WHY =
   'the Lake dataset’s retention could not be read, so this app does not know which window this search should read, and wrote nothing'
+
+/** …and why an absent one is not created. Owner decision, 2026-09-24. */
+const UNRESOLVED_CREATE_WHY =
+  'the Lake dataset’s retention could not be read, so this app does not know which window this search should read, and did not create it — Apply creates it once the retention can be read'
 
 /**
  * The corrective PATCH's schedule.
@@ -1143,6 +1154,10 @@ export function applyPlan(state: AccelState): AccelPlan {
   for (const row of state.rows) {
     switch (row.state) {
       case 'absent':
+        if (row.windowUnresolved) {
+          willLeave.push({ label: label(row.entry), why: UNRESOLVED_CREATE_WHY })
+          break
+        }
         willWrite.push(`${label(row.entry)} — create, running ${row.entry.cron} ${row.entry.tz}`)
         break
       case 'differs':
