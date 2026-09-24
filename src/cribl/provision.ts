@@ -1208,31 +1208,51 @@ async function deployedVersion(group: string): Promise<string | null> {
 }
 
 /**
- * How much of the history one read takes. The range a group has not deployed
- * has to fit inside it, or `pendingDeploy` answers "could not tell" — a group
- * fifty commits behind is not something to reason about from a status check.
- * The request below spells the same number as a literal, because
- * `policyCoverage.test.ts` resolves literal paths only.
+ * How many commits one `/version` read asks for. The query string is not part
+ * of the grant (`policyCoverage.test.ts` compares the path before the `?`), so
+ * the request is built from this constant rather than spelling it again.
  */
-const HISTORY_PAGE = 50
+export const HISTORY_PAGE = 50
+
+/**
+ * How many pages `pendingDeploy` will read looking for the commit a group is
+ * running — two hundred commits. Past that it answers "could not tell", which
+ * is null: a status check that pages through a whole repo's history to decorate
+ * a row is not a status check.
+ */
+export const HISTORY_PAGES = 4
+
+/**
+ * How many `/version/files` reads `pendingDeploy` keeps in flight. One at a time
+ * held the status rows behind forty GETs in a row for a group forty commits
+ * behind; all at once is fifty requests at a Leader from one status check.
+ */
+export const FILES_READ_CONCURRENCY = 6
 
 interface CommitRef { hash: string; refs: string }
 
-/** The newest commits in the leader's config repo, or null when unreadable. */
-async function commitHistory(): Promise<CommitRef[] | null> {
+/** One page of the leader's config-repo history, or null when unreadable. */
+async function commitHistory(offset = 0): Promise<CommitRef[] | null> {
   // `offset` is not optional, whatever the spec says: `limit` without it is a
   // 400 on 4.20.1 ("missing 'offset' parameter", measured 2026-09-23). Without
   // it this always answered null, which silently disabled `undeployedHead`,
   // `pendingDeploy` and the stranded-commit recovery built on them.
-  const r = await capi('GET', '/version?offset=0&limit=50')
+  const r = await capi('GET', `/version?offset=${offset}&limit=${HISTORY_PAGE}`)
   if (r.status !== 200) return null
   const items = (r.body as { items?: Array<{ hash?: unknown; refs?: unknown }> })?.items
   if (!Array.isArray(items)) return null
   return items
     .filter((c) => typeof c?.hash === 'string' && c.hash !== '')
     .map((c) => ({ hash: c.hash as string, refs: typeof c.refs === 'string' ? c.refs : '' }))
-    .slice(0, HISTORY_PAGE)
 }
+
+/**
+ * The local HEAD in a `git log --decorate` refs string: `HEAD -> main`, or a
+ * bare `HEAD` when detached. Not any ref that CONTAINS the word — a Leader with
+ * a Git remote decorates an older commit with `origin/HEAD`, and a tag may be
+ * called anything; either one, taken as HEAD, names the wrong commit.
+ */
+const LOCAL_HEAD = /(?:^|,\s*)HEAD(?:\s*->|\s*,|\s*$)/
 
 /** Where the Leader's HEAD sits in a history page, or -1 for an empty page. */
 function headIndex(items: CommitRef[]): number {
@@ -1241,7 +1261,7 @@ function headIndex(items: CommitRef[]): number {
   // `HEAD -> <branch>` in its refs. Take that one, and fall back to the first
   // only when nothing says so. Getting this backwards would deploy an old commit
   // to a live group, which is a rollback nobody asked for.
-  const i = items.findIndex((c) => c.refs.includes('HEAD'))
+  const i = items.findIndex((c) => LOCAL_HEAD.test(c.refs))
   return i >= 0 ? i : items.length ? 0 : -1
 }
 
@@ -1275,10 +1295,13 @@ export function versionFilePaths(body: unknown): string[] | null {
     out.push(full)
   }
   // One entry per answer — it carries `count` and, on the tree shape, the
-  // commit's own `commitMessage` — each holding the top-level nodes.
-  for (const entry of entries as Array<{ items?: unknown }>) {
-    if (!Array.isArray(entry?.items)) continue
-    for (const n of entry.items as Node[]) walk(n, '')
+  // commit's own `commitMessage` — each holding the top-level nodes. An entry
+  // that says it holds files and yields none is a shape this walk does not
+  // know, and "cannot read" is null, not an empty commit.
+  for (const entry of entries as Array<{ items?: unknown; count?: unknown }>) {
+    const before = out.length
+    if (Array.isArray(entry?.items)) for (const n of entry.items as Node[]) walk(n, '')
+    if (typeof entry?.count === 'number' && entry.count > 0 && out.length === before) return null
   }
   return out
 }
@@ -1302,7 +1325,7 @@ async function filesInCommit(commit: string): Promise<string[] | null> {
 
 /**
  * The commits a group is running behind: everything after `deployed` up to and
- * including `head`, from one history page. Null when the page does not hold
+ * including `head`, from the history read so far. Null when it does not hold
  * both — the range cannot be bounded, and a guess at it is exactly the claim
  * `pendingDeploy` must not make.
  */
@@ -1370,8 +1393,10 @@ export async function undeployedHead(group: string = DEFAULT_STREAM_GROUP): Prom
  * cannot distinguish this group from any other is not good enough. "Could not
  * tell" answers null, exactly like "nothing pending".
  *
- * Read-only: two GETs, then one `/version/files` per commit the group is behind
- * until one proves the claim — no writes, so it is safe to ask on a status check.
+ * Read-only: two GETs, up to `HISTORY_PAGES - 1` more history pages when the
+ * group's commit is further back than one, then one `/version/files` per commit
+ * the group is behind, `FILES_READ_CONCURRENCY` at a time, until one proves the
+ * claim — no writes, so it is safe to ask on a status check.
  */
 export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promise<string | null> {
   const range = await undeployedRange(group)
@@ -1383,20 +1408,46 @@ export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promi
   // would light this up. One read per commit, because `/version/files` answers
   // for ONE commit (see `filesInCommit`): asked only about the deployed commit,
   // as this used to, it described what the group was already running.
-  const behind = commitsAfter(range.history, range.deployed, range.head)
-  // The deployed commit is not in the page: no bounded range, so no claim.
+  const history = await historyReaching(range.history, range.deployed)
+  const behind = history && commitsAfter(history, range.deployed, range.head)
+  // The deployed commit is not in the history this will read: no bounded
+  // range, so no claim.
   if (!behind) return null
-  for (const hash of behind) {
-    const changed = await filesInCommit(hash)
-    // Unavailable for this commit: no evidence from it, but another commit's
-    // read can still prove the claim. If none does, the unread one might have
-    // been this group's, so the answer below is "could not tell" — null.
-    if (changed === null) continue
-    // The deploy moves the group to HEAD, carrying every commit in between, so
-    // proof from any of them is a pending deploy of HEAD.
-    if (changed.some((p) => pathInGroup(p, group))) return range.head
+  // The deploy moves the group to HEAD, carrying every commit in between, so
+  // proof from any of them is a pending deploy of HEAD. A few reads at a time,
+  // and none started once one has proved it. An unavailable read is no
+  // evidence from that commit, but another read can still prove the claim; if
+  // none does, the unread one might have been this group's, so the answer is
+  // "could not tell" — null.
+  let proved = false
+  let next = 0
+  const worker = async () => {
+    while (!proved && next < behind.length) {
+      const changed = await filesInCommit(behind[next++])
+      if (changed?.some((p) => pathInGroup(p, group))) proved = true
+    }
   }
-  return null
+  await Promise.all(Array.from({ length: Math.min(FILES_READ_CONCURRENCY, behind.length) }, worker))
+  return proved ? range.head : null
+}
+
+/**
+ * `first` extended page by page until it holds `deployed`, or null when it
+ * does not within `HISTORY_PAGES` pages, the history ends first, or a page
+ * cannot be read. Only `pendingDeploy` needs the range; `undeployedHead` needs
+ * HEAD, which is on the first page, and does not come here.
+ */
+async function historyReaching(first: CommitRef[], deployed: string): Promise<CommitRef[] | null> {
+  let history = first
+  let page = first
+  for (let n = 1; !history.some((c) => c.hash === deployed); n++) {
+    if (n >= HISTORY_PAGES || page.length < HISTORY_PAGE) return null
+    const more = await commitHistory(n * HISTORY_PAGE)
+    if (!more) return null
+    page = more
+    history = history.concat(more)
+  }
+  return history
 }
 
 /** Deploy one commit and report it as a step. Shared by the normal path and by
