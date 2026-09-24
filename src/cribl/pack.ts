@@ -8,10 +8,11 @@
 // parses that YAML and fails if an id here and an id there disagree, so neither
 // side can be renamed alone.
 //
-// NOTHING IMPORTS THIS YET. Slice 1 ships the pack content and its gates only;
-// no query, tab, grant or write changes. That is deliberate, and it is why this
-// file makes no network call and names no API path: the paths arrive with the
-// code that calls them, and with their `config/policies.yml` grants.
+// ONE IMPORTER SO FAR: src/queries/stackIds.ts, which builds the Data Flow
+// counters (METRICS_QUERY, LAKE_TOTAL_QUERY) from these ids. No tab, grant or
+// write uses this module yet, and it makes no network call and names no API
+// path: the paths arrive with the code that calls them, and with their
+// `config/policies.yml` grants.
 //
 // DISTINCT IDS, NOT THE GLOBAL ONES. The group's global config already holds
 // objects with the old names — the syslog source, its pipeline and route, the
