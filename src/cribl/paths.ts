@@ -173,14 +173,14 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/${SEARCH_GROUP}/search/jobs`,
     scope: 'product',
-    site: 'jobWatchdog.ts pollOnce',
+    site: 'jobWatchdog.ts pollOnce (also accel/status.ts fetchHistoryPage)',
     why: 'List the search jobs currently running, to surface one that has been running far longer than any query this app permits itself. It is a config-plane READ, of other people’s searches as well as the viewer’s own where their role already allows it: it submits no search, bills nothing, and — unlike the `$vt_jobs` query it replaces — adds no job to the workspace’s own search history. What the app does with somebody else’s row is show it; only the viewer’s own rows get a Cancel.',
   },
   {
     method: 'GET',
     path: `/m/${SEARCH_GROUP}/search/jobs/:jobId`,
     scope: 'product',
-    site: 'search.ts stoppedByTimeLimit',
+    site: 'search.ts stoppedByTimeLimit (also accel/status.ts runMeta)',
     why: 'Read a failed job’s errors, to tell a query stopped by its running-time cap (which the panel says plainly) from one that failed for some other reason.',
   },
   {
@@ -208,7 +208,7 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/${SEARCH_GROUP}/search/jobs/:jobId/metrics`,
     scope: 'product',
-    site: 'jobCost.ts readBillableCpuSeconds',
+    site: 'jobCost.ts readBillableCpuSeconds (also accel/status.ts lastRunCost)',
     why: 'Read a completed job’s billable CPU-seconds for the header’s auto-refresh cost label. Denied, the app shows a cost figure that is wrong rather than an error, so it is declared like any other read.',
   },
   {
@@ -642,7 +642,7 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/:gid/system/outputs/${LAKE_DESTINATION_ID}`,
     scope: 'product',
-    site: 'provision.ts ensureDestination',
+    site: 'provision.ts ensureDestination (also lake.ts getDestination)',
     why: 'Ask whether that destination exists, which is what stops the app creating a second one.',
   },
   {

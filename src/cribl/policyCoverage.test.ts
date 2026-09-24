@@ -535,10 +535,30 @@ const HITS: Hit[] = SCAN.flatMap((s) => s.hits).concat(
 const UNRESOLVED: Unresolved[] = SCAN.flatMap((s) => s.unresolved)
 const EXTERNAL: External[] = SCAN.flatMap((s) => s.external)
 
-/** A call whose code no screen reaches yet (paths.ts `UNREACHED_MODULES`). It
- *  is named in paths.ts like any other call, and it is NOT granted: see the
- *  "calls nothing reaches yet" block below. */
-const isUnreached = (c: ApiCall) => UNREACHED_MODULES.some((u) => u.file.endsWith(`/${c.site.split(' ')[0]}`))
+/**
+ * Every file a paths.ts entry says its call is made in: the first word of
+ * `site`, and each `*.ts`/`*.tsx` named inside its "(also …)". A function named
+ * there without a file is in the first one.
+ */
+function siteFiles(c: ApiCall): string[] {
+  const named = [c.site.split(' ')[0], ...[...c.site.matchAll(/(?<![\w/.-])([\w/-]+\.tsx?)/g)].map((m) => m[1])]
+  return [...new Set(named)]
+}
+
+/** Does this paths.ts entry name `file` (repo-relative) as one its call is in? */
+const namesFile = (c: ApiCall, file: string) => siteFiles(c).some((f) => file.endsWith(`/${f}`))
+
+/** Is `file` (repo-relative) a module on paths.ts `UNREACHED_MODULES`? */
+const onUnreachedList = (file: string) => UNREACHED_MODULES.some((u) => u.file === file)
+
+/** Does the entry describe this call site's endpoint and method? */
+const describes = (c: ApiCall, h: Hit) => sameShape(c.path, h.path) && (h.method === null || c.method === h.method)
+
+/** A call whose code no screen reaches yet (paths.ts `UNREACHED_MODULES`): every
+ *  file its `site` names is on that list. It is named in paths.ts like any other
+ *  call, and it is NOT granted: see the "calls nothing reaches yet" block below.
+ *  An entry that names a reachable file as well is an ordinary granted call. */
+const isUnreached = (c: ApiCall) => siteFiles(c).every((f) => UNREACHED_MODULES.some((u) => u.file.endsWith(`/${f}`)))
 const PRODUCT_CALLS = API_CALLS.filter((c) => c.scope === 'product' && !isUnreached(c))
 const PENDING_CALLS = API_CALLS.filter((c) => c.scope === 'product' && isUnreached(c))
 const APP_CALLS = API_CALLS.filter((c) => c.scope === 'app')
@@ -652,6 +672,23 @@ describe('paths.ts against the source', () => {
       return seen.length > 0 && !seen.some((h) => h.file.endsWith(`/${file}`))
     }).map((c) => `${describeCall(c)} — found instead in ${HITS.filter((h) => sameShape(c.path, h.path)).map((h) => h.file).join(', ')}`)
     expect(wrong).toEqual([])
+  })
+
+  it('names every call in the file that makes it, not merely somewhere', () => {
+    // A call is checked against config/policies.yml through the entry that
+    // names it, and whether that entry is granted or pending is decided by the
+    // files its `site` names. Matching a call to ANY entry of the same shape let
+    // a reachable module borrow a pending entry of packClient.ts's: the call
+    // counted as "not reached yet", needed no grant, and would 403 for every
+    // non-admin once installed. So an entry covers only calls in the files it
+    // names.
+    const unattributed = HITS.filter((h) => !API_CALLS.some((c) => describes(c, h) && namesFile(c, h.file)))
+      .map((h) => `${h.method ?? '?'} ${h.path} — called in ${h.file}, and no entry of that shape names that file`)
+    expect(
+      [...new Set(unattributed)],
+      'src/cribl/paths.ts has an entry of this shape, but not for the file that makes this call. Name the file in ' +
+        'that entry’s `site` (…(also <file>.ts <function>)) or add an entry for it — and the grant, if the file is reachable.',
+    ).toEqual([])
   })
 
   it('explains every call in terms an admin approving it would recognise', () => {
@@ -826,6 +863,35 @@ describe('calls nothing reaches yet', () => {
         `${u.file} makes no call paths.ts names — delete it from UNREACHED_MODULES`,
       ).toBe(true)
     }
+  })
+
+  it('grants every call made from a module that is not on the list', () => {
+    // Checked call site by call site, not entry by entry: which entry a call
+    // matches is not a fact about where it is made. Only a module on
+    // UNREACHED_MODULES may make an ungranted product call.
+    const ungranted = HITS.filter((h) => !onUnreachedList(h.file)).filter((h) => {
+      const mine = API_CALLS.filter((c) => describes(c, h) && namesFile(c, h.file))
+      if (mine.some((c) => c.scope === 'app')) return false
+      return !DECLARED.some((d) => covers(d.object, h.path) && (h.method === null || d.actions.includes(h.method)))
+    }).map((h) => `${h.method ?? '?'} ${h.path} — called in ${h.file}`)
+    expect(
+      [...new Set(ungranted)],
+      'a module the app can load makes these calls and config/policies.yml does not grant them — installed, each ' +
+        'is a 403 that only a non-admin sees.',
+    ).toEqual([])
+  })
+
+  it('keeps every call of a pending entry’s shape inside a module on the list', () => {
+    // The other half, and independent of how `site` is spelled: a call whose
+    // shape only a pending entry describes may be made from nowhere else.
+    const escaped = HITS.filter((h) => !onUnreachedList(h.file)).filter((h) => {
+      const shaped = API_CALLS.filter((c) => c.scope === 'product' && describes(c, h))
+      return shaped.length > 0 && shaped.every(isUnreached)
+    }).map((h) => `${h.method ?? '?'} ${h.path} — called in ${h.file}`)
+    expect(
+      [...new Set(escaped)],
+      'only a pending (not yet granted) entry describes these calls, and they are made outside UNREACHED_MODULES',
+    ).toEqual([])
   })
 
   it('runs every granted call from a module the app actually loads', () => {
