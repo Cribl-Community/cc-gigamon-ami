@@ -44,7 +44,8 @@
 // are for.
 //
 // IF THIS TEST FAILS, read which check it is:
-//   • transports        — a new way to reach the network appeared in src/
+//   • transports        — a new way to reach the network appeared in src/, or a
+//                         transport is reached under an alias the scan cannot see
 //   • unresolved        — a call site whose path this test cannot work out
 //   • scan ↔ manifest   — the code calls something paths.ts does not name, or
 //                         paths.ts names something the code no longer calls
@@ -463,7 +464,48 @@ interface External {
 
 /** The callees that take a URL or an API path as an argument. Everything the app
  *  sends leaves through one of them. */
-const CALL_SITES = /(?<![A-Za-z0-9_$.])(capi|fetchRetry|fetch|api)\s*(?:<[\s\S]*?>)?\s*\(/g
+const TRANSPORTS = ['capi', 'fetchRetry', 'fetch', 'api'] as const
+const CALL_SITES = new RegExp(`(?<![A-Za-z0-9_$.])(${TRANSPORTS.join('|')})\\s*(?:<[\\s\\S]*?>)?\\s*\\(`, 'g')
+
+/**
+ * Every way `src` reaches a transport under a name CALL_SITES does not match, as
+ * the text that does it. Empty is the only acceptable answer for a module in src/.
+ *
+ * WHY REFUSE RATHER THAN RESOLVE. CALL_SITES matches a transport by its name,
+ * so `import { capi as mcapi }` and then `mcapi('DELETE', …)` was a call this
+ * file never saw — measured: a planted undeclared DELETE made that way passed
+ * every check here. Following aliases would mean following them through
+ * imports, namespaces, re-exports and rebinding, and each one this test failed
+ * to follow would be the same hole again. No module needs any of them, so
+ * none is allowed: an alias is refused here, and the call goes back to being
+ * written as `capi(…)`, which everything below can read.
+ *
+ * What counts: an aliased import or re-export (`capi as x`); a member call or
+ * index access by a transport's name (`ns.capi(…)`, `globalThis.fetch(…)`,
+ * `x['capi']`), which is how a namespace import or a global reaches one; a
+ * rebinding (`const send = capi`, `{ capi: send } = …`); and a dynamic import
+ * of the module that exports one.
+ */
+function transportAliases(src: string): string[] {
+  const s = stripComments(src)
+  const names = TRANSPORTS.join('|')
+  const found: string[] = []
+  for (const m of s.matchAll(/\b(?:import|export)\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const spec of m[1].split(',')) {
+      const one = new RegExp(`^\\s*(?:type\\s+)?(${names})\\s+as\\s+([A-Za-z_$][\\w$]*)\\s*$`).exec(spec)
+      if (one && one[1] !== one[2]) found.push(`${one[1]} as ${one[2]}`)
+    }
+  }
+  const patterns = [
+    new RegExp(`\\.\\s*(?:${names})\\s*(?:<[^>]*>)?\\s*\\(`, 'g'),
+    new RegExp(`\\[\\s*['"\`](?:${names})['"\`]\\s*\\]`, 'g'),
+    new RegExp(`\\b(?:const|let|var)\\s+[A-Za-z_$][\\w$]*\\s*(?::[^=]+)?=\\s*(?:${names})\\b(?!\\s*(?:<[^>]*>)?\\s*\\()`, 'g'),
+    new RegExp(`\\{[^{}=]*\\b(?:${names})\\s*:\\s*[A-Za-z_$][\\w$]*[^{}=]*\\}\\s*=[^=>]`, 'g'),
+    /\bimport\s*\(\s*['"`][^'"`]*\/capi['"`]\s*\)/g,
+  ]
+  for (const re of patterns) for (const m of s.matchAll(re)) found.push(m[0].replace(/\s+/g, ' ').trim())
+  return found
+}
 
 /** Anything that can put bytes on the network. The app has exactly one of them. */
 const NETWORK_PRIMITIVES = /(?<![A-Za-z0-9_$.])(fetch\s*\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|axios)/
@@ -582,6 +624,46 @@ describe('transports', () => {
       'src/cribl/jobCost.ts',
       'src/cribl/search.ts',
     ])
+  })
+
+  it('reaches no transport under another name, so every call is one CALL_SITES can see', () => {
+    const aliased = sourceFiles().flatMap((f) =>
+      transportAliases(readFileSync(join(ROOT, f), 'utf8')).map((a) => `${f}: ${a}`),
+    )
+    expect(
+      aliased,
+      'a transport is reached under a name this test does not scan for, so the call it makes is checked against ' +
+        'nothing. Call it by its own name — capi(…), not an alias of it.',
+    ).toEqual([])
+  })
+
+  it('catches a planted alias of a transport, in each form that would hide the call', () => {
+    // Each of these made a call the scan above never saw.
+    const planted = [
+      "import { capi as mcapi } from './capi'\nmcapi('DELETE', '/system/secrets')",
+      "export { capi as send } from './capi'",
+      "import * as t from './capi'\nt.capi('GET', '/x')",
+      "const send = capi\nsend('GET', '/x')",
+      "let f: typeof fetch = fetch",
+      "const { capi: send } = mod",
+      "globalThis.fetch('/x')",
+      "window['fetch']('/x')",
+      "const m = await import('./capi')",
+    ]
+    for (const src of planted) expect(transportAliases(src), src).not.toEqual([])
+  })
+
+  it('does not call an ordinary call of a transport an alias', () => {
+    const plain = [
+      "import { capi } from './capi'\nconst r = await capi('GET', '/x')",
+      "import { capi, type ApiResp } from './capi'",
+      "const r = await fetchRetry(url, init)",
+      "const rows = await api<Row[]>(url, init)",
+      "const res = await fetch(url, init)",
+      "const g = groupPath",
+      "// import { capi as mcapi } from './capi' — a comment",
+    ]
+    for (const src of plain) expect(transportAliases(src), src).toEqual([])
   })
 
   it('scans every module that can build a Cribl URL', () => {
