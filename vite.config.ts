@@ -5,7 +5,7 @@ import { join } from 'path'
 import react from '@vitejs/plugin-react'
 // @ts-ignore
 import { servePackageTgz } from './scripts/pkgutil.mjs'
-import { decideInitScript } from './scripts/devInitScript.ts'
+import { createInitTracker, injectedInitSrc } from './scripts/devInitScript.ts'
 
 // App version from package.json, injected as a build-time constant so the UI
 // always shows the version being tested/shipped (stays in sync with packaging).
@@ -97,11 +97,15 @@ hot.on('${CONFIG_CHANGED_HMR_EVENT}', (data) => {
 `;
 
 const injectScriptFromQueryPlugin = () => {
-  let initScriptUrl: string | null = null;
+  // Each Live Preview page's ?init=, remembered under the page's origin so an init-less reload of
+  // /flow-map gets ITS workspace's bridge. See scripts/devInitScript.ts.
+  const initTracker = createInitTracker();
   return {
     name: 'inject-script-from-query',
     configureServer(server: ViteDevServer) {
       startDevTokenRefresh(); // dev only — never armed during `vite build`
+      // Pre-middleware: runs before Vite's html fallback and index-html middlewares.
+      server.middlewares.use(initTracker.middleware);
       const root = server.config.root;
       const watched = WATCHED_CONFIG_FILES.map((rel) => join(root, rel));
       server.watcher.add(watched);
@@ -112,10 +116,9 @@ const injectScriptFromQueryPlugin = () => {
       });
     },
     transformIndexHtml(html: string, ctx: IndexHtmlTransformContext): IndexHtmlTransformResult{
-      // This request's own ?init= wins; only a request with none reuses the last one seen.
-      // See scripts/devInitScript.ts for why the first one must not stick.
-      const init = decideInitScript(ctx.originalUrl, initScriptUrl);
-      initScriptUrl = init.cache;
+      // The tracker's middleware already wrote this page's init into originalUrl when the request
+      // carried none; this only reads it. No state here.
+      const initSrc = injectedInitSrc(ctx.originalUrl);
       const root = process.cwd();
       let appName;
       try {
@@ -148,10 +151,10 @@ const injectScriptFromQueryPlugin = () => {
           injectTo: 'head-prepend' as const,
         });
       }
-      if (init.src) {
+      if (initSrc) {
         tags.push({
           tag: 'script',
-          attrs: { src: init.src, type: 'text/javascript' },
+          attrs: { src: initSrc, type: 'text/javascript' },
           injectTo: 'head-prepend' as const,
         });
       }
