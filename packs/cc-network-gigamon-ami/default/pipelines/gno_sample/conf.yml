@@ -1,0 +1,90 @@
+# Pipeline gno_sample of the cc-network-gigamon-ami pack.
+# The functions are provision.ts's PIPELINE_SPEC, value for value (gno_sample carries
+# only its cast and derive steps). src/cribl/pack.test.ts fails if the two drift, so
+# change them together.
+output: default
+streamtags: []
+groups: {}
+asyncFuncTimeout: 1000
+description: Gigamon AMI sample events, which arrive as objects - cast and derive only.
+functions:
+  - id: eval
+    filter: "true"
+    disabled: false
+    description: Cast numeric strings
+    conf:
+      add:
+        - name: src_bytes
+          value: src_bytes==null?src_bytes:Number(src_bytes)
+        - name: dst_bytes
+          value: dst_bytes==null?dst_bytes:Number(dst_bytes)
+        - name: src_packets
+          value: src_packets==null?src_packets:Number(src_packets)
+        - name: dst_packets
+          value: dst_packets==null?dst_packets:Number(dst_packets)
+        - name: src_port
+          value: src_port==null?src_port:Number(src_port)
+        - name: dst_port
+          value: dst_port==null?dst_port:Number(dst_port)
+        - name: protocol
+          value: protocol==null?protocol:Number(protocol)
+        - name: app_id
+          value: app_id==null?app_id:Number(app_id)
+        - name: ip_version
+          value: ip_version==null?ip_version:Number(ip_version)
+        - name: tcp_rtt
+          value: tcp_rtt==null?tcp_rtt:Number(tcp_rtt)
+        - name: tcp_rtt_app
+          value: tcp_rtt_app==null?tcp_rtt_app:Number(tcp_rtt_app)
+        - name: tcp_dup_ack
+          value: tcp_dup_ack==null?tcp_dup_ack:Number(tcp_dup_ack)
+        - name: tcp_loss_count
+          value: tcp_loss_count==null?tcp_loss_count:Number(tcp_loss_count)
+        - name: tcp_wrong_crc
+          value: tcp_wrong_crc==null?tcp_wrong_crc:Number(tcp_wrong_crc)
+        - name: tcp_unseq
+          value: tcp_unseq==null?tcp_unseq:Number(tcp_unseq)
+        - name: dns_response_time
+          value: dns_response_time==null?dns_response_time:Number(dns_response_time)
+        - name: dns_ttl
+          value: dns_ttl==null?dns_ttl:Number(dns_ttl)
+        - name: ssl_mitm_score
+          value: ssl_mitm_score==null?ssl_mitm_score:Number(ssl_mitm_score)
+        - name: ssl_request_size
+          value: ssl_request_size==null?ssl_request_size:Number(ssl_request_size)
+        - name: snmp_version
+          value: snmp_version==null?snmp_version:Number(snmp_version)
+        - name: end_reason
+          value: end_reason==null?end_reason:Number(end_reason)
+        - name: seq_num
+          value: seq_num==null?seq_num:Number(seq_num)
+        - name: http_request_ts
+          value: http_request_ts==null?http_request_ts:Number(http_request_ts)
+        - name: http_response_ts
+          value: http_response_ts==null?http_response_ts:Number(http_response_ts)
+        - name: tcp_flags
+          value: tcp_flags==null?tcp_flags:Number(tcp_flags)
+  - id: eval
+    filter: "true"
+    disabled: false
+    description: Derive helper fields
+    conf:
+      add:
+        - name: src_subnet
+          value: typeof src_ip==='string'?src_ip.split('.').slice(0,3).join('.'):undefined
+        - name: dst_subnet
+          value: typeof dst_ip==='string'?dst_ip.split('.').slice(0,3).join('.'):undefined
+        - name: total_bytes
+          value: (src_bytes||0)+(dst_bytes||0)
+        - name: total_packets
+          value: (src_packets||0)+(dst_packets||0)
+        - name: l4_proto
+          value: ({'6':'TCP','17':'UDP','1':'ICMP'})[String(protocol)]||String(protocol)
+        - name: http_server_ms
+          value: (http_request_ts!=null&&http_response_ts!=null)?(http_response_ts-http_request_ts)*1000:undefined
+        - name: tcp_reset
+          value: tcp_flags==null?undefined:((tcp_flags&4)?1:0)
+        - name: src_subnet16
+          value: typeof src_ip==='string'?src_ip.split('.').slice(0,2).join('.'):undefined
+        - name: dst_subnet16
+          value: typeof dst_ip==='string'?dst_ip.split('.').slice(0,2).join('.'):undefined

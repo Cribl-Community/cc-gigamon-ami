@@ -16,14 +16,17 @@ npm run build           # tsc -b + vite build → dist/
 npm test                # vitest run — the whole suite, once
 npm run lint            # oxlint (config in .oxlintrc.json)
 npm run queries:extract # regenerate src/queries/__frozen__/display.json from src/
+npm run pack:samples    # regenerate the onboarding pack's synthetic samples + default/samples.yml
+npm run pack:check      # samples reproduce byte for byte, and the pack validates
+npm run pack:build      # write build/packs/cc-network-gigamon-ami-<version>.crbl (deterministic)
 npm run preview         # preview the production build
 npm run package         # test + build + bundle into build/<name>-<version>.tgz (bumps version)
 ```
 
 ### The gates, and what each one catches
 
-`.github/workflows/ci.yml` runs `npm run lint`, `npm run build` and `npm test` on **every push and
-every pull request** — not only at release, because a reviewer needs them red before approving, not
+`.github/workflows/ci.yml` runs `npm run lint`, `npm run build`, `npm test` and `npm run pack:check`
+on **every push and every pull request** — not only at release, because a reviewer needs them red before approving, not
 weeks later at publish time. `npm run package` runs the suite *before* it writes the new version, so
 a failing test can never leave a bumped `package.json` behind for someone to commit by accident.
 
@@ -35,6 +38,7 @@ Don't count the tests. Know what they hold still:
 | `src/cribl/policyCoverage.test.ts` | Both directions of `config/policies.yml`. A Cribl path the code calls and the file does not declare is a 403 that only non-admins ever see (it has already happened once: `PATCH` on the syslog source). A path the file declares that nothing calls asks an admin to grant more than the app uses. It also fails on anything the app creates but cannot remove, on an app-scoped `/kvstore/…` path being declared at all, on a `*` in any path or method (the no-wildcard rule below), and on a module outside the four transports reaching the network — a raw `fetch` anywhere else is a call the coverage scan cannot see, so it would not be checked against the grant at all. `src/cribl/paths.ts` is held to the same two directions, plus a reason on every entry. |
 | `src/components/gatedWrites.test.ts` | Every `config`-surface write registered in `src/cribl/authz.ts` is reached through a `<GatedControl write="…">`, so a denied write says which object it needed instead of failing silently. |
 | `src/app/contrast.test.ts` | Resolves each `token()` chain the way a browser does — through `@capra/theme`'s `base.css`, alpha-compositing the translucent surfaces — and computes the WCAG ratio in both themes. "We fixed the contrast" is a claim that otherwise rots in silence. |
+| `src/cribl/pack.test.ts`, `packSamples.test.ts`, `packCheck.test.ts` | The onboarding pack under `packs/cc-network-gigamon-ami/`. Its YAML must equal `PIPELINE_SPEC`, `SOURCE_SPEC`, `ROUTE_SPEC` and `destinationSpecFor(DEFAULT_PROFILE)` value for value, apart from the `gno_` ids in `src/cribl/pack.ts`. The synthetic samples must be exactly what `scripts/gen-pack-samples.mjs` produces, must light every tab (the assertions are generated from `FINDINGS`, `TECHNIQUES`, `AMI_CATALOG` and the rest), and may hold only `10.20.0.0/16`, documentation-range IPs and `example.*` hostnames. `scripts/pack.mjs check` must refuse an NDJSON sample, a `samples.yml` size or count that differs from the packed bytes, a missing DataGen sample id, a routes file anywhere but `default/pipelines/route.yml` (a `default/routes.yml` is refused by name), a syslog input that ships enabled, and either way sample data could bypass the routes into `gigamon_ami` (QuickConnect `connections` on an input, an output expression on a route), and the rest. `pack-release.yml` must keep its seven rules: `gigamon-pack-v*` only, never Latest, never clobber, never package the app, never reach the Dispensary, build only a commit on `main`, and publish only after a draft's asset has been downloaded and its sha256 matched. |
 | `npm run build` | Type errors across three TypeScript projects (`tsconfig.app.json`, `tsconfig.node.json`, `tsconfig.test.json` — tests get Node types, app code does not). |
 | `npm run lint` | oxlint's default `correctness` set plus `react/rules-of-hooks`. |
 
