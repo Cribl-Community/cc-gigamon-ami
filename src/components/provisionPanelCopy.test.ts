@@ -7,7 +7,7 @@
 // It shipped, it is in the installed 1.0.20, and it is false. Git commits FILES
 // (openapi.json, GitCommitBody.files: "Array of file paths to include in the
 // commit"), and `groups/<g>/local/cribl/inputs.yml` holds every Source in the
-// group — the app's syslog source and the demo DataGen source are two entries
+// group — the app's own source and the demo DataGen source are two entries
 // in one file. So the press that promised not to touch the DataGen source
 // commits whatever anybody had left uncommitted in it and deploys the result to
 // running Worker Processes.
@@ -22,17 +22,23 @@
 // opposite of what it should.
 
 import { describe, expect, it } from 'vitest'
-import { SETUP_FACTS, deployConsequences, pendingSentence, removeConsequences } from './provisionPanelCopy'
+import {
+  ENDPOINT_LEAD, SETUP_FACTS, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployConsequences, legacyNote, LEGACY_TIP,
+  pendingSentence, removeConsequences,
+} from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
-import { commitScope, SYSLOG_PIPELINE_ID, SYSLOG_PORT, SYSLOG_SOURCE_ID, type ResourceKey } from '../cribl/provision'
+import {
+  commitScope, CLOUD_PORT_RANGE, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID,
+  LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID, type CommitKey,
+} from '../cribl/provision'
 
 const GROUP = 'default'
-const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
+const ALL: CommitKey[] = ['source', 'pipeline', 'route', 'destination']
 const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
 const ROUTES = `groups/${GROUP}/local/cribl/pipelines/route.yml`
 const OUTPUTS = `groups/${GROUP}/local/cribl/outputs.yml`
 
-const ctx = (pending: string[] | null, keys: ResourceKey[] = ALL, undeployed: string | null = null) => ({
+const ctx = (pending: string[] | null, keys: CommitKey[] = ALL, undeployed: string | null = null) => ({
   group: GROUP,
   scope: commitScope(GROUP, keys, pending),
   undeployed,
@@ -50,8 +56,9 @@ describe('what the deploy confirmation claims about reach', () => {
 
   it('still says what is true about the write, because that is what somebody is asking', () => {
     const line = deployConsequences(ctx([]))[0]
-    expect(line).toContain(SYSLOG_PIPELINE_ID)
-    expect(line).toContain(SYSLOG_SOURCE_ID)
+    expect(line).toContain(HTTP_PIPELINE_ID)
+    expect(line).toContain(HTTP_SOURCE_ID)
+    expect(line).toContain(HTTP_BREAKER_ID)
     expect(line).toContain('does not edit the demo DataGen source')
   })
 
@@ -65,7 +72,7 @@ describe('what the deploy confirmation claims about reach', () => {
     const lines = removeConsequences(ctx([], ['source', 'pipeline', 'route']), 'gigamon_lake', 'gigamon_ami')
     expect(all(lines)).toContain(INPUTS)
     expect(all(lines)).toContain(ROUTES)
-    // Over-naming is the same class of untruth as hiding: `removeSyslogStack`
+    // Over-naming is the same class of untruth as hiding: `removeOnboardingStack`
     // never writes the destination, so its commit never carries outputs.yml.
     expect(all(lines)).not.toContain(OUTPUTS)
   })
@@ -156,18 +163,48 @@ describe('“What gets created & things to know”', () => {
     }
   })
 
-  it('still names the port to open and the ids the stack creates', () => {
+  it('still names the port range and the ids the stack creates', () => {
     const text = SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')
-    expect(text).toContain(String(SYSLOG_PORT))
-    expect(text).toContain(SYSLOG_PIPELINE_ID)
-    expect(text).toContain(`syslog:${SYSLOG_SOURCE_ID}`)
-    // The firewall step is the one a customer must act on, so it is the label,
-    // not only the tip.
-    expect(SETUP_FACTS.some((f) => f.label.includes(`port ${SYSLOG_PORT}`))).toBe(true)
+    expect(text).toContain(HTTP_PIPELINE_ID)
+    expect(text).toContain(HTTP_BREAKER_ID)
+    expect(text).toContain(`http_raw:${HTTP_SOURCE_ID}`)
+    // The port range is the one constraint a Cloud customer cannot work
+    // around, so it is a label, not only a tip.
+    const range = `${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`
+    expect(SETUP_FACTS.some((f) => f.label.includes(range))).toBe(true)
+  })
+
+  it('no longer tells anybody to open a Syslog port', () => {
+    const text = SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')
+    expect(text).not.toMatch(/syslog|5514|TCP\/UDP/i)
   })
 
   it('says nothing about "the lab" — that was our demo workspace, not the customer’s', () => {
     expect(SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')).not.toMatch(/\blab\b/i)
+  })
+})
+
+describe('the endpoint card and the old Syslog stack', () => {
+  it('says the token is shown once and kept nowhere by this app', () => {
+    expect(TOKEN_ONCE).toContain('Shown once')
+    expect(TOKEN_ONCE).toContain('keeps no copy')
+    // And where to find it afterwards — never "lost".
+    expect(TOKEN_ELSEWHERE).toContain('authentication settings')
+  })
+
+  it('says plainly, on a hybrid group, that the traffic is unencrypted', () => {
+    expect(UNENCRYPTED_WARNING).toMatch(/^Unencrypted/)
+    expect(UNENCRYPTED_WARNING).toContain('plain text')
+    expect(UNENCRYPTED_WARNING).toContain('until you add')
+  })
+
+  it('keeps the endpoint card to one short lead line', () => {
+    expect(ENDPOINT_LEAD.split(/\s+/).length).toBeLessThanOrEqual(20)
+  })
+
+  it('names every old Syslog object the teardown will remove', () => {
+    for (const id of [LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID]) expect(LEGACY_TIP).toContain(id)
+    expect(legacyNote(GROUP)).toContain(GROUP)
   })
 })
 

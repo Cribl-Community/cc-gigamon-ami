@@ -134,7 +134,7 @@ describe('the sentence', () => {
   }
 
   it('names the method and the path, which is what an admin would grant', () => {
-    const text = denialReason('syslog_stack.apply', denial)
+    const text = denialReason('onboarding_stack.apply', denial)
     expect(text).toContain('PATCH /m/default/system/inputs/in_gigamon_syslog')
     expect(text).toContain('HTTP 403')
   })
@@ -142,13 +142,13 @@ describe('the sentence', () => {
   it('does not claim to know it was a permission, because Cribl does not say', () => {
     // Cribl answers the same status for "not authorized" and "not licensed", on
     // 42 endpoints of the 4.19.0 spec, in one sentence that covers both.
-    const text = denialReason('syslog_stack.apply', denial)
+    const text = denialReason('onboarding_stack.apply', denial)
     expect(text).toContain('usually a permission')
     expect(text).toContain('licensing limit')
   })
 
   it('quotes what Cribl actually said', () => {
-    expect(denialReason('syslog_stack.apply', denial)).toContain('Not authorized or licensed to perform this action.')
+    expect(denialReason('onboarding_stack.apply', denial)).toContain('Not authorized or licensed to perform this action.')
   })
 
   it('does not send somebody to an admin for the app’s own store', () => {

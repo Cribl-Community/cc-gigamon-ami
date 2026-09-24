@@ -322,6 +322,9 @@ export interface StreamInput {
   type: string | null
   /** Output ids this source is wired straight to, bypassing the routing table. */
   connectedOutputs: string[]
+  /** Every port this source listens on — `port`, or a Syslog source's
+   *  `tcpPort` / `udpPort`. Guided Setup reads it to offer a free port. */
+  ports: number[]
 }
 
 /**
@@ -347,6 +350,7 @@ export async function listInputs(group: string, init: CapiInit = {}): Promise<Re
         connectedOutputs: (Array.isArray(it.connections) ? it.connections : [])
           .map((c) => (c && typeof c === 'object' ? text((c as Record<string, unknown>).output) : null))
           .filter((o): o is string => o !== null),
+        ports: [it.port, it.tcpPort, it.udpPort].filter((p): p is number => num(p) !== null),
       })),
       r.status,
     )

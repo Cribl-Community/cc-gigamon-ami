@@ -64,7 +64,7 @@ const describedText = () => blockedState().describedBy.map((id) => document.getE
 /** Render one gated control whose write does `run`. */
 function render(run: () => Promise<unknown>) {
   act(() => {
-    root.render(<GatedControl write="syslog_stack.apply" label="Deploy" busyLabel="Deploying…" run={run} />)
+    root.render(<GatedControl write="onboarding_stack.apply" label="Deploy" busyLabel="Deploying…" run={run} />)
   })
 }
 
@@ -172,7 +172,7 @@ describe('GatedControl', () => {
     const renderUnavailable = (unavailable: string | null, run = async () => {}) => {
       act(() => {
         root.render(
-          <GatedControl write="syslog_stack.apply" label="Deploy" busyLabel="Deploying…" unavailable={unavailable} run={run} />,
+          <GatedControl write="onboarding_stack.apply" label="Deploy" busyLabel="Deploying…" unavailable={unavailable} run={run} />,
         )
       })
     }
@@ -244,7 +244,7 @@ describe('GatedControl', () => {
       document.body.appendChild(req)
       const control = (blocked: boolean) => (
         <GatedControl
-          write="syslog_stack.apply"
+          write="onboarding_stack.apply"
           label="Deploy"
           unavailable={blocked ? 'Type the worker group name first.' : null}
           blockedUntil={blocked ? { describedBy: 'ttc-req', onActivate } : null}
@@ -289,7 +289,7 @@ describe('GatedControl', () => {
       act(() => {
         root.render(
           <GatedControl
-            write="syslog_stack.apply"
+            write="onboarding_stack.apply"
             label="Deploy"
             blockedUntil={{ describedBy: 'ttc-req', onActivate }}
             run={run}

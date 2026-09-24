@@ -74,7 +74,9 @@ function evalExpr(expr: string, ev: Ev): unknown {
   return new Function('scope', `with (scope) { return (${expr}) }`)(scope)
 }
 
-const castAndDerive = PIPELINE_SPEC.conf.functions.slice(2) as { filter: string; conf: { add: { name: string; value: string }[] } }[]
+// The whole global pipeline: since the move to Raw HTTP it is exactly the cast
+// and derive functions (the prep and parse steps went with Syslog).
+const castAndDerive = PIPELINE_SPEC.conf.functions as { filter: string; conf: { add: { name: string; value: string }[] } }[]
 const events: Ev[] = rawEvents.map((e) => {
   const out: Ev = { ...e }
   for (const fn of castAndDerive) {

@@ -44,10 +44,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
-  commitScope, deployAll, pendingConfigPaths, pendingDeploy, removeSyslogStack, undeployedHead,
-  ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
-  SYSLOG_ROUTE_ID, SYSLOG_PIPELINE_ID, SYSLOG_SOURCE_ID, DEFAULT_STREAM_GROUP,
-  type PendingChange, type ResourceKey, type StepResult,
+  commitScope, deployAll, pendingConfigPaths, pendingDeploy, removeOnboardingStack, undeployedHead,
+  portProblem, portsInUse, postUrl, suggestPort,
+  ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, HTTP_BREAKER_SPEC, DATASET_SPEC, DESTINATION_SPEC, destinationSpecFor,
+  HTTP_ROUTE_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, HTTP_BREAKER_ID, DEFAULT_STREAM_GROUP,
+  type PendingChange, type CommitKey, type StepResult,
 } from './provision'
 
 const GROUP = DEFAULT_STREAM_GROUP
@@ -89,8 +90,11 @@ interface LeaderOpts {
    *  re-apply writes. `null` means a 200 whose `items` this file cannot read,
    *  which since the full-replacement fix must NOT write. */
   pipeline?: Record<string, unknown> | null
-  /** The live syslog source, likewise. */
+  /** The live Raw HTTP source, likewise. */
   source?: Record<string, unknown> | null
+  /** The live breaker ruleset. Defaults to exactly the spec, so a run that is
+   *  not about the ruleset neither writes it nor stops on it. */
+  breaker?: Record<string, unknown> | null
   /**
    * What the pipeline / source / routing-table GET answers FROM THE SECOND READ
    * ONWARD — i.e. the other admin.
@@ -106,6 +110,13 @@ interface LeaderOpts {
   pipelineBetweenReads?: Record<string, unknown> | null
   sourceBetweenReads?: Record<string, unknown> | null
   routesBetweenReads?: Array<Record<string, unknown>> | null
+  /** The group's other sources, as `GET /m/<g>/system/inputs` lists them. */
+  inputs?: Array<Record<string, unknown>>
+  /** 404 = the Raw HTTP source does not exist yet, so a run CREATES it. */
+  sourceStatus?: number
+  /** The create POST fails with a message quoting the body it was sent — the
+   *  worst case for a token, and the one the scrub exists for. */
+  sourcePostEchoes?: boolean
 }
 
 /**
@@ -119,7 +130,11 @@ interface LeaderOpts {
  * drifted instead. These are it.
  */
 const STALE_PIPELINE = { ...PIPELINE_SPEC, conf: { ...PIPELINE_SPEC.conf, functions: [] } }
-const STALE_SOURCE = { ...SOURCE_SPEC, tcpPort: 1514 }
+const STALE_SOURCE = { ...SOURCE_SPEC, host: '127.0.0.1' }
+/** A drift on a key the re-apply spec owns, used wherever a test needs the
+ *  source PATCHed. (It was `tcpPort: 9999` while the source was Syslog; the
+ *  port is set at creation now and is never re-asserted.) */
+const DRIFTED_HOST = '10.9.9.9'
 
 const catchAll = { id: 'default', name: 'default', filter: 'true', final: false, pipeline: 'main' }
 
@@ -140,8 +155,9 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
   const {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
     configVersion = HEAD, head = HEAD, changedSince = [], filesStatus = 200, pendingStatus = 200,
-    pipeline = STALE_PIPELINE, source = STALE_SOURCE,
-    pipelineBetweenReads, sourceBetweenReads, routesBetweenReads,
+    pipeline = STALE_PIPELINE, source = STALE_SOURCE, breaker = { ...HTTP_BREAKER_SPEC },
+    pipelineBetweenReads, sourceBetweenReads, routesBetweenReads, inputs = [], sourceStatus = 200,
+    sourcePostEchoes = false,
   } = opts
   const calls: Call[] = []
   let pipeReads = 0
@@ -208,12 +224,20 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     // merge onto this body. Answering with a real body is what lets a test say
     // "already correct" at all — and, since the merge, what lets it say anything
     // about the request body, which is composed from exactly this.
-    if (at('GET', `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)) {
+    if (at('GET', `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`)) {
+      return breaker === null ? reply(404, { message: 'not found' }) : reply(200, { items: [breaker] })
+    }
+    if (at('GET', `/m/${GROUP}/system/inputs`)) return reply(200, { items: inputs })
+    if (at('POST', `/m/${GROUP}/system/inputs`) && sourcePostEchoes) {
+      return reply(400, { message: `invalid input: ${JSON.stringify(body)}` })
+    }
+    if (at('GET', `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)) {
       pipeReads += 1
       const now = pipeReads >= 2 && pipelineBetweenReads !== undefined ? pipelineBetweenReads : pipeline
       return reply(200, { items: now ? [now] : [] })
     }
-    if (at('GET', `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)) {
+    if (at('GET', `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)) {
+      if (sourceStatus !== 200) return reply(sourceStatus, { message: 'not found' })
       sourceReads += 1
       const now = sourceReads >= 2 && sourceBetweenReads !== undefined ? sourceBetweenReads : source
       return reply(200, { items: now ? [now] : [] })
@@ -273,7 +297,7 @@ describe('ensureRoute', () => {
 
     const sent = routesSent(calls)
     expect(sent, 'the stale route should have been patched').toBeDefined()
-    expect(sent!.map((r) => r.id)).toEqual(['a', 'b', SYSLOG_ROUTE_ID, 'default'])
+    expect(sent!.map((r) => r.id)).toEqual(['a', 'b', HTTP_ROUTE_ID, 'default'])
     expect(step(steps, 'route')?.action).toBe('updated')
     // The table object carries more than `routes`. Sending back `{ id, routes }`
     // would delete a customer's Route Groups and route comments outright.
@@ -303,14 +327,14 @@ describe('ensureRoute', () => {
   it('inserts a missing route directly above the catch-all, not at the top', async () => {
     const calls = stubLeader({ routes: [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }, catchAll] })
     const steps = await run()
-    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'b', SYSLOG_ROUTE_ID, 'default'])
+    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'b', HTTP_ROUTE_ID, 'default'])
     expect(step(steps, 'route')?.action).toBe('created')
   })
 
   it('treats the first unconditional route as the catch-all when nothing is called default', async () => {
     const calls = stubLeader({ routes: [{ id: 'a', name: 'a', filter: "host=='x'" }, { id: 'everything', name: 'everything', filter: 'true' }] })
     await run()
-    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', SYSLOG_ROUTE_ID, 'everything'])
+    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', HTTP_ROUTE_ID, 'everything'])
   })
 
   it('removes only our entry on teardown, leaving every other index where it was', async () => {
@@ -319,7 +343,7 @@ describe('ensureRoute', () => {
       table: { comments: [{ text: 'keep me' }] },
       pending: [`groups/${GROUP}/local/cribl/pipelines/route.yml`],
     })
-    await new Promise<void>((resolve) => { void removeSyslogStack(() => {}, GROUP, undefined, { route: 'present', source: 'absent', pipeline: 'absent' }).then(() => resolve()) })
+    await new Promise<void>((resolve) => { void removeOnboardingStack(() => {}, GROUP, undefined, { route: 'present', source: 'absent', pipeline: 'absent', breaker: 'absent', legacy_source: 'absent', legacy_pipeline: 'absent' }).then(() => resolve()) })
 
     expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'b', 'default'])
     expect((patched(calls)!.body as { comments?: unknown }).comments).toEqual([{ text: 'keep me' }])
@@ -347,21 +371,21 @@ describe('a re-apply that has nothing to apply', () => {
     const steps = await run()
 
     expect(writes(calls), 'a settled stack was written to anyway').toEqual([])
-    expect(['dataset', 'destination', 'pipeline', 'source', 'route'].map((k) => step(steps, k)?.action))
-      .toEqual(['exists', 'exists', 'exists', 'exists', 'exists'])
+    expect(['dataset', 'destination', 'breaker', 'pipeline', 'source', 'route'].map((k) => step(steps, k)?.action))
+      .toEqual(['exists', 'exists', 'exists', 'exists', 'exists', 'exists'])
     expect(step(steps, 'commit')?.detail).toBe('no changes to commit')
     expect(step(steps, 'deploy'), 'a zero-change re-apply restarted the group’s Worker Processes').toBeUndefined()
   })
 
   it('still writes when one field has drifted, and says which one', async () => {
-    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, host: DRIFTED_HOST } })
     const steps = await run()
 
-    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)
+    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)
     expect(step(steps, 'source')?.action).toBe('updated')
-    expect(step(steps, 'source')?.detail, 'the step named no field, so the log says a write happened and not what it was').toContain('tcpPort')
+    expect(step(steps, 'source')?.detail, 'the step named no field, so the log says a write happened and not what it was').toContain('host')
     // And the pipeline, which did not drift, is still left alone.
-    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)
   })
 
   it('counts an extra function somebody added as a change, because sending ours would delete it', async () => {
@@ -372,7 +396,7 @@ describe('a re-apply that has nothing to apply', () => {
     })
     const steps = await run()
 
-    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+    expect(writes(calls)).toContain(`PATCH /m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)
     expect(step(steps, 'pipeline')?.detail).toContain('conf')
   })
 
@@ -388,7 +412,7 @@ describe('a re-apply that has nothing to apply', () => {
     // committed or deployed on top of it.
     const calls = stubLeader({ ...settled, pipeline: null })
     const steps = await run()
-    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`)
+    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)
     expect(step(steps, 'pipeline')?.action).toBe('error')
     expect(step(steps, 'pipeline')?.detail).toContain('could not read the live')
     expect(steps.some((s) => s.key === 'commit'), 'committed on top of an object it could not read').toBe(false)
@@ -397,7 +421,7 @@ describe('a re-apply that has nothing to apply', () => {
   it('sends no PATCH for an unreadable source either', async () => {
     const calls = stubLeader({ ...settled, source: null })
     const steps = await run()
-    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`)
+    expect(writes(calls)).not.toContain(`PATCH /m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)
     expect(step(steps, 'source')?.action).toBe('error')
   })
 })
@@ -412,22 +436,25 @@ describe('a re-apply that has nothing to apply', () => {
 describe('a PATCH is a full replacement', () => {
   const bodySent = (calls: Call[], path: string) =>
     calls.find((c) => c.method === 'PATCH' && c.path === path)?.body as Record<string, unknown> | undefined
-  const SOURCE_PATH = `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`
-  const PIPELINE_PATH = `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`
+  const SOURCE_PATH = `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`
+  const PIPELINE_PATH = `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`
 
-  /** A syslog source a customer has actually configured: TLS terminated at the
-   *  Source, a persistent queue, a connection cap, a renamed description, and a
-   *  QuickConnect connection. None of it is anything this app names. */
+  /** A Raw HTTP source a customer has actually configured: its port, TLS on
+   *  their own certificate, its auth token, a persistent queue, a request cap,
+   *  a renamed description, and a QuickConnect connection. None of it is
+   *  anything a re-apply names. */
   const customised = {
     ...SOURCE_SPEC,
-    tcpPort: 9999, // the one spec field that drifted, so the write happens at all
+    host: DRIFTED_HOST, // the one spec field that drifted, so the write happens at all
+    port: 20003,
+    authTokensExt: [{ token: 'their-token', authType: 'manual' }],
     description: 'Gigamon AMX — DC1 collector',
-    maxActiveCxn: 200,
-    ipWhitelistRegex: '^10\\.',
+    maxActiveReq: 200,
+    ipAllowlistRegex: '^10\\.',
     pqEnabled: true,
     pq: { mode: 'always', maxBufferSizeBytes: '1MB', compress: 'none', onBackpressure: 'drop' },
     tls: { disabled: false, certificateName: 'dc1-collector', requestCert: true },
-    connections: [{ output: 'gigamon_lake', pipeline: 'gigamon_syslog' }],
+    connections: [{ output: 'gigamon_lake', pipeline: 'gigamon_http_normalize' }],
     criblSourceProvenance: { originDataSource: 'discovered' },
   }
 
@@ -435,17 +462,21 @@ describe('a PATCH is a full replacement', () => {
     const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], source: customised })
     await run()
     const body = bodySent(calls, SOURCE_PATH)
-    expect(body, 'the source should have been patched — tcpPort drifted').toBeDefined()
+    expect(body, 'the source should have been patched — host drifted').toBeDefined()
     // Every one of these was deleted by the shipped version, silently.
     expect(body!.tls).toEqual(customised.tls)
     expect(body!.pq).toEqual(customised.pq)
     expect(body!.pqEnabled).toBe(true)
-    expect(body!.maxActiveCxn).toBe(200)
-    expect(body!.ipWhitelistRegex).toBe('^10\\.')
+    expect(body!.maxActiveReq).toBe(200)
+    expect(body!.ipAllowlistRegex).toBe('^10\\.')
     expect(body!.description).toBe('Gigamon AMX — DC1 collector')
     expect(body!.connections).toEqual(customised.connections)
+    // Set at creation and never re-asserted: a re-apply that reset these
+    // would move the exporter's port or lock it out.
+    expect(body!.port).toBe(20003)
+    expect(body!.authTokensExt).toEqual(customised.authTokensExt)
     // And the app still asserts what the app owns.
-    expect(body!.tcpPort).toBe(SOURCE_SPEC.tcpPort)
+    expect(body!.host).toBe(SOURCE_SPEC.host)
     expect(body!.sendToRoutes).toBe(true)
   })
 
@@ -495,7 +526,7 @@ describe('a PATCH is a full replacement', () => {
 
     const body = bodySent(calls, SOURCE_PATH)!
     const shown = asked.find((c) => c.key === 'source')!
-    expect(shown.diff.map((d) => d.key)).toEqual(['tcpPort'])
+    expect(shown.diff.map((d) => d.key)).toEqual(['host'])
     for (const row of shown.diff) expect(row.after).toEqual(body[row.key])
     // Nothing else in the body differs from what Cribl already held — which is
     // what makes a one-row diff an honest description of this request.
@@ -524,16 +555,16 @@ describe('the confirmation seam', () => {
 
   it('is asked once, with the diff, for the one object that drifted', async () => {
     const asked: PendingChange[] = []
-    stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    stubLeader({ ...settled, source: { ...SOURCE_SPEC, host: DRIFTED_HOST } })
     await runWith({ confirm: (c) => { asked.push(c); return true } })
 
     expect(asked.map((c) => `${c.key}:${c.action}`)).toEqual(['source:overwrite'])
-    expect(asked[0].object, 'the change did not name the Cribl object').toContain(SYSLOG_SOURCE_ID)
-    expect(asked[0].diff.map((d) => [d.key, d.before, d.after])).toEqual([['tcpPort', 9999, SOURCE_SPEC.tcpPort]])
+    expect(asked[0].object, 'the change did not name the Cribl object').toContain(HTTP_SOURCE_ID)
+    expect(asked[0].diff.map((d) => [d.key, d.before, d.after])).toEqual([['host', DRIFTED_HOST, SOURCE_SPEC.host]])
   })
 
   it('writes nothing when the answer is no, and commits nothing either', async () => {
-    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, host: DRIFTED_HOST } })
     const steps = await runWith({ confirm: () => false })
 
     expect(writes(calls), 'the write went out after the confirmation said no').toEqual([])
@@ -549,7 +580,7 @@ describe('the confirmation seam', () => {
     // A dialog that unmounted, a rejected promise, a caller that threw: all of
     // them are "this was not agreed to", and the only dangerous reading is the
     // optimistic one.
-    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, host: DRIFTED_HOST } })
     const steps = await runWith({ confirm: () => { throw new Error('the dialog went away') } })
     expect(writes(calls)).toEqual([])
     expect(step(steps, 'source')?.action).toBe('skipped')
@@ -558,7 +589,7 @@ describe('the confirmation seam', () => {
   it('reports a refusal as a refusal rather than as a failure', async () => {
     // `error` means Cribl said no; `skipped` means the person did. Rendering the
     // second as the first sends somebody to look for a fault they caused.
-    stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    stubLeader({ ...settled, source: { ...SOURCE_SPEC, host: DRIFTED_HOST } })
     const steps = await runWith({ confirm: () => false })
     expect(steps.some((s) => s.action === 'error')).toBe(false)
   })
@@ -576,18 +607,18 @@ describe('the confirmation seam', () => {
   // sitting in front of, and the stub answers differently from the second read
   // onward. Every one of them fails against the pre-2026-09-17 code.
 
-  const PIPE_PATH = `/m/${GROUP}/pipelines/${SYSLOG_PIPELINE_ID}`
-  const SRC_PATH = `/m/${GROUP}/system/inputs/${SYSLOG_SOURCE_ID}`
+  const PIPE_PATH = `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`
+  const SRC_PATH = `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`
   const sent = (calls: Call[], path: string) =>
     calls.find((c) => c.method === 'PATCH' && c.path === path)?.body as Record<string, unknown> | undefined
 
   it('composes the source PATCH from a read taken after the answer, not before it', async () => {
-    // Somebody adds a TLS block to the customer's syslog source while the dialog
+    // Somebody adds a TLS block to the customer's source while the dialog
     // is open. The body sent is built on the second read, so it carries it.
     const calls = stubLeader({
       ...settled,
-      source: { ...SOURCE_SPEC, tcpPort: 9999 },
-      sourceBetweenReads: { ...SOURCE_SPEC, tcpPort: 9999, tls: { disabled: false, certificateName: 'theirs' } },
+      source: { ...SOURCE_SPEC, host: DRIFTED_HOST },
+      sourceBetweenReads: { ...SOURCE_SPEC, host: DRIFTED_HOST, tls: { disabled: false, certificateName: 'theirs' } },
     })
     const steps = await runWith({ confirm: () => true })
     expect(step(steps, 'source')?.action).toBe('updated')
@@ -597,13 +628,13 @@ describe('the confirmation seam', () => {
   })
 
   it('refuses the source write when the change it was asked about has moved', async () => {
-    // The dialog said "tcpPort 9999 → 5514". By the time Yes came back the live
-    // port was something else, so that is no longer the change, and a
+    // The dialog said "host 10.9.9.9 → 0.0.0.0". By the time Yes came back the
+    // live host was something else, so that is no longer the change, and a
     // confirmation describes ONE before → after.
     const calls = stubLeader({
       ...settled,
-      source: { ...SOURCE_SPEC, tcpPort: 9999 },
-      sourceBetweenReads: { ...SOURCE_SPEC, tcpPort: 7777 },
+      source: { ...SOURCE_SPEC, host: DRIFTED_HOST },
+      sourceBetweenReads: { ...SOURCE_SPEC, host: '10.7.7.7' },
     })
     const steps = await runWith({ confirm: () => true })
     expect(calls.some((c) => c.method === 'PATCH' && c.path === SRC_PATH)).toBe(false)
@@ -651,7 +682,7 @@ describe('the confirmation seam', () => {
     const steps = await runWith({ confirm: () => true })
     expect(step(steps, 'route')?.action).toBe('updated')
     expect(routesSent(calls)?.map((r) => r.id), 'a route added while the dialog was open was deleted by this write')
-      .toEqual([SYSLOG_ROUTE_ID, 'their_route', 'default'])
+      .toEqual([HTTP_ROUTE_ID, 'their_route', 'default'])
   })
 
   it('refuses when our route was removed from the table while the dialog was open', async () => {
@@ -677,7 +708,7 @@ describe('the confirmation seam', () => {
     // `preConfirmed` is the only caller today, and the fix must not be something
     // a future caller has to remember to opt into. One extra GET per written
     // object per run is the price of the seam being safe to wire.
-    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, tcpPort: 9999 } })
+    const calls = stubLeader({ ...settled, source: { ...SOURCE_SPEC, host: DRIFTED_HOST } })
     await run()
     expect(calls.filter((c) => c.method === 'GET' && c.path === SRC_PATH)).toHaveLength(2)
   })
@@ -980,11 +1011,12 @@ describe('commitScope', () => {
   // nothing ever put it in front of a person.
   const FILES = [
     `groups/${GROUP}/local/cribl/inputs.yml`,
-    `groups/${GROUP}/local/cribl/pipelines/${SYSLOG_PIPELINE_ID}/conf.yml`,
+    `groups/${GROUP}/local/cribl/pipelines/${HTTP_PIPELINE_ID}/conf.yml`,
     `groups/${GROUP}/local/cribl/pipelines/route.yml`,
     `groups/${GROUP}/local/cribl/outputs.yml`,
+    `groups/${GROUP}/local/cribl/breakers.yml`,
   ]
-  const ALL: ResourceKey[] = ['source', 'pipeline', 'route', 'destination']
+  const ALL: CommitKey[] = ['source', 'pipeline', 'route', 'destination', 'breaker']
 
   it('names every whole file a deploy can commit, including the one holding the demo DataGen source', () => {
     expect(commitScope(GROUP, ALL, []).carries).toEqual(FILES)
@@ -998,7 +1030,7 @@ describe('commitScope', () => {
     // `default/pipelines/route.yml`), and no `routes.yml` exists anywhere. So a
     // non-empty status never matched the route, the scoped commit left it out,
     // and the deploy shipped a version without the route this app had just
-    // written — the Syslog source received data that no route sent to Lake.
+    // written — the source received data that no route sent to Lake.
     // The literal is written out here on purpose, not derived.
     const LEADER_ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
     const scope = commitScope(GROUP, ['route'], [LEADER_ROUTE, `groups/${GROUP}/local/cribl/inputs.yml`])
@@ -1034,6 +1066,244 @@ describe('commitScope', () => {
     // asserting a clean tree it never saw.
     expect(commitScope(GROUP, ALL, null).unknown).toBe(true)
     expect(commitScope(GROUP, ALL, null).alreadyDirty).toEqual([])
+  })
+})
+
+// ── Raw HTTP (2026-09-24): the source this release creates ─────────────────
+//
+// The Syslog source had nothing to generate and nothing to hide. This one has
+// a port the group must not already use, a TLS mode that depends on who runs
+// the workers, and an auth token that must exist in exactly two places: the
+// source and the one screen that shows it. Every test below that mentions the
+// token is asserting WHERE IT IS NOT.
+
+describe('creating the Raw HTTP source', () => {
+  const settledRest = { routes: [{ ...ROUTE_SPEC }, catchAll], pipeline: { ...PIPELINE_SPEC } }
+  const managed = { managed: true, port: 20004 }
+  const createBody = (calls: Call[]) =>
+    calls.find((c) => c.method === 'POST' && c.path === `/m/${GROUP}/system/inputs`)?.body as Record<string, unknown> | undefined
+
+  async function create(opts: LeaderOpts, deploy: Parameters<typeof deployAll>[3]) {
+    const calls = stubLeader({ ...settledRest, sourceStatus: 404, ...opts })
+    const tokens: string[] = []
+    const phases: string[] = []
+    const logged: StepResult[] = []
+    const steps = await deployAll((r) => logged.push(r), GROUP, (p) => phases.push(p.text), {
+      ...deploy,
+      onToken: (t) => tokens.push(t),
+    })
+    return { calls, steps, tokens, phases, logged }
+  }
+
+  it('creates it on the chosen port, with Cribl’s certificate on a managed group, and a fresh token', async () => {
+    const { calls, steps, tokens } = await create({}, { ingress: managed })
+    const body = createBody(calls)
+    expect(body, 'the source was never created').toBeDefined()
+    expect(body!.type).toBe('http_raw')
+    expect(body!.port).toBe(20004)
+    expect(body!.tls).toEqual({
+      disabled: false, minVersion: 'TLSv1.2', certPath: '$CRIBL_CLOUD_CRT', privKeyPath: '$CRIBL_CLOUD_KEY',
+    })
+    expect(body!.breakerRulesets).toEqual([HTTP_BREAKER_ID])
+    // One token, at least 128 bits, handed to the caller once and sent to Cribl.
+    expect(tokens).toHaveLength(1)
+    expect(tokens[0]).toMatch(/^[0-9a-f]{64}$/)
+    expect(body!.authTokensExt).toEqual([{ token: tokens[0], authType: 'manual' }])
+    expect(step(steps, 'source')).toEqual({ key: 'source', action: 'created', detail: 'port 20004' })
+  })
+
+  it('starts without TLS on a hybrid group, whose workers have no Cribl certificate', async () => {
+    const { calls } = await create({}, { ingress: { managed: false, port: 10080 } })
+    expect(createBody(calls)!.tls).toEqual({ disabled: true })
+    expect(createBody(calls)!.port).toBe(10080)
+  })
+
+  it('puts the token nowhere but the create request: not a step, a phase, the commit or the audit trail', async () => {
+    const { calls, tokens, phases, logged, steps } = await create({}, { ingress: managed })
+    const token = tokens[0]
+    expect(token).toBeTruthy()
+    const carrying = calls.filter((c) => JSON.stringify(c.body ?? '').includes(token)).map((c) => `${c.method} ${c.path}`)
+    expect(carrying, 'the token left in a request other than the create').toEqual([`POST /m/${GROUP}/system/inputs`])
+    // The audit trail is a KV PUT, and would have been listed above; say it outright.
+    expect(calls.some((c) => c.path.startsWith('/kvstore/') && c.method === 'PUT'), 'the run wrote no audit entry at all').toBe(true)
+    expect(JSON.stringify([phases, logged, steps])).not.toContain(token)
+  })
+
+  it('generates a different token every time', async () => {
+    const a = await create({}, { ingress: managed })
+    vi.unstubAllGlobals()
+    const b = await create({}, { ingress: managed })
+    expect(a.tokens[0]).not.toBe(b.tokens[0])
+  })
+
+  it('creates nothing without a chosen port, and runs nothing after it', async () => {
+    const { calls, steps, tokens } = await create({}, {})
+    expect(createBody(calls)).toBeUndefined()
+    expect(step(steps, 'source')?.action).toBe('error')
+    expect(step(steps, 'route')?.action).toBe('skipped')
+    expect(tokens).toEqual([])
+  })
+
+  it('re-checks the port against the group just before creating, and refuses one in use', async () => {
+    const { calls, steps, tokens } = await create({ inputs: [{ id: 'theirs', type: 'http', port: 20004 }] }, { ingress: managed })
+    expect(createBody(calls), 'created a second source on a port another one listens on').toBeUndefined()
+    expect(step(steps, 'source')?.detail).toContain('already listens on 20004')
+    expect(tokens).toEqual([])
+  })
+
+  it('refuses a port outside 20000–20010 on a Cribl-managed group', async () => {
+    const { calls, steps } = await create({}, { ingress: { managed: true, port: 9999 } })
+    expect(createBody(calls)).toBeUndefined()
+    expect(step(steps, 'source')?.detail).toContain('20000–20010')
+  })
+
+  it('makes no token when the create was not confirmed', async () => {
+    const { calls, tokens } = await create({}, {
+      ingress: managed,
+      confirm: (c) => !(c.key === 'source' && c.action === 'create'),
+    })
+    expect(createBody(calls)).toBeUndefined()
+    expect(tokens).toEqual([])
+  })
+
+  it('scrubs the token out of an error Cribl sends back about the create', async () => {
+    const { steps, tokens } = await create({ sourcePostEchoes: true }, { ingress: managed })
+    // The create failed, so nothing was handed out either.
+    expect(tokens).toEqual([])
+    const detail = step(steps, 'source')?.detail ?? ''
+    expect(detail).toContain('<token>')
+    expect(detail).not.toMatch(/[0-9a-f]{64}/)
+  })
+})
+
+describe('the event breaker ruleset', () => {
+  const settled = { routes: [{ ...ROUTE_SPEC }, catchAll], pipeline: { ...PIPELINE_SPEC }, source: { ...SOURCE_SPEC } }
+  const RULESET = `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`
+
+  it('is created before the source that names it', async () => {
+    const calls = stubLeader({ ...settled, breaker: null, sourceStatus: 404 })
+    await runWith({ ingress: { managed: true, port: 20000 } })
+    const order = writes(calls)
+    expect(order).toContain(`POST /m/${GROUP}/lib/breakers`)
+    expect(order.indexOf(`POST /m/${GROUP}/lib/breakers`)).toBeLessThan(order.indexOf(`POST /m/${GROUP}/system/inputs`))
+    expect(calls.find((c) => c.path === `/m/${GROUP}/lib/breakers`)?.body).toEqual(HTTP_BREAKER_SPEC)
+  })
+
+  it('is not written when it already says what the spec says', async () => {
+    const calls = stubLeader({ ...settled, breaker: { ...HTTP_BREAKER_SPEC, tags: 'theirs' } })
+    await run()
+    expect(writes(calls).filter((w) => w.includes('/lib/breakers'))).toEqual([])
+  })
+
+  it('is PATCHed as the whole live ruleset when a rule drifted, keeping what the spec never names', async () => {
+    const drifted = {
+      ...HTTP_BREAKER_SPEC,
+      tags: 'gigamon,json',
+      rules: [{ ...HTTP_BREAKER_SPEC.rules[0], maxEventBytes: 1024, timestampTimezone: 'local' }],
+    }
+    const calls = stubLeader({ ...settled, breaker: drifted })
+    const steps = await run()
+    const body = calls.find((c) => c.method === 'PATCH' && c.path === RULESET)?.body as Record<string, unknown>
+    expect(body, 'the drifted ruleset was not re-applied').toBeDefined()
+    expect(body.tags).toBe('gigamon,json')
+    const rule = (body.rules as Array<Record<string, unknown>>)[0]
+    expect(rule.maxEventBytes).toBe(51200)
+    expect(rule.timestampTimezone).toBe('local')
+    expect(step(steps, 'breaker')?.detail).toContain('rules')
+  })
+})
+
+describe('removing the onboarding stack', () => {
+  const legacyRoute = { id: 'gigamon_ami_syslog', name: 'gigamon_ami_syslog', filter: "__inputId=='syslog:in_gigamon_syslog'" }
+  const remove = (present?: Parameters<typeof removeOnboardingStack>[3]) =>
+    new Promise<StepResult[]>((resolve) => { void removeOnboardingStack(() => {}, GROUP, undefined, present).then(resolve) })
+  const deletes = (calls: Call[]) => calls.filter((c) => c.method === 'DELETE').map((c) => c.path)
+
+  it('takes away the HTTP stack and the Syslog stack an earlier release left, in one routing-table edit', async () => {
+    const calls = stubLeader({ routes: [{ id: 'a', name: 'a' }, legacyRoute, { ...ROUTE_SPEC }, catchAll] })
+    const steps = await remove()
+
+    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'default'])
+    expect(calls.filter((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)).toHaveLength(1)
+    expect(deletes(calls)).toEqual([
+      `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`,
+      `/m/${GROUP}/system/inputs/in_gigamon_syslog`,
+      `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`,
+      `/m/${GROUP}/pipelines/gigamon_syslog`,
+      // Last: the source that names it is gone by now.
+      `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`,
+    ])
+    for (const k of ['route', 'legacy_route', 'source', 'legacy_source', 'pipeline', 'legacy_pipeline', 'breaker']) {
+      expect(step(steps, k)?.detail, k).toBe('deleted')
+    }
+  })
+
+  it('leaves the Syslog objects alone when the status check says they are not there', async () => {
+    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
+    await remove({ legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' })
+    expect(deletes(calls).some((p) => p.includes('syslog'))).toBe(false)
+  })
+
+  it('never deletes the dataset, the destination, or anything not named by id', async () => {
+    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
+    await remove()
+    const allowed = new Set([
+      `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`, `/m/${GROUP}/system/inputs/in_gigamon_syslog`,
+      `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`, `/m/${GROUP}/pipelines/gigamon_syslog`,
+      `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`,
+    ])
+    expect(deletes(calls).filter((p) => !allowed.has(p))).toEqual([])
+  })
+
+  it('commits the breaker file and the old pipeline directory along with the rest', async () => {
+    const calls = stubLeader({
+      routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll],
+      pending: [
+        `groups/${GROUP}/local/cribl/breakers.yml`,
+        `groups/${GROUP}/local/cribl/pipelines/gigamon_syslog/conf.yml`,
+        `groups/${GROUP}/local/cribl/outputs.yml`,
+      ],
+    })
+    await remove()
+    const files = (calls.find((c) => c.path === '/version/commit')?.body as { files?: string[] } | undefined)?.files ?? []
+    expect(files).toContain(`groups/${GROUP}/local/cribl/breakers.yml`)
+    expect(files).toContain(`groups/${GROUP}/local/cribl/pipelines/gigamon_syslog/conf.yml`)
+    // A teardown never touches the destination, so it never commits its file.
+    expect(files).not.toContain(`groups/${GROUP}/local/cribl/outputs.yml`)
+  })
+})
+
+describe('the port picker’s rules', () => {
+  it('holds a Cribl-managed group to 20000–20010 and a hybrid one to any valid port', () => {
+    expect(portProblem(20000, true, [])).toBeNull()
+    expect(portProblem(20010, true, [])).toBeNull()
+    expect(portProblem(19999, true, [])).toContain('20000–20010')
+    expect(portProblem(20011, true, [])).toContain('20000–20010')
+    expect(portProblem(9999, false, [])).toBeNull()
+    for (const bad of [0, 65536, 1.5, Number.NaN]) expect(portProblem(bad, false, []), String(bad)).not.toBeNull()
+  })
+
+  it('refuses a port another source uses, and refuses to guess when it cannot read them', () => {
+    expect(portProblem(20001, true, [20001])).toContain('already listens')
+    expect(portProblem(20001, true, null)).toContain('could not read')
+  })
+
+  it('offers the lowest free port, and none when the managed range is full', () => {
+    expect(suggestPort(true, [20000, 20001])).toBe(20002)
+    expect(suggestPort(true, Array.from({ length: 11 }, (_, i) => 20000 + i))).toBeNull()
+    expect(suggestPort(false, [10080])).toBe(10081)
+  })
+
+  it('counts every port a source listens on, Syslog’s two included', () => {
+    expect(portsInUse([
+      { id: 'a', type: 'syslog', connectedOutputs: [], ports: [5514, 5515] },
+      { id: 'b', type: 'http_raw', connectedOutputs: [], ports: [20001] },
+    ])).toEqual([5514, 5515, 20001])
+  })
+
+  it('builds https only for a source that terminates TLS', () => {
+    expect(postUrl('default.main.x.cribl.cloud', 20001, true)).toBe('https://default.main.x.cribl.cloud:20001/')
+    expect(postUrl('worker', 10080, false)).toBe('http://worker:10080/')
   })
 })
 

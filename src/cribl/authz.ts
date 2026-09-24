@@ -91,8 +91,8 @@ export type WriteSurface =
 /** Every control in this app that performs a write. One id per control, because
  *  the id is what a `<GatedControl>` carries and what a denial is latched to. */
 export type WriteId =
-  | 'syslog_stack.apply'
-  | 'syslog_stack.remove'
+  | 'onboarding_stack.apply'
+  | 'onboarding_stack.remove'
   | 'search_caps.save'
   | 'dataset_intel.generate'
   | 'hung_job.cancel'
@@ -115,11 +115,11 @@ export interface GatedWrite {
 
 /** The controls, and what each one is. */
 export const GATED_WRITES: Record<WriteId, GatedWrite> = {
-  'syslog_stack.apply': {
+  'onboarding_stack.apply': {
     surface: 'config',
     does: 'applying the Gigamon AMI onboarding stack',
   },
-  'syslog_stack.remove': {
+  'onboarding_stack.remove': {
     surface: 'config',
     does: 'removing the Gigamon AMI onboarding stack',
   },
@@ -221,51 +221,57 @@ export const WRITE_SITES: readonly WriteSite[] = [
   // --- Guided Setup: the only customer configuration this app writes --------
   {
     at: 'cribl/provision.ts#ensureDataset',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'POST creates the Cribl Lake dataset the dashboards read, when the tenant has none.',
   },
   {
     at: 'cribl/provision.ts#ensureDestination',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'POST creates the Cribl Lake destination on a tenant that lacks it.',
   },
   {
+    at: 'cribl/provision.ts#ensureBreaker',
+    gates: ['onboarding_stack.apply'],
+    surface: 'config',
+    why: 'POST creates the event breaker ruleset the Raw HTTP source names, in the group library; PATCH overwrites its rules on a re-apply, only when the live ruleset differs, and as a read-modify-write of the whole object because the endpoint deletes any field a PATCH omits.',
+  },
+  {
     at: 'cribl/provision.ts#ensurePipeline',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply — but only when the live list does not already say what the spec says. Until Phase 3 it PATCHed whenever the object existed, so a re-apply of a settled stack wrote twice, dirtied the group\'s Git status and carried the run on into a deploy that restarts Worker Processes.',
   },
   {
     at: 'cribl/provision.ts#ensureSource',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
-    why: 'POST creates the Syslog source; PATCH overwrites its settings on a re-apply — the call slice 1.3 shipped undeclared, and since Phase 3 one that is sent only when the live source differs. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function now takes, which is where a caller can be shown what is about to change rather than only which object.',
+    why: 'POST creates the Raw HTTP source, with the port, TLS mode and app-generated auth token chosen at creation; PATCH overwrites its other settings on a re-apply, only when the live source differs, and never its port, TLS or token. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function takes, which is where a caller can be shown what is about to change rather than only which object.',
   },
   {
     at: 'cribl/provision.ts#ensureRoute',
-    gates: ['syslog_stack.apply'],
+    gates: ['onboarding_stack.apply'],
     surface: 'config',
     why: 'PATCH replaces the group routing table wholesale — the most consequential write in the app.',
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['syslog_stack.apply', 'syslog_stack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove'],
     surface: 'config',
     why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both controls end here.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['syslog_stack.apply', 'syslog_stack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove'],
     surface: 'config',
     why: 'POST /version/commit writes a Git commit on the Leader. Both controls end here.',
   },
   {
-    at: 'cribl/provision.ts#removeSyslogStack',
-    gates: ['syslog_stack.remove'],
+    at: 'cribl/provision.ts#removeOnboardingStack',
+    gates: ['onboarding_stack.remove'],
     surface: 'config',
-    why: 'PATCH drops our route from the table; DELETE removes the source and the pipeline.',
+    why: 'PATCH drops our routes from the table — this release’s and the Syslog route an earlier release created; DELETE removes the Raw HTTP source, the pipeline and the breaker ruleset, and the old Syslog source and pipeline where they are still there.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------

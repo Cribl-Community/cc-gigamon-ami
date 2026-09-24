@@ -24,8 +24,8 @@
 #   the equivalent of `*` for a child path.
 #
 #   LITERALS WHERE THE APP ONLY EVER CALLS ONE VALUE. Search runs only in
-#   `default_search`, and Guided Setup only ever touches the three objects it
-#   created — so this file says `/m/:gid/system/inputs/in_gigamon_syslog` rather
+#   `default_search`, and Guided Setup only ever touches the objects it
+#   created — so this file says `/m/:gid/system/inputs/in_gigamon_http` rather
 #   than `/m/:gid/system/inputs/*`. The grant an admin approves is then "may
 #   delete the input this app made", not "may delete any input".
 #
@@ -34,9 +34,10 @@
 # `gigamon_ami` and read the results — that is most of the objects below. The
 # rest are the writes CLAUDE.md lists under "App-specific conventions":
 #
-#   1. Guided Setup provisioning — the syslog source, pipeline, route, Lake
-#      dataset, a Git commit on the Leader and a deploy that restarts that
-#      group's Worker Processes. Behind a confirmation in
+#   1. Guided Setup provisioning — the Raw HTTP source, its event breaker
+#      ruleset, pipeline, route, Lake dataset, a Git commit on the Leader and a
+#      deploy that restarts that group's Worker Processes; and the removal of
+#      the Syslog stack an earlier release created. Behind a confirmation in
 #      components/ProvisionPanel.tsx that names each object.
 #   2. The scheduled saved searches (acceleration) — created,
 #      corrected, paused, resumed and deleted. Behind confirmations in
@@ -81,7 +82,7 @@
 #     create scheduled saved searches that RUN ON A CRON AND SPEND CREDITS until
 #     somebody stops them — and uninstalling the app does not stop them (I-D28);
 #   * any Member who can open it can reach Guided Setup's Remove and delete the
-#     syslog source, the pipeline and this app's route in the worker group they
+#     Raw HTTP source, the pipeline and this app's route in the worker group they
 #     pick — the teardown, not the customer's own objects, but a teardown all the
 #     same;
 #   * any Member who can open it can SHORTEN RETENTION on the `gigamon_ami` Lake
@@ -233,7 +234,7 @@ policies:
   - object: '/ai/settings/dataset-intelligence/:dataset'
     actions: ['GET', 'POST']
 
-  # --- Guided Setup: the Gigamon AMI syslog onboarding stack ------------------
+  # --- Guided Setup: the Gigamon AMI Raw HTTP onboarding stack ----------------
   # cribl/provision.ts, reached only from the Guided Setup tab's confirmed
   # Deploy / Remove buttons. Everything it creates is additive and scoped to the
   # five objects named in that confirmation. It never edits the demo DataGen
@@ -355,28 +356,38 @@ policies:
   # narrow that; the README says so plainly under "What installing this app
   # grants".
 
-  # The Syslog source Gigamon AMX exports arrive on (TCP/UDP 5514). POST creates
-  # it; GET answers "does it exist yet" and drives the status pill; PATCH
-  # re-applies the spec to one that is already there — that is the grant slice
-  # 1.3 shipped without, where deploying a fresh stack worked and every re-apply
-  # afterwards 403ed; DELETE is the teardown, and only ever of this source.
+  # The Raw HTTP source Gigamon AMX POSTs its records to. POST creates it, with
+  # the port picked in Guided Setup, TLS on a Cribl-managed group and an auth
+  # token the app generates and shows once; GET answers "does it exist yet",
+  # drives the status pill and gives the endpoint card its port and TLS state;
+  # PATCH re-applies the spec to one that is already there, only when it
+  # differs, as the whole live object — and never changes its port, TLS or
+  # token; DELETE is the teardown, and only ever of this source.
   #
-  # Since Phase 3 the PATCH is sent only when the live source does not already
-  # say what the spec says. It used to go out on every re-apply regardless, which
-  # dirtied the group's Git status and carried the run on into a commit and a
-  # deploy for a change that was not one.
-  #
-  # GET on the COLLECTION is the landing panel's, not provisioning's: it lists
-  # the group's sources so the app can work out what actually writes through the
-  # gigamon_lake destination. The routing table is not the whole answer — on the
-  # workspace this was measured against, a source reaches Cribl Lake through a
-  # QuickConnect binding on the source itself and appears in no route at all — so
-  # a destination confirmation built on routes alone would under-report the feeds
-  # it affects. It reads every source in the group, including ones this app did
-  # not create; it shows only those wired to this destination.
+  # GET on the COLLECTION is shared by two panels. The landing panel lists the
+  # group's sources to work out what actually writes through the gigamon_lake
+  # destination — on the workspace this was measured against, a source reaches
+  # Cribl Lake through a QuickConnect binding on the source itself and appears
+  # in no route at all. Guided Setup reads the same list for the ports the
+  # group's sources already listen on, so the new source gets a free one. It
+  # reads every source in the group, including ones this app did not create.
   - object: '/m/:gid/system/inputs'
     actions: ['GET', 'POST']
+  - object: '/m/:gid/system/inputs/in_gigamon_http'
+    actions: ['GET', 'PATCH', 'DELETE']
+  # The Syslog source an earlier release created. GET so Remove can name it,
+  # DELETE so Remove can take it away. Nothing creates or edits it any more.
   - object: '/m/:gid/system/inputs/in_gigamon_syslog'
+    actions: ['GET', 'DELETE']
+
+  # The event breaker ruleset the Raw HTTP source names: it splits each POSTed
+  # JSON array into one event per AMI record. A global object in the group's
+  # library, created only by this app under its own id. POST creates, GET
+  # checks, PATCH re-applies the rules as the whole live object when they
+  # differ, DELETE is the teardown — after the source that names it.
+  - object: '/m/:gid/lib/breakers'
+    actions: ['POST']
+  - object: '/m/:gid/lib/breakers/gigamon_ami_json_array'
     actions: ['GET', 'PATCH', 'DELETE']
 
   # The Cribl Lake destination. POST creates it only on a tenant that does not
@@ -406,14 +417,17 @@ policies:
   - object: '/m/:gid/system/outputs/gigamon_lake'
     actions: ['GET', 'PATCH']
 
-  # The pipeline that parses Gigamon AMI JSON out of the syslog message and
-  # normalizes its fields. POST creates, GET checks, PATCH re-applies the
+  # The pipeline that normalizes Gigamon AMI fields — the same casts and derived
+  # fields the demo feed gets. POST creates, GET checks, PATCH re-applies the
   # function list to an existing one — and, as with the source above, only when
   # that list actually differs — DELETE is the teardown.
   - object: '/m/:gid/pipelines'
     actions: ['POST']
-  - object: '/m/:gid/pipelines/gigamon_syslog'
+  - object: '/m/:gid/pipelines/gigamon_http_normalize'
     actions: ['GET', 'PATCH', 'DELETE']
+  # The Syslog pipeline an earlier release created: read and removed only.
+  - object: '/m/:gid/pipelines/gigamon_syslog'
+    actions: ['GET', 'DELETE']
 
   # A group has ONE routing table and PATCH replaces it wholesale, so this is the
   # most consequential entry in the file. provision.ts edits the array it just
@@ -432,7 +446,7 @@ policies:
   # group never deployed? Without them a commit whose deploy failed can never be
   # deployed by this app again.
   #
-  # TWO SURFACES COMMIT, not one: Guided Setup's five objects, and (Phase 3) the
+  # TWO SURFACES COMMIT, not one: Guided Setup's objects, and (Phase 3) the
   # Lake landing panel's single outputs.yml. Both always pass an explicit file
   # list, because this API commits every pending change in the repository when
   # given none. Neither can avoid carrying somebody else's pending edit to a file

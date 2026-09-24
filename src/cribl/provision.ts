@@ -1,10 +1,26 @@
 // Guided-setup provisioning client.
 //
-// Deploys the *real-world* Gigamon AMI onboarding path into the Cribl Stream
-// `default` group — a Syslog source, a parse+normalize pipeline, a route, and
-// the Cribl Lake dataset — so a user can point their Gigamon Application
-// Metadata Exporter (AMX) at Cribl and have flows land in the same `gigamon_ami`
-// dataset these dashboards already read.
+// Deploys the *real-world* Gigamon AMI onboarding path into a Cribl Stream
+// worker group — a Raw HTTP source with a JSON-array event breaker, a normalize
+// pipeline, a route, and the Cribl Lake dataset — so a user can point their
+// Gigamon Application Metadata Exporter (AMX) at Cribl and have flows land in
+// the same `gigamon_ami` dataset these dashboards already read.
+//
+// ── RAW HTTP, NOT SYSLOG (owner decision, 2026-09-24) ────────────────────────
+//
+// Real AMX deployments POST JSON arrays of AMI records over HTTP; the model is
+// the live `http_raw` input a Gigamon lab runs. So this release creates an
+// `http_raw` source with an app-generated auth token, TLS on Cribl's own
+// certificate on a Cribl-managed group (off on a hybrid one, and the endpoint
+// card says so), and a breaker ruleset that splits each POSTed array into one
+// event per record. The pipeline no longer parses a syslog message: the breaker
+// already extracted the fields, so only the cast and derive functions remain —
+// the same two the pack's sample pipeline carries, so HTTP rows and DataGen rows
+// have the same shape.
+//
+// The Syslog stack earlier releases created (`LEGACY_SYSLOG_*` below) is no
+// longer created or edited. It is only READ, so the screen can say it is there,
+// and REMOVED by the same confirmed teardown that removes the HTTP stack.
 //
 // Every operation is idempotent and ADDITIVE: it never edits the demo DataGen
 // source, the existing `gigamon_ami` pipeline, or the `gigamon_lake`
@@ -21,7 +37,7 @@
 // Nothing here enforces that, because nothing here can tell a deliberate click
 // from an accidental one: the confirmation lives in components/ProvisionPanel.tsx
 // (it moved out of tabs/GuidedSetup.tsx with the rest of the provisioning half),
-// in front of `deployAll` and `removeSyslogStack`, which are the only two entry
+// in front of `deployAll` and `removeOnboardingStack`, which are the only two entry
 // points that write anything. Every other export is a GET.
 //
 // Calls go through cribl/capi.ts, which is where the auth story lives: the
@@ -77,20 +93,49 @@ import {
   DEFAULT_PROFILE, datasetSpec, destinationSpec, sameDiff,
   type DiffRow, type LandingProfile,
 } from './landing'
+import { listInputs, type StreamInput } from './lake'
 import { loadCommitMemory } from './setupMemory'
 
-export const SYSLOG_SOURCE_ID = 'in_gigamon_syslog'
-export const SYSLOG_PIPELINE_ID = 'gigamon_syslog'
-export const SYSLOG_ROUTE_ID = 'gigamon_ami_syslog'
+/** The Raw HTTP source Gigamon AMX POSTs to. Global (not pack) ids, and each is
+ *  distinct from every id in the onboarding pack (src/cribl/pack.ts), so the
+ *  pack can be installed beside this stack and migrated to side by side. */
+export const HTTP_SOURCE_ID = 'in_gigamon_http'
+/** Cast + derive only: the breaker below has already extracted the fields. */
+export const HTTP_PIPELINE_ID = 'gigamon_http_normalize'
+export const HTTP_ROUTE_ID = 'gigamon_ami_http'
+/**
+ * The event breaker ruleset the source names. A GLOBAL object in the group's
+ * library, created by this app — and named for what it does rather than after
+ * the lab ruleset it is modelled on (`gigamon_json_http`), so a group that
+ * already has that one is never edited or deleted by this app.
+ */
+export const HTTP_BREAKER_ID = 'gigamon_ami_json_array'
 export const LAKE_DESTINATION_ID = 'gigamon_lake'
 export const LAKE_DATASET_ID = 'gigamon_ami'
-export const SYSLOG_PORT = 5514
+
+/**
+ * The Syslog stack earlier releases created. Read and removed, never created or
+ * edited: the teardown still has to take these away on a tenant that has them,
+ * because "installs but cannot uninstall" does not stop being true when a
+ * release changes what it installs.
+ */
+export const LEGACY_SYSLOG_SOURCE_ID = 'in_gigamon_syslog'
+export const LEGACY_SYSLOG_PIPELINE_ID = 'gigamon_syslog'
+export const LEGACY_SYSLOG_ROUTE_ID = 'gigamon_ami_syslog'
+
+/** The only ports a Cribl-managed (Cribl.Cloud) worker group exposes for a
+ *  source. A hybrid group's workers are the customer's, so any port works there. */
+export const CLOUD_PORT_RANGE = Object.freeze({ min: 20000, max: 20010 })
+/** Where a hybrid group's picker starts: Cribl's own default for a Raw HTTP
+ *  source. A suggestion, checked against the group's other sources like any
+ *  other port. */
+export const HYBRID_DEFAULT_PORT = 10080
 const LAKE_ID = 'default'
 
 // --- Resource specs (exported so the UI can show exactly what gets created) ---
 
 /** The two Evals below are copied verbatim from the existing `gigamon_ami`
- *  pipeline so syslog-delivered flows get identical field derivations. */
+ *  pipeline so HTTP-delivered flows get identical field derivations. */
 const NUMERIC_FIELDS = [
   'src_bytes', 'dst_bytes', 'src_packets', 'dst_packets', 'src_port', 'dst_port',
   'protocol', 'app_id', 'ip_version', 'tcp_rtt', 'tcp_rtt_app', 'tcp_dup_ack',
@@ -121,47 +166,145 @@ const DERIVE_FN = {
   },
 }
 
-// Syslog-specific pre-parse: Gigamon AMX exports AMI records as JSON in the
-// syslog MSG. Fall back to _raw when the source delivers unframed JSON, then
-// extract the JSON into top-level fields. (CEF export would need a different
-// parse — see the note in the Guided Setup tab.)
-const PREP_FN = {
-  id: 'eval', filter: 'true', disabled: false, description: 'Fallback to _raw when no syslog MSG',
-  conf: { add: [{ name: 'message', value: 'message==null?_raw:message' }] },
-}
-const PARSE_FN = {
-  id: 'serde', filter: "typeof message==='string' && message.trim().charAt(0)==='{'", disabled: false,
-  description: 'Parse Gigamon AMI JSON from the syslog message',
-  conf: { mode: 'extract', type: 'json', srcField: 'message' },
-}
-
+/**
+ * NO PARSE STEP. The Syslog pipeline began with a fallback-to-_raw Eval and a
+ * JSON `serde` of the syslog message. Over HTTP there is no message to take
+ * apart: `HTTP_BREAKER_SPEC` below splits the POSTed array and extracts every
+ * record's fields (`jsonExtractAll`) before the pipeline runs, just as the
+ * DataGen's events arrive already as objects. So this is the pack's sample
+ * pipeline — cast and derive — and the two feeds produce rows of one shape.
+ */
 export const PIPELINE_SPEC = {
-  id: SYSLOG_PIPELINE_ID,
-  conf: { functions: [PREP_FN, PARSE_FN, CAST_FN, DERIVE_FN] },
+  id: HTTP_PIPELINE_ID,
+  conf: { functions: [CAST_FN, DERIVE_FN] },
 }
 
+/**
+ * The breaker ruleset, from the lab model (`gigamon_json_http`): one
+ * `json_array` rule over the whole body, every record's fields extracted, a
+ * 51,200-byte cap per event, and the timestamp found automatically in the first
+ * 150 characters. `minRawLength` 256 is the model's.
+ */
+export const HTTP_BREAKER_SPEC = {
+  id: HTTP_BREAKER_ID,
+  lib: 'custom',
+  description: 'Gigamon AMI: one event per record of a POSTed JSON array',
+  minRawLength: 256,
+  rules: [
+    {
+      name: 'gigamon_ami_json_array',
+      condition: 'true',
+      type: 'json_array',
+      jsonExtractAll: true,
+      maxEventBytes: 51200,
+      timestampAnchorRegex: '/^/',
+      timestamp: { type: 'auto', length: 150 },
+      disabled: false,
+    },
+  ],
+}
+
+/**
+ * What a re-apply asserts on the source. DELIBERATELY NOT THE WHOLE SOURCE:
+ * the port, TLS and the auth token are set once, at creation, and never
+ * re-asserted — see `sourceCreateBody`. A re-apply that reset them would move
+ * the exporter's port, strip a certificate a hybrid customer added, or (for the
+ * token) need a copy of a secret this app deliberately does not keep.
+ */
 export const SOURCE_SPEC = {
-  id: SYSLOG_SOURCE_ID,
-  type: 'syslog',
+  id: HTTP_SOURCE_ID,
+  type: 'http_raw',
   disabled: false,
   host: '0.0.0.0',
-  tcpPort: SYSLOG_PORT,
-  udpPort: SYSLOG_PORT,
   sendToRoutes: true,
+  breakerRulesets: [HTTP_BREAKER_ID],
+  autoParse: false,
   streamtags: ['gigamon', 'ami'],
 }
 
 export const ROUTE_SPEC = {
-  id: SYSLOG_ROUTE_ID,
-  name: SYSLOG_ROUTE_ID,
+  id: HTTP_ROUTE_ID,
+  name: HTTP_ROUTE_ID,
   final: true,
   disabled: false,
-  filter: `__inputId=='syslog:${SYSLOG_SOURCE_ID}'`,
-  pipeline: SYSLOG_PIPELINE_ID,
+  filter: `__inputId=='http_raw:${HTTP_SOURCE_ID}'`,
+  pipeline: HTTP_PIPELINE_ID,
   output: LAKE_DESTINATION_ID,
-  description: 'Gigamon AMI syslog → parse → Cribl Lake (gigamon_ami)',
+  description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami)',
   clones: [],
   enableOutputExpression: false,
+}
+
+// --- How the source listens: port, TLS and its auth token -----------------
+
+/**
+ * Where the new source listens and how. `managed` is the worker group's
+ * `onPrem === false` (cribl/lake.ts `listStreamGroupsCurrent`): Cribl runs the
+ * workers, exposes only `CLOUD_PORT_RANGE`, and provides a certificate through
+ * `$CRIBL_CLOUD_CRT` / `$CRIBL_CLOUD_KEY`. A hybrid group's workers are the
+ * customer's, have no such certificate, and take any port.
+ */
+export interface HttpIngress {
+  managed: boolean
+  port: number
+}
+
+/** TLS for a new source: Cribl's certificate on a managed group, none on a
+ *  hybrid one — where the endpoint card says the traffic is unencrypted. */
+export function tlsFor(managed: boolean): Record<string, unknown> {
+  return managed
+    ? { disabled: false, minVersion: 'TLSv1.2', certPath: '$CRIBL_CLOUD_CRT', privKeyPath: '$CRIBL_CLOUD_KEY' }
+    : { disabled: true }
+}
+
+/**
+ * A fresh auth token for the source: 32 random bytes from the platform CSPRNG
+ * (256 bits), hex-encoded. It exists in exactly two places afterwards — the
+ * source's own `authTokensExt`, and the endpoint card that shows it once. It is
+ * never written to the KV store, a log, a toast, a step result or the audit
+ * trail; provision.test.ts holds each of those still.
+ */
+export function generateToken(): string {
+  const bytes = new Uint8Array(32)
+  globalThis.crypto.getRandomValues(bytes)
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** The POST that creates the source: the re-apply spec plus the three things
+ *  set only at creation. */
+export function sourceCreateBody(ingress: HttpIngress, token: string): Record<string, unknown> {
+  return {
+    ...SOURCE_SPEC,
+    port: ingress.port,
+    tls: tlsFor(ingress.managed),
+    authTokensExt: [{ token, authType: 'manual' }],
+  }
+}
+
+/**
+ * Why a port cannot be used for the new source, or null when it can.
+ *
+ * `used` is every port another source in the group already listens on; null
+ * means that list could not be read, which is refused rather than guessed —
+ * two sources on one port is a bind failure on every worker in the group.
+ */
+export function portProblem(port: number, managed: boolean, used: readonly number[] | null): string | null {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 'Enter a whole number between 1 and 65535.'
+  if (managed && (port < CLOUD_PORT_RANGE.min || port > CLOUD_PORT_RANGE.max)) {
+    return `A Cribl-managed worker group only exposes ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}.`
+  }
+  if (used === null) return 'This app could not read the group’s sources, so it cannot check that this port is free.'
+  if (used.includes(port)) return `Another source in this group already listens on ${port}.`
+  return null
+}
+
+/** The port the picker offers first: the lowest free one in the managed range,
+ *  or the first free one from the hybrid default up. Null when none is free. */
+export function suggestPort(managed: boolean, used: readonly number[] | null): number | null {
+  const taken = used ?? []
+  const [from, to] = managed ? [CLOUD_PORT_RANGE.min, CLOUD_PORT_RANGE.max] : [HYBRID_DEFAULT_PORT, 65535]
+  for (let p = from; p <= to; p++) if (!taken.includes(p)) return p
+  return null
 }
 
 // --- The two Cribl Lake specs, from a profile rather than from literals ------
@@ -278,7 +421,18 @@ export async function listStreamGroups(): Promise<StreamGroup[]> {
 
 // --- Status ---------------------------------------------------------------
 
-export type ResourceKey = 'dataset' | 'destination' | 'pipeline' | 'source' | 'route'
+export type ResourceKey = 'dataset' | 'destination' | 'breaker' | 'pipeline' | 'source' | 'route'
+
+/**
+ * The three objects of the Syslog stack earlier releases created. A separate
+ * key set rather than more `ResourceKey`s: every `Record<ResourceKey, …>` on the
+ * screen is a row this release creates, and these are rows it only removes.
+ */
+export type LegacyKey = 'legacy_source' | 'legacy_pipeline' | 'legacy_route'
+export const LEGACY_KEYS: readonly LegacyKey[] = Object.freeze(['legacy_source', 'legacy_pipeline', 'legacy_route'])
+
+/** Anything a Guided Setup commit can carry a file for. */
+export type CommitKey = ResourceKey | LegacyKey
 
 /**
  * What a status check can honestly say about one resource.
@@ -294,6 +448,7 @@ export type ResourceKey = 'dataset' | 'destination' | 'pipeline' | 'source' | 'r
 export type ResourceState = 'present' | 'absent' | 'unreadable'
 
 export type SetupStatus = Record<ResourceKey, ResourceState>
+export type LegacyStatus = Record<LegacyKey, ResourceState>
 
 /** What one status GET really told us. `present` is the caller's own reading of
  *  the body; a refusal overrides it, because the body of a refused call says
@@ -303,30 +458,81 @@ function stateOf(r: ApiResp, present: boolean): ResourceState {
   return present ? 'present' : 'absent'
 }
 
+type RouteRow = { id?: string; name?: string }
+const routeRows = (r: ApiResp): RouteRow[] =>
+  ((r.body as { items?: Array<{ routes?: RouteRow[] }> })?.items?.[0]?.routes) || []
+const hasRoute = (rows: RouteRow[], id: string) => rows.some((x) => x.id === id || x.name === id)
+
 export async function checkStatus(group: string = DEFAULT_STREAM_GROUP): Promise<SetupStatus> {
-  const [ds, dest, pipe, src, routes] = await Promise.all([
+  const [ds, dest, brk, pipe, src, routes] = await Promise.all([
     capi('GET', datasetsPath),
     capi('GET', g(group, `/system/outputs/${LAKE_DESTINATION_ID}`)),
-    capi('GET', g(group, `/pipelines/${SYSLOG_PIPELINE_ID}`)),
-    capi('GET', g(group, `/system/inputs/${SYSLOG_SOURCE_ID}`)),
+    capi('GET', g(group, `/lib/breakers/${HTTP_BREAKER_ID}`)),
+    capi('GET', g(group, `/pipelines/${HTTP_PIPELINE_ID}`)),
+    capi('GET', g(group, `/system/inputs/${HTTP_SOURCE_ID}`)),
     capi('GET', g(group, '/routes')),
   ])
   const dsItems = (ds.body as { items?: Array<{ id?: string }> })?.items || []
-  const routeList = ((routes.body as { items?: Array<{ routes?: Array<{ id?: string; name?: string }> }> })?.items?.[0]?.routes) || []
   return {
     dataset: stateOf(ds, dsItems.some((d) => d.id === LAKE_DATASET_ID)),
     destination: stateOf(dest, dest.status === 200),
+    breaker: stateOf(brk, brk.status === 200),
     pipeline: stateOf(pipe, pipe.status === 200),
     source: stateOf(src, src.status === 200),
-    route: stateOf(routes, routeList.some((r) => r.id === SYSLOG_ROUTE_ID || r.name === SYSLOG_ROUTE_ID)),
+    route: stateOf(routes, hasRoute(routeRows(routes), HTTP_ROUTE_ID)),
+  }
+}
+
+/**
+ * Whether the Syslog stack an earlier release created is still in this group.
+ * Read-only, and read so the teardown can name what it will delete — never so
+ * anything can be offered for re-apply.
+ */
+export async function checkLegacyStatus(group: string = DEFAULT_STREAM_GROUP): Promise<LegacyStatus> {
+  const [src, pipe, routes] = await Promise.all([
+    capi('GET', g(group, `/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`)),
+    capi('GET', g(group, `/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`)),
+    capi('GET', g(group, '/routes')),
+  ])
+  return {
+    legacy_source: stateOf(src, src.status === 200),
+    legacy_pipeline: stateOf(pipe, pipe.status === 200),
+    legacy_route: stateOf(routes, hasRoute(routeRows(routes), LEGACY_SYSLOG_ROUTE_ID)),
+  }
+}
+
+/** Where the live HTTP source listens — what the endpoint card prints. */
+export interface HttpEndpoint {
+  port: number | null
+  /** True when the source terminates TLS. False is the hybrid default, and the
+   *  card then says the traffic is unencrypted. */
+  tls: boolean
+}
+
+/**
+ * Read the port and TLS state off the live source, rather than off whatever the
+ * picker was set to: the source may have been created by an earlier run, or
+ * edited in Cribl since. Null when it cannot be read. The auth token is in the
+ * same body and is deliberately not taken out of it.
+ */
+export async function readHttpEndpoint(group: string = DEFAULT_STREAM_GROUP): Promise<HttpEndpoint | null> {
+  const r = await capi('GET', g(group, `/system/inputs/${HTTP_SOURCE_ID}`))
+  if (r.status !== 200) return null
+  const live = firstItem(r)
+  if (!live) return null
+  const tls = live.tls as { disabled?: unknown } | undefined
+  return {
+    port: typeof live.port === 'number' ? live.port : null,
+    tls: !!tls && typeof tls === 'object' && tls.disabled === false,
   }
 }
 
 // --- Ensure (idempotent create/update) -----------------------------------
 
 export type StepAction = 'created' | 'updated' | 'exists' | 'error' | 'skipped'
+export type StepKey = CommitKey | 'commit' | 'deploy'
 export interface StepResult {
-  key: ResourceKey | 'commit' | 'deploy'
+  key: StepKey
   action: StepAction
   detail?: string
   /** On a successful `commit` step: the commit message and Git hash, so the UI
@@ -407,24 +613,32 @@ async function agreed(confirm: ConfirmChange, change: PendingChange): Promise<bo
 }
 
 /** Human labels for each resource, used in step logs and phase pop-ups. */
-export const STEP_LABELS: Record<ResourceKey | 'commit' | 'deploy', string> = {
+export const STEP_LABELS: Record<StepKey, string> = {
   dataset: 'Lake dataset',
   destination: 'Lake destination',
+  breaker: 'Event breaker',
   pipeline: 'Pipeline',
-  source: 'Syslog source',
+  source: 'Raw HTTP source',
   route: 'Route',
+  legacy_source: 'Old Syslog source',
+  legacy_pipeline: 'Old Syslog pipeline',
+  legacy_route: 'Old Syslog route',
   commit: 'Commit',
   deploy: 'Deploy',
 }
 
 // Rich, human-readable description of each resource — names the concrete Cribl
 // object and what it does, so the Git commit history explains itself.
-const RESOURCE_PHRASE: Record<ResourceKey, string> = {
+const RESOURCE_PHRASE: Record<CommitKey, string> = {
   dataset: `Cribl Lake dataset '${LAKE_DATASET_ID}'`,
   destination: `Cribl Lake destination '${LAKE_DESTINATION_ID}' → dataset '${LAKE_DATASET_ID}'`,
-  pipeline: `pipeline '${SYSLOG_PIPELINE_ID}' (parse Gigamon AMI JSON + normalize fields)`,
-  source: `Syslog source '${SYSLOG_SOURCE_ID}' (TCP/UDP ${SYSLOG_PORT})`,
-  route: `route '${SYSLOG_ROUTE_ID}' → Cribl Lake '${LAKE_DATASET_ID}'`,
+  breaker: `event breaker ruleset '${HTTP_BREAKER_ID}' (one event per record of a JSON array)`,
+  pipeline: `pipeline '${HTTP_PIPELINE_ID}' (normalize Gigamon AMI fields)`,
+  source: `Raw HTTP source '${HTTP_SOURCE_ID}'`,
+  route: `route '${HTTP_ROUTE_ID}' → Cribl Lake '${LAKE_DATASET_ID}'`,
+  legacy_source: `Syslog source '${LEGACY_SYSLOG_SOURCE_ID}' (from an earlier release)`,
+  legacy_pipeline: `pipeline '${LEGACY_SYSLOG_PIPELINE_ID}' (from an earlier release)`,
+  legacy_route: `route '${LEGACY_SYSLOG_ROUTE_ID}' (from an earlier release)`,
 }
 
 /**
@@ -433,24 +647,24 @@ const RESOURCE_PHRASE: Record<ResourceKey, string> = {
  * Gigamon Network Observability app did and why, not just "guided setup".
  */
 function deployCommitMessage(group: string, steps: StepResult[]): string {
-  const committed = steps.filter((s) => groupFile(group, s.key as ResourceKey))
-  const created = committed.filter((s) => s.action === 'created').map((s) => RESOURCE_PHRASE[s.key as ResourceKey])
-  const updated = committed.filter((s) => s.action === 'updated').map((s) => RESOURCE_PHRASE[s.key as ResourceKey])
+  const committed = steps.filter((s) => groupFile(group, s.key as CommitKey))
+  const created = committed.filter((s) => s.action === 'created').map((s) => RESOURCE_PHRASE[s.key as CommitKey])
+  const updated = committed.filter((s) => s.action === 'updated').map((s) => RESOURCE_PHRASE[s.key as CommitKey])
   const clauses: string[] = []
   if (created.length) clauses.push(`added ${created.join(', ')}`)
   if (updated.length) clauses.push(`updated ${updated.join(', ')}`)
   const what = clauses.length ? `: ${clauses.join('; ')}` : ''
   return (
-    `Gigamon Network Observability — onboard Gigamon AMI over Syslog into worker group '${group}'${what}. ` +
+    `Gigamon Network Observability — onboard Gigamon AMI over Raw HTTP into worker group '${group}'${what}. ` +
     `Real AMX exports land in Cribl Lake dataset '${LAKE_DATASET_ID}', feeding the Gigamon Network Observability dashboards.`
   )
 }
 
 /** Commit message for teardown, naming exactly what was removed. */
-function removeCommitMessage(group: string, keys: ResourceKey[]): string {
+function removeCommitMessage(group: string, keys: CommitKey[]): string {
   const removed = keys.map((k) => RESOURCE_PHRASE[k]).join(', ')
   return (
-    `Gigamon Network Observability — remove Gigamon AMI Syslog onboarding from worker group '${group}': deleted ${removed}. ` +
+    `Gigamon Network Observability — remove Gigamon AMI onboarding from worker group '${group}': deleted ${removed}. ` +
     `Cribl Lake dataset '${LAKE_DATASET_ID}' retained (shared, group-independent).`
   )
 }
@@ -461,13 +675,18 @@ function removeCommitMessage(group: string, keys: ResourceKey[]): string {
  * pending changes elsewhere in the group. Returns null for resources that are
  * not part of the group's Git config (the Lake dataset lives in Cribl Lake).
  */
-function groupFile(group: string, key: ResourceKey): string | null {
+function groupFile(group: string, key: CommitKey): string | null {
   const root = `groups/${group}/local/cribl`
   switch (key) {
     case 'destination': return `${root}/outputs.yml`
-    case 'source': return `${root}/inputs.yml`
-    case 'route': return `${root}/pipelines/route.yml`
-    case 'pipeline': return `${root}/pipelines/${SYSLOG_PIPELINE_ID}/conf.yml`
+    case 'source': case 'legacy_source': return `${root}/inputs.yml`
+    case 'route': case 'legacy_route': return `${root}/pipelines/route.yml`
+    // Where a group keeps its custom event breaker rulesets. NOT MEASURED on a
+    // Leader's /version/status; `filesToCommit` prefers the path Git reports
+    // and matches it by `fileMarker`, so this is only the fallback.
+    case 'breaker': return `${root}/breakers.yml`
+    case 'pipeline': return `${root}/pipelines/${HTTP_PIPELINE_ID}/conf.yml`
+    case 'legacy_pipeline': return `${root}/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}/conf.yml`
     case 'dataset': return null // Cribl Lake — not a Stream group Git file
     default: return null
   }
@@ -510,12 +729,14 @@ async function pendingFiles(): Promise<string[] | null> {
  * whether the versioning root yields `groups/<gid>/local/cribl/pipelines/route.yml` or a
  * group-rooted `local/cribl/pipelines/route.yml` — we don't guess the prefix.
  */
-function fileMarker(key: ResourceKey): string | null {
+function fileMarker(key: CommitKey): string | null {
   switch (key) {
     case 'destination': return 'local/cribl/outputs.yml'
-    case 'source': return 'local/cribl/inputs.yml'
-    case 'route': return 'local/cribl/pipelines/route.yml'
-    case 'pipeline': return `local/cribl/pipelines/${SYSLOG_PIPELINE_ID}/`
+    case 'source': case 'legacy_source': return 'local/cribl/inputs.yml'
+    case 'route': case 'legacy_route': return 'local/cribl/pipelines/route.yml'
+    case 'breaker': return 'local/cribl/breakers.yml'
+    case 'pipeline': return `local/cribl/pipelines/${HTTP_PIPELINE_ID}/`
+    case 'legacy_pipeline': return `local/cribl/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}/`
     case 'dataset': return null // Cribl Lake — not a Stream group Git file
     default: return null
   }
@@ -534,7 +755,7 @@ function pathInGroup(path: string, group: string): boolean {
  * scoped to just our resources. Falls back to constructed paths only when the
  * status call yields nothing (e.g. endpoint restricted), as a best effort.
  */
-async function filesToCommit(group: string, keys: ResourceKey[]): Promise<string[]> {
+async function filesToCommit(group: string, keys: CommitKey[]): Promise<string[]> {
   if (keys.length === 0) return []
   const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
   let pending: string[] = []
@@ -618,7 +839,7 @@ export async function pendingConfigPaths(): Promise<string[] | null> {
   }
 }
 
-export function commitScope(group: string, keys: readonly ResourceKey[], pending: readonly string[] | null): CommitScope {
+export function commitScope(group: string, keys: readonly CommitKey[], pending: readonly string[] | null): CommitScope {
   const carries = keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null)
   if (pending === null) return { carries, alreadyDirty: [], elsewhere: [], unknown: true }
   const markers = keys.map(fileMarker).filter((m): m is string => m !== null)
@@ -758,6 +979,8 @@ function mergeSpec(live: unknown, want: unknown): unknown {
  */
 const SOURCE_SERVER_OWNED: readonly string[] = ['criblSourceProvenance']
 const PIPELINE_SERVER_OWNED: readonly string[] = []
+// `EventBreakerRuleset` declares nothing the server owns either.
+const BREAKER_SERVER_OWNED: readonly string[] = []
 
 /** The complete representation a full-replacement PATCH has to carry: what Cribl
  *  just returned, minus the keys the server owns, with the spec asserted on. */
@@ -829,6 +1052,10 @@ interface EnsureCtx {
   group: string
   profile: LandingProfile
   confirm: ConfirmChange
+  /** How a NEW source listens. Unused when the source already exists. */
+  ingress: HttpIngress | null
+  /** Handed the new source's token once, after Cribl accepted the create. */
+  onToken: (token: string) => void
 }
 
 const refused = (key: ResourceKey): StepResult => ({ key, action: 'skipped', detail: NOT_CONFIRMED })
@@ -966,7 +1193,7 @@ async function ensureDestination(ctx: EnsureCtx): Promise<StepResult> {
 }
 
 async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
-  const cur = await capi('GET', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`))
+  const cur = await capi('GET', g(ctx.group, `/pipelines/${HTTP_PIPELINE_ID}`))
   if (cur.status === 200) {
     // openapi.json, PATCH /pipelines/{id} (Cribl 4.19.0, read 2026-09-17):
     // "Provide a complete representation of the Pipeline that you want to update
@@ -991,11 +1218,11 @@ async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
     // `body` above filled the dialog and is NOT what is sent — see
     // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
     const merge = mergeSourceAfterConfirm(
-      'pipeline', await capi('GET', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`)), `pipeline ${SYSLOG_PIPELINE_ID}`,
+      'pipeline', await capi('GET', g(ctx.group, `/pipelines/${HTTP_PIPELINE_ID}`)), `pipeline ${HTTP_PIPELINE_ID}`,
       PIPELINE_SPEC, PIPELINE_SERVER_OWNED, diff,
     )
     if ('stop' in merge) return merge.stop
-    const r = await capi('PATCH', g(ctx.group, `/pipelines/${SYSLOG_PIPELINE_ID}`), merge.body)
+    const r = await capi('PATCH', g(ctx.group, `/pipelines/${HTTP_PIPELINE_ID}`), merge.body)
     return r.status === 200
       ? { key: 'pipeline', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
       : { key: 'pipeline', action: 'error', detail: errText(r) }
@@ -1009,20 +1236,65 @@ async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
     : { key: 'pipeline', action: 'error', detail: errText(r) }
 }
 
+/**
+ * The event breaker ruleset the source names. Before the source, because a
+ * source naming a ruleset the group does not have breaks nothing into events.
+ *
+ * The same read → merge → confirm → re-read → PATCH shape as the pipeline, for
+ * the same reason: openapi.json, PATCH /lib/breakers/{id} — "This endpoint does
+ * not support partial updates. Cribl removes any omitted fields when updating
+ * the Event Breaker Ruleset." A ruleset somebody added a second rule to keeps
+ * it only if the body sent carries it, and `mergeSpec` replaces a `rules` array
+ * whose length changed — which the diff then shows as a `rules` row.
+ */
+async function ensureBreaker(ctx: EnsureCtx): Promise<StepResult> {
+  const cur = await capi('GET', g(ctx.group, `/lib/breakers/${HTTP_BREAKER_ID}`))
+  if (cur.status === 200) {
+    const live = firstItem(cur)
+    if (!live) return { key: 'breaker', action: 'error', detail: unreadable('event breaker ruleset') }
+    const body = patchBody(live, HTTP_BREAKER_SPEC, BREAKER_SERVER_OWNED)
+    const diff = bodyDiff(live, body)
+    if (diff.length === 0) return { key: 'breaker', action: 'exists' }
+    if (!(await agreed(ctx.confirm, { key: 'breaker', action: 'overwrite', object: RESOURCE_PHRASE.breaker, diff }))) {
+      return refused('breaker')
+    }
+    const merge = mergeSourceAfterConfirm(
+      'breaker', await capi('GET', g(ctx.group, `/lib/breakers/${HTTP_BREAKER_ID}`)), `event breaker ruleset ${HTTP_BREAKER_ID}`,
+      HTTP_BREAKER_SPEC, BREAKER_SERVER_OWNED, diff,
+    )
+    if ('stop' in merge) return merge.stop
+    const r = await capi('PATCH', g(ctx.group, `/lib/breakers/${HTTP_BREAKER_ID}`), merge.body)
+    return r.status === 200
+      ? { key: 'breaker', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
+      : { key: 'breaker', action: 'error', detail: errText(r) }
+  }
+  if (!(await agreed(ctx.confirm, { key: 'breaker', action: 'create', object: RESOURCE_PHRASE.breaker, diff: [] }))) {
+    return refused('breaker')
+  }
+  const r = await capi('POST', g(ctx.group, '/lib/breakers'), HTTP_BREAKER_SPEC)
+  return r.status >= 200 && r.status < 300
+    ? { key: 'breaker', action: 'created' }
+    : { key: 'breaker', action: 'error', detail: errText(r) }
+}
+
+/** Every port the group's sources already listen on. */
+export function portsInUse(inputs: readonly StreamInput[]): number[] {
+  return [...new Set(inputs.flatMap((i) => i.ports))]
+}
+
 async function ensureSource(ctx: EnsureCtx): Promise<StepResult> {
-  const cur = await capi('GET', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`))
+  const cur = await capi('GET', g(ctx.group, `/system/inputs/${HTTP_SOURCE_ID}`))
   if (cur.status === 200) {
     // openapi.json, PATCH /system/inputs/{id} (Cribl 4.19.0, read 2026-09-17):
     // "Provide a complete representation of the Source that you want to update
     //  in the request body. This endpoint does not support partial updates.
     //  Cribl removes any omitted fields when updating the Source."
-    // SOURCE_SPEC is eight keys and a live syslog source has forty (openapi.json
-    // `InputSyslog`), so sending the spec deleted the customer's `tls`, their
-    // persistent queue, `maxActiveCxn`, `connections` and `description` — and
-    // `covered` guaranteed the confirmation could not name any of them. Merge
-    // onto what we just read, exactly as ensureRoute does.
+    // SOURCE_SPEC names a handful of keys and a live Raw HTTP source has thirty
+    // (openapi.json `InputHttpRaw`) — among them its port, its TLS block and its
+    // auth tokens, none of which a re-apply asserts. Sending the spec would
+    // delete all three. Merge onto what we just read, exactly as ensureRoute does.
     const live = firstItem(cur)
-    if (!live) return { key: 'source', action: 'error', detail: unreadable('Syslog source') }
+    if (!live) return { key: 'source', action: 'error', detail: unreadable('Raw HTTP source') }
     const body = patchBody(live, SOURCE_SPEC, SOURCE_SERVER_OWNED)
     const diff = bodyDiff(live, body)
     if (diff.length === 0) return { key: 'source', action: 'exists' }
@@ -1032,22 +1304,44 @@ async function ensureSource(ctx: EnsureCtx): Promise<StepResult> {
     // `body` above filled the dialog and is NOT what is sent — see
     // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
     const merge = mergeSourceAfterConfirm(
-      'source', await capi('GET', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`)), `Syslog source ${SYSLOG_SOURCE_ID}`,
+      'source', await capi('GET', g(ctx.group, `/system/inputs/${HTTP_SOURCE_ID}`)), `Raw HTTP source ${HTTP_SOURCE_ID}`,
       SOURCE_SPEC, SOURCE_SERVER_OWNED, diff,
     )
     if ('stop' in merge) return merge.stop
-    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${SYSLOG_SOURCE_ID}`), merge.body)
+    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${HTTP_SOURCE_ID}`), merge.body)
     return r.status === 200
       ? { key: 'source', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
       : { key: 'source', action: 'error', detail: errText(r) }
   }
+
+  // A NEW SOURCE needs three things a re-apply never sends: a port, TLS, and a
+  // token. Without a chosen port there is nothing honest to create.
+  const ingress = ctx.ingress
+  if (!ingress) {
+    return { key: 'source', action: 'error', detail: 'not applied — no port was chosen for the new Raw HTTP source' }
+  }
+  // The port is checked again HERE, against the group as it is now, rather than
+  // trusted from the picker: the picker read the group when the page loaded, and
+  // two sources on one port fail to bind on every worker in the group.
+  const inputs = await listInputs(ctx.group)
+  const problem = portProblem(ingress.port, ingress.managed, inputs.outcome === 'ok' ? portsInUse(inputs.value ?? []) : null)
+  if (problem) return { key: 'source', action: 'error', detail: `not applied — port ${ingress.port}: ${problem}` }
+
   if (!(await agreed(ctx.confirm, { key: 'source', action: 'create', object: RESOURCE_PHRASE.source, diff: [] }))) {
     return refused('source')
   }
-  const r = await capi('POST', g(ctx.group, '/system/inputs'), SOURCE_SPEC)
-  return r.status >= 200 && r.status < 300
-    ? { key: 'source', action: 'created' }
-    : { key: 'source', action: 'error', detail: errText(r) }
+  // Generated here, after the answer, so a refused run never made one. It goes
+  // into the POST and to `onToken`, and nowhere else: not into the step result,
+  // the phase text, the commit message or the audit trail.
+  const token = generateToken()
+  const r = await capi('POST', g(ctx.group, '/system/inputs'), sourceCreateBody(ingress, token))
+  if (r.status >= 200 && r.status < 300) {
+    ctx.onToken(token)
+    return { key: 'source', action: 'created', detail: `port ${ingress.port}` }
+  }
+  // Scrubbed, because this string reaches the step log on screen and nothing
+  // guarantees Cribl's error message never quotes the body it refused.
+  return { key: 'source', action: 'error', detail: errText(r).split(token).join('<token>') }
 }
 
 // --- The routing table ----------------------------------------------------
@@ -1074,7 +1368,9 @@ async function readRoutes(group: string): Promise<RoutingTable | null> {
 }
 
 /** Our route, by either of the two fields it can be identified by. */
-const isOurRoute = (r: Record<string, unknown>) => r.id === SYSLOG_ROUTE_ID || r.name === SYSLOG_ROUTE_ID
+const isOurRoute = (r: Record<string, unknown>) => r.id === HTTP_ROUTE_ID || r.name === HTTP_ROUTE_ID
+/** The Syslog route an earlier release inserted. Matched only for removal. */
+const isLegacyRoute = (r: Record<string, unknown>) => r.id === LEGACY_SYSLOG_ROUTE_ID || r.name === LEGACY_SYSLOG_ROUTE_ID
 
 /**
  * Where a NEW route goes: directly above the catch-all. Cribl's table ends with
@@ -1131,7 +1427,7 @@ async function ensureRoute(ctx: EnsureCtx): Promise<StepResult> {
   // while that dialog was open — the worst instance of the hazard written out
   // at `mergeSourceAfterConfirm`, because one request carries every route in
   // the group rather than one object. Read that header before wiring `confirm`.
-  const what = `route ${SYSLOG_ROUTE_ID} in ${ctx.group}`
+  const what = `route ${HTTP_ROUTE_ID} in ${ctx.group}`
   const fresh = await readRoutes(ctx.group)
   if (!fresh) return { key: 'route', action: 'error', detail: reReadFailed(`the routing table of ${ctx.group}`) }
   const freshAt = fresh.routes.findIndex(isOurRoute)
@@ -1472,8 +1768,7 @@ function logRun(action: string, group: string, steps: StepResult[]): void {
   })
 }
 
-/** What a caller may say about a run. Both have defaults that reproduce exactly
- *  what this function did before Phase 3. */
+/** What a caller may say about a run. */
 export interface DeployOptions {
   /** Asked once per object that is actually about to be written. See
    *  `preConfirmed` for what passing nothing means. */
@@ -1486,11 +1781,21 @@ export interface DeployOptions {
    * the landing is a choice somebody can make — but note what this release will
    * and will not do with it: a profile only reaches Cribl through a CREATE here,
    * so a profile naming Parquet or partitions describes a dataset this phase can
-   * bring into existence and cannot migrate an existing one to. The format
-   * migration is Phase 4's, behind P-S1 and P-S5, and the partitions editor is
-   * behind P-S9.
+   * bring into existence and cannot migrate an existing one to.
    */
   profile?: LandingProfile
+  /**
+   * The port and TLS mode for a source that does not exist yet. Read only when
+   * the run has to CREATE the source; a run that finds it present re-applies
+   * `SOURCE_SPEC` and leaves port, TLS and token exactly as they are. Absent
+   * with no source in the group, the source step fails and nothing after it runs.
+   */
+  ingress?: HttpIngress
+  /**
+   * Called once, with the new source's auth token, when — and only when — this
+   * run created the source. The caller shows it and keeps it nowhere else.
+   */
+  onToken?: (token: string) => void
 }
 
 /** Provision the whole stack in dependency order, reporting each step. */
@@ -1501,12 +1806,20 @@ export async function deployAll(
   opts: DeployOptions = {},
 ): Promise<StepResult[]> {
   const out: StepResult[] = []
-  const ctx: EnsureCtx = { group, profile: opts.profile ?? DEFAULT_PROFILE, confirm: opts.confirm ?? preConfirmed }
+  const ctx: EnsureCtx = {
+    group,
+    profile: opts.profile ?? DEFAULT_PROFILE,
+    confirm: opts.confirm ?? preConfirmed,
+    ingress: opts.ingress ?? null,
+    onToken: opts.onToken ?? (() => {}),
+  }
   // Dataset lives in Cribl Lake and is group-independent; the rest target the
-  // chosen Stream worker group.
+  // chosen Stream worker group. The breaker before the source that names it,
+  // the pipeline before the route that sends to it.
   const steps: Array<[ResourceKey, () => Promise<StepResult>]> = [
     ['dataset', () => ensureDataset(ctx)],
     ['destination', () => ensureDestination(ctx)],
+    ['breaker', () => ensureBreaker(ctx)],
     ['pipeline', () => ensurePipeline(ctx)],
     ['source', () => ensureSource(ctx)],
     ['route', () => ensureRoute(ctx)],
@@ -1518,7 +1831,7 @@ export async function deployAll(
     out.push(r)
     onStep(r)
     // A refusal and a failure stop the run the same way and for the same reason —
-    // the four steps below each depend on the ones above — but they are not the
+    // the steps below each depend on the ones above — but they are not the
     // same event, and reporting "failed" for an answer somebody gave on purpose
     // is how a dialog stops being believed. `skipped` from an ensure* means the
     // confirmation said no and nothing else does (see NOT_CONFIRMED).
@@ -1539,95 +1852,126 @@ export async function deployAll(
       }
       // A run that stopped part-way still created whatever came before, so it is
       // exactly as worth recording as one that finished.
-      logRun('syslog_stack.applied', group, out)
+      logRun('onboarding_stack.applied', group, out)
       return out
     }
   }
   // Only the resources we actually created/updated get committed — nothing else.
   const touchedKeys = out
-    .filter((s) => (s.action === 'created' || s.action === 'updated') && groupFile(group, s.key as ResourceKey))
-    .map((s) => s.key as ResourceKey)
+    .filter((s) => (s.action === 'created' || s.action === 'updated') && groupFile(group, s.key as CommitKey))
+    .map((s) => s.key as CommitKey)
   const files = await filesToCommit(group, touchedKeys)
   const cd = await commitAndDeploy(deployCommitMessage(group, out), group, files, onStep, onPhase)
   const all = [...out, ...cd]
-  logRun('syslog_stack.applied', group, all)
+  logRun('onboarding_stack.applied', group, all)
   return all
 }
 
-/** Tear down the syslog stack (source, pipeline, route). Leaves the shared
- *  dataset and destination in place. */
-export async function removeSyslogStack(
+/** One DELETE's answer as a step. 404 is "already gone" (a racy partial
+ *  cleanup), not an error. */
+function deleteStep(key: CommitKey, r: ApiResp): StepResult {
+  if (r.status === 404) return { key, action: 'exists', detail: 'not present' }
+  return r.status < 300 ? { key, action: 'updated', detail: 'deleted' } : { key, action: 'error', detail: errText(r) }
+}
+
+/** What the teardown knows is there. Anything not stated is attempted. */
+export type RemovalPresence = Partial<Record<CommitKey, ResourceState>>
+
+/**
+ * Tear down the onboarding stack: this release's Raw HTTP source, pipeline,
+ * route entry and breaker ruleset, AND the Syslog source, pipeline and route an
+ * earlier release created. Only those fixed ids — the same ownership signal the
+ * teardown has always used. Leaves the shared dataset and destination in place.
+ */
+export async function removeOnboardingStack(
   onStep: (r: StepResult) => void,
   group: string = DEFAULT_STREAM_GROUP,
   onPhase: OnPhase = noopPhase,
-  present?: Partial<SetupStatus>,
+  present?: RemovalPresence,
 ): Promise<StepResult[]> {
   const out: StepResult[] = []
-  const touched: ResourceKey[] = []
+  const touched: CommitKey[] = []
   // When cleaning up a partial stack, only touch resources that actually exist —
   // if `present` was supplied, skip anything KNOWN to be absent so we don't issue
   // pointless deletes or report spurious failures. Without it, attempt all
   // (still 404-tolerant below). A resource whose state could not be read is
   // attempted rather than skipped: "I could not see it" is not "it is not there",
   // and the DELETE answers the question for real.
-  const exists = (k: ResourceKey) => present?.[k] !== 'absent'
+  const exists = (k: CommitKey) => present?.[k] !== 'absent'
+  const record = (res: StepResult) => {
+    out.push(res); onStep(res)
+    if (res.detail === 'deleted') touched.push(res.key as CommitKey)
+  }
 
-  // Route: remove our entry, keep the rest.
-  if (exists('route')) {
+  // Routes: remove our entries — this release's and the old Syslog one — in ONE
+  // edit of the table, keeping every other route at its index.
+  if (exists('route') || exists('legacy_route')) {
     onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.route}…` })
     const obj = await readRoutes(group)
     if (obj) {
-      // Drop our entry and nothing else: every other route keeps its index, and
-      // the table's own `comments` / Route Groups ride back out with `...obj`.
-      const kept = obj.routes.filter((x) => !isOurRoute(x))
-      const removed = kept.length !== obj.routes.length
-      if (removed) {
+      const had = (id: string) => obj.routes.some((x) => x.id === id || x.name === id)
+      const ours = { route: had(HTTP_ROUTE_ID), legacy_route: had(LEGACY_SYSLOG_ROUTE_ID) }
+      // Drop our entries and nothing else: the table's own `comments` / Route
+      // Groups ride back out with `...obj`.
+      const kept = obj.routes.filter((x) => !isOurRoute(x) && !isLegacyRoute(x))
+      if (kept.length !== obj.routes.length) {
         const r = await capi('PATCH', g(group, `/routes/${obj.id}`), { ...obj, routes: kept })
-        const res: StepResult = { key: 'route', action: r.status === 200 ? 'updated' : 'error', detail: r.status === 200 ? 'deleted' : errText(r) }
-        out.push(res); onStep(res)
-        if (r.status === 200) touched.push('route')
+        for (const key of ['route', 'legacy_route'] as const) {
+          if (!ours[key]) continue
+          record(r.status === 200 ? { key, action: 'updated', detail: 'deleted' } : { key, action: 'error', detail: errText(r) })
+        }
       }
     }
   }
+  // Sources before the pipelines and the ruleset they reference.
   if (exists('source')) {
     onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.source}…` })
-    const src = await capi('DELETE', g(group, `/system/inputs/${SYSLOG_SOURCE_ID}`))
-    // 404 = already gone (racy partial cleanup) — not an error.
-    const sres: StepResult = src.status === 404
-      ? { key: 'source', action: 'exists', detail: 'not present' }
-      : { key: 'source', action: src.status < 300 ? 'updated' : 'error', detail: src.status < 300 ? 'deleted' : errText(src) }
-    out.push(sres); onStep(sres)
-    if (src.status < 300) touched.push('source')
+    record(deleteStep('source', await capi('DELETE', g(group, `/system/inputs/${HTTP_SOURCE_ID}`))))
+  }
+  if (exists('legacy_source')) {
+    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.legacy_source}…` })
+    record(deleteStep('legacy_source', await capi('DELETE', g(group, `/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`))))
   }
   if (exists('pipeline')) {
     onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.pipeline}…` })
-    const pipe = await capi('DELETE', g(group, `/pipelines/${SYSLOG_PIPELINE_ID}`))
-    const pres: StepResult = pipe.status === 404
-      ? { key: 'pipeline', action: 'exists', detail: 'not present' }
-      : { key: 'pipeline', action: pipe.status < 300 ? 'updated' : 'error', detail: pipe.status < 300 ? 'deleted' : errText(pipe) }
-    out.push(pres); onStep(pres)
-    if (pipe.status < 300) touched.push('pipeline')
+    record(deleteStep('pipeline', await capi('DELETE', g(group, `/pipelines/${HTTP_PIPELINE_ID}`))))
+  }
+  if (exists('legacy_pipeline')) {
+    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.legacy_pipeline}…` })
+    record(deleteStep('legacy_pipeline', await capi('DELETE', g(group, `/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`))))
+  }
+  if (exists('breaker')) {
+    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.breaker}…` })
+    record(deleteStep('breaker', await capi('DELETE', g(group, `/lib/breakers/${HTTP_BREAKER_ID}`))))
   }
   // Commit only the files whose resources we actually removed — matched against
   // the real Git status (deletions/modifications show up there too).
   const files = await filesToCommit(group, touched)
   const cd = await commitAndDeploy(removeCommitMessage(group, touched), group, files, onStep, onPhase)
   const all = [...out, ...cd]
-  logRun('syslog_stack.removed', group, all)
+  logRun('onboarding_stack.removed', group, all)
   return all
 }
 
-/** Best-effort Syslog ingress endpoint to point Gigamon AMX at. The worker
- *  ingress host differs from the UI origin; on Cribl.Cloud it is typically
- *  `default.main.<org>.cribl.cloud`. Returns null when it can't be derived. */
-export function suggestedSyslogHost(): string | null {
-  if (typeof window === 'undefined') return null
+/**
+ * Best-effort ingress host to point Gigamon AMX at, or null when it cannot be
+ * derived. On Cribl.Cloud the `default` group's workers answer at
+ * `default.main.<org>.cribl.cloud`; for any other group, or a hybrid group
+ * (whose workers are the customer's own machines), the card prints a
+ * placeholder rather than a guess.
+ */
+export function suggestedIngressHost(group: string, managed: boolean): string | null {
+  if (!managed || group !== DEFAULT_STREAM_GROUP || typeof window === 'undefined') return null
   const origin = window.__CRIBL_SEARCH_ORIGIN || window.location.origin
   try {
     const host = new URL(origin).hostname // e.g. main-<org>.cribl.cloud
-    if (host.startsWith('main-')) return `default.main.${host.slice('main-'.length)}`
-    return host
+    return host.startsWith('main-') ? `default.main.${host.slice('main-'.length)}` : null
   } catch {
     return null
   }
+}
+
+/** The URL Gigamon AMX POSTs to: https when the source terminates TLS. */
+export function postUrl(host: string, port: number, tls: boolean): string {
+  return `${tls ? 'https' : 'http'}://${host}:${port}/`
 }

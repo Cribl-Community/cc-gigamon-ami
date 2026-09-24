@@ -43,7 +43,8 @@
 // to "writes" — because it is true and it is what somebody is actually asking.
 
 import {
-  LAKE_DATASET_ID, SYSLOG_PIPELINE_ID, SYSLOG_PORT, SYSLOG_ROUTE_ID, SYSLOG_SOURCE_ID,
+  CLOUD_PORT_RANGE, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DATASET_ID,
+  LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID,
   type CommitScope,
 } from '../cribl/provision'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
@@ -130,8 +131,8 @@ function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
 export function deployConsequences(ctx: ProvisionConfirmContext): string[] {
   const { group, undeployed } = ctx
   return [
-    `This app writes only its own objects in ${group}: pipeline ${SYSLOG_PIPELINE_ID}, Syslog source ${SYSLOG_SOURCE_ID}, and the one ` +
-      `${SYSLOG_ROUTE_ID} entry in the routing table. It does not edit the demo DataGen source, and every other route keeps its place.`,
+    `This app writes only its own objects in ${group}: event breaker ruleset ${HTTP_BREAKER_ID}, pipeline ${HTTP_PIPELINE_ID}, Raw HTTP ` +
+      `source ${HTTP_SOURCE_ID}, and the one ${HTTP_ROUTE_ID} entry in the routing table. It does not edit the demo DataGen source, and every other route keeps its place.`,
     carriesSentence(ctx, 'change'),
     pendingSentence(ctx),
     ...(undeployed
@@ -152,9 +153,9 @@ export function deployConsequences(ctx: ProvisionConfirmContext): string[] {
  *
  * The teardown dialog had no counterpart to the deploy dialog's reach sentence
  * at all — the same defect stated by omission — so this is the first time it
- * says what its commit carries. It names three files, not four: `removeSyslogStack`
- * never touches the destination, so naming `outputs.yml` here would be the
- * over-naming half of the same class.
+ * says what its commit carries. It never names `outputs.yml`: `removeOnboardingStack`
+ * never touches the destination, so naming it here would be the over-naming half
+ * of the same class.
  */
 export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination: string, keptDataset: string): string[] {
   return [
@@ -175,19 +176,52 @@ export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination
 
 /** The one line under the panel title. */
 export const PROVISION_LEAD =
-  `Creates a Syslog source, pipeline and route in the worker group below, landing Gigamon AMX data in the Cribl Lake dataset ${LAKE_DATASET_ID}.`
+  `Creates a Raw HTTP source, pipeline and route in the worker group below, landing Gigamon AMX data in the Cribl Lake dataset ${LAKE_DATASET_ID}.`
 
 /** The rest of what the old intro said, behind the ⓘ at the end of the lead. */
 export const PROVISION_LEAD_TIP =
-  'Only this app’s own objects are written: whatever is missing is created, and its pipeline, source and route entry are overwritten where they differ from this release. The demo DataGen feed is never edited. ' +
-  'The commit that follows takes whole files — inputs.yml, pipelines/route.yml and outputs.yml each hold every object of their kind in the group — and the confirmation names them and anything already uncommitted in them.'
+  'Only this app’s own objects are written: whatever is missing is created, and its breaker ruleset, pipeline, source and route entry are overwritten where they differ from this release. The demo DataGen feed is never edited. ' +
+  'The commit that follows takes whole files — inputs.yml, breakers.yml, pipelines/route.yml and outputs.yml each hold every object of their kind in the group — and the confirmation names them and anything already uncommitted in them.'
 
 /** Beside the "Worker group" label; replaces the hint that sat after the picker. */
 export const GROUP_TIP =
   `The source, pipeline, route and destination are created, committed and deployed in this group. The Lake dataset ${LAKE_DATASET_ID} is shared and belongs to no group. Your pick is remembered, so this tab opens on it next time.`
 
+/** Beside the port picker. */
+export const PORT_TIP =
+  `Set once, when the source is created. A Cribl-managed group only exposes ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max} and its source uses Cribl’s TLS certificate; ` +
+  'a hybrid group takes any free port and starts without TLS. Ports other sources in the group already use are refused.'
+
 /** Under the Deploy button. Short, because the confirmation says the rest. */
 export const deployNote = (group: string): string => `Commits and deploys to ${group}. You review every change first.`
+
+/** Beside the actions, when the group still has the Syslog stack an earlier release created. */
+export const legacyNote = (group: string): string =>
+  `${group} still has the Syslog objects an earlier release created. Remove deletes them along with the HTTP stack.`
+
+export const LEGACY_TIP =
+  `Syslog source ${LEGACY_SYSLOG_SOURCE_ID}, pipeline ${LEGACY_SYSLOG_PIPELINE_ID} and route ${LEGACY_SYSLOG_ROUTE_ID}. This release no longer creates or edits them; ` +
+  'they keep running until they are removed, and the confirmation names each one before anything is deleted.'
+
+// ── The endpoint card ────────────────────────────────────────────────────────
+
+/** The one line on "Point Gigamon AMX here". */
+export const ENDPOINT_LEAD = 'Configure Gigamon AMX to POST AMI records, as JSON arrays, to this URL with this token.'
+
+export const ENDPOINT_TIP =
+  'Send the token in the Authorization header. The source splits each POSTed array into one event per record, and the pipeline gives them the same fields as the demo feed.'
+
+/** Shown beside the token, the one time it is shown. */
+export const TOKEN_ONCE =
+  'Shown once. Copy it now: this app keeps no copy, and reloading the page clears it. Cribl keeps it in the source’s authentication settings.'
+
+/** Where the token line is when it is not being shown. */
+export const TOKEN_ELSEWHERE =
+  'The token was shown once, when this app created the source. It is in the source’s authentication settings in Cribl.'
+
+/** On a hybrid group, whose source starts without TLS. Plain on purpose. */
+export const UNENCRYPTED_WARNING =
+  'Unencrypted: this source has no TLS certificate, so AMI records and the token cross the network in plain text until you add one to the source in Cribl.'
 
 /** One line of "What gets created & things to know": a short label and its ⓘ. */
 export interface SetupFact {
@@ -197,25 +231,25 @@ export interface SetupFact {
 
 export const SETUP_FACTS: readonly SetupFact[] = Object.freeze([
   {
-    label: `Pipeline ${SYSLOG_PIPELINE_ID} — same fields as the demo feed`,
+    label: `Breaker ${HTTP_BREAKER_ID} — one event per record`,
     tip:
-      'Extracts the JSON payload from the syslog message, then applies the same numeric casts and derived fields ' +
-      '(http_server_ms, tcp_reset, subnets, l4_proto, byte and packet totals) as the demo gigamon_ami pipeline, so every dashboard reads the same fields.',
+      'Each POST body is a JSON array of AMI records. The ruleset splits it into one event per record and extracts every field, so no parse step is needed. ' +
+      'If your AMX exports CEF instead, this ruleset and pipeline will not read it.',
   },
   {
-    label: `Route ${SYSLOG_ROUTE_ID} — this source only`,
+    label: `Pipeline ${HTTP_PIPELINE_ID} — same fields as the demo feed`,
     tip:
-      `Inserted above the catch-all default route, filtered to __inputId=='syslog:${SYSLOG_SOURCE_ID}' and marked final, so it only touches this source’s data and no other route changes.`,
+      'Applies the same numeric casts and derived fields (http_server_ms, tcp_reset, subnets, l4_proto, byte and packet totals) as the demo gigamon_ami pipeline, so every dashboard reads the same fields.',
   },
   {
-    label: `Open port ${SYSLOG_PORT} (TCP/UDP) on the worker group’s ingress`,
+    label: `Route ${HTTP_ROUTE_ID} — this source only`,
     tip:
-      `On Cribl.Cloud, native data ports are firewalled by default. Open TCP/UDP ${SYSLOG_PORT} on the Worker Group’s ingress, or run an on-prem or Edge worker Gigamon can reach, before real data can arrive.`,
+      `Inserted above the catch-all default route, filtered to __inputId=='http_raw:${HTTP_SOURCE_ID}' and marked final, so it only touches this source’s data and no other route changes.`,
   },
   {
-    label: 'Expects AMI records as JSON',
+    label: `Cribl-managed groups use ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`,
     tip:
-      'The parse step expects AMI records as JSON. If your AMX exports CEF instead, swap the parse function for a CEF parser — the field names must match the ones the dashboards query.',
+      `Cribl.Cloud exposes only ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max} on a managed group, with TLS on Cribl’s certificate. A hybrid group takes any port, but its source starts without TLS until you add a certificate.`,
   },
   {
     label: 'Idle until Gigamon sends to it',

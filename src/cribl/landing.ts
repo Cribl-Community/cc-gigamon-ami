@@ -1321,7 +1321,7 @@ export const DEPLOY_CONSEQUENCES: readonly string[] = Object.freeze([
   'Deploying restarts this worker group’s Worker Processes.',
   'A commit takes whole files, never single objects, so anybody else’s uncommitted work in the files named above is committed and deployed with this change.',
   'A deploy moves the group to a commit rather than applying one change: every commit anybody made on this Leader between the commit this group is running and the one this press creates goes live with it.',
-  'A source with onBackpressure "block" can lose seconds of data across the restart. The syslog source in this stack is one.',
+  'A source with onBackpressure "block" can lose seconds of data across the restart, and while it restarts a Raw HTTP source refuses POSTs, which the sender has to retry.',
 ])
 
 export const DESTINATION_UNDO =

@@ -712,7 +712,7 @@ describe('paired teardown', () => {
 
   it('pairs the routing table by resource rather than by method, because one call does both', () => {
     // The route is added and taken away by the same PATCH of the group's one
-    // routing table (provision.ts ensureRoute / removeSyslogStack). A teardown
+    // routing table (provision.ts ensureRoute / removeOnboardingStack). A teardown
     // check keyed on "a POST needs a DELETE" would report this forever and miss
     // the two that genuinely have no teardown.
     const route = API_CALLS.find((c) => c.creates === 'route')

@@ -42,7 +42,7 @@
 //
 // ── THE IDS ARE IMPORTED, NOT TYPED OUT ─────────────────────────────────────
 // The paths below interpolate the same constants provision.ts and config.ts call
-// with, so renaming `SYSLOG_SOURCE_ID` moves this list, which then no longer
+// with, so renaming `HTTP_SOURCE_ID` moves this list, which then no longer
 // matches config/policies.yml, which fails the test and makes somebody update the
 // declaration. The one value not bound that way is the Cribl Lake id `default`
 // (provision.ts keeps `LAKE_ID` private); the source scan resolves it from
@@ -51,10 +51,13 @@
 
 import { SEARCH_GROUP } from './config'
 import {
+  HTTP_BREAKER_ID,
+  HTTP_PIPELINE_ID,
+  HTTP_SOURCE_ID,
   LAKE_DATASET_ID,
   LAKE_DESTINATION_ID,
-  SYSLOG_PIPELINE_ID,
-  SYSLOG_SOURCE_ID,
+  LEGACY_SYSLOG_PIPELINE_ID,
+  LEGACY_SYSLOG_SOURCE_ID,
   type ResourceKey,
 } from './provision'
 
@@ -76,7 +79,7 @@ export type Scope =
   | 'app'
 
 /**
- * A resource this app can bring into existence in a customer's Cribl. The five
+ * A resource this app can bring into existence in a customer's Cribl. The six
  * provisioned objects share provision.ts's own vocabulary so the two cannot
  * drift apart; `commit` is the sixth thing a deploy leaves behind, and
  * `accel_saved_search` the seventh.
@@ -375,7 +378,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/m/:gid/system/inputs',
     scope: 'product',
     site: 'lake.ts listInputs',
-    why: `List the group's sources, to work out what actually writes through the '${LAKE_DESTINATION_ID}' destination. The routing table is not the whole answer: on the workspace this was measured against, a source reaches Cribl Lake through a QuickConnect binding on the source itself and appears in no route at all — so a confirmation built on routes alone would under-report the feeds a destination change affects.`,
+    why: `List the group's sources, to work out what actually writes through the '${LAKE_DESTINATION_ID}' destination. The routing table is not the whole answer: on the workspace this was measured against, a source reaches Cribl Lake through a QuickConnect binding on the source itself and appears in no route at all — so a confirmation built on routes alone would under-report the feeds a destination change affects. Guided Setup reads the same list for the ports the group's sources already listen on, so it offers a free port for the Raw HTTP source and checks it again just before creating it.`,
   },
   {
     method: 'GET',
@@ -396,7 +399,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/products/stream/groups',
     scope: 'product',
     site: 'lake.ts listStreamGroupsCurrent',
-    why: 'List the worker groups from the current path family, for the commit each group is running. A rollback needs a target: "redeploy the previous version" is not a plan until the previous version has a name, and this is where that name comes from. Guided Setup\'s picker still reads the deprecated /master/groups; this read is what starts retiring it.',
+    why: 'List the worker groups from the current path family, for the commit each group is running. A rollback needs a target: "redeploy the previous version" is not a plan until the previous version has a name, and this is where that name comes from. Guided Setup also reads `onPrem` here: it decides the new source’s port range and whether it terminates TLS on Cribl’s certificate. Its picker still reads the deprecated /master/groups.',
   },
 
   // ── Guided Setup: the group-scoped config objects ─────────────────────────
@@ -405,38 +408,85 @@ export const API_CALLS: readonly ApiCall[] = [
   // has to stay a placeholder — see the README for what that costs.
   //
   // The child paths name the object, rather than taking a wildcard. The app only
-  // ever touches the three objects it created, and a declaration that says so is
-  // both narrower and more useful to the admin reading it: "may delete the input
-  // in_gigamon_syslog" rather than "may delete any input".
+  // ever touches the objects it created, and a declaration that says so is both
+  // narrower and more useful to the admin reading it: "may delete the input
+  // in_gigamon_http" rather than "may delete any input".
   {
     method: 'POST',
     path: '/m/:gid/system/inputs',
     scope: 'product',
     site: 'provision.ts ensureSource',
-    why: `Create the Gigamon Syslog source '${SYSLOG_SOURCE_ID}' that AMX exports arrive on.`,
+    why: `Create the Gigamon Raw HTTP source '${HTTP_SOURCE_ID}' that AMX POSTs its records to, with the port picked in Guided Setup, TLS on a Cribl-managed group, and an auth token this app generates and shows once.`,
     creates: 'source',
   },
   {
     method: 'GET',
-    path: `/m/:gid/system/inputs/${SYSLOG_SOURCE_ID}`,
+    path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
     scope: 'product',
-    site: 'provision.ts ensureSource',
-    why: 'Ask whether that source exists yet — the answer decides create versus re-apply, and drives the status pill on the tab.',
+    site: 'provision.ts ensureSource (also checkStatus, readHttpEndpoint)',
+    why: 'Ask whether that source exists yet — the answer decides create versus re-apply and drives the status pill — and read the port and TLS state the endpoint card prints.',
   },
   {
     method: 'PATCH',
-    path: `/m/:gid/system/inputs/${SYSLOG_SOURCE_ID}`,
+    path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
     scope: 'product',
     site: 'provision.ts ensureSource',
-    why: 'Re-apply the spec to a source that already exists. This is the grant slice 1.3 shipped without: deploying a fresh stack worked, and every re-apply afterwards 403ed. Sent only when the live source does NOT already say what the spec says — before Phase 3 it went out on every re-apply regardless, which committed and deployed a change that was not one.',
+    why: 'Re-apply the spec to a source that already exists, only when the live source does not already say what the spec says. The body is the whole live source with the spec asserted on it, because this endpoint deletes any field a PATCH omits; its port, TLS and auth token are never changed by it.',
   },
   {
     method: 'DELETE',
-    path: `/m/:gid/system/inputs/${SYSLOG_SOURCE_ID}`,
+    path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
     scope: 'product',
-    site: 'provision.ts removeSyslogStack',
+    site: 'provision.ts removeOnboardingStack',
     why: 'Remove that source again, from the confirmed Remove button. Without it a customer can install the stack and not uninstall it.',
     removes: 'source',
+  },
+  // The Syslog source an earlier release created. Read so the teardown can name
+  // it, and deleted by that teardown — never created or edited any more, so no
+  // POST or PATCH is asked for it.
+  {
+    method: 'GET',
+    path: `/m/:gid/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`,
+    scope: 'product',
+    site: 'provision.ts checkLegacyStatus',
+    why: 'Ask whether the Syslog source an earlier release of this app created is still in the group, so Remove can name it.',
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`,
+    scope: 'product',
+    site: 'provision.ts removeOnboardingStack',
+    why: 'Remove that old Syslog source, from the confirmed Remove button that names it.',
+  },
+  {
+    method: 'POST',
+    path: '/m/:gid/lib/breakers',
+    scope: 'product',
+    site: 'provision.ts ensureBreaker',
+    why: `Create the event breaker ruleset '${HTTP_BREAKER_ID}' the Raw HTTP source names, which splits each POSTed JSON array into one event per AMI record.`,
+    creates: 'breaker',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
+    scope: 'product',
+    site: 'provision.ts ensureBreaker (also checkStatus)',
+    why: 'Ask whether that ruleset exists yet — create versus re-apply, and the status pill.',
+  },
+  {
+    method: 'PATCH',
+    path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
+    scope: 'product',
+    site: 'provision.ts ensureBreaker',
+    why: 'Re-apply the rules to a ruleset that already exists, only when they differ — as the whole live object with the spec asserted on it, because this endpoint deletes any field a PATCH omits.',
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
+    scope: 'product',
+    site: 'provision.ts removeOnboardingStack',
+    why: 'Remove that ruleset again, from the confirmed Remove button, after the source that names it.',
+    removes: 'breaker',
   },
   {
     method: 'POST',
@@ -458,30 +508,44 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/m/:gid/pipelines',
     scope: 'product',
     site: 'provision.ts ensurePipeline',
-    why: `Create the '${SYSLOG_PIPELINE_ID}' pipeline that parses Gigamon AMI JSON out of the syslog message and normalizes its fields.`,
+    why: `Create the '${HTTP_PIPELINE_ID}' pipeline that normalizes Gigamon AMI fields — the same casts and derived fields the demo feed gets.`,
     creates: 'pipeline',
   },
   {
     method: 'GET',
-    path: `/m/:gid/pipelines/${SYSLOG_PIPELINE_ID}`,
+    path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
     scope: 'product',
-    site: 'provision.ts ensurePipeline',
+    site: 'provision.ts ensurePipeline (also checkStatus)',
     why: 'Ask whether that pipeline exists yet — create versus re-apply, and the status pill.',
   },
   {
     method: 'PATCH',
-    path: `/m/:gid/pipelines/${SYSLOG_PIPELINE_ID}`,
+    path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
     scope: 'product',
     site: 'provision.ts ensurePipeline',
     why: 'Re-apply the function list to a pipeline that already exists. Overwrites that one pipeline’s definition, which is why it is behind the confirmation — and, since Phase 3, is sent only when the live function list differs, so a re-apply of a settled stack writes nothing and cannot reach the deploy that restarts Worker Processes.',
   },
   {
     method: 'DELETE',
-    path: `/m/:gid/pipelines/${SYSLOG_PIPELINE_ID}`,
+    path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
     scope: 'product',
-    site: 'provision.ts removeSyslogStack',
+    site: 'provision.ts removeOnboardingStack',
     why: 'Remove that pipeline again, from the confirmed Remove button.',
     removes: 'pipeline',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`,
+    scope: 'product',
+    site: 'provision.ts checkLegacyStatus',
+    why: 'Ask whether the Syslog pipeline an earlier release of this app created is still in the group, so Remove can name it.',
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`,
+    scope: 'product',
+    site: 'provision.ts removeOnboardingStack',
+    why: 'Remove that old Syslog pipeline, from the confirmed Remove button that names it.',
   },
   {
     method: 'GET',
@@ -494,8 +558,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'PATCH',
     path: '/m/:gid/routes/:tableId',
     scope: 'product',
-    site: 'provision.ts ensureRoute',
-    why: 'Add our route above the catch-all, or take it out again. A group has one routing table and this replaces it wholesale, so it is the most consequential grant in the file — and the reason both halves of it are one entry: the same call installs the route and uninstalls it.',
+    site: 'provision.ts ensureRoute (also removeOnboardingStack)',
+    why: 'Add our route above the catch-all, or take it out again — along with the Syslog route an earlier release added. A group has one routing table and this replaces it wholesale, so it is the most consequential grant in the file — and the reason both halves of it are one entry: the same call installs the route and uninstalls it.',
     creates: 'route',
     removes: 'route',
   },
@@ -527,7 +591,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/version/commit',
     scope: 'product',
     site: 'provision.ts commitAndDeploy (also lakeLanding.ts commitAndDeployDestination)',
-    why: 'Commit exactly the files the run touched — Guided Setup’s five objects, or the Lake landing panel’s one outputs.yml. Always with an explicit file list: the API commits every pending change in the repository when given none, which would sweep up whatever anybody else had left uncommitted anywhere on the Leader.',
+    why: 'Commit exactly the files the run touched — Guided Setup’s objects, or the Lake landing panel’s one outputs.yml. Always with an explicit file list: the API commits every pending change in the repository when given none, which would sweep up whatever anybody else had left uncommitted anywhere on the Leader.',
     creates: 'commit',
   },
 

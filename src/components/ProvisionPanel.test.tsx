@@ -30,7 +30,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { ProvisionPanel } from './ProvisionPanel'
-import { GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, deployNote } from './provisionPanelCopy'
+import {
+  GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployNote,
+} from './provisionPanelCopy'
+import {
+  HTTP_BREAKER_ID, HTTP_BREAKER_SPEC, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, PIPELINE_SPEC, ROUTE_SPEC,
+} from '../cribl/provision'
 
 const GROUP = 'default'
 const OTHERS_WORK = `groups/${GROUP}/local/cribl/inputs.yml`
@@ -67,6 +72,8 @@ function stubLeader() {
     if (path === '/version/files') return reply(200, { items: [] })
     if (path === '/version') return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
     if (path === '/products/stream/groups') return reply(200, { items: [{ id: GROUP, name: GROUP }] })
+    // No other sources, so every port is free.
+    if (path === `/m/${GROUP}/system/inputs`) return reply(200, { items: [] })
     if (path === `/products/stream/groups/${GROUP}`) {
       return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
     }
@@ -193,11 +200,127 @@ describe('what the panel says before anything is pressed', () => {
   })
 })
 
+/**
+ * A Leader with the whole stack present EXCEPT the Raw HTTP source, which a
+ * Deploy therefore creates. It remembers the create body and answers later
+ * reads of the source with it, so the endpoint card reads what was created.
+ */
+function stubLeaderWithoutSource(opts: { onPrem?: boolean; usedPorts?: number[] } = {}) {
+  const sent: Array<{ method: string; path: string; body: string }> = []
+  let source: Record<string, unknown> | null = null
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const method = (init.method ?? 'GET').toUpperCase()
+    const path = String(url).replace(/^\/capi/, '').split('?')[0]
+    const bodyText = init.body == null ? '' : String(init.body)
+    sent.push({ method, path, body: bodyText })
+    const reply = (status: number, value?: unknown) => {
+      const text = value === undefined ? '' : JSON.stringify(value)
+      return { ok: status >= 200 && status < 300, status, statusText: 'OK', text: async () => text, json: async () => JSON.parse(text) as unknown }
+    }
+    const at = (m: string, p: string) => method === m && path === p
+    if (at('GET', '/version/status')) return reply(200, { items: [{ files: [] }] })
+    if (at('GET', '/version/files')) return reply(200, { items: [] })
+    if (at('GET', '/version')) return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
+    if (at('POST', '/version/commit')) return reply(200, { items: [{ commit: 'bbbb2222bbbb2222' }] })
+    if (at('PATCH', `/products/stream/groups/${GROUP}/deploy`)) return reply(200, { items: [] })
+    if (at('GET', '/products/stream/groups')) return reply(200, { items: [{ id: GROUP, name: GROUP, onPrem: opts.onPrem === true }] })
+    if (at('GET', `/products/stream/groups/${GROUP}`)) return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
+    if (at('GET', '/master/groups')) return reply(200, { items: [{ id: GROUP, name: GROUP, type: 'stream' }] })
+    if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
+    if (at('GET', `/m/${GROUP}/system/outputs/gigamon_lake`)) return reply(200, { items: [{ id: 'gigamon_lake' }] })
+    if (at('GET', `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`)) return reply(200, { items: [{ ...HTTP_BREAKER_SPEC }] })
+    if (at('GET', `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)) return reply(200, { items: [{ ...PIPELINE_SPEC }] })
+    if (at('GET', `/m/${GROUP}/routes`)) return reply(200, { items: [{ id: 'default', routes: [{ ...ROUTE_SPEC }, { id: 'default', filter: 'true' }] }] })
+    if (at('GET', `/m/${GROUP}/system/inputs`)) {
+      return reply(200, { items: (opts.usedPorts ?? []).map((port, i) => ({ id: `other${i}`, type: 'http', port })) })
+    }
+    if (at('GET', `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)) {
+      return source ? reply(200, { items: [source] }) : reply(404, { message: 'not found' })
+    }
+    if (at('POST', `/m/${GROUP}/system/inputs`)) {
+      source = JSON.parse(bodyText) as Record<string, unknown>
+      return reply(200, { items: [source] })
+    }
+    if (path.startsWith('/kvstore')) return method === 'GET' ? reply(404, '') : reply(200, '')
+    return reply(404, { message: `no stub for ${method} ${path}` })
+  })
+  return { sent, created: () => source }
+}
+
+async function deployThroughTheDialog() {
+  await press(buttonNamed('Deploy onboarding stack'))
+  await press(buttonNamed(`Yes, deploy to ${GROUP}`))
+  await settle(20)
+}
+
+const portInput = () => document.body.querySelector<HTMLInputElement>('#gs-port-input')
+
+describe('the Raw HTTP source’s port, TLS and token', () => {
+  it('offers the first free port in 20000–20010 on a Cribl-managed group', async () => {
+    stubLeaderWithoutSource({ usedPorts: [20000] })
+    await mount()
+    expect(portInput()?.value).toBe('20001')
+  })
+
+  it('will not open the confirmation for a port another source uses', async () => {
+    stubLeaderWithoutSource({ usedPorts: [20000, 20001] })
+    await mount()
+    await act(async () => {
+      const input = portInput()!
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input, '20001')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await settle()
+    expect(bodyText()).toContain('Another source in this group already listens on 20001.')
+    expect(buttonNamed('Deploy onboarding stack')?.getAttribute('aria-disabled')).toBe('true')
+    await press(buttonNamed('Deploy onboarding stack'))
+    expect(bodyText()).not.toContain('onboarding stack to Cribl Stream worker group')
+  })
+
+  it('shows the token once on the endpoint card, next to an https POST URL, and nowhere after a reload', async () => {
+    const leader = stubLeaderWithoutSource()
+    await mount()
+    await deployThroughTheDialog()
+
+    const token = ((leader.created()?.authTokensExt as Array<{ token: string }> | undefined) ?? [])[0]?.token
+    expect(token, 'the source was not created with a token').toMatch(/^[0-9a-f]{64}$/)
+    expect(bodyText()).toContain('Point Gigamon AMX here')
+    expect(bodyText()).toContain(token)
+    expect(bodyText()).toContain(TOKEN_ONCE)
+    expect(bodyText()).toContain('https://')
+    expect(bodyText()).toContain(':20000/')
+    expect(buttonNamed('Copy token')).toBeTruthy()
+    expect(bodyText()).not.toContain(UNENCRYPTED_WARNING)
+    // It never went to this app's own store — the only writes there are the
+    // audit trail and the commit memory, and neither carries it.
+    expect(leader.sent.filter((c) => c.path.startsWith('/kvstore') && c.body.includes(token!))).toEqual([])
+
+    // A reload is a new mount: nothing kept it, so nothing can show it.
+    act(() => root.unmount())
+    root = createRoot(container)
+    await mount()
+    expect(bodyText()).not.toContain(token)
+    expect(bodyText()).toContain(TOKEN_ELSEWHERE)
+  })
+
+  it('says plainly on a hybrid group that the traffic is unencrypted, and prints http', async () => {
+    stubLeaderWithoutSource({ onPrem: true })
+    await mount()
+    expect(portInput()?.value).toBe('10080')
+    await deployThroughTheDialog()
+    expect(bodyText()).toContain(UNENCRYPTED_WARNING)
+    expect(bodyText()).toContain('http://<worker-ingress-host>:10080/')
+  })
+})
+
 // ── What this file does not establish ───────────────────────────────────────
 //
 //   * THE TEARDOWN TRIGGER. It is only rendered when something in the group is
-//     present, and this stub provisions nothing, so the assertions above are on
-//     the deploy trigger alone. Both call the same `openConfirm`, which is a
+//     present, and the first stub provisions nothing, so the pending-file
+//     assertions are on the deploy trigger alone.
+//   * THAT COPY PUTS THE TOKEN ON THE CLIPBOARD. happy-dom has no clipboard;
+//     the Copy buttons are asserted present, not working. Both call the same `openConfirm`, which is a
 //     type-level fact here and not a measured one.
 //   * THAT THE READ IS CHEAP. One `GET /version/status` per press is asserted
 //     as a count, not as a cost; whether a real Leader answers it quickly enough

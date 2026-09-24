@@ -20,6 +20,12 @@
 // shares the page. Measured rather than asserted: no useState value and no
 // derived local in this file is referenced by anything left behind.
 //
+// RAW HTTP (2026-09-24). The stack is an `http_raw` source now, so this file
+// also holds what a Syslog stack never needed: the group's hosting (managed or
+// hybrid, which decides TLS and the port range), the port picker, and the auth
+// token the create run generates — held in state for the one screen that shows
+// it, and nowhere else. See cribl/provision.ts's header.
+//
 // WHY THE ENDPOINT PANEL CAME WITH IT. "Point Gigamon AMX here" renders only
 // when every resource is present, and that is `allPresent`, derived from
 // `status`. Leaving it in the tab meant lifting one boolean back out through a
@@ -58,16 +64,19 @@ import { StatusPill, type StatusState } from './StatusPill'
 import { pushToast } from './Toast'
 import { useWriteGate } from '../cribl/authz'
 import { IS_INSTALLED } from '../cribl/config'
+import { listInputs, listStreamGroupsCurrent } from '../cribl/lake'
 import {
-  checkStatus, deployAll, removeSyslogStack, suggestedSyslogHost, pendingDeploy,
-  listStreamGroups, DEFAULT_STREAM_GROUP, STEP_LABELS,
-  commitScope, pendingConfigPaths,
-  type SetupStatus, type StepResult, type ResourceKey, type StreamGroup,
-  SYSLOG_SOURCE_ID, SYSLOG_PIPELINE_ID, SYSLOG_ROUTE_ID,
-  LAKE_DESTINATION_ID, LAKE_DATASET_ID, SYSLOG_PORT,
+  checkStatus, checkLegacyStatus, deployAll, removeOnboardingStack, suggestedIngressHost, postUrl, pendingDeploy,
+  listStreamGroups, readHttpEndpoint, portProblem, portsInUse, suggestPort, DEFAULT_STREAM_GROUP, STEP_LABELS,
+  commitScope, pendingConfigPaths, LEGACY_KEYS,
+  type SetupStatus, type LegacyStatus, type HttpEndpoint, type StepResult, type ResourceKey, type CommitKey, type StreamGroup,
+  HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID,
+  LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
+  LAKE_DESTINATION_ID, LAKE_DATASET_ID,
 } from '../cribl/provision'
 import {
-  GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, deployConsequences, deployNote, removeConsequences,
+  ENDPOINT_LEAD, ENDPOINT_TIP, GROUP_TIP, LEGACY_TIP, PORT_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, TOKEN_ELSEWHERE, TOKEN_ONCE,
+  UNENCRYPTED_WARNING, deployConsequences, deployNote, legacyNote, removeConsequences,
 } from './provisionPanelCopy'
 import { InfoTip } from './InfoTip'
 import {
@@ -78,10 +87,17 @@ interface ResourceMeta { key: ResourceKey; label: string; detail: string }
 const RESOURCES: ResourceMeta[] = [
   { key: 'dataset', label: 'Cribl Lake dataset', detail: `${LAKE_DATASET_ID} · 30-day retention · JSON` },
   { key: 'destination', label: 'Cribl Lake destination', detail: `${LAKE_DESTINATION_ID} → dataset ${LAKE_DATASET_ID}` },
-  { key: 'pipeline', label: 'Pipeline', detail: `${SYSLOG_PIPELINE_ID} · parse JSON + normalize` },
-  { key: 'source', label: 'Syslog source', detail: `${SYSLOG_SOURCE_ID} · TCP + UDP :${SYSLOG_PORT}` },
-  { key: 'route', label: 'Route', detail: `${SYSLOG_ROUTE_ID} · scoped to the source → Lake` },
+  { key: 'breaker', label: 'Event breaker', detail: `${HTTP_BREAKER_ID} · one event per JSON array record` },
+  { key: 'pipeline', label: 'Pipeline', detail: `${HTTP_PIPELINE_ID} · normalize fields` },
+  { key: 'source', label: 'Raw HTTP source', detail: `${HTTP_SOURCE_ID} · token auth` },
+  { key: 'route', label: 'Route', detail: `${HTTP_ROUTE_ID} · scoped to the source → Lake` },
 ]
+
+/** How the chosen group is hosted: `onPrem` from /products/stream/groups. Null
+ *  is "could not tell", which blocks creating a source — TLS and the port range
+ *  both depend on it, and guessing either wrong leaves a source that cannot
+ *  start or cannot be reached. */
+type Hosting = 'managed' | 'hybrid' | null
 
 const ACTION_TXT: Record<string, string> = {
   created: 'created', updated: 'updated', exists: 'already present', error: 'failed', skipped: 'skipped',
@@ -97,7 +113,7 @@ export function ProvisionPanel() {
   // Operations") requires a deliberate click and a prompt naming exactly what is
   // affected before either runs, and forbids reaching them from load, render or
   // a timer — so nothing sets these except a button, and nothing calls deployAll
-  // or removeSyslogStack except the confirm inside them.
+  // or removeOnboardingStack except the confirm inside them.
   // One at a time, structurally: two prompts about the same group with opposite
   // answers is how the wrong button gets pressed, and one slot cannot hold both.
   const [confirming, setConfirming] = useState<'deploy' | 'remove' | null>(null)
@@ -110,7 +126,23 @@ export function ProvisionPanel() {
   // instead of asserting that nothing does. Null is "could not tell" and the
   // copy renders it as that — see provisionPanelCopy.ts.
   const [pendingPaths, setPendingPaths] = useState<string[] | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'url' | 'token' | null>(null)
+  // The Syslog stack an earlier release left in this group, if any. Read only so
+  // the teardown can name it; null until the first check lands.
+  const [legacy, setLegacy] = useState<LegacyStatus | null>(null)
+  // What the live source says about where it listens — the card prints this,
+  // never the picker's value.
+  const [endpoint, setEndpoint] = useState<HttpEndpoint | null>(null)
+  const [hosting, setHosting] = useState<Hosting>(null)
+  // Ports other sources in the group already use; null = could not be read.
+  const [usedPorts, setUsedPorts] = useState<number[] | null>(null)
+  // The picker's text, so a half-typed value is not coerced under the cursor.
+  const [portText, setPortText] = useState('')
+  // THE TOKEN, and the only place in the app it is ever held: set by the run
+  // that created the source, shown once on the endpoint card, dropped on a
+  // group change, a teardown or a reload. Keyed by group so it is never shown
+  // under a group whose source it does not open.
+  const [token, setToken] = useState<{ group: string; value: string } | null>(null)
   const [group, setGroup] = useState<string>(DEFAULT_STREAM_GROUP)
   const [groups, setGroups] = useState<StreamGroup[]>([{ id: DEFAULT_STREAM_GROUP, name: DEFAULT_STREAM_GROUP }])
   // Whether the viewer's remembered group has been read yet. The first status
@@ -122,12 +154,12 @@ export function ProvisionPanel() {
   // owns the inner one. These read the same gate so the OUTER button closes too
   // after a refusal — walking somebody into a confirmation they cannot complete
   // is worse than telling them at the button they pressed.
-  const applyGate = useWriteGate('syslog_stack.apply')
-  const removeGate = useWriteGate('syslog_stack.remove')
+  const applyGate = useWriteGate('onboarding_stack.apply')
+  const removeGate = useWriteGate('onboarding_stack.remove')
 
   // Step logs and fatal errors are kept PER worker group so switching groups (or
   // re-checking) preserves the last outcome for each — a provisioning failure
-  // (e.g. a syslog port conflict) lingers on that group's screen until the next
+  // (e.g. a port conflict) lingers on that group's screen until the next
   // deploy/remove for it, instead of vanishing on the next render.
   const [outcomes, setOutcomes] = useState<Record<string, { steps: StepResult[]; err: string | null }>>({})
   const steps = outcomes[group]?.steps ?? []
@@ -231,16 +263,29 @@ export function ProvisionPanel() {
       // "is there something this group committed but never ran". It rides along
       // with the status check, and its own failure must not blank the resource
       // rows, so it swallows rather than rejects.
-      const [live, undeployed, paths] = await Promise.all([
+      const [live, undeployed, paths, old, ep, groupsNow, inputs] = await Promise.all([
         checkStatus(group),
         pendingDeploy(group).catch(() => null),
         // Same shape and the same reason: a read whose only job is to make a
         // confirmation specific must not be able to blank the resource rows.
         pendingConfigPaths().catch(() => null),
+        checkLegacyStatus(group).catch(() => null),
+        readHttpEndpoint(group).catch(() => null),
+        listStreamGroupsCurrent(),
+        listInputs(group),
       ])
       setStatus(live)
       setPending(undeployed)
       setPendingPaths(paths)
+      setLegacy(old)
+      setEndpoint(ep)
+      const rec = groupsNow.outcome === 'ok' ? groupsNow.value?.find((x) => x.id === group) : undefined
+      const host: Hosting = rec ? (rec.onPrem ? 'hybrid' : 'managed') : null
+      const used = inputs.outcome === 'ok' ? portsInUse(inputs.value ?? []) : null
+      setHosting(host)
+      setUsedPorts(used)
+      // Offer a free port, but never overwrite one somebody is typing.
+      setPortText((cur) => cur || String(suggestPort(host !== 'hybrid', used) ?? ''))
     } catch (e) {
       setGroupErr(group, (e as Error).message)
     } finally {
@@ -293,6 +338,11 @@ export function ProvisionPanel() {
     setConfirming(null)
     setPending(null)
     setPendingPaths(null)
+    setLegacy(null)
+    setEndpoint(null)
+    setHosting(null)
+    setUsedPorts(null)
+    setPortText('')
     void populate()
   }, [groupReady, populate])
 
@@ -306,7 +356,7 @@ export function ProvisionPanel() {
   const unreadable = status ? RESOURCES.filter((r) => status[r.key] === 'unreadable') : []
 
   // Per-resource outcomes from this group's step log, surfaced inline on the
-  // rows: a failure (e.g. the syslog port conflict) and any downstream steps
+  // rows: a failure (e.g. a port conflict) and any downstream steps
   // that were skipped because an earlier step failed.
   const errorByKey: Partial<Record<ResourceKey, string>> = {}
   const skippedByKey: Partial<Record<ResourceKey, string>> = {}
@@ -319,11 +369,23 @@ export function ProvisionPanel() {
 
   // The group-scoped resources the teardown removes. When some (but not all) of
   // these exist, the stack is "partial" and can be cleaned up.
-  const REMOVABLE_KEYS: ResourceKey[] = ['source', 'pipeline', 'route']
+  const REMOVABLE_KEYS: ResourceKey[] = ['source', 'pipeline', 'route', 'breaker']
   const anyRemovable = status ? REMOVABLE_KEYS.some((k) => status[k] === 'present') : false
+  const legacyPresent = legacy ? LEGACY_KEYS.filter((k) => legacy[k] === 'present') : []
   const partial = anyRemovable && !allPresent
+  const onlyLegacy = !anyRemovable && legacyPresent.length > 0
+
+  // The port only matters when this run will CREATE the source. A present (or
+  // unreadable) source keeps whatever port it has.
+  const needsPort = status?.source === 'absent'
+  const port = Number(portText)
+  const portIssue = !needsPort
+    ? null
+    : hosting === null
+      ? `This app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range and TLS.`
+      : portProblem(port, hosting === 'managed', usedPorts)
   // One place each, so the click guard and the aria state cannot drift apart.
-  const deployBlocked = running !== null || loading || applyGate.denied !== null
+  const deployBlocked = running !== null || loading || applyGate.denied !== null || portIssue !== null
   const removeBlocked = running !== null || removeGate.denied !== null
 
   // What each confirmation names, as objects rather than as prose. AGENTS.md
@@ -348,19 +410,25 @@ export function ProvisionPanel() {
       detail: `Created by this button only if missing, and never edited by it. Writes to dataset ${LAKE_DATASET_ID}.`,
     },
     {
-      action: 'replace', kind: 'Pipeline', id: SYSLOG_PIPELINE_ID, group,
+      action: 'replace', kind: 'Event breaker ruleset', id: HTTP_BREAKER_ID, group,
+      detail: 'Created, or its rules overwritten if it already exists.',
+    },
+    {
+      action: 'replace', kind: 'Pipeline', id: HTTP_PIPELINE_ID, group,
       detail: 'Created, or its function list overwritten if it already exists.',
     },
     {
-      action: 'replace', kind: 'Syslog source', id: SYSLOG_SOURCE_ID, group,
-      detail: `TCP + UDP :${SYSLOG_PORT}. Created, or its settings overwritten if it already exists.`,
+      action: 'replace', kind: 'Raw HTTP source', id: HTTP_SOURCE_ID, group,
+      detail: needsPort
+        ? `Created on port ${portText} with a new auth token, ${hosting === 'hybrid' ? 'without TLS' : 'with TLS on Cribl’s certificate'}.`
+        : 'Its settings overwritten where they differ; its port, TLS and token are left as they are.',
     },
     {
       // Named as the routing table and not as the route, because the call is a
       // PATCH of the whole table — the most consequential write in this app
       // (cribl/authz.ts, WRITE_SITES). What it does to the table is the detail.
       action: 'replace', kind: 'Routing table', id: group,
-      detail: `Route ${SYSLOG_ROUTE_ID} added above the catch-all if it is missing. Existing routes keep their order and are not edited.`,
+      detail: `Route ${HTTP_ROUTE_ID} added above the catch-all if it is missing. Existing routes keep their order and are not edited.`,
     },
   ]
 
@@ -369,11 +437,15 @@ export function ProvisionPanel() {
   // is touched, including the demo DataGen source" — was true about what this
   // app writes and false about what its commit carries, and it shipped.
   //
-  // Deploy names all four files it may commit; the teardown names three,
-  // because removeSyslogStack never touches the destination and naming
-  // outputs.yml there would be the over-naming half of the same defect.
-  const deployScope = commitScope(group, ['source', 'pipeline', 'route', 'destination'], pendingPaths)
-  const removeScope = commitScope(group, ['source', 'pipeline', 'route'], pendingPaths)
+  // Deploy names every file it may commit; the teardown never names outputs.yml,
+  // because removeOnboardingStack never touches the destination and naming it
+  // there would be the over-naming half of the same defect.
+  const removeKeys: CommitKey[] = [
+    ...REMOVABLE_KEYS.filter((k) => status?.[k] === 'present'),
+    ...legacyPresent,
+  ]
+  const deployScope = commitScope(group, ['source', 'breaker', 'pipeline', 'route', 'destination'], pendingPaths)
+  const removeScope = commitScope(group, removeKeys, pendingPaths)
   const deploySentences = deployConsequences({ group, scope: deployScope, undeployed: pending })
   const removeSentences = removeConsequences(
     { group, scope: removeScope, undeployed: pending }, LAKE_DESTINATION_ID, LAKE_DATASET_ID,
@@ -381,18 +453,29 @@ export function ProvisionPanel() {
 
   // Only what is actually there. A confirmation that offered to delete a route
   // this group does not have would be naming an object the operator cannot check.
+  const routeDetail = `Removed from the routing table of ${group}. Every other route keeps its order.`
+  const oldDetail = 'Created by an earlier release of this app, over Syslog.'
   const removeResources: ConfirmResource[] = [
     ...(status?.source === 'present'
-      ? [{ action: 'delete' as const, kind: 'Syslog source', id: SYSLOG_SOURCE_ID, group }]
+      ? [{ action: 'delete' as const, kind: 'Raw HTTP source', id: HTTP_SOURCE_ID, group, detail: 'Gigamon AMX can no longer send to it, and its auth token goes with it.' }]
       : []),
     ...(status?.pipeline === 'present'
-      ? [{ action: 'delete' as const, kind: 'Pipeline', id: SYSLOG_PIPELINE_ID, group }]
+      ? [{ action: 'delete' as const, kind: 'Pipeline', id: HTTP_PIPELINE_ID, group }]
       : []),
     ...(status?.route === 'present'
-      ? [{
-          action: 'delete' as const, kind: 'Route', id: SYSLOG_ROUTE_ID, group,
-          detail: `Removed from the routing table of ${group}. Every other route keeps its order.`,
-        }]
+      ? [{ action: 'delete' as const, kind: 'Route', id: HTTP_ROUTE_ID, group, detail: routeDetail }]
+      : []),
+    ...(status?.breaker === 'present'
+      ? [{ action: 'delete' as const, kind: 'Event breaker ruleset', id: HTTP_BREAKER_ID, group }]
+      : []),
+    ...(legacy?.legacy_source === 'present'
+      ? [{ action: 'delete' as const, kind: 'Syslog source', id: LEGACY_SYSLOG_SOURCE_ID, group, detail: oldDetail }]
+      : []),
+    ...(legacy?.legacy_pipeline === 'present'
+      ? [{ action: 'delete' as const, kind: 'Pipeline', id: LEGACY_SYSLOG_PIPELINE_ID, group, detail: oldDetail }]
+      : []),
+    ...(legacy?.legacy_route === 'present'
+      ? [{ action: 'delete' as const, kind: 'Route', id: LEGACY_SYSLOG_ROUTE_ID, group, detail: `${oldDetail} ${routeDetail}` }]
       : []),
   ]
 
@@ -405,8 +488,14 @@ export function ProvisionPanel() {
     setRunning('deploy')
     setConfirming(null)
     resetOutcome(gid)
+    // What a NEW source is created with. Passed whether or not the source
+    // exists; deployAll reads it only when it has to create one.
+    const ingress = needsPort && hosting !== null ? { managed: hosting === 'managed', port } : undefined
     try {
-      const results = await deployAll((r) => appendStep(gid, r), gid, pushToast)
+      const results = await deployAll((r) => appendStep(gid, r), gid, pushToast, {
+        ingress,
+        onToken: (value) => setToken({ group: gid, value }),
+      })
       // A single commit covers every file it included — attribute its hash to
       // all artifacts created/updated in this run (the dataset lives in Cribl
       // Lake, not Git, so it never carries a commit).
@@ -432,7 +521,11 @@ export function ProvisionPanel() {
     resetOutcome(gid)
     setConfirming(null)
     try {
-      const results = await removeSyslogStack((r) => appendStep(gid, r), gid, pushToast, status ?? undefined)
+      const results = await removeOnboardingStack(
+        (r) => appendStep(gid, r), gid, pushToast, status || legacy ? { ...status, ...legacy } : undefined,
+      )
+      // The source this token opened is gone, so the token is too.
+      setToken((t) => (t?.group === gid ? null : t))
       // Removed artifacts no longer have a live config — drop their commit note.
       const removed = results
         .filter((s) => s.detail === 'deleted' && RESOURCES.some((x) => x.key === s.key))
@@ -446,19 +539,23 @@ export function ProvisionPanel() {
     }
   }
 
-  const host = suggestedSyslogHost()
-  const endpoint = host ? `${host}:${SYSLOG_PORT}` : `<worker-ingress-host>:${SYSLOG_PORT}`
-  const copyEndpoint = () => {
-    void navigator.clipboard?.writeText(endpoint).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+  // The endpoint card reads the LIVE source: its port and whether it terminates
+  // TLS. The host is derived only where it can be (Cribl.Cloud, default group).
+  const host = suggestedIngressHost(group, hosting !== 'hybrid')
+  const livePort = endpoint?.port ?? null
+  const url = livePort === null ? null : postUrl(host ?? '<worker-ingress-host>', livePort, endpoint?.tls ?? false)
+  const shownToken = token?.group === group ? token.value : null
+  const copy = (what: 'url' | 'token', text: string) => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(what)
+      setTimeout(() => setCopied(null), 1500)
     })
   }
 
   return (
     <>
       <Panel
-        title="Guided setup — onboard live Gigamon AMI over Syslog"
+        title="Guided setup — onboard live Gigamon AMI over Raw HTTP"
         note={<span className={`env-chip ${IS_INSTALLED ? 'env-installed' : 'env-dev'}`}>{IS_INSTALLED ? 'Cribl' : 'dev preview'}</span>}
       >
         {/* One lead line; the rest is behind the ⓘ (provisionPanelCopy.ts). */}
@@ -488,6 +585,24 @@ export function ProvisionPanel() {
             ))}
           </select>
         </div>
+
+        {needsPort && (
+          <div className="gs-port-picker">
+            <label htmlFor="gs-port-input" className="gs-group-label">Source port</label>
+            <InfoTip text={PORT_TIP} />
+            <input
+              id="gs-port-input"
+              className="gs-group-select gs-port-input"
+              inputMode="numeric"
+              value={portText}
+              disabled={running !== null}
+              aria-invalid={portIssue !== null || undefined}
+              aria-describedby={portIssue ? 'gs-port-issue' : undefined}
+              onChange={(e) => setPortText(e.target.value.trim())}
+            />
+            {portIssue && <span id="gs-port-issue" className="gs-res-error">{portIssue}</span>}
+          </div>
+        )}
 
         <div className="gs-grid">
           <div className="gs-checklist">
@@ -571,14 +686,14 @@ export function ProvisionPanel() {
             {/* The dialog closes itself before the write runs, so by the time
                 there is a refusal to report, its "Yes" button is gone. The note
                 belongs here, beside the trigger the user is now looking at. */}
-            <GateNote write="syslog_stack.apply" />
+            <GateNote write="onboarding_stack.apply" />
             <p className="gs-action-note">{deployNote(group)}</p>
             {unreadable.length > 0 && (
               <p className="gs-action-note gs-action-warn">
                 Cribl refused to let this app read part of <code>{group}</code>{' '}
                 ({unreadable.map((r) => r.label).join(', ')}), so the rows above are an incomplete
                 picture — those resources may already exist. Deploying creates what is missing{' '}
-                <em>and overwrites</em> this app's own pipeline, source and route entry where they differ
+                <em>and overwrites</em> this app's own breaker ruleset, pipeline, source and route entry where they differ
                 from this release, so check the group in Cribl before you rely on what this screen says.
               </p>
             )}
@@ -590,7 +705,13 @@ export function ProvisionPanel() {
                 committed on this Leader since.
               </p>
             )}
-            {(allPresent || partial) && (
+            {legacyPresent.length > 0 && (
+              <p className="gs-action-note">
+                {legacyNote(group)}
+                <InfoTip text={LEGACY_TIP} />
+              </p>
+            )}
+            {(allPresent || partial || onlyLegacy) && (
               <>
                 <button
                   type="button"
@@ -599,9 +720,9 @@ export function ProvisionPanel() {
                   aria-disabled={removeBlocked || undefined}
                   title={removeGate.reason ?? undefined}
                 >
-                  {partial ? 'Remove partial stack' : 'Remove onboarding stack'}
+                  {onlyLegacy ? 'Remove old Syslog stack' : partial ? 'Remove partial stack' : 'Remove onboarding stack'}
                 </button>
-                <GateNote write="syslog_stack.remove" />
+                <GateNote write="onboarding_stack.remove" />
               </>
             )}
           </div>
@@ -613,7 +734,7 @@ export function ProvisionPanel() {
           resources={deployResources}
           consequences={deploySentences}
           undo={
-            `Remove onboarding stack, on this tab, deletes the source, pipeline and route again. ` +
+            `Remove onboarding stack, on this tab, deletes the source, pipeline, route and breaker ruleset again. ` +
             `A setting this run overwrites is recoverable only from ${group}'s Git history.`
           }
           onCancel={() => setConfirming(null)}
@@ -625,7 +746,7 @@ export function ProvisionPanel() {
                calls behind it, the refusal is caught here and named rather than
                reported as a generic failed step. */
             <GatedControl
-              write="syslog_stack.apply"
+              write="onboarding_stack.apply"
               label={allPresent ? `Yes, re-apply to ${group}` : `Yes, deploy to ${group}`}
               busyLabel="Deploying…"
               unavailable={running !== null ? 'Another run is already in progress.' : null}
@@ -636,11 +757,11 @@ export function ProvisionPanel() {
 
         <ConfirmDialog
           isOpen={confirming === 'remove'}
-          title={`Delete the ${partial ? 'partially-created ' : ''}Gigamon AMI syslog resources from Cribl Stream worker group ${group}`}
+          title={`Delete the ${partial ? 'partially-created ' : ''}Gigamon AMI onboarding resources from Cribl Stream worker group ${group}`}
           resources={removeResources}
           irreversible={{
             why:
-              `Deleting a source and a pipeline cannot be undone from this app; the configuration is ` +
+              `Deleting a source, a pipeline and a breaker ruleset cannot be undone from this app; the configuration is ` +
               `recoverable only from ${group}'s Git history.`,
           }}
           consequences={removeSentences}
@@ -649,15 +770,15 @@ export function ProvisionPanel() {
           // is the caveat that keeps it honest — a rebuild is this app's
           // definition, not whatever the group has since been edited to.
           undo={
-            removeResources.length === 3
-              ? 'Deploy onboarding stack, on this tab, rebuilds all three — as this app defines them, not as they are now.'
-              : 'Deploy onboarding stack, on this tab, rebuilds everything listed above — as this app defines it, not as it is now.'
+            legacyPresent.length > 0
+              ? 'Deploy onboarding stack, on this tab, rebuilds the Raw HTTP stack — with a new port choice and a new token. The old Syslog objects are not rebuilt.'
+              : 'Deploy onboarding stack, on this tab, rebuilds everything listed above — as this app defines it, with a new auth token, not as it is now.'
           }
           typeToConfirm={{ value: group, label: `To confirm, type the worker group name ${group}` }}
           onCancel={() => setConfirming(null)}
           confirm={
             <GatedControl
-              write="syslog_stack.remove"
+              write="onboarding_stack.remove"
               label={`Yes, delete from ${group}`}
               busyLabel="Removing…"
               className="btn btn-danger"
@@ -685,25 +806,38 @@ export function ProvisionPanel() {
       {allPresent && (
         <Panel title="Point Gigamon AMX here" tourId="gs-endpoint">
           <p className="gs-intro">
-            Configure the Gigamon Application Metadata Exporter to send AMI metadata as{' '}
-            <strong>JSON over Syslog</strong> to this endpoint:
+            {ENDPOINT_LEAD}
+            <InfoTip text={ENDPOINT_TIP} />
           </p>
           <div className="gs-endpoint">
             <div className="gs-endpoint-main">
-              <code className="gs-endpoint-addr">{endpoint}</code>
-              <button type="button" className="btn btn-ghost" onClick={copyEndpoint}>{copied ? 'Copied ✓' : 'Copy'}</button>
+              <code className="gs-endpoint-addr">{url ?? 'This app could not read the source’s port.'}</code>
+              {url && (
+                <button type="button" className="btn btn-ghost" onClick={() => copy('url', url)}>
+                  {copied === 'url' ? 'Copied ✓' : 'Copy'}
+                </button>
+              )}
             </div>
+            {shownToken ? (
+              <div className="gs-endpoint-main">
+                <code className="gs-endpoint-addr" aria-label="Auth token">{shownToken}</code>
+                <button type="button" className="btn btn-ghost" onClick={() => copy('token', shownToken)}>
+                  {copied === 'token' ? 'Copied ✓' : 'Copy token'}
+                </button>
+              </div>
+            ) : null}
+            <p className="gs-note">{shownToken ? TOKEN_ONCE : TOKEN_ELSEWHERE}</p>
             <div className="gs-endpoint-meta">
-              <span><strong>Protocol</strong> TCP &amp; UDP</span>
-              <span><strong>Port</strong> {SYSLOG_PORT}</span>
-              <span><strong>Format</strong> JSON</span>
+              <span><strong>Method</strong> POST</span>
+              <span><strong>Port</strong> {livePort ?? 'unknown'}</span>
+              <span><strong>Format</strong> JSON array</span>
               <span><strong>Lands in</strong> Cribl Lake · <code>{LAKE_DATASET_ID}</code></span>
             </div>
           </div>
+          {endpoint && !endpoint.tls && <p className="gs-action-note gs-action-warn">{UNENCRYPTED_WARNING}</p>}
           {!host && (
             <p className="gs-note">
-              Replace <code>&lt;worker-ingress-host&gt;</code> with your Cribl Worker Group's ingress
-              address (Cribl.Cloud: typically <code>default.main.&lt;org&gt;.cribl.cloud</code>).
+              Replace <code>&lt;worker-ingress-host&gt;</code> with the address of {group}’s workers.
             </p>
           )}
         </Panel>
