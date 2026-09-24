@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { forgetRunHistory } from '../cribl/accel/status'
-import { recheckDatasetTarget } from '../cribl/datasetTarget'
+import { recheckDatasetTarget, recheckDatasetTargetOnTick } from '../cribl/datasetTarget'
 
 export interface TimeRange {
   label: string
@@ -62,8 +62,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     // is already shorter than the shortest interval.
     forgetRunHistory()
     // …and, while the app is reading the sample dataset, whether real data has
-    // landed since (cribl/datasetTarget.ts). A read, and only on this click —
-    // never on an auto-refresh tick.
+    // landed since (cribl/datasetTarget.ts). A read. Unthrottled here; a tick
+    // asks the throttled one below.
     recheckDatasetTarget()
     setRefreshNonce((n) => n + 1)
     setManualRefreshNonce((n) => n + 1)
@@ -75,6 +75,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (autoSeconds <= 0) return
     const id = setInterval(() => {
+      // While on sample data, look for real data at most every ten minutes —
+      // otherwise a wall display would never move back. A read, not a write.
+      recheckDatasetTargetOnTick()
       setRefreshNonce((n) => n + 1)
       setLastRefresh(Date.now())
     }, autoSeconds * 1000)

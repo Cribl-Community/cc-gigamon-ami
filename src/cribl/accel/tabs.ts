@@ -62,7 +62,10 @@
 // tabs — `realData` — and like them it is READ, never stored. With it false, no
 // flip turns anything on: an on flip plans no change and says why
 // (`refused: 'sample-only'`); an off flip still pauses, because off is the
-// state the rule asks for.
+// state the rule asks for. The same holds while the check has not given a FINAL
+// answer (`unverified`, `refused: 'unverified'`): "not known to be sample" is
+// not "real data exists", and a schedule turned on in that window keeps billing
+// if the answer turns out to be sample.
 
 import { MANIFEST, type AccelEntry, type AccelId } from './manifest'
 import type { AccelRow, AccelState } from './provision'
@@ -172,6 +175,9 @@ export function scheduleEnabled(entry: AccelEntry, master: boolean, tabs: TabSwi
 export interface SwitchContext {
   /** The app is reading the sample dataset: the customer's holds no data. */
   sampleOnly?: boolean
+  /** The dataset check has no final answer yet (cribl/datasetTarget.ts
+   *  `realDataConfirmed`). Refuses an ON flip exactly as `sampleOnly` does. */
+  unverified?: boolean
 }
 
 // ── What is there now ───────────────────────────────────────────────────────
@@ -296,7 +302,7 @@ export interface TogglePlan {
   /** Every tab whose switch reads differently afterwards, the target included. */
   tabsChanged: readonly { tab: AccelTabKey; before: SwitchState; after: SwitchState }[]
   /** Why an ON flip plans nothing whatever the saved searches say, or null. */
-  refused: 'sample-only' | null
+  refused: 'sample-only' | 'unverified' | null
 }
 
 /**
@@ -308,7 +314,7 @@ export interface TogglePlan {
  * schedules — or every schedule, for the master — are candidates to change.
  */
 export function togglePlan(state: AccelState, target: ToggleTarget, ctx: SwitchContext = {}): TogglePlan {
-  const realData = !ctx.sampleOnly
+  const realData = !ctx.sampleOnly && !ctx.unverified
   const live = liveSchedules(state)
   const why = reasons(state)
   const scope: AccelId[] = target.kind === 'master' ? MANIFEST.map((e) => e.id) : schedulesOfTab(target.tab)
@@ -361,7 +367,7 @@ export function togglePlan(state: AccelState, target: ToggleTarget, ctx: SwitchC
     untouchable: scope.filter((id) => !live.has(id)).map((id) => ({ id, why: why.get(id) ?? 'not read yet' })),
     already,
     tabsChanged,
-    refused: !realData && target.on ? 'sample-only' : null,
+    refused: !target.on || realData ? null : ctx.sampleOnly ? 'sample-only' : 'unverified',
   }
 }
 

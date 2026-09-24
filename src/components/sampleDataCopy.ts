@@ -23,9 +23,13 @@ export const SAMPLE_TIP = [
   `While ${REAL_DATASET} is empty, every query, every ⓘ and every “Open in Search” link names ${SAMPLE_DATASET} instead.`,
   `Snapshot mode steps aside: its stored runs are scheduled over ${REAL_DATASET}, so every panel runs live over the sample, and the time range applies as usual.`,
   'Acceleration cannot be switched on until real data exists, because it would schedule searches over an empty dataset.',
-  `How this is known: Cribl Lake’s dataset list and, when that cannot tell, one search for a single record of ${REAL_DATASET}. Press Refresh to check again.`,
+  `How this is known: Cribl Lake’s dataset list and, when that cannot tell, one search for a single record of ${REAL_DATASET}. Press Refresh to check again; with auto-refresh on, the app also checks by itself every ten minutes.`,
 ].join(' ')
 
 /** Why an acceleration control will not turn schedules on. Shown beside the
  *  control that was pressed, and above the switches. */
 export const SAMPLE_ACCEL_OFF = `Off while only sample data exists: scheduled searches read ${REAL_DATASET}, which holds no data yet. They can be switched on once it does.`
+
+/** The same refusal while the check has not given a final answer — the page
+ *  cannot yet say which dataset holds data, so it does not claim either. */
+export const ACCEL_UNVERIFIED_OFF = `Cannot be switched on yet: the app is still checking whether ${REAL_DATASET} holds data.`

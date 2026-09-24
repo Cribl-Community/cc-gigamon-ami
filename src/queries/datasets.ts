@@ -32,8 +32,10 @@ export const SAMPLE_DATASET = 'gigamon_ami_sample'
  * cannot answer (cribl/datasetTarget.ts).
  *
  * Measured 2026-09-24 over 30 days: 0.08–0.38 billable CPU-s against an empty
- * dataset (the case it runs in), 41.6 against a populated one, where it runs at
- * most once a page load and its answer is then final. Written out rather than
+ * dataset (the case it runs in), 41.6 against a populated one — once a page
+ * load, on every load until Lake's size figure turns positive; a narrower
+ * window does not make it cheaper (measurements in cribl/datasetTarget.ts).
+ * Written out rather than
  * built with `q()` for the reason in the header; the test pins it to `q('| limit 1')`.
  */
 export const REAL_DATA_PROBE_QUERY = `dataset="${REAL_DATASET}" | limit 1`

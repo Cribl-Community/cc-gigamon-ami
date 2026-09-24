@@ -41,7 +41,7 @@ import {
   type SwitchState,
   type TogglePlan,
 } from '../cribl/accel/tabs'
-import { SAMPLE_ACCEL_OFF } from './sampleDataCopy'
+import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
 import { formatCost, formatRecurringCost } from '../lib/format'
 
 // ── The words, kept pure so a test can read them without a DOM ──────────────
@@ -176,6 +176,8 @@ export function rowAction(row: AccelRow, ctx: SwitchContext = {}): RowAction {
   // While only sample data exists nothing is turned ON — the switches' rule
   // (accel/tabs.ts). Pausing is still offered: off is what the rule asks for.
   if (!row.enabled && ctx.sampleOnly) return { kind: 'none', word: 'Off: sample data only' }
+  // …nor before the check has a final answer: it can still end on sample.
+  if (!row.enabled && ctx.unverified) return { kind: 'none', word: 'Off: checking for data' }
   return row.enabled ? { kind: 'pause' } : { kind: 'resume' }
 }
 
@@ -620,6 +622,7 @@ export function toggleConsequences(plan: TogglePlan): string[] {
  *  a confirmation for nothing. Null when there is something to write. */
 export function toggleNothingWords(plan: TogglePlan): string | null {
   if (plan.refused === 'sample-only') return SAMPLE_ACCEL_OFF
+  if (plan.refused === 'unverified') return ACCEL_UNVERIFIED_OFF
   if (plan.changes.length) return null
   if (plan.kept.length) {
     const ids = plan.kept.map((k) => k.id).join(', ')

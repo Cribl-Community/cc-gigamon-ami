@@ -14,9 +14,14 @@ import {
   datasetTarget,
   judgeListing,
   judgeProbe,
+  TICK_RECHECK_MS,
+  realDataConfirmed,
   recheckDatasetTarget,
+  recheckDatasetTargetOnTick,
   resetDatasetTarget,
   resolveDatasetTarget,
+  settleDatasetTarget,
+  type TargetReason,
 } from './datasetTarget'
 import type { LakeDataset, ReadResult } from './lake'
 import { runSearch } from './search'
@@ -256,5 +261,79 @@ describe('resolveDatasetTarget', () => {
     await p
     await vi.advanceTimersByTimeAsync(0)
     expect(datasetTarget()).toMatchObject({ known: true, sample: true, reason: 'real-absent' })
+  })
+})
+
+// ── Review 2026-09-24 ────────────────────────────────────────────────────────
+
+describe('a cost measured on the sample is not kept as the cost of real data', () => {
+  it('measures again once the same panel text runs against the customer dataset', async () => {
+    // A slot holds one measurement per query and range. The job body moves at
+    // submit, so the key has to name the dataset that ran — or a 0.1 CPU-s
+    // sample figure would price a real-data job forever.
+    listing = [{ id: 'gigamon_ami_sample', metrics: {} }]
+    await resolveDatasetTarget()
+    let cpu = 0.1
+    const base = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      if (String(url).endsWith('/metrics')) return res(200, { items: [{ metrics: { cpuMetrics: { billableCPUSeconds: cpu } } }] })
+      return base(url, init)
+    })
+    const slot = { id: 9001, autoRefresh: true, willRun: true, key: null, cpuSeconds: null, liveHint: null }
+    const text = 'dataset="gigamon_ami" | summarize c=count()'
+    await runSearch(text, { pollMs: 0, costSlot: slot })
+    await vi.waitFor(() => expect(slot.cpuSeconds).toBe(0.1))
+    settleDatasetTarget(false, 'probe-found')
+    cpu = 130
+    await runSearch(text, { pollMs: 0, costSlot: slot })
+    await vi.waitFor(() => expect(slot.cpuSeconds).toBe(130))
+  })
+})
+
+describe('an auto-refresh tick looks again while on the sample, throttled', () => {
+  it('does nothing on a tick soon after the last look, and looks once the throttle has passed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_790_000_000_000)
+    listing = [{ id: 'gigamon_ami', metrics: {} }, { id: 'gigamon_ami_sample', metrics: {} }]
+    await resolveDatasetTarget()
+    expect(datasetTarget().sample).toBe(true)
+    probeRows = [{ src_ip: '10.0.0.1' }]
+    calls = []
+    recheckDatasetTargetOnTick()
+    await Promise.resolve()
+    expect(calls, 'a tick inside the throttle reads nothing').toEqual([])
+    vi.setSystemTime(1_790_000_000_000 + TICK_RECHECK_MS)
+    recheckDatasetTargetOnTick()
+    await vi.waitFor(() => expect(datasetTarget().sample).toBe(false))
+    expect(datasetTarget()).toMatchObject({ reason: 'probe-found', dataset: 'gigamon_ami' })
+    expect(writes()).toEqual([])
+  })
+
+  it('reads nothing on a tick once the verdict is real', async () => {
+    listing = [{ id: 'gigamon_ami', metrics: {} }]
+    await resolveDatasetTarget()
+    calls = []
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 10 * TICK_RECHECK_MS)
+    recheckDatasetTargetOnTick()
+    await Promise.resolve()
+    expect(calls).toEqual([])
+  })
+
+  it('is at most every ten minutes', () => {
+    expect(TICK_RECHECK_MS).toBe(10 * 60_000)
+  })
+})
+
+describe('whether a schedule may be turned on', () => {
+  it('only on a final verdict of real data', () => {
+    const t = (known: boolean, sample: boolean, reason: TargetReason) => ({ known, sample, dataset: 'x', reason })
+    expect(realDataConfirmed(t(false, false, 'reading'))).toBe(false)
+    expect(realDataConfirmed(t(true, false, 'deadline')), 'the provisional answer is not an answer').toBe(false)
+    expect(realDataConfirmed(t(true, true, 'real-empty'))).toBe(false)
+    expect(realDataConfirmed(t(true, true, 'real-absent'))).toBe(false)
+    for (const r of ['no-sample', 'has-data', 'probe-found', 'unreadable', 'probe-failed'] as const) {
+      expect(realDataConfirmed(t(true, false, r)), r).toBe(true)
+    }
   })
 })

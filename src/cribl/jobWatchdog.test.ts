@@ -20,6 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from './authz'
 import { SEARCH_GROUP } from './config'
+import { settleDatasetTarget } from './datasetTarget'
 import { DEFAULT_CAP_TIERS, capTiersInForce, setCapTiers } from './search'
 import {
   HUNG_FLOOR_SECONDS,
@@ -214,6 +215,24 @@ describe('which jobs it reports', () => {
     expect(snapshot().jobs).toEqual([])
     // Counted rather than listed: the watch is scoped to this app's dataset and
     // says so instead of implying it watches everything.
+    expect(snapshot().otherDatasetsOverThreshold).toBe(1)
+  })
+
+  it('while the app reads the sample dataset, lists hung jobs of that dataset too', async () => {
+    // Review 2026-09-24, gap 6: on a sample-only install every panel's job
+    // reads gigamon_ami_sample, and a hung one of those is this app's own.
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    settleDatasetTarget(true)
+    stub(
+      list([
+        running({ id: 'sample', query: 'dataset="gigamon_ami_sample" | limit 1', datasetIds: ['gigamon_ami_sample'] }),
+        running({ id: 'real' }),
+        running({ id: 'other', datasetIds: ['cribl_logs'] }),
+      ]),
+    )
+    await checkNow()
+    expect(snapshot().jobs.map((j) => j.id).sort()).toEqual(['real', 'sample'])
     expect(snapshot().otherDatasetsOverThreshold).toBe(1)
   })
 

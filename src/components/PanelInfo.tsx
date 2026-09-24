@@ -295,6 +295,11 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
   // and the display freeze counts those two calls as written.
   const target = useDatasetTarget()
   const shown = query === undefined ? undefined : retargetQuery(query, target.dataset)
+  // The prose follows for the same reason: a stage that says its panels query
+  // `dataset="gigamon_ami"` (Data Flow's Search stage) is the same claim. Only
+  // a dataset SELECTOR moves (queries/datasets.ts) — prose naming gigamon_ami
+  // as where the Lake destination writes stays true and is left alone.
+  const aboutShown = about === undefined ? undefined : retargetQuery(about, target.dataset)
   const [open, setOpen] = useState(false)
   const [place, setPlace] = useState<Placement>({ top: 0, left: 0, side: 'below' })
   const [copied, setCopied] = useState(false)
@@ -443,7 +448,7 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
           {about && (
             <div className="pinfo-block">
               <div className="pinfo-h">{aboutHeading}</div>
-              <p className="pinfo-about">{about}</p>
+              <p className="pinfo-about">{aboutShown}</p>
             </div>
           )}
           {links && links.length > 0 && (

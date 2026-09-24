@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { rowAction, toggleNothingWords } from '../../components/accelPanelCopy'
-import { SAMPLE_ACCEL_OFF } from '../../components/sampleDataCopy'
+import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from '../../components/sampleDataCopy'
 import { MANIFEST, accelEntry, type AccelId } from './manifest'
 import type { AccelEntryState, AccelRow, AccelState } from './provision'
 import {
@@ -448,5 +448,31 @@ describe('while only sample data exists', () => {
     expect(rowAction(paused, SAMPLE)).toEqual({ kind: 'none', word: 'Off: sample data only' })
     expect(rowAction(paused)).toEqual({ kind: 'resume' })
     expect(rowAction(row(MANIFEST[0].id, 'enabled'), SAMPLE)).toEqual({ kind: 'pause' })
+  })
+})
+
+// Review 2026-09-24, defect 2: before the dataset check has a FINAL answer the
+// switches refuse ON just as they do on sample — it can still end on sample.
+describe('before the dataset check has a final answer', () => {
+  const PENDING = { unverified: true } as const
+
+  it('an ON flip plans no write, and says the check is still out rather than that data is sample', () => {
+    for (const key of ['master', ...ACCEL_TABS.map((t) => t.key)] as const) {
+      const plan = flipPlan(stateOf({}, 'paused'), key, PENDING)
+      expect(plan.changes, key).toEqual([])
+      expect(plan.refused, key).toBe('unverified')
+      expect(toggleNothingWords(plan), key).toBe(ACCEL_UNVERIFIED_OFF)
+    }
+  })
+
+  it('an OFF flip still pauses', () => {
+    const plan = flipPlan(stateOf({}), 'master', PENDING)
+    expect(plan.changes.length).toBe(MANIFEST.length)
+    expect(plan.refused).toBeNull()
+  })
+
+  it('a paused row offers no Resume; a running one still offers Pause', () => {
+    expect(rowAction(row(MANIFEST[0].id, 'paused'), PENDING)).toEqual({ kind: 'none', word: 'Off: checking for data' })
+    expect(rowAction(row(MANIFEST[0].id, 'enabled'), PENDING)).toEqual({ kind: 'pause' })
   })
 })

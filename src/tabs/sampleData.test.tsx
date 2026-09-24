@@ -36,6 +36,7 @@ import { datasetTarget, resetDatasetTarget, subscribeDatasetTarget } from '../cr
 import { resetSnapshotCensus } from '../components/snapshotCensus'
 import { SAMPLE_TITLE } from '../components/sampleDataCopy'
 import { REAL_DATA_PROBE_QUERY } from '../queries/datasets'
+import { LAKE_HELD_QUERY } from '../queries/dataFlow'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 /** Every route in App.tsx's TABS, read from the source so a new tab is covered the day it lands. */
@@ -64,6 +65,8 @@ interface Call {
 let calls: Call[] = []
 let submits: string[] = []
 let artifactReads: string[] = []
+/** gigamon_ami's retention. Past cribl_metrics' 30 days, Data Flow's Lake card counts the dataset directly. */
+let amiRetention = 30
 
 function stub(): void {
   calls = []
@@ -81,7 +84,7 @@ function stub(): void {
     if (u.includes('/lakes/default/datasets')) {
       return res(200, {
         items: [
-          { id: 'gigamon_ami', retentionPeriodInDays: 30, metrics: { currentSizeBytes: 0, metricsDate: '2026-09-23' } },
+          { id: 'gigamon_ami', retentionPeriodInDays: amiRetention, metrics: { currentSizeBytes: 0, metricsDate: '2026-09-23' } },
           { id: 'gigamon_ami_sample', retentionPeriodInDays: 7, metrics: {} },
           { id: 'cribl_metrics', retentionPeriodInDays: 30, metrics: {} },
         ],
@@ -135,6 +138,7 @@ beforeEach(() => {
   resetAccelKeyMemo()
   // A page that has read nothing: the verdict below is the real read path's.
   resetDatasetTarget()
+  amiRetention = 30
   stub()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -170,6 +174,13 @@ const bare = (q: string) => q.replace(EXEC_PREFIX, '')
 
 /** Every submitted query that is not the probe. */
 const panelSubmits = () => submits.map(bare).filter((q) => q !== REAL_DATA_PROBE_QUERY)
+
+/** Tabs with no ⓘ at all: the AMI field reference (AmiReference.tsx) is a static table and runs no query. */
+const NO_INFO = new Set(['/reference'])
+/** Tabs whose ⓘs carry prose and provenance but no query block: Guided Setup's
+ *  explain settings, and Data Flow's explain each stage of the diagram. Their
+ *  prose is still held to the rule, by the whole-popover check. */
+const NO_QUERY_INFO = new Set(['/setup', '/data-flow'])
 
 /** Across every tab, so the sweep cannot pass by submitting nothing. */
 let retargeted = 0
@@ -207,14 +218,26 @@ describe('every tab, while only sample data exists', () => {
 
       // …and every ⓘ names the dataset that answered.
       const buttons = [...container.querySelectorAll<HTMLButtonElement>('.app-main .pinfo-btn')]
+      let codes = 0
       for (const b of buttons) {
         await act(async () => { b.click() })
+        const pop = document.body.querySelector('.pinfo-pop')
+        expect(pop, `${b.getAttribute('aria-label')}: the ⓘ opened nothing`).not.toBeNull()
+        // The whole popover, prose included — a stage's "what this does" that
+        // says the panels query gigamon_ami is the same false claim as the code.
+        expect(pop?.textContent ?? '', b.getAttribute('aria-label') ?? '').not.toMatch(/dataset\s*=?\s*"gigamon_ami"/)
         const code = document.body.querySelector('.pinfo-pop .pinfo-code')?.textContent ?? ''
+        if (code !== '') codes++
         expect(code, b.getAttribute('aria-label') ?? '').not.toMatch(/dataset="gigamon_ami"/)
         const link = document.body.querySelector<HTMLAnchorElement>('.pinfo-pop a.pinfo-code-link')
         if (link) expect(new URL(link.href, 'http://x').searchParams.get('q') ?? '').not.toMatch(/dataset="gigamon_ami"/)
         await act(async () => { b.click() })
       }
+      // The sweep cannot pass by finding nothing to check (review 2026-09-24,
+      // gap 8): every tab but the ones named here shows at least one ⓘ with a
+      // query in it.
+      if (!NO_INFO.has(route)) expect(buttons.length, `${route} shows no ⓘ at all`).toBeGreaterThan(0)
+      if (!NO_INFO.has(route) && !NO_QUERY_INFO.has(route)) expect(codes, `${route}: no ⓘ showed a query`).toBeGreaterThan(0)
 
       // 4. Nothing written: every non-GET is a search submit, a cancel, or the
       //    KV store's key listing (a read Cribl spells as POST — cribl/kv.ts).
@@ -228,6 +251,20 @@ describe('every tab, while only sample data exists', () => {
   it('retargeted a real number of queries across the tabs', () => {
     // Runs after the per-tab cases (vitest runs a file's tests in order).
     expect(retargeted).toBeGreaterThan(15)
+  })
+})
+
+// Review 2026-09-24, defect 5. The Lake card describes the customer's dataset —
+// its retention, its on-disk size, its name in the label — so the count beside
+// them must be of that dataset too, not of the sample under its name.
+describe('Data Flow’s Lake card while only sample data exists', () => {
+  it('counts gigamon_ami as written, when its retention outruns cribl_metrics', async () => {
+    amiRetention = 365
+    await renderAt('/data-flow')
+    expect(datasetTarget().sample).toBe(true)
+    const counts = submits.map(bare).filter((q) => q.endsWith('| summarize total_events=count()'))
+    expect(counts).toEqual([LAKE_HELD_QUERY])
+    expect(LAKE_HELD_QUERY).toContain('dataset="gigamon_ami"')
   })
 })
 

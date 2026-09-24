@@ -687,12 +687,13 @@
           "ref": "lakeRead.query",
           "shape": "query",
           "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0))",
-          "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, }",
+          "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, asWritten: true, }",
           "optionsValue": {
             "earliest": "-30d",
             "accel": "gno_lake_30d_c1d",
             "snapshotInLive": true,
-            "deferred": false
+            "deferred": false,
+            "asWritten": true
           }
         }
       },

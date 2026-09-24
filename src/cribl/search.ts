@@ -355,6 +355,26 @@ export function cancelJob(jobId: string): void {
  * job still starts in Cribl. Instead the submit completes, and a job whose
  * search was abandoned meanwhile is cancelled at once.
  */
+/**
+ * THE ONE PLACE A QUERY IS MOVED ONTO THE SAMPLE DATASET — the text a job
+ * actually runs. `submitJob` sends it, so no panel, fallback or direct read can
+ * forget the move; the ⓘ makes the same move for display
+ * (components/PanelInfo.tsx).
+ *
+ * It is also what a job's measured cost is filed under (`costKey`). Filed
+ * under the query as written, a figure measured on the sample would match the
+ * same panel's first job on real data and never be measured again — a 0.1 CPU-s
+ * sample price quoted for a 130 CPU-s scan (review 2026-09-24, defect 1).
+ */
+function executedQuery(query: string, asWritten: boolean): string {
+  return asWritten ? query : toActiveDataset(query)
+}
+
+/** The cost slot's key: the window and the text that actually ran. */
+function costKey(query: string, earliest: string | number, asWritten: boolean): string {
+  return `${earliest} ${executedQuery(query, asWritten)}`
+}
+
 async function submitJob(
   query: string,
   earliest: string | number,
@@ -363,10 +383,7 @@ async function submitJob(
   reuse = false,
   asWritten = false,
 ): Promise<string> {
-  // THE ONE PLACE A QUERY IS MOVED ONTO THE SAMPLE DATASET. Here rather than in
-  // each caller, so no panel, fallback or direct read can forget it; the ⓘ
-  // makes the same move for display (components/PanelInfo.tsx).
-  const executed = asWritten ? query : toActiveDataset(query)
+  const executed = executedQuery(query, asWritten)
   const created = await api<{ items: Array<{ id: string }> }>(searchUrl('/search/jobs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -463,7 +480,7 @@ async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<
 
   const jobId = await submitJob(query, earliest, latest, signal, reuse, asWritten)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
-  if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
+  if (costSlot) void recordJobCost(costSlot, costKey(query, earliest, asWritten), jobId)
 
   const { rows, totalEventCount } = await readJobResults(jobId, { limit, signal })
   return { jobId, rows, totalEventCount }
@@ -582,7 +599,7 @@ async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): 
   const cap = capSecondsFor(earliest)
   const jobId = await submitJob(query, earliest, latest, signal, reuse, asWritten)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
-  if (costSlot) void recordJobCost(costSlot, `${earliest} ${query}`, jobId)
+  if (costSlot) void recordJobCost(costSlot, costKey(query, earliest, asWritten), jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)
   const fields = data.fields ?? []
   const sampled = fields.reduce((m, f) => Math.max(m, f.count + f.countNull), 0)

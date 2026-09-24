@@ -23,13 +23,30 @@
 // customer's dataset present, no positive size — does this submit one search:
 // `REAL_DATA_PROBE_QUERY`, one row over the dataset's retention. Measured the
 // same day: 0.08–0.38 billable CPU-s against an empty dataset, which is the
-// case it runs in; 41.6 against a populated one, which happens at most once per
-// page load, on the day real data first lands before Lake's metric catches up.
+// case it runs in; 41.6 against a populated one.
+//
+// THE POPULATED CASE IS PAID ON EVERY PAGE LOAD until Lake's figure turns
+// positive, not once. How long that is, measured 2026-09-24: every dataset
+// this workspace created reports a dated size (`gigamon_ami`: 111 GB as of the
+// day before), while the built-in ones (`cribl_*`, `default_*`) report `{}`
+// whatever they hold — so for the customer's dataset it is the day between
+// real data landing and Lake's next daily figure.
+//
+// A NARROWER WINDOW DOES NOT BUY IT BACK, which is why the probe is not
+// widened in steps. `limit 1` over the populated `gigamon_ami`, measured
+// 2026-09-24: 28.5 CPU-s over 5 minutes, 30.3 and 30.5 over an hour, 35.4 over
+// a day, 40.2 and 41.6 over 30 days. Touching a populated dataset at all has a
+// floor; a `-1h` first step would save about a quarter of it on the day real
+// data lands, and add a probe and ~1.5 s to EVERY sample-install load — enough
+// to push the verdict past HOLD_DEADLINE_MS and run every panel twice.
 //
 // CACHED FOR THE PAGE, never stored. A stored verdict would be a write on load
 // and would outlive the thing it describes. A REAL verdict is final for the
-// page; a SAMPLE verdict is re-checked on an explicit Refresh — that is how an
-// open page finds the first real record — and never on a timer.
+// page. A SAMPLE verdict is re-checked — that is how an open page finds the
+// first real record — on an explicit Refresh, and on an auto-refresh tick at
+// most every TICK_RECHECK_MS, because a wall display left on sample data would
+// otherwise never move back. That is a READ on a timer: one free listing and at
+// most one probe of an empty dataset. Nothing here writes, on a timer or not.
 //
 // ── WHAT A VERDICT CHANGES ──────────────────────────────────────────────────
 // `setActiveDataset` (config.ts): every job body (search.ts), deep link and
@@ -51,7 +68,6 @@ import { useSyncExternalStore } from 'react'
 import { LAKE_DATASET, setActiveDataset } from './config'
 import { setSnapshotWithheld } from './dataMode'
 import { listDatasets, type LakeDataset, type ReadResult } from './lake'
-import { DEFAULT_DATASETS, DEFAULT_TARGET, SAMPLE_DATASETS, routeQuery } from './queryTarget'
 import { runSearch } from './search'
 import { REAL_DATA_PROBE_QUERY, SAMPLE_DATASET } from '../queries/datasets'
 
@@ -96,7 +112,12 @@ export const HOLD_DEADLINE_MS = 4_000
  *  customer's own. */
 export const PROBE_TIMEOUT_MS = 20_000
 
-const datasetFor = (sample: boolean) => routeQuery(DEFAULT_TARGET, null, sample ? SAMPLE_DATASETS : DEFAULT_DATASETS).dataset
+/** How often an auto-refresh tick may look again while on the sample. Ten
+ *  minutes: real data landing is a once-per-install event, and each look is a
+ *  free listing plus a probe of 0.08–0.38 CPU-s against an empty dataset. */
+export const TICK_RECHECK_MS = 10 * 60_000
+
+const datasetFor = (sample: boolean) => (sample ? SAMPLE_DATASET : LAKE_DATASET)
 
 const make = (known: boolean, sample: boolean, reason: TargetReason): DatasetTarget =>
   Object.freeze({ known, sample, dataset: datasetFor(sample), reason })
@@ -140,6 +161,8 @@ export function judgeProbe(outcome: 'found' | 'empty' | 'failed'): { kind: 'real
 
 let state: DatasetTarget = READING
 let inFlight: Promise<DatasetTarget> | null = null
+/** When the last read started, for the tick throttle. */
+let lastLook = 0
 const listeners = new Set<() => void>()
 
 function publish(next: DatasetTarget): void {
@@ -175,6 +198,7 @@ async function decide(): Promise<DatasetTarget> {
 }
 
 function run(): Promise<DatasetTarget> {
+  lastLook = Date.now()
   const p = decide()
   inFlight = p
   void p.then((next) => {
@@ -204,6 +228,7 @@ export function resolveDatasetTarget(): Promise<DatasetTarget> {
 
 /**
  * Look again — from an explicit Refresh, and only while reading the sample.
+ * Unthrottled: a person asked. (A tick goes through `recheckDatasetTargetOnTick`.)
  *
  * A REAL verdict is final for the page: data does not leave a dataset between
  * two presses. A SAMPLE one is how an open page finds the first real record,
@@ -212,6 +237,28 @@ export function resolveDatasetTarget(): Promise<DatasetTarget> {
 export function recheckDatasetTarget(): void {
   if (!state.sample || inFlight !== null) return
   void run()
+}
+
+/**
+ * Look again from an auto-refresh tick — at most every TICK_RECHECK_MS since
+ * the last read, and only while reading the sample. A read, never a write.
+ */
+export function recheckDatasetTargetOnTick(): void {
+  if (!state.sample || inFlight !== null) return
+  if (Date.now() - lastLook < TICK_RECHECK_MS) return
+  void run()
+}
+
+/**
+ * Whether anything may turn a scheduled search ON.
+ *
+ * Only on a FINAL verdict of real data. `sample: false` is not enough: it is
+ * also what the page says while the check is still out, and in the provisional
+ * `deadline` state — both of which can still end on sample, and a schedule
+ * created running in that window keeps billing over an empty dataset.
+ */
+export function realDataConfirmed(t: DatasetTarget): boolean {
+  return t.known && t.reason !== 'deadline' && !t.sample
 }
 
 /** The verdict, for code that is not a component. */
@@ -244,11 +291,13 @@ export function useDatasetTarget(): DatasetTarget {
 /** Tests only: a verdict, as if it had been read — no network. */
 export function settleDatasetTarget(sample: boolean, reason: TargetReason = sample ? 'real-empty' : 'no-sample'): void {
   inFlight = null
+  lastLook = Date.now()
   publish(make(true, sample, reason))
 }
 
 /** Tests only: back to a page that has read nothing. */
 export function resetDatasetTarget(): void {
   inFlight = null
+  lastLook = 0
   publish(READING)
 }

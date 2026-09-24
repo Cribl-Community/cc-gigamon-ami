@@ -198,6 +198,14 @@ export interface UseSearchOptions {
    * the panel's own caption; guessing costs nothing and is silent.
    */
   accelPanel?: string
+  /**
+   * Run the live query against the dataset it names, even while the app reads
+   * the sample (cribl/search.ts `asWritten`). For a figure that DESCRIBES the
+   * customer's dataset — Data Flow's Lake card, whose retention, on-disk size
+   * and label are all `gigamon_ami`'s — a count of the sample beside them would
+   * be the sample's number under the customer's name.
+   */
+  asWritten?: boolean
 }
 
 /** What one read of either kind answers with, before it becomes panel state. */
@@ -223,7 +231,7 @@ interface PanelRead {
  * changing.
  */
 export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {}): UseSearchState {
-  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel, snapshotInLive = false } = opts
+  const { enabled = true, deferred = false, deps = [], limit, earliest, accelEnabled = true, accelPanel, snapshotInLive = false, asWritten = false } = opts
   const text = typeof query === 'string' ? query : query.query
   // WHICH DATASET ANSWERS, and whether that is known yet (cribl/datasetTarget.ts).
   // The query text stays as written — search.ts moves the job onto the sample
@@ -399,7 +407,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // live query is what ran.
     let liveTotal: number | null = null
     const live = async (): Promise<Row[]> => {
-      const res = await runSearch(text, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot, reuse })
+      const res = await runSearch(text, { earliest: effectiveEarliest, limit, signal: controller.signal, costSlot, reuse, asWritten })
       liveTotal = res.totalEventCount
       return res.rows
     }
@@ -456,7 +464,7 @@ export function useSearch(query: string | PanelQuery, opts: UseSearchOptions = {
     // which is how this effect started reporting two warnings again after the
     // snapshot work added the explanation above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, target.dataset, accel, snapshotServed, asOf, tail, waitingForMode, waitingForTarget, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
+  }, [text, target.dataset, asWritten, accel, snapshotServed, asOf, tail, waitingForMode, waitingForTarget, enabled, deferred, effectiveEarliest, refreshKey, localNonce, limit, ...deps])
 
   return { ...state, refetch }
 }

@@ -12,11 +12,9 @@
 // unknown, not the answer being no.
 import { describe, expect, it } from 'vitest'
 import { LAKE_DATASET } from './config'
-import { PACK_SAMPLE_DATASET_ID } from './pack'
 import {
   DEFAULT_DATASETS,
   DEFAULT_TARGET,
-  SAMPLE_DATASETS,
   PIN_WORDS,
   SAFE_WITHOUT_MEASUREMENT,
   TARGET_WORDS,
@@ -132,19 +130,5 @@ describe('what the picker offers', () => {
 
   it('warns that Parquet is not yet the default, where the reader is choosing', () => {
     expect(targetNote('lake-parquet', ALL)).toContain('Not yet the default')
-  })
-})
-
-describe('while only sample data exists', () => {
-  it('routes every query, pinned or not, to the sample dataset — it is the archive of record then', () => {
-    // A drill-down under a figure computed from the sample has to open the
-    // sample: the customer dataset is empty, and a pin to it would show
-    // nothing under a number of thousands.
-    for (const chosen of ALL_TARGETS) {
-      for (const pin of [null, 'presence', 'evidence'] as const) {
-        expect(routeQuery(chosen, pin, SAMPLE_DATASETS).dataset, `${chosen}/${pin}`).toBe(PACK_SAMPLE_DATASET_ID)
-      }
-    }
-    expect(availableTargets(SAMPLE_DATASETS)).toEqual(['lake-json'])
   })
 })
