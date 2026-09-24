@@ -60,7 +60,22 @@ export type DataModeSave = 'unasked' | 'saving' | 'saved' | 'refused'
 
 let mode: DataMode = 'snapshot'
 let save: DataModeSave = 'unasked'
+/**
+ * Whether Snapshot mode has stepped aside — while the app is reading the pack's
+ * SAMPLE dataset (cribl/datasetTarget.ts).
+ *
+ * Every scheduled search scans the customer's dataset, so while that dataset
+ * holds nothing a stored run is a stored run of nothing, and the numbers on
+ * screen are the sample's, computed live. So the mode every reader sees is
+ * `live`, whatever this viewer chose — and their choice (`mode`) is kept as it
+ * is, unwritten, for the moment real data lands and this goes back to false.
+ * Stepping aside is not a press: nothing here is stored and nothing is written.
+ */
+let withheld = false
 const listeners = new Set<() => void>()
+
+/** The mode panels act on: the viewer's, unless Snapshot has stepped aside. */
+const effective = (): DataMode => (withheld ? 'live' : mode)
 
 /**
  * The cached tuple `useSyncExternalStore` compares by identity.
@@ -69,11 +84,26 @@ const listeners = new Set<() => void>()
  * `getSnapshot` on every call is an infinite render loop in React 18, and it is
  * the single easiest way to break this file.
  */
-let snapshot: { mode: DataMode; save: DataModeSave } = { mode, save }
+let snapshot: { mode: DataMode; save: DataModeSave; withheld: boolean } = { mode: effective(), save, withheld }
 
 function emit(): void {
-  snapshot = { mode, save }
+  snapshot = { mode: effective(), save, withheld }
   for (const l of listeners) l()
+}
+
+/**
+ * Step Snapshot mode aside, or bring it back. Only cribl/datasetTarget.ts calls
+ * this, when the dataset the app reads changes.
+ */
+export function setSnapshotWithheld(next: boolean): void {
+  if (next === withheld) return
+  withheld = next
+  emit()
+}
+
+/** Whether Snapshot mode has stepped aside — see `withheld`. */
+export function snapshotWithheld(): boolean {
+  return withheld
 }
 
 /**
@@ -110,9 +140,10 @@ export function registerDataModeWriter(write: DataModeWriter, initial?: DataMode
   }
 }
 
-/** The mode, for code that is not a component. */
+/** The mode, for code that is not a component. Live while Snapshot has
+ *  stepped aside, whatever the viewer chose. */
 export function dataMode(): DataMode {
-  return mode
+  return effective()
 }
 
 /** Whether this viewer's choice reached the store, for code that is not a
@@ -179,7 +210,8 @@ function subscribe(l: () => void): () => void {
 
 const getSnapshot = () => snapshot
 
-/** The mode every panel and the header control read. */
+/** The mode every panel and the header control read — `live` while Snapshot
+ *  has stepped aside. */
 export function useDataMode(): DataMode {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).mode
 }
@@ -189,10 +221,16 @@ export function useDataModeSave(): DataModeSave {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).save
 }
 
+/** Whether Snapshot mode has stepped aside, for the header and its controls. */
+export function useSnapshotWithheld(): boolean {
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).withheld
+}
+
 /** Tests only: back to a freshly loaded app with no writer registered. */
 export function resetDataMode(): void {
   mode = 'snapshot'
   save = 'unasked'
   writer = null
+  withheld = false
   emit()
 }

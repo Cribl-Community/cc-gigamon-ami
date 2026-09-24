@@ -16,7 +16,8 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { rowAction } from '../../components/accelPanelCopy'
+import { rowAction, toggleNothingWords } from '../../components/accelPanelCopy'
+import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from '../../components/sampleDataCopy'
 import { MANIFEST, accelEntry, type AccelId } from './manifest'
 import type { AccelEntryState, AccelRow, AccelState } from './provision'
 import {
@@ -396,5 +397,82 @@ describe('own and shared schedules', () => {
     const shared = [...new Set(ACCEL_TABS.flatMap((t) => sharedSchedulesOfTab(t.key)))]
     expect(sorted([...own, ...shared])).toEqual(sorted(allIds))
     expect(own.length + shared.length).toBe(allIds.length)
+  })
+})
+
+// ── While only sample data exists ───────────────────────────────────────────
+// Every schedule scans the customer's dataset; while it is empty a schedule is
+// a charge for a stored run of nothing. The switches must not offer to turn
+// anything on, and must say why (owner decision, 2026-09-24).
+describe('while only sample data exists', () => {
+  const SAMPLE = { sampleOnly: true } as const
+
+  it('the rule enables nothing, whatever the switches say', () => {
+    for (const entry of MANIFEST) {
+      expect(scheduleEnabled(entry, true, ALL_TABS_ON, false), entry.id).toBe(false)
+      expect(scheduleEnabled(entry, true, ALL_TABS_ON), entry.id).toBe(true)
+    }
+  })
+
+  it('an ON flip of the master plans no write, and says why', () => {
+    const plan = flipPlan(stateOf({}, 'paused'), 'master', SAMPLE)
+    expect(plan.target).toEqual({ kind: 'master', on: true })
+    expect(plan.changes).toEqual([])
+    expect(plan.refused).toBe('sample-only')
+    expect(toggleNothingWords(plan)).toBe(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of every tab plans no write', () => {
+    for (const t of ACCEL_TABS) {
+      const plan = flipPlan(stateOf({}, 'paused'), t.key, SAMPLE)
+      expect(plan.changes, t.key).toEqual([])
+      expect(plan.refused, t.key).toBe('sample-only')
+    }
+  })
+
+  it('an OFF flip still pauses — off is what the rule asks for', () => {
+    const plan = flipPlan(stateOf({}), 'master', SAMPLE)
+    expect(plan.target.on).toBe(false)
+    expect(sorted(plan.changes.map((c) => c.id))).toEqual(sorted(MANIFEST.map((e) => e.id)))
+    expect(plan.changes.every((c) => c.to === false)).toBe(true)
+    expect(plan.refused).toBeNull()
+  })
+
+  it('the same flips plan writes once real data exists', () => {
+    expect(flipPlan(stateOf({}, 'paused'), 'master').changes.length).toBe(MANIFEST.length)
+    expect(flipPlan(stateOf({}, 'paused'), 'master').refused).toBeNull()
+  })
+
+  it('a paused row offers no Resume, and says why in the word', () => {
+    const paused = row(MANIFEST[0].id, 'paused')
+    expect(rowAction(paused, SAMPLE)).toEqual({ kind: 'none', word: 'Off: sample data only' })
+    expect(rowAction(paused)).toEqual({ kind: 'resume' })
+    expect(rowAction(row(MANIFEST[0].id, 'enabled'), SAMPLE)).toEqual({ kind: 'pause' })
+  })
+})
+
+// Review 2026-09-24, defect 2: before the dataset check has a FINAL answer the
+// switches refuse ON just as they do on sample — it can still end on sample.
+describe('before the dataset check has a final answer', () => {
+  const PENDING = { unverified: true } as const
+
+  it('an ON flip plans no write, and says the check is still out rather than that data is sample', () => {
+    for (const key of ['master', ...ACCEL_TABS.map((t) => t.key)] as const) {
+      const plan = flipPlan(stateOf({}, 'paused'), key, PENDING)
+      expect(plan.changes, key).toEqual([])
+      expect(plan.refused, key).toBe('unverified')
+      expect(toggleNothingWords(plan), key).toBe(ACCEL_UNVERIFIED_OFF)
+    }
+  })
+
+  it('an OFF flip still pauses', () => {
+    const plan = flipPlan(stateOf({}), 'master', PENDING)
+    expect(plan.changes.length).toBe(MANIFEST.length)
+    expect(plan.refused).toBeNull()
+  })
+
+  it('a paused row offers no Resume; a running one still offers Pause', () => {
+    expect(rowAction(row(MANIFEST[0].id, 'paused'), PENDING)).toEqual({ kind: 'none', word: 'Off: checking for data' })
+    expect(rowAction(row(MANIFEST[0].id, 'enabled'), PENDING)).toEqual({ kind: 'pause' })
   })
 })

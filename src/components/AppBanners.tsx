@@ -46,6 +46,7 @@ import { Alert } from '@capra/core'
 import { useTour } from '../app/TourContext'
 import { useDatasetIntelBanner } from './DatasetIntelPrompt'
 import { useJobWatchdogBanner } from './JobWatchdog'
+import { useSampleDataBanner } from './SampleDataBanner'
 
 /**
  * One page-level banner, as its source describes it.
@@ -126,7 +127,9 @@ export function AppBanners() {
   // also the first time the sort does anything: a long-running search of the
   // viewer's own goes above an offer of a guided tour, whatever order the
   // sources are listed in here.
-  const banners = collectBanners([useTourNudgeBanner(), useDatasetIntelBanner(), useJobWatchdogBanner()])
+  // Sample data is listed first so that, among the info banners, the one that
+  // describes every number on the page is the one read first.
+  const banners = collectBanners([useSampleDataBanner(), useTourNudgeBanner(), useDatasetIntelBanner(), useJobWatchdogBanner()])
   if (banners.length === 0) return null
   return (
     <div className="appbanners">

@@ -117,7 +117,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { capi, errText } from './capi'
-import { LAKE_DATASET } from './config'
+import { LAKE_DATASET, activeDataset } from './config'
 import { DEFAULT_CAP_TIERS, capTiersInForce } from './search'
 import { currentUser } from './user'
 
@@ -551,8 +551,12 @@ async function pollOnce(): Promise<Partial<WatchdogState>> {
   const over = items
     .map((raw) => toHungJob(raw as ShortJob, now, thresholdMs))
     .filter((j): j is HungJob => j !== null)
+  // The customer's dataset always, and the one the panels are reading now —
+  // on a sample-only install every job this app submits reads the sample
+  // (cribl/datasetTarget.ts), and a hung one of those is this app's own.
+  const watched = new Set([LAKE_DATASET, activeDataset()])
   const listed = over
-    .filter((j) => j.datasetIds.includes(LAKE_DATASET))
+    .filter((j) => j.datasetIds.some((d) => watched.has(d)))
     .sort((a, b) => b.elapsedMs - a.elapsedMs)
   // Drop anything cancelled here that Cribl is still listing, and forget the
   // ones it has caught up on — see cancelledHere.

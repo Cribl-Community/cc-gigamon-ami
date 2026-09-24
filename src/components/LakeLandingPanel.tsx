@@ -613,7 +613,11 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
       // Named, and named differently from the partition run's variable, because
       // the display freeze keys a search call site by the name it is assigned to
       // and two `result`s would hide one another in the snapshot.
-      const lagRun = await runSearch(LANDING_LAG_QUERY, { earliest: LANDING_LAG_EARLIEST })
+      // `asWritten`: this measures how the CUSTOMER's dataset lands, and is
+      // stored as that. While the app reads the sample dataset, every other
+      // query moves there (cribl/datasetTarget.ts); this one must not, or the
+      // sample feed's lag would be saved as gigamon_ami's.
+      const lagRun = await runSearch(LANDING_LAG_QUERY, { earliest: LANDING_LAG_EARLIEST, asWritten: true })
       const row = lagRun.rows[0]
       if (!row || toNum(row.n) === 0) {
         // An empty window is not a lag of zero, and rendering one would report a
@@ -637,7 +641,8 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
     setMeasuring('partitions')
     setMeasureError(null)
     try {
-      const candidateRun = await runSearch(PARTITION_CANDIDATES_QUERY)
+      // As written, for the same reason as the lag above.
+      const candidateRun = await runSearch(PARTITION_CANDIDATES_QUERY, { asWritten: true })
       const stats = partitionStats(candidateRun.rows[0] as Record<string, unknown> | undefined)
       if (stats.length === 0) {
         setMeasureError('The partition-candidate measurement came back with no candidate columns in it.')

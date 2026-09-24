@@ -170,6 +170,8 @@ import {
 } from '../cribl/accel/provision'
 import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/accel/status'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
+import { datasetTarget, realDataConfirmed, useDatasetTarget } from '../cribl/datasetTarget'
+import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
 import { estimateScheduleSetCost, estimateWorkspaceSaving, type ScheduleSetCost } from '../cribl/accel/estimate'
 import {
   ACCEL_TABS,
@@ -248,6 +250,22 @@ export function AccelPanel() {
   // Why the last flip opened no dialog, beside the switch that was flipped.
   const [nothing, setNothing] = useState<{ key: AccelTabKey | 'master'; text: string } | null>(null)
 
+  // WHILE ONLY SAMPLE DATA EXISTS nothing here turns a schedule on — not a
+  // switch, not a row's Resume, not Review changes (which creates them
+  // running). Every schedule scans the customer's dataset, which is empty then.
+  // Pause and Remove stay: off is the state the rule asks for. Read, never
+  // stored (cribl/datasetTarget.ts).
+  //
+  // …NOR BEFORE THE CHECK HAS A FINAL ANSWER. `sample` is also false while the
+  // check is out and in its provisional `deadline` state, and either can still
+  // end on sample. `switchCtx` refuses ON in both; `onOnlyIfReal` re-reads the
+  // verdict inside each confirmed handler, so a dialog opened before the answer
+  // came back cannot write after it.
+  const target = useDatasetTarget()
+  const sampleOnly = target.sample
+  const unverified = !sampleOnly && !realDataConfirmed(target)
+  const switchCtx = { sampleOnly, unverified }
+
   const applyGate = useWriteGate('accel.apply')
   const pauseGate = useWriteGate('accel.pause')
   const removeGate = useWriteGate('accel.remove')
@@ -305,13 +323,25 @@ export function AccelPanel() {
   const readError = state?.error ?? null
   const plan = state && readError === null ? applyPlan(state) : null
   const teardown = state && readError === null ? removalPlan(state) : null
-  const canApply = plan !== null && plan.willWrite.length > 0
+  const canApply = plan !== null && plan.willWrite.length > 0 && !sampleOnly && !unverified
   const canRemove = teardown !== null && teardown.willDelete.length > 0
 
   const applyBlocked = running !== null || loading || applyGate.denied !== null
   const removeBlocked = running !== null || loading || removeGate.denied !== null
 
+  /** True when the verdict, read NOW, allows turning schedules on. Otherwise
+   *  closes the dialog, says why, and the caller writes nothing. */
+  const onOnlyIfReal = (): boolean => {
+    const now = datasetTarget()
+    if (realDataConfirmed(now)) return true
+    setConfirming(null)
+    pushToast({ kind: 'error', text: `Nothing was written. ${now.sample ? SAMPLE_ACCEL_OFF : ACCEL_UNVERIFIED_OFF}` })
+    return false
+  }
+
   const onApply = async () => {
+    // Apply creates every schedule running.
+    if (!onOnlyIfReal()) return
     setRunning('apply')
     setConfirming(null)
     setSteps([])
@@ -379,6 +409,7 @@ export function AccelPanel() {
   }
 
   const onSchedule = async (id: AccelId, enable: boolean) => {
+    if (enable && !onOnlyIfReal()) return
     setRunning('schedule')
     setConfirming(null)
     setSteps([])
@@ -412,7 +443,7 @@ export function AccelPanel() {
    *  now — a Mixed switch goes off (review 2026-09-24, defect 3). */
   const onFlip = (key: AccelTabKey | 'master') => {
     if (switchBlocked || state === null) return
-    const plan = flipPlan(state, key)
+    const plan = flipPlan(state, key, switchCtx)
     const why = toggleNothingWords(plan)
     if (why !== null) {
       setNothing({ key, text: why })
@@ -423,6 +454,9 @@ export function AccelPanel() {
   }
 
   const onToggle = async (plan: TogglePlan) => {
+    // A flip moves schedules one way; only one that turns some ON waits for the
+    // verdict. Pausing is what the rule asks for, whatever the answer.
+    if (plan.changes.some((c) => c.to) && !onOnlyIfReal()) return
     setRunning('toggle')
     setConfirming(null)
     setSteps([])
@@ -462,6 +496,8 @@ export function AccelPanel() {
           <h4 className="ac-estimate-head" id={switchesHeadId}>By dashboard</h4>
           <InfoTip text={`${SWITCHES_LEAD} ${SWITCHES_LEAD_TIP}`} />
         </div>
+        {sampleOnly && <p className="ac-note" role="status">{SAMPLE_ACCEL_OFF}</p>}
+        {unverified && !loading && <p className="ac-note" role="status">{ACCEL_UNVERIFIED_OFF}</p>}
         <SwitchRow
           label="Every dashboard"
           name={switchName('master')}
@@ -584,7 +620,7 @@ export function AccelPanel() {
               : rows.map((row) => {
                   const st = statusFor(row.id)
                   const health = healthOf(row.state, st)
-                  const action = rowAction(row)
+                  const action = rowAction(row, switchCtx)
                   const note = rowNote(row, health)
                   const owner = ownerOf(row)
                   return (

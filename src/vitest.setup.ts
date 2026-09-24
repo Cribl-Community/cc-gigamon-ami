@@ -12,12 +12,21 @@
 import { beforeEach } from 'vitest'
 
 beforeEach(async () => {
-  const [{ forgetRunHistory }, { forgetArtifacts }, { forgetLakeFacts }] = await Promise.all([
+  const [{ forgetRunHistory }, { forgetArtifacts }, { forgetLakeFacts }, { settleDatasetTarget }] = await Promise.all([
     import('./cribl/accel/status'),
     import('./cribl/accel/read'),
     import('./cribl/lakeWindowRead'),
+    import('./cribl/datasetTarget'),
   ])
   forgetRunHistory()
   forgetArtifacts()
   forgetLakeFacts()
+  // WHICH DATASET THE APP READS, settled as an install with no sample dataset —
+  // every install before sample data existed, and the one every other test in
+  // the suite was written against. Without it every panel would hold its first
+  // submit for the dataset verdict, and every fetch stub would have to answer a
+  // Lake listing it never heard of. The verdict itself is tested from a reset
+  // (`resetDatasetTarget`) in cribl/datasetTarget.test.ts and
+  // tabs/sampleData.test.tsx, against the real read path.
+  settleDatasetTarget(false)
 })

@@ -51,6 +51,8 @@ import { accelWritesSettled } from '../cribl/accel/store'
 import { estimateWorkspaceSaving } from '../cribl/accel/estimate'
 import type { AccelStatus } from '../cribl/accel/status'
 import { AccelPanel } from './AccelPanel'
+import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
 // The words are next door, pure and DOM-free — most of what this screen can get
 // wrong is a sentence rather than a tag, so most of what follows is a function
 // call rather than a render.
@@ -920,6 +922,153 @@ describe('the per-dashboard switches', () => {
     await press(switchNamed(switchName('master')))
     expect(dialog()).toBeNull()
     expect(savedWrites(calls)).toEqual([])
+  })
+})
+
+// ── While only sample data exists ───────────────────────────────────────────
+// Every schedule scans the customer's dataset, which is empty then. Nothing on
+// this panel may offer to turn one ON, and the panel says why (owner decision,
+// 2026-09-24). Off stays available: it is the state the rule asks for.
+describe('while only sample data exists', () => {
+  beforeEach(() => settleDatasetTarget(true))
+
+  it('says why above the switches', async () => {
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).toContain(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of the master opens no dialog, writes nothing, and says why beside it', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+    expect(document.body.querySelector('.ac-switch-master .ac-switch-note')?.textContent).toBe(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of a tab opens no dialog either', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('dns-health')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('an OFF flip still asks to pause', async () => {
+    stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()?.textContent ?? '').toContain('Yes, pause them')
+  })
+
+  it('offers no Review changes, which would create them running', async () => {
+    // Nothing created yet: Apply would have eighteen searches to write.
+    stubWorkspace({})
+    await mount()
+    expect(buttonNamed('Review changes…')).toBeUndefined()
+  })
+
+  it('offers no Resume on a paused row', async () => {
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(document.body.querySelector('button[aria-label^="Resume"]')).toBeNull()
+    expect(bodyText()).toContain('Off: sample data only')
+  })
+})
+
+// ── Before the dataset check has a final answer ─────────────────────────────
+// Review 2026-09-24, defect 2. `sample` is false while the check is still out
+// and in the provisional `deadline` state — neither is "real data exists". A
+// control that turns schedules on must wait for a final answer, and a dialog
+// opened before the answer turned out to be sample must not write after it.
+describe('before the dataset check has a final answer', () => {
+  /**
+   * A workspace whose dataset check cannot finish: both datasets listed, no
+   * size figure, and the one-record probe never answers — so the provisional
+   * answer stays put. (The listing itself must answer: the panel's own read
+   * resolves each schedule's window from it.)
+   */
+  function holdLakeListing(): void {
+    const base = globalThis.fetch
+    const listing = {
+      items: [
+        { id: 'gigamon_ami', retentionPeriodInDays: 30, metrics: {} },
+        { id: 'gigamon_ami_sample', retentionPeriodInDays: 7, metrics: {} },
+        { id: 'cribl_metrics', retentionPeriodInDays: 30, metrics: {} },
+      ],
+    }
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/lakes/default/datasets')) return Promise.resolve(response(200, listing))
+      if ((init?.method ?? 'GET') === 'POST' && /\/search\/jobs$/.test(u)) return new Promise(() => {})
+      return base(url, init)
+    })
+  }
+
+  it('in the provisional state: no Review changes, no Resume, no ON flip — and it says why', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    holdLakeListing()
+    settleDatasetTarget(false, 'deadline')
+    await mount()
+    expect(document.body.querySelector('button[aria-label^="Resume"]')).toBeNull()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+    expect(document.body.querySelector('.ac-switch-master .ac-switch-note')?.textContent).toBe(ACCEL_UNVERIFIED_OFF)
+    expect(bodyText()).toContain(ACCEL_UNVERIFIED_OFF)
+    expect(bodyText()).not.toContain(SAMPLE_ACCEL_OFF)
+  })
+
+  it('in the provisional state: no Review changes on a workspace with nothing created', async () => {
+    stubWorkspace({})
+    holdLakeListing()
+    settleDatasetTarget(false, 'deadline')
+    await mount()
+    expect(buttonNamed('Review changes…')).toBeUndefined()
+  })
+
+  it('a create dialog opened on real data writes nothing once the answer turns out to be sample', async () => {
+    const { calls } = stubWorkspace({})
+    await mount()
+    await press(buttonNamed('Review changes…'))
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, create them'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('a resume-all dialog opened on real data writes nothing once the answer turns out to be sample', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()?.textContent ?? '').toContain('Yes, resume them')
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, resume them'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('a row Resume dialog opened on real data writes nothing once the answer turns out to be sample', async () => {
+    const paused = await stored(LAKE)
+    paused.schedule = { ...(paused.schedule as Record<string, unknown>), enabled: false }
+    const { calls } = stubWorkspace({ saved: { [LAKE]: paused } })
+    await mount()
+    await press(buttonNamed(rowActionName('resume', accelEntry(LAKE))))
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, resume it'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('a pause dialog still pauses after the answer turns out to be sample — off is what the rule asks for', async () => {
+    const { calls } = stubWorkspace({ saved: { [LAKE]: await stored(LAKE) } })
+    await mount()
+    await press(buttonNamed(rowActionName('pause', accelEntry(LAKE))))
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, pause it'))
+    await settle()
+    expect(savedWrites(calls).map((c) => c.method)).toEqual(['PATCH'])
   })
 })
 

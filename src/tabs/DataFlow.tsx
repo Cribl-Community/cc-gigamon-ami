@@ -9,6 +9,8 @@ import {
   COUNTED_DESTINATIONS_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE, SHOWN_INPUTS, SHOWN_OUTPUTS, SHOWN_PIPELINES,
 } from '../queries/stackIds'
 import { useLakeFacts } from '../cribl/lakeWindowRead'
+import { useDatasetTarget } from '../cribl/datasetTarget'
+import { retargetQuery } from '../queries/datasets'
 import { windowMinutes } from '../cribl/accel/estimate'
 import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
@@ -402,12 +404,24 @@ export function DataFlow() {
   const lakeWin = lake?.window ?? null
   const lakeRead = lakeWin ?? LAKE_DEFAULT_WINDOW
   const lakeEarliest = lakeRead.earliest
+  //
+  // THE CUSTOMER'S DATASET, ALWAYS (`asWritten`). The card's window is
+  // gigamon_ami's retention, its size is gigamon_ami's Lake figure and its
+  // label names gigamon_ami, so the count beside them is of gigamon_ami too —
+  // also while the rest of the app reads the sample. Counted there it would be
+  // the sample's number under the customer's name. (The write-counter form
+  // reads cribl_metrics and is untouched by the move either way.)
   const lakeTotal = useSearch(lakeRead.query, {
     earliest: lakeEarliest,
     accel: LAKE_ACCEL,
     snapshotInLive: true,
     deferred: lake === undefined,
+    asWritten: true,
   })
+  // The stage list below says which dataset the panels query; it follows the
+  // one they actually query, as every ⓘ does (components/PanelInfo.tsx).
+  const { dataset } = useDatasetTarget()
+  const said = (t: string) => retargetQuery(t, dataset)
   // THE CENSUS, ON A TAB THAT RENDERS NO <Panel>. Registration normally happens
   // inside <Panel>, because that is the customer's unit — one card, one title,
   // one ⓘ. This tab draws a diagram and a stage-detail card instead, so nothing
@@ -578,7 +592,7 @@ export function DataFlow() {
           <p className="dop-stage-kicker">{selected.short}</p>
           <ul className="flow-detail">
             {selected.detail.map((d) => (
-              <li key={d}>{d}</li>
+              <li key={d}>{said(d)}</li>
             ))}
           </ul>
         </div>

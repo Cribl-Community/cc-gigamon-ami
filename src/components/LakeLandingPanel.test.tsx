@@ -53,6 +53,7 @@ import { DashboardProvider } from '../app/DashboardContext'
 import { DEPLOY_CONSEQUENCES, FLUSH_PRESETS, LANDING_TERMS, retentionChange } from '../cribl/landing'
 import { LANDING_PROFILE_KEY } from '../cribl/lakeLanding'
 import { LakeLandingPanel } from './LakeLandingPanel'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
 // The words and the units, separately from the screen that renders them. Half
 // the assertions in this file never mount anything — see lakeLandingCopy.ts.
 import {
@@ -858,6 +859,18 @@ describe('measuring', () => {
     // …and it is persisted, so a reload does not re-spend.
     const stored = calls.find((c) => c.method === 'PUT' && c.path.includes('lake_landing'))
     expect(stored, 'the measurement was not written to the app store').toBeTruthy()
+  })
+
+  it('measures the customer dataset even while the app is reading the sample one', async () => {
+    // Every other query moves to gigamon_ami_sample while only sample data
+    // exists. This one is stored as gigamon_ami's landing lag, so it must not.
+    settleDatasetTarget(true)
+    const { calls } = stubWorkspace({ searchRows: [{ newest: 1, n: 5, lag_s: 8.25 }] })
+    await mount()
+    await press(controlIn('Landing lag', `Measure the landing lag for gigamon_ami — ${costLabel(LAG_CPU_SECONDS)}`))
+    const jobs = jobsSubmitted(calls)
+    expect(jobs).toHaveLength(1)
+    expect(String(jobs[0].body?.query)).toMatch(/; dataset="gigamon_ami" \|/)
   })
 
   it('will not call an empty window a lag of zero', async () => {
