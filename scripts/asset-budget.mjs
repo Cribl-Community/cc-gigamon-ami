@@ -32,7 +32,16 @@
 // Because the graph lives outside dist/, it could describe a different build
 // than the one beside it. So before measuring, every .js file in dist/ must be
 // in the graph and every graph file must be on disk — a mismatch fails the gate
-// rather than measuring the wrong thing.
+// rather than measuring the wrong thing. Two kinds of .js file reach dist/
+// without being chunks: a copy of one in public/ (Vite copies that directory
+// verbatim, outside the bundle) and a .js file the bundle emits as an asset. The
+// graph lists both as `unbundledJs`; they are accounted for, and not measured.
+//
+// The command line is scripts/asset-budget-cli.mjs, which calls main()
+// unconditionally. This module is also imported by vite.config.ts, so it cannot
+// run anything on import. It used to decide that with an "am I the entry
+// point?" comparison of argv[1] against the module URL, which would skip main()
+// and exit 0, having checked nothing, on any path the two spell differently.
 //
 // WHAT IT DOES NOT MEASURE: CSS, fonts, images, and anything the app fetches at
 // run time. Nor does it prove a budget is the right number — that is a human
@@ -40,7 +49,6 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { gzipSync } from 'node:zlib'
 
 export const METRICS = /** @type {const} */ (['initialRaw', 'initialGzip', 'largestLazyRaw', 'totalRaw'])
@@ -52,22 +60,37 @@ const LABELS = {
   totalRaw: 'total JS, raw',
 }
 
-/** The Rollup/Rolldown output bundle → { chunks: { fileName: { isEntry, imports, dynamicImports } } }. */
+/**
+ * The Rollup/Rolldown output bundle → { chunks: { fileName: { isEntry, imports,
+ * dynamicImports } }, unbundledJs: [.js assets the bundle emitted that are not chunks] }.
+ */
 export function graphFromBundle(bundle) {
   const chunks = {}
+  const unbundledJs = []
   for (const item of Object.values(bundle)) {
-    if (item.type !== 'chunk') continue
+    if (item.type !== 'chunk') {
+      if (item.fileName.endsWith('.js')) unbundledJs.push(item.fileName)
+      continue
+    }
     chunks[item.fileName] = {
       isEntry: Boolean(item.isEntry),
       imports: [...item.imports],
       dynamicImports: [...item.dynamicImports],
     }
   }
-  return { chunks }
+  return { chunks, unbundledJs: unbundledJs.sort() }
 }
 
 /** Where `vite build` leaves the chunk graph, relative to the project root. */
 export const GRAPH_PATH = join('node_modules', '.tmp', 'asset-graph.json')
+
+const walkFiles = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? walkFiles(join(d, e.name)) : [join(d, e.name)])
+
+/** The .js files under `dir`, as '/'-separated paths relative to it. */
+function jsFilesUnder(dir) {
+  return walkFiles(dir).filter((f) => f.endsWith('.js')).map((f) => relative(dir, f).split(sep).join('/'))
+}
 
 /**
  * The Vite plugin that writes the chunk graph after `vite build` writes dist/.
@@ -75,14 +98,19 @@ export const GRAPH_PATH = join('node_modules', '.tmp', 'asset-graph.json')
  */
 export function chunkGraphPlugin() {
   let root = process.cwd()
+  let publicDir = ''
   return {
     name: 'gno-chunk-graph',
     apply: 'build',
-    configResolved(config) { root = config.root },
+    // publicDir is '' when the config sets `publicDir: false`.
+    configResolved(config) { root = config.root; publicDir = config.publicDir },
     writeBundle(_options, bundle) {
+      const graph = graphFromBundle(bundle)
+      const fromPublic = publicDir && existsSync(publicDir) ? jsFilesUnder(publicDir) : []
+      graph.unbundledJs = [...new Set([...graph.unbundledJs, ...fromPublic])].sort()
       const out = join(root, GRAPH_PATH)
       mkdirSync(dirname(out), { recursive: true })
-      writeFileSync(out, JSON.stringify(graphFromBundle(bundle), null, 2) + '\n')
+      writeFileSync(out, JSON.stringify(graph, null, 2) + '\n')
     },
   }
 }
@@ -164,13 +192,21 @@ export function compareToBudget(m, budgets) {
   return out
 }
 
-/** Disagreements between the graph and the .js files actually in dist/. */
+/**
+ * Disagreements between the graph and the .js files actually in dist/. A dist
+ * file the graph lists as unbundled (a public/ copy, an emitted asset) is known.
+ */
 export function staleGraphProblems(graph, distJsFiles) {
   const inGraph = new Set(Object.keys(graph.chunks))
+  const known = new Set([...inGraph, ...(graph.unbundledJs ?? [])])
   const onDisk = new Set(distJsFiles)
   const problems = []
-  for (const f of onDisk) if (!inGraph.has(f)) problems.push(`${f} is in dist/ but not in the chunk graph`)
-  for (const f of inGraph) if (!onDisk.has(f)) problems.push(`${f} is in the chunk graph but not in dist/`)
+  for (const f of onDisk) {
+    if (!known.has(f)) problems.push(`${f} is in dist/ but was not produced by the bundler, and is not a copy from public/ — something wrote it into dist/ after the build`)
+  }
+  for (const f of inGraph) {
+    if (!onDisk.has(f)) problems.push(`${f} is in the chunk graph but not in dist/ — the graph is from a different build; run \`npm run build\``)
+  }
   return problems.sort()
 }
 
@@ -187,8 +223,8 @@ export function report(m, budgets) {
   ].join('\n')
 }
 
-// ── CLI ────────────────────────────────────────────────────────────────────
-function main() {
+// ── CLI (run by scripts/asset-budget-cli.mjs) ──────────────────────────────
+export function main() {
   const root = process.cwd()
   const dist = join(root, 'dist')
   const graphPath = join(root, GRAPH_PATH)
@@ -199,18 +235,17 @@ function main() {
   const graph = JSON.parse(readFileSync(graphPath, 'utf8'))
   const { budgets } = JSON.parse(readFileSync(join(root, 'asset-budget.json'), 'utf8'))
 
-  const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)])
-  const distJs = walk(dist).filter((f) => f.endsWith('.js')).map((f) => relative(dist, f).split(sep).join('/'))
-  const stale = staleGraphProblems(graph, distJs)
+  const stale = staleGraphProblems(graph, jsFilesUnder(dist))
   if (stale.length) {
-    console.error('asset budget: the chunk graph does not describe this dist/ — rebuild with `npm run build`.')
+    console.error('asset budget: the chunk graph and dist/ disagree, so there is nothing trustworthy to measure.')
     for (const p of stale) console.error('  ' + p)
     process.exit(1)
   }
 
   const m = measure(graph, (f) => readFileSync(join(dist, f)))
   console.log(report(m, budgets))
+  const unbundled = graph.unbundledJs ?? []
+  if (unbundled.length) console.log(`  not measured (not chunks — copied from public/ or emitted as assets): ${unbundled.join(", ")}`)
   const over = compareToBudget(m, budgets)
   if (over.length) {
     console.error('\nasset budget: OVER BUDGET')
@@ -220,5 +255,3 @@ function main() {
   }
   console.log('\nasset budget: within budget')
 }
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()

@@ -36,11 +36,15 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
-      # The asset-size budget: the JS a first page load downloads, the largest
-      # lazy chunk, and the total, against asset-budget.json. Reads the dist/
-      # and chunk graph the build step just wrote, so it must come after it.
-      - run: npm run assets:budget
       # --if-present because the test suite arrives partway up this stack; once
       # it exists this is also the ⓘ freeze, which fails if any query string,
       # the ⓘ prose, or the query a panel points at has moved.
       - run: npm test --if-present
+      # The asset-size budget: the JS a first page load downloads, the largest
+      # lazy chunk, and the total, against asset-budget.json. Reads the dist/
+      # and chunk graph the build step wrote, so it must come after the build.
+      # It comes after the tests too: a failed step skips every step below it,
+      # and an over-budget PR must still show whether its tests pass.
+      # No `if:` and no `continue-on-error` on this step — src/assetBudget.test.ts
+      # reads this file as steps and fails if either appears.
+      - run: npm run assets:budget

@@ -3,6 +3,8 @@ import type { Plugin } from 'vite'
 
 export type ChunkGraph = {
   chunks: Record<string, { isEntry: boolean; imports: string[]; dynamicImports: string[] }>
+  /** .js files in dist/ that are not chunks: copies from public/, and .js assets the bundle emitted. */
+  unbundledJs?: string[]
 }
 export type Size = { raw: number; gzip: number }
 export type Measurement = {
@@ -22,4 +24,5 @@ export function initialChunks(graph: ChunkGraph): string[]
 export function measure(graph: ChunkGraph, read: (file: string) => Buffer): Measurement
 export function compareToBudget(m: Measurement, budgets: Partial<Record<Metric, number>>): Violation[]
 export function staleGraphProblems(graph: ChunkGraph, distJsFiles: string[]): string[]
+export function main(): void
 export function report(m: Measurement, budgets: Record<Metric, number>): string

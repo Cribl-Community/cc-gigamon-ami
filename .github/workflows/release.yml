@@ -28,6 +28,11 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run package -- --version "$(echo ${GITHUB_REF_NAME#v} | sed s/-staging$//)"
+      # The asset-size budget, against the dist/ and chunk graph the package
+      # step's own build just wrote. A tag push does not run ci.yml, so without
+      # this an oversized bundle could be published from a commit CI never saw.
+      # Before every publishing step below, which a failure here skips.
+      - run: npm run assets:budget
 
       - name: Publish pack layout for Git install
         run: |
