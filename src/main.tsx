@@ -15,7 +15,6 @@ import { prefetchRunHistory } from './cribl/accel/status'
 import { resolveDatasetTarget } from './cribl/datasetTarget'
 import { loadAccelServing } from './cribl/accel/serving'
 import { installTrace, relayError, startRelay } from './cribl/devTrace'
-
 // The dev-only page trace (cribl/devTrace.ts). `import.meta.env.DEV` is a
 // build-time constant, so a production bundle drops this branch entirely.
 // StrictMode is off while tracing: it mounts every effect twice in dev, which
@@ -66,6 +65,16 @@ void resolveDatasetTarget()
 // deadline, so that a paused schedule's panel runs live once rather than
 // reading a stale run first and then running live.
 void loadAccelServing()
+
+// The per-query dataset router (cribl/routing/route.ts, Phase 8.1). It reads
+// nothing and writes nothing: it decides, at each submit, whether a query may
+// run on the Parquet copy, and with the shipped routing table every query stays
+// on gigamon_ami. Installed here because cribl/search.ts cannot import it, and
+// by a dynamic import because its table reaches every src/queries module — most
+// belong to lazy tabs, and a static import put ~16 kB of them back into the
+// first page load. A job submitted before it lands runs as written, on JSON,
+// which is always a correct answer.
+void import('./cribl/routing/route').then((m) => m.installQueryRouter())
 
 const Strict = TRACE ? Fragment : StrictMode
 

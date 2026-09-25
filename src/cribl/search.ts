@@ -9,7 +9,7 @@
 //   aggregations: count(), sum(f), avg(f), min/max(f), count_distinct(f), percentile(f,95)
 //   NOT `dc()` — use count_distinct(). Sorting is `sort by <col> desc`.
 
-import { searchUrl, toActiveDataset, LAKE_DATASET } from './config'
+import { activeDataset, searchUrl, toActiveDataset, LAKE_DATASET } from './config'
 import { beginQuery, endQuery } from './inflight'
 import { recordJobCost, type CostSlot } from './jobCost'
 
@@ -365,25 +365,46 @@ export function cancelJob(jobId: string): void {
  * under the query as written, a figure measured on the sample would match the
  * same panel's first job on real data and never be measured again — a 0.1 CPU-s
  * sample price quoted for a 130 CPU-s scan (review 2026-09-24, defect 1).
+ *
+ * AND THE ONE PLACE A QUERY IS ROUTED (Phase 8.1, 2026-09-25). After the sample
+ * seam — which takes precedence and, while the app reads the sample, is the
+ * only move made — the installed router may send a query to the Parquet copy
+ * (cribl/routing/route.ts). Computed ONCE per job, so the body sent and the
+ * cost key filed describe the same run.
  */
-function executedQuery(query: string, asWritten: boolean): string {
-  return asWritten ? query : toActiveDataset(query)
+function executedQuery(query: string, asWritten: boolean, earliest: string | number, latest: string | number): string {
+  if (asWritten) return query
+  if (activeDataset() !== LAKE_DATASET) return toActiveDataset(query)
+  return router(query, { earliest, latest })
+}
+
+/**
+ * Chooses the dataset a query as written runs on. cribl/routing/route.ts
+ * installs the real one from main.tsx; it cannot be imported here, because it
+ * reaches every src/queries module and those import `q()` from this one.
+ */
+export type QueryRouter = (query: string, window: { earliest: string | number; latest: string | number }) => string
+
+const AS_WRITTEN: QueryRouter = (query) => query
+let router: QueryRouter = AS_WRITTEN
+
+/** main.tsx (through `installQueryRouter`) and tests. `null` puts back "run as written". */
+export function setQueryRouter(next: QueryRouter | null): void {
+  router = next ?? AS_WRITTEN
 }
 
 /** The cost slot's key: the window and the text that actually ran. */
-function costKey(query: string, earliest: string | number, asWritten: boolean): string {
-  return `${earliest} ${executedQuery(query, asWritten)}`
+function costKey(executed: string, earliest: string | number): string {
+  return `${earliest} ${executed}`
 }
 
 async function submitJob(
-  query: string,
+  executed: string,
   earliest: string | number,
   latest: string | number,
   signal?: AbortSignal,
   reuse = false,
-  asWritten = false,
 ): Promise<string> {
-  const executed = executedQuery(query, asWritten)
   const created = await api<{ items: Array<{ id: string }> }>(searchUrl('/search/jobs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -478,9 +499,10 @@ async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<
   const { earliest = '-15m', latest = 'now', limit = 5000, signal, pollMs, timeoutMs, costSlot, reuse = false, asWritten = false } = opts
   const cap = capSecondsFor(earliest)
 
-  const jobId = await submitJob(query, earliest, latest, signal, reuse, asWritten)
+  const executed = executedQuery(query, asWritten, earliest, latest)
+  const jobId = await submitJob(executed, earliest, latest, signal, reuse)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
-  if (costSlot) void recordJobCost(costSlot, costKey(query, earliest, asWritten), jobId)
+  if (costSlot) void recordJobCost(costSlot, costKey(executed, earliest), jobId)
 
   const { rows, totalEventCount } = await readJobResults(jobId, { limit, signal })
   return { jobId, rows, totalEventCount }
@@ -597,9 +619,10 @@ export async function runFieldSummaries(query: string, opts: SearchOptions = {})
 async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): Promise<FieldSummariesResult> {
   const { earliest = '-15m', latest = 'now', signal, pollMs, timeoutMs, costSlot, reuse = false, asWritten = false } = opts
   const cap = capSecondsFor(earliest)
-  const jobId = await submitJob(query, earliest, latest, signal, reuse, asWritten)
+  const executed = executedQuery(query, asWritten, earliest, latest)
+  const jobId = await submitJob(executed, earliest, latest, signal, reuse)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
-  if (costSlot) void recordJobCost(costSlot, costKey(query, earliest, asWritten), jobId)
+  if (costSlot) void recordJobCost(costSlot, costKey(executed, earliest), jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)
   const fields = data.fields ?? []
   const sampled = fields.reduce((m, f) => Math.max(m, f.count + f.countNull), 0)
