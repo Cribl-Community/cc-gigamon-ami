@@ -360,6 +360,40 @@ describe('pack.mjs check', () => {
       /pipeline "gigamon_ami_nowhere" has no default\/pipelines\/gigamon_ami_nowhere\/conf\.yml/,
     ],
     [
+      'the Parquet route running the JSON pipeline, which keeps _raw',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace('pipeline: gigamon_ami_normalize_parquet', 'pipeline: gigamon_ami_normalize')),
+      /gigamon_ami_http_to_parquet: writes the Parquet destination gigamon_ami_parquet_lake through pipeline "gigamon_ami_normalize", which does not remove _raw/,
+    ],
+    [
+      'the JSON route running the Parquet pipeline, which removes _raw',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace(
+        /(id: gigamon_ami_http_to_json\n[\s\S]*?pipeline: )gigamon_ami_normalize\n/, '$1gigamon_ami_normalize_parquet\n')),
+      /gigamon_ami_http_to_json: writes the json dataset gigamon_ami through pipeline "gigamon_ami_normalize_parquet", which removes _raw/,
+    ],
+    [
+      'the sample route running a pipeline that removes _raw by a wildcard',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize/conf.yml', (s) => `${s}  - id: eval\n    filter: "true"\n    disabled: false\n    conf:\n      remove:\n        - _r*\n`),
+      /gigamon_ami_sample: writes the json dataset gigamon_ami_sample through pipeline "gigamon_ami_normalize", which removes _raw/,
+    ],
+    [
+      'a Parquet pipeline whose removal of _raw is disabled',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize_parquet/conf.yml', (s) => s.replace(
+        /disabled: false\n    description: Remove _raw/, 'disabled: true\n    description: Remove _raw')),
+      /which does not remove _raw; the Parquet copy must not carry it \(no enabled Eval with filter "true" lists _raw under remove\)/,
+    ],
+    [
+      'a Parquet pipeline that removes _raw only from some events',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize_parquet/conf.yml', (s) => s.replace(
+        /filter: "true"\n    disabled: false\n    description: Remove _raw/, 'filter: "protocol==6"\n    disabled: false\n    description: Remove _raw')),
+      /which does not remove _raw; the Parquet copy must not carry it \(no enabled Eval with filter "true" lists _raw under remove\)/,
+    ],
+    [
+      'a Parquet pipeline that adds _raw back after removing it',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize_parquet/conf.yml', (s) =>
+        `${s}  - id: eval\n    filter: "true"\n    disabled: false\n    description: Put it back\n    conf:\n      add:\n        - name: _raw\n          value: JSON.stringify(__e)\n`),
+      /which does not remove _raw; the Parquet copy must not carry it \(a later function \(Put it back\) adds _raw back\)/,
+    ],
+    [
       'a YAML file that does not parse',
       (d) => edit(d, 'default/outputs.yml', (s) => s.replace('  gigamon_ami_json_lake:', '  gigamon_ami_json_lake:\n   bad: [unclosed')),
       /default\/outputs\.yml: YAML error/,
