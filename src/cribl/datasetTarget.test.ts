@@ -242,9 +242,33 @@ describe('resolveDatasetTarget', () => {
     listing = [{ id: 'gigamon_ami', metrics: {} }]
     await resolveDatasetTarget()
     calls = []
-    recheckDatasetTarget()
+    const then = vi.fn()
+    expect(recheckDatasetTarget(then), 'no look is out').toBe(false)
     await Promise.resolve()
     expect(calls).toEqual([])
+    expect(then).not.toHaveBeenCalled()
+  })
+
+  // The Refresh waits on this (app/DashboardContext.tsx): `then` must run in
+  // the same synchronous turn as the verdict it waited for, once, and a second
+  // Refresh while the look is out joins it rather than starting another.
+  it('calls a waiter once, in the same turn as the verdict it publishes, and a second caller joins the look', async () => {
+    listing = [{ id: 'gigamon_ami', metrics: {} }, { id: 'gigamon_ami_sample', metrics: {} }]
+    await resolveDatasetTarget()
+    probeRows = [{ src_ip: '10.0.0.1' }]
+    calls = []
+    const seen: boolean[] = []
+    const first = vi.fn(() => seen.push(datasetTarget().sample))
+    const second = vi.fn(() => seen.push(datasetTarget().sample))
+    expect(recheckDatasetTarget(first)).toBe(true)
+    expect(recheckDatasetTarget(second), 'joins the look in flight').toBe(true)
+    await vi.waitFor(() => expect(first).toHaveBeenCalledTimes(1))
+    expect(second).toHaveBeenCalledTimes(1)
+    expect(seen, 'each waiter sees the new verdict').toEqual([false, false])
+    expect(calls.filter((c) => c.url.includes('/lakes/default/datasets')), 'one look, not two').toHaveLength(1)
+    // A later verdict does not call them again.
+    settleDatasetTarget(true)
+    expect(first).toHaveBeenCalledTimes(1)
   })
 
   it('does not hold the panels forever: past the deadline it proceeds on the customer dataset, then moves', async () => {

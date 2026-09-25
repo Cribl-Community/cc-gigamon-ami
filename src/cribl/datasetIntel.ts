@@ -1,5 +1,7 @@
 import { noteDenial } from './authz'
 import { API_BASE, LAKE_DATASET } from './config'
+import { datasetTarget, realDataConfirmed } from './datasetTarget'
+import { SAMPLE_DATASET } from '../queries/datasets'
 
 /**
  * Cribl Search "dataset intelligence" — a generated schema/semantics summary the
@@ -38,6 +40,30 @@ export async function getDatasetIntel(signal?: AbortSignal, dataset = LAKE_DATAS
 }
 
 /**
+ * Why generation would be refused for `dataset` now, or null when it may go.
+ *
+ * Two refusals, both about WHAT a summary would describe, never about who may
+ * write it (that is the gate's job):
+ *   * the sample dataset, always: its records are synthetic, and a summary the
+ *     Copilot agent reads as the shape of real traffic would describe the
+ *     pack's generator instead;
+ *   * `gigamon_ami` unless the dataset verdict is a FINAL real one
+ *     (`realDataConfirmed`): while the app reads the sample, the customer's
+ *     dataset holds nothing to summarise, and while the verdict is still out or
+ *     only past its hold deadline it may yet say so.
+ * The banner does not offer either (components/DatasetIntelPrompt.tsx); this is
+ * the same rule held at the write, so a click that raced a verdict sends nothing.
+ */
+export function intelRefusal(dataset: string = LAKE_DATASET): string | null {
+  if (dataset === SAMPLE_DATASET) return INTEL_REFUSED_SAMPLE
+  if (!realDataConfirmed(datasetTarget())) return INTEL_REFUSED_NO_DATA
+  return null
+}
+
+export const INTEL_REFUSED_SAMPLE = `Not started: ${SAMPLE_DATASET} holds synthetic sample data, so a summary of it would describe the generator, not your traffic.`
+export const INTEL_REFUSED_NO_DATA = `Not started: ${LAKE_DATASET} has no data confirmed yet, so there is nothing to summarise.`
+
+/**
  * Kick off generation. Returns immediately — the caller should poll.
  *
  * This module talks to `fetch` directly rather than through cribl/capi.ts, so a
@@ -46,6 +72,8 @@ export async function getDatasetIntel(signal?: AbortSignal, dataset = LAKE_DATAS
  * names neither the object nor what anybody could do about it.
  */
 export async function generateDatasetIntel(dataset = LAKE_DATASET): Promise<void> {
+  const refused = intelRefusal(dataset)
+  if (refused !== null) throw new Error(refused)
   const path = `/ai/settings/dataset-intelligence/${encodeURIComponent(dataset)}`
   const res = await fetch(url(dataset), {
     method: 'POST',
