@@ -49,7 +49,7 @@
 // way to look: pick a group, reload the tab, see whether it came back.
 
 import { getDoc, putDoc } from './kv'
-import { currentUserId } from './user'
+import { currentUserId, userKeySegment } from './user'
 
 export interface CommitInfo {
   hash: string
@@ -123,7 +123,7 @@ interface SetupPrefs {
   setupGroup?: string
 }
 
-const prefsKey = (userId: string) => `guided_setup_memory/prefs/${userId}`
+const prefsKey = (userId: string) => `guided_setup_memory/prefs/${userKeySegment(userId)}`
 
 /** The worker group this viewer last picked, or null when there is nothing to
  *  restore: no stored choice, no store, or no signed-in user to key it on. */

@@ -74,7 +74,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { appendLog, getDoc, putDoc, type LogEntry } from '../kv'
-import { currentUserId } from '../user'
+import { currentUserId, userKeySegment } from '../user'
 
 /** Install-wide: the ids this app wrote, and what it wrote them as. */
 export const ACCEL_STATE_KEY = 'accel/state'
@@ -83,7 +83,7 @@ export const ACCEL_STATE_KEY = 'accel/state'
 export const ACCEL_LOG_NAMESPACE = 'accel'
 
 /** Per-viewer preferences. */
-export const accelPrefsKey = (userId: string) => `accel/prefs/${userId}`
+export const accelPrefsKey = (userId: string) => `accel/prefs/${userKeySegment(userId)}`
 
 /**
  * What this install knows about one saved search it wrote.

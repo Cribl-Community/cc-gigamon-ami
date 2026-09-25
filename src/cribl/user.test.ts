@@ -58,3 +58,23 @@ describe('currentUserId', () => {
     expect(await currentUserId()).toBe(null)
   })
 })
+
+describe('userKeySegment', () => {
+  it('leaves a plain id as it is, and turns anything else into _hex, never a percent-escape', async () => {
+    const { userKeySegment } = await loadUser()
+    expect(userKeySegment('u-42')).toBe('u-42')
+    expect(userKeySegment('auth0|0123456789abcdef01234567')).toBe('auth0_7c0123456789abcdef01234567')
+    expect(userKeySegment('a.b/c')).toBe('a_2eb_2fc')
+    expect(userKeySegment('é')).toBe('_e9')
+    expect(userKeySegment('名')).toBe('_u540d')
+    for (const id of ['auth0|x', 'a b', 'q?r#s', 'x/y']) expect(encodeURIComponent(userKeySegment(id)), id).toBe(userKeySegment(id))
+  })
+
+  it('never maps two ids to one document', async () => {
+    const { userKeySegment } = await loadUser()
+    // `_` is escaped too, so an id that already looks escaped cannot collide.
+    expect(userKeySegment('a|b')).not.toBe(userKeySegment('a_7cb'))
+    const ids = ['a|b', 'a_7cb', 'a_b', 'a-b', 'aB', 'ab', 'a.b', 'a_2eb']
+    expect(new Set(ids.map(userKeySegment)).size).toBe(ids.length)
+  })
+})
