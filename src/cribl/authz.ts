@@ -106,6 +106,7 @@ export type WriteId =
   | 'onboarding_pack.upgrade'
   | 'onboarding_pack.configure'
   | 'onboarding_pack.remove'
+  | 'benchmark.run'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -240,6 +241,16 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   'onboarding_pack.remove': {
     surface: 'config',
     does: 'removing the Gigamon AMI onboarding pack',
+  },
+  // Guided Setup's store benchmark. A `search` write like hung_job.cancel: it
+  // starts the signed-in user's own search jobs and creates no configuration.
+  // It is gated for the same reason that one is: a person confirms it — here
+  // because it runs up to dozens of full scans in a row, whose work the dialog
+  // states — and if Cribl refuses the submit, the sentence should name the call
+  // rather than leave a run that silently did nothing.
+  'benchmark.run': {
+    surface: 'search',
+    does: 'running the store benchmark',
   },
 }
 

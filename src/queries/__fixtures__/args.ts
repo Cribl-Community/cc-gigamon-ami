@@ -68,6 +68,14 @@ export interface VariantSpec {
 }
 
 export const FIXTURES: Record<string, Record<string, unknown>> = {
+  'src/components/BenchmarkPanel.tsx': {
+    // Guided Setup's store benchmark: one ⓘ per search it can run, rendered
+    // inside BENCH_QUERIES.map(), and a second per search for the Parquet copy.
+    // Every search, not one: read from the set itself, so adding a search or
+    // changing one's words moves the snapshot.
+    q: { $each: 'BENCH_QUERIES.map((x) => ({ label: x.id, value: x }))' } satisfies EachFixture,
+  },
+
   'src/tabs/DnsHealth.tsx': {
     // The resolver row the customer clicked, drilled into Cribl Search.
     host: '10.0.0.53',

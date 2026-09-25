@@ -2247,6 +2247,22 @@ body:has(.tour-strip) .app { padding-bottom: 190px; }
 /* The binding sentence. Same ink as .ms-serves on purpose: it is a standing
    caveat, not news, and news-coloured boilerplate stops being read. */
 .ms-footer { margin: 0; color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
+/* Guided Setup's store benchmark (components/BenchmarkPanel.tsx). The search
+   choices are a fieldset so a screen reader hears them as one group; the browser's
+   fieldset border and padding are reset because the panel already frames them. */
+.bm-choices { border: 0; margin: 0 0 var(--gm-sp-10); padding: 0; display: flex; flex-wrap: wrap; gap: var(--gm-sp-8) var(--gm-sp-18); }
+.bm-legend { padding: 0; margin-bottom: var(--gm-sp-6); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); }
+.bm-choice { display: inline-flex; align-items: center; gap: var(--gm-sp-4); }
+.bm-stage { margin-top: var(--gm-sp-16); display: flex; flex-direction: column; gap: var(--gm-sp-8); }
+.bm-h { margin: 0; font-size: var(--gm-fs-13); display: flex; align-items: center; flex-wrap: wrap; gap: var(--gm-sp-8); }
+/* The window qualifies the heading, so it takes the subtle ink and the small size. */
+.bm-window { font-weight: normal; font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); display: inline-flex; align-items: center; gap: var(--gm-sp-4); }
+/* `.dtable` sets `white-space: nowrap` on every cell; a verdict or Cribl's own
+   error sentence is prose and has to wrap. */
+.dtable td.bm-verdict, .dtable td.bm-error, .bm-error { white-space: normal; line-height: 1.45; }
+.dtable td.bm-verdict { color: var(--gm-fg); padding-bottom: var(--gm-sp-12); }
+.dtable td.bm-verdict-none { color: var(--gm-fg-subtle); }
+.bm-errors { margin: 0; padding-left: var(--gm-sp-16); font-size: var(--gm-fs-12); }
 .ac-noaction { color: var(--gm-fg-subtle); font-size: var(--gm-fs-12); }
 /* The per-row sentence, under the row it is about. `.dtable` sets
    `white-space: nowrap` on every cell, so this row has to put it back or a

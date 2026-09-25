@@ -13,7 +13,10 @@
 // install-wide search setting that shares this page because an installer is
 // already standing on it — not because it has anything to do with setup.
 
+import { Suspense } from 'react'
 import { AccelPanel } from '../components/AccelPanel'
+import { ErrorBoundary } from '../components/ErrorBoundary'
+import { lazyTab } from '../app/lazyTab'
 import { MetricsStorePanel } from '../components/MetricsStorePanel'
 import { OnboardingPanel } from '../components/OnboardingPanel'
 import { LakeLandingPanel } from '../components/LakeLandingPanel'
@@ -27,6 +30,13 @@ import { InfoTip } from '../components/InfoTip'
 import { setupFacts } from '../components/provisionPanelCopy'
 import { onboardingPath } from '../cribl/onboarding/plan'
 import { packRelease } from '../cribl/pack'
+
+// The store benchmark is its own chunk. It is the page's rarest tool, and in
+// Guided Setup's chunk it added 21.9 kB raw (227.6 -> 249.5 kB, over the 243 kB
+// lazy-chunk budget) for every visit to this page; split, the page paints
+// without it and it arrives a moment later at the bottom. A chunk that fails
+// to load shows <ErrorBoundary>'s Reload message in its place, never a blank.
+const BenchmarkPanel = lazyTab(() => import('../components/BenchmarkPanel'), 'BenchmarkPanel')
 
 export function GuidedSetup() {
   // Which onboarding the page offers decides which objects "What gets created"
@@ -117,6 +127,19 @@ export function GuidedSetup() {
           long-term retention and alerting, and the panels it could serve are
           already served by the scheduled snapshots above it. */}
       <MetricsStorePanel />
+
+      {/* Section 5, the store benchmark. An install-level tool rather than a
+          dashboard: whoever decides which Cribl Lake copy the dashboards may
+          read is the installer, and this page already hosts the install-wide
+          tools. It is last because it runs nothing on its own — every search
+          it submits starts from a confirmed click — and it changes nothing about
+          the install; results live on this page until it is left.
+          components/BenchmarkPanel.tsx carries the rest of the argument. */}
+      <ErrorBoundary>
+        <Suspense fallback={null}>
+          <BenchmarkPanel />
+        </Suspense>
+      </ErrorBoundary>
 
       {/* The toast stack that used to be rendered here now lives at the app root
           and is Capra's — an `aria-live` container that appeared together with
