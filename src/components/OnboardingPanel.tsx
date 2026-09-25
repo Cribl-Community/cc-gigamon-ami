@@ -9,7 +9,13 @@
 // `prepareOnboarding`, GETs only) and opens ONE <ConfirmDialog> built by
 // onboarding/plan.ts `onboardingDialog`; the dialog's own "Yes" runs
 // `runOnboarding` with exactly what it showed. Remove pack does the same with
-// `packRemovalDialog` and `runPackRemoval`, behind type-to-confirm. A Remove
+// `packRemovalDialog` and `runPackRemoval`, behind type-to-confirm. Upgrade
+// (an owned copy that is behind) opens `packUpgradeDialog` and runs
+// `runPackUpgrade`, which reads the Raw HTTP source back and commits and
+// deploys nothing when the upgrade reset it. The pack sources' own settings —
+// Rotate token, Move port, Start and Stop sample data — each open
+// `sourceChangeDialog` and run `runSourceChange`: one whole-body PATCH, then
+// the commit and deploy. Every one of these takes the page's run lock. A Remove
 // whose DELETE landed and whose commit did not leaves the pack gone and its
 // removal in no commit; "Finish removing the pack" commits and deploys it
 // (`finishRemovalDialog`, `finishPackRemoval`), from Git's own pending list.
@@ -27,7 +33,7 @@
 // the onboarding, as it always was.
 //
 // THE TOKEN is held in this component's state and nowhere else: set only by the
-// run's `onToken`, shown once on the endpoint card, and dropped on a group
+// onboarding run's or a rotation's `onToken`, shown once on the endpoint card, and dropped on a group
 // change, a Remove that took the source, a remount and a reload. It never
 // reaches a step, a toast, the diff, an error or the KV store.
 //
@@ -46,9 +52,9 @@ import { pushToast } from './Toast'
 import { useSetupGroup } from './useSetupGroup'
 import {
   NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
-  PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR, UPGRADE_NOT_OFFERED, accelStatusWords,
-  datasetWords, finishRemovalNote, groupElsewhereNote, httpStatusWords, installedRefusal, onboardLabel, onboardNote, packStatusWords,
-  removeTypeLabel,
+  PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_START_REFUSAL, SAMPLE_TIP, SOURCE_SETTINGS_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR,
+  UPGRADE_TIP, accelStatusWords, datasetWords, finishRemovalNote, groupElsewhereNote, httpStatusWords, installedRefusal, onboardLabel,
+  onboardNote, packStatusWords, removeTypeLabel,
 } from './onboardingCopy'
 import { AUTH_HEADER, ENDPOINT_LEAD, TOKEN_ONCE, UNENCRYPTED_WARNING } from './provisionPanelCopy'
 import { MANIFEST } from '../cribl/accel/manifest'
@@ -58,11 +64,15 @@ import { IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
-  finishRemovalDialog, httpActionOf, onboardingDialog, onboardingPath, packRemovalDialog, type FinishRemovalDialog,
-  type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog,
+  finishRemovalDialog, httpActionOf, onboardingDialog, onboardingPath, packRemovalDialog, packUpgradeDialog, sourceChangeDialog,
+  type FinishRemovalDialog, type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog, type SourceChange,
+  type SourceChangeContext, type SourceChangeDialog, type UpgradeDialog, type UpgradeDialogContext,
 } from '../cribl/onboarding/plan'
-import { finishPackRemoval, prepareOnboarding, runOnboarding, runPackRemoval, type RunStep } from '../cribl/onboarding/run'
-import { PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_VERSION } from '../cribl/pack'
+import {
+  finishPackRemoval, prepareOnboarding, prepareSourceChange, prepareUpgrade, runOnboarding, runPackRemoval, runPackUpgrade,
+  runSourceChange, type RunStep,
+} from '../cribl/onboarding/run'
+import { PACK_HTTP_INPUT_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_VERSION } from '../cribl/pack'
 import {
   PACK_COMMIT_KEY, compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackState,
 } from '../cribl/packClient'
@@ -104,6 +114,16 @@ function accelCounts(a: AccelState | null): { total: number; installed: number; 
   return { total: MANIFEST.length, installed: installed.length, running: running.length, error: a.error }
 }
 
+/** The Raw HTTP source as read, or null. */
+const http0 = (p: PackState | null): PackState['http'] => p?.http ?? null
+
+/** The "Yes" inside a source change's confirmation. */
+function confirmLabel(change: SourceChange): string {
+  if (change.kind === 'token') return 'Yes, rotate the token'
+  if (change.kind === 'port') return `Yes, move to port ${change.port}`
+  return change.enabled ? 'Yes, start the sample data' : 'Yes, stop the sample data'
+}
+
 /** Whether the panel has anything to show (see the header): the pack can be
  *  installed, this is dev preview, the pack is in the group, or its removal is
  *  waiting to be committed. */
@@ -116,7 +136,11 @@ export function OnboardingPanel() {
   const lockHolder = useSetupRunHolder()
   const installGate = useWriteGate('onboarding_pack.install')
   const removeGate = useWriteGate('onboarding_pack.remove')
+  const upgradeGate = useWriteGate('onboarding_pack.upgrade')
+  const configureGate = useWriteGate('onboarding_pack.configure')
   const refusalId = useId()
+  const upgradeRefusalId = useId()
+  const startRefusalId = useId()
 
   const [read, setRead] = useState<PanelRead | null>(null)
   const [loading, setLoading] = useState(true)
@@ -124,13 +148,18 @@ export function OnboardingPanel() {
   const [portText, setPortText] = useState('')
   // "Also send sample data": UNTICKED by default, and never remembered.
   const [sample, setSample] = useState(false)
-  const [confirming, setConfirming] = useState<'onboard' | 'remove' | 'finish' | null>(null)
+  const [confirming, setConfirming] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | null>(null)
   const [onboard, setOnboard] = useState<{ ctx: OnboardingDialogContext; dialog: OnboardingDialog } | null>(null)
   const [removal, setRemoval] = useState<RemovalDialog | null>(null)
   const [finishing, setFinishing] = useState<FinishRemovalDialog | null>(null)
+  const [upgrading, setUpgrading] = useState<{ ctx: UpgradeDialogContext; dialog: UpgradeDialog } | null>(null)
+  const [sourceChange, setSourceChange] = useState<{ ctx: SourceChangeContext; dialog: SourceChangeDialog } | null>(null)
+  // The Raw HTTP source's next port, for Move port: offered free, never
+  // overwritten while somebody types.
+  const [movePortText, setMovePortText] = useState('')
   const [openErr, setOpenErr] = useState<string | null>(null)
   const [opening, setOpening] = useState(false)
-  const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | null>(null)
+  const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, RunStep[]>>({})
   const [token, setToken] = useState<{ group: string; value: string; afterError: boolean } | null>(null)
   const [copied, setCopied] = useState<'url' | 'token' | null>(null)
@@ -173,6 +202,7 @@ export function OnboardingPanel() {
       setRead({ pack, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel, stranded })
       // Offer a free port, but never overwrite one somebody is typing.
       setPortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
+      setMovePortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
     } catch (e) {
       if (current()) setReadErr((e as Error).message)
     } finally {
@@ -188,6 +218,7 @@ export function OnboardingPanel() {
     setRead(null)
     setOpenErr(null)
     setPortText('')
+    setMovePortText('')
     seq.current++
     void refresh()
   }, [groupReady, refresh])
@@ -216,6 +247,29 @@ export function OnboardingPanel() {
     (release.installable && portIssue !== null)
   const removeBlocked = busy !== null || removeGate.denied !== null || opening
   const stranded = !installed ? read?.stranded ?? [] : []
+
+  // Upgrade: offered for an owned copy that is behind, and refused — visibly —
+  // while this build records no release.
+  const upgradeRefusal = !release.installable ? `Upgrade to ${PACK_VERSION} is not available: ${release.refusal}.` : null
+  const upgradeBlocked = upgradeRefusal !== null || busy !== null || upgradeGate.denied !== null || opening || loading
+
+  // The pack sources' own settings: only on this app's copy, and only on a
+  // source there is to change (a Raw HTTP source that onboarding has not given
+  // a token yet is Finish onboarding's, not these controls').
+  const canRotate = owned && http0(pack) !== null && http0(pack)!.tokenSet
+  const sampleNow = owned ? pack.sample : null
+  const sourceBlocked = busy !== null || configureGate.denied !== null || opening || loading
+  const movePort = Number(movePortText)
+  const movePortIssue = !canRotate || !read
+    ? null
+    : read.hosting === null
+      ? `This app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range.`
+      : movePort === http0(pack)?.port
+        ? `${PACK_HTTP_INPUT_ID} already listens on ${movePort}.`
+        : portProblem(movePort, read.hosting === 'managed', read.usedPorts)
+  const sampleDatasetKnownAbsent = read !== null && read.datasets !== null &&
+    !read.datasets.some((d) => d.id === PACK_SAMPLE_DATASET_ID && d.deletionStartedAt === null)
+  const startRefusal = sampleNow?.disabled && sampleDatasetKnownAbsent ? SAMPLE_START_REFUSAL : null
 
   // Rendered only where there is something to show — see the header.
   const visible = release.installable || !IS_INSTALLED || installed || stranded.length > 0
@@ -381,6 +435,104 @@ export function OnboardingPanel() {
     }
   }
 
+  const openUpgrade = async () => {
+    if (upgradeBlocked) return
+    const mine = seq.current
+    setOpening(true)
+    setOpenErr(null)
+    try {
+      const r = await prepareUpgrade(group, { undeployed: pendingNow.current.hash, undeployedChecking: !pendingNow.current.known })
+      if (mine !== seq.current) return
+      if (!r.ok) {
+        setOpenErr(`The confirmation did not open: ${r.why}.`)
+        return
+      }
+      setUpgrading({ ctx: r.ctx, dialog: packUpgradeDialog(r.ctx) })
+      setConfirming('upgrade')
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  // Reached only from the "Yes" inside the Upgrade confirmation.
+  const onUpgrade = async () => {
+    const shown = upgrading
+    if (!shown) return
+    const gid = shown.ctx.group
+    const unlock = acquireSetupRun('onboarding_pack')
+    setConfirming(null)
+    if (!unlock) {
+      setOpenErr(`Nothing was written: ${SETUP_RUN_BUSY}`)
+      return
+    }
+    setRunning('upgrade')
+    setOutcomes((prev) => ({ ...prev, [gid]: [] }))
+    try {
+      const out = await runPackUpgrade(shown.ctx, shown.dialog, { onStep: (s) => appendStep(gid, s), record: record(gid) })
+      pushToast(out.stopped
+        ? { kind: 'error', text: `The upgrade stopped at “${out.stopped.label}”. The step list says what was done.` }
+        : { kind: 'done', text: `Upgraded the Gigamon AMI pack in ${gid} to ${shown.ctx.release.version}.` })
+      await refresh()
+    } catch (e) {
+      appendStep(gid, { key: 'run', label: 'Upgrade', action: 'error', detail: (e as Error).message })
+    } finally {
+      setRunning(null)
+      unlock()
+    }
+  }
+
+  const openSource = async (change: SourceChange) => {
+    if (sourceBlocked) return
+    if (change.kind === 'port' && movePortIssue !== null) return
+    if (change.kind === 'sample' && change.enabled && startRefusal !== null) return
+    const mine = seq.current
+    setOpening(true)
+    setOpenErr(null)
+    try {
+      const r = await prepareSourceChange(group, change, { undeployed: pendingNow.current.hash, undeployedChecking: !pendingNow.current.known })
+      if (mine !== seq.current) return
+      if (!r.ok) {
+        setOpenErr(`The confirmation did not open: ${r.why}.`)
+        return
+      }
+      setSourceChange({ ctx: r.ctx, dialog: sourceChangeDialog(r.ctx) })
+      setConfirming('source')
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  // Reached only from the "Yes" inside a source change's confirmation.
+  const onSource = async () => {
+    const shown = sourceChange
+    if (!shown) return
+    const gid = shown.ctx.group
+    const unlock = acquireSetupRun('onboarding_pack')
+    setConfirming(null)
+    if (!unlock) {
+      setOpenErr(`Nothing was written: ${SETUP_RUN_BUSY}`)
+      return
+    }
+    setRunning('source')
+    setOutcomes((prev) => ({ ...prev, [gid]: [] }))
+    try {
+      const out = await runSourceChange(shown.ctx, shown.dialog, {
+        onStep: (s) => appendStep(gid, s),
+        onToken: (value) => setToken({ group: gid, value, afterError: false }),
+        record: record(gid),
+      })
+      pushToast(out.stopped
+        ? { kind: 'error', text: `“${shown.dialog.title}” stopped at “${out.stopped.label}”. The step list says what was done.` }
+        : { kind: 'done', text: `${shown.dialog.title}: done.` })
+      await refresh()
+    } catch (e) {
+      appendStep(gid, { key: 'run', label: shown.dialog.title, action: 'error', detail: (e as Error).message })
+    } finally {
+      setRunning(null)
+      unlock()
+    }
+  }
+
   if (!visible) return null
 
   const steps = outcomes[group] ?? []
@@ -520,12 +672,79 @@ export function OnboardingPanel() {
             <GateNote write="onboarding_pack.install" />
             {openErr && <p className="gs-action-note gs-action-warn">{openErr}</p>}
             {!onboardRefusal && <p className="gs-action-note">{onboardNote(group)}</p>}
-            {/* Named, not offered: no control until the upgrade can run (its
-                write is unreached and ungranted — cribl/packUpgrade.ts). */}
             {behind && (
-              <p className="gs-action-note">
-                {release.refusal ? `Upgrade to ${PACK_VERSION} is not available: ${release.refusal}.` : UPGRADE_NOT_OFFERED}
-              </p>
+              <>
+                <span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => void openUpgrade()}
+                    aria-disabled={upgradeBlocked || undefined}
+                    aria-describedby={upgradeRefusal ? upgradeRefusalId : undefined}
+                  >
+                    {running === 'upgrade' ? 'Upgrading…' : `Upgrade to ${PACK_VERSION}`}
+                  </button>
+                  <InfoTip text={UPGRADE_TIP} />
+                </span>
+                {upgradeRefusal && <p id={upgradeRefusalId} className="gs-action-note">{upgradeRefusal}</p>}
+                <GateNote write="onboarding_pack.upgrade" />
+              </>
+            )}
+            {(canRotate || sampleNow !== null) && (
+              <div role="group" aria-labelledby="gs-onb-source-head">
+                <div className="gs-checklist-head">
+                  <span id="gs-onb-source-head">Source settings</span>
+                  <InfoTip text={SOURCE_SETTINGS_TIP} />
+                </div>
+                {canRotate && (
+                  <>
+                    <button type="button" className="btn btn-ghost" onClick={() => void openSource({ kind: 'token' })} aria-disabled={sourceBlocked || undefined}>
+                      Rotate token
+                    </button>
+                    <div className="gs-port-picker">
+                      <label htmlFor="gs-onb-move-port" className="gs-group-label">New port</label>
+                      <input
+                        id="gs-onb-move-port"
+                        className="gs-group-select gs-port-input"
+                        inputMode="numeric"
+                        value={movePortText}
+                        disabled={running !== null}
+                        aria-invalid={movePortIssue !== null || undefined}
+                        aria-describedby={movePortIssue ? 'gs-onb-move-port-issue' : undefined}
+                        onChange={(e) => setMovePortText(e.target.value.trim())}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => void openSource({ kind: 'port', port: movePort })}
+                        aria-disabled={sourceBlocked || movePortIssue !== null || undefined}
+                      >
+                        Move port
+                      </button>
+                      {movePortIssue && <span id="gs-onb-move-port-issue" className="gs-res-error">{movePortIssue}</span>}
+                    </div>
+                  </>
+                )}
+                {sampleNow !== null && (sampleNow.disabled ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => void openSource({ kind: 'sample', enabled: true })}
+                      aria-disabled={sourceBlocked || startRefusal !== null || undefined}
+                      aria-describedby={startRefusal ? startRefusalId : undefined}
+                    >
+                      Start sample data
+                    </button>
+                    {startRefusal && <p id={startRefusalId} className="gs-action-note">{startRefusal}</p>}
+                  </>
+                ) : (
+                  <button type="button" className="btn btn-ghost" onClick={() => void openSource({ kind: 'sample', enabled: false })} aria-disabled={sourceBlocked || undefined}>
+                    Stop sample data
+                  </button>
+                ))}
+                <GateNote write="onboarding_pack.configure" />
+              </div>
             )}
             {owned && (
               <>
@@ -612,6 +831,44 @@ export function OnboardingPanel() {
               busyLabel="Committing…"
               unavailable={busy}
               run={onFinish}
+            />
+          }
+        />
+
+        <ConfirmDialog
+          isOpen={confirming === 'upgrade' && upgrading !== null}
+          title={upgrading?.dialog.title ?? ''}
+          resources={upgrading?.dialog.resources ?? []}
+          consequences={upgrading?.dialog.consequences}
+          undo={upgrading?.dialog.undo}
+          onCancel={() => setConfirming(null)}
+          confirm={
+            <GatedControl
+              write="onboarding_pack.upgrade"
+              label={`Yes, upgrade in ${upgrading?.ctx.group ?? group}`}
+              busyLabel="Upgrading…"
+              unavailable={busy}
+              run={onUpgrade}
+            />
+          }
+        />
+
+        <ConfirmDialog
+          isOpen={confirming === 'source' && sourceChange !== null}
+          title={sourceChange?.dialog.title ?? ''}
+          resources={sourceChange?.dialog.resources ?? []}
+          diff={sourceChange?.dialog.diff ?? []}
+          costLine={sourceChange?.dialog.costLine}
+          consequences={sourceChange?.dialog.consequences}
+          undo={sourceChange?.dialog.undo}
+          onCancel={() => setConfirming(null)}
+          confirm={
+            <GatedControl
+              write="onboarding_pack.configure"
+              label={sourceChange ? confirmLabel(sourceChange.ctx.change) : ''}
+              busyLabel="Working…"
+              unavailable={busy}
+              run={onSource}
             />
           }
         />

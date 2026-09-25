@@ -16,19 +16,23 @@
 // from `src/main.tsx` and is GRANTED in `config/policies.yml` — each pack path
 // named with exactly the methods called on it, and no `*` (policyCoverage
 // .test.ts holds both directions). Its writes are registered in
-// src/cribl/authz.ts under `onboarding_pack.install` and `.remove`, each
-// rendered by a `<GatedControl>` on that panel. *(Until 2026-09-24 this
+// src/cribl/authz.ts under `onboarding_pack.install`, `.configure` and
+// `.remove` (and the upgrade's under `.upgrade`), each rendered by a
+// `<GatedControl>` on that panel. *(Until 2026-09-24 this
 // module was on paths.ts `UNREACHED_MODULES`, built a slice ahead of its UI,
 // with its grants deliberately withheld.)*
 //
-// The in-place upgrade is NOT here: it is packUpgrade.ts, on paths.ts
-// `UNREACHED_MODULES` with its PATCH named and not granted, until the slice that
-// offers it (and checks the Raw HTTP source survives it) renders its control.
-// The pack sources' own settings outside an onboarding run (rotate the token,
-// move the port, start or stop the sample) have no control either, so their
-// WriteId was withdrawn until they do. *(Corrected 2026-09-24,
-// `feat/pack-onboarding-4a`: `upgradePack` lived here, so its PATCH was granted
-// for a control that rendered refused and could never send it.)*
+// The in-place upgrade is NOT here: it is packUpgrade.ts, split out so that its
+// PATCH was not granted before a control could send it. Upgrade is offered now
+// (onboarding/run.ts `runPackUpgrade`, which reads the Raw HTTP source back),
+// so that module is reached and its PATCH granted. The pack sources' own
+// settings outside an onboarding run — rotate the token (`setHttpToken`), move
+// the port (`setSourcePort`), start or stop the sample (`setSampleEnabled`) —
+// are offered too, each gated by `onboarding_pack.configure`. *(Corrected
+// 2026-09-24, `feat/pack-onboarding-slice3`: this said neither had a control,
+// and that their WriteId was withdrawn. On `feat/pack-onboarding-4a`,
+// `upgradePack` lived here, so its PATCH was granted for a control that
+// rendered refused and could never send it.)*
 //
 // ── WHAT EVERY WRITE HERE ASSUMES OF ITS CALLER ─────────────────────────────
 // Each export that writes is an entry point reached from a confirmed click and

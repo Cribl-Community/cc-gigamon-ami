@@ -146,10 +146,72 @@ export function installedRefusal(p: { version: string | null; published: boolean
   return `${PACK_ID} ${v} is installed in ${p.group}, and this app installs ${PACK_VERSION}. Upgrade it before onboarding.`
 }
 
-/** The Upgrade control's reason, while upgrading is not offered here. */
-export const UPGRADE_NOT_OFFERED =
-  'Upgrading in place is not offered on this screen yet, because nothing here checks yet that the Raw HTTP source keeps its port, ' +
-  `token and state through an upgrade. Upgrade ${PACK_ID} in Cribl, or remove it here and onboard again.`
+// ── Upgrade ─────────────────────────────────────────────────────────────────
+
+/** Behind the ⓘ beside Upgrade. */
+export const UPGRADE_TIP =
+  'Upgrades the pack in place from the GitHub release this app pins, with custom functions refused. The confirmation lists what ' +
+  'the new version adds and removes. The pack’s Raw HTTP source is read back after the upgrade, and nothing is committed or deployed ' +
+  'if its port, auth token or state was reset.'
+
+/** The plain statement every Upgrade confirmation carries. */
+export const UPGRADE_UNVERIFIED =
+  'Settings made after install — the Raw HTTP source’s port, auth token, TLS and whether it is on — have not been verified to survive an ' +
+  'upgrade. This app reads the source back after upgrading, and if any of them was reset it commits and deploys nothing and says so.'
+
+/** When the installed version has no Raw HTTP source of its own (0.1.0). */
+export const upgradeNewSourceSentence = (): string =>
+  `${PACK_HTTP_INPUT_ID} arrives switched off and without an auth token. Finish onboarding gives it a port and a token after the upgrade.`
+
+/** The sources the new version no longer has. */
+export const upgradeRemovedSourcesSentence = (ids: readonly string[]): string =>
+  `After the deploy, ${ids.join(', ')} ${ids.length === 1 ? 'stops' : 'stop'} listening. Anything sending to ${ids.length === 1 ? 'it' : 'them'} has to be pointed at ${PACK_HTTP_INPUT_ID}.`
+
+export const upgradeUndo = (group: string): string =>
+  `This app does not downgrade. The version before is in ${group}’s Git history; Remove pack uninstalls the pack, and Onboard installs it again with a new auth token.`
+
+/** The step that stops an upgrade whose read-back found a reset. Never a token. */
+export const upgradeResetSentence = (group: string, what: readonly string[]): string =>
+  `Nothing was committed or deployed, because the upgrade reset ${what.join(', ')} on ${PACK_HTTP_INPUT_ID}. The upgrade is in ` +
+  `${group}’s configuration but uncommitted, and another admin’s commit and deploy of ${group} would push the reset to its Workers. ` +
+  `Set ${what.length === 1 ? 'it' : 'them'} again in Cribl before anyone commits and deploys ${group}.`
+
+/** The step that stops an upgrade after its PATCH, for any other reason. */
+export const upgradeHeldSentence = (group: string, because: string): string =>
+  `Nothing was committed or deployed, because ${because}. The upgrade is in ${group}’s configuration but uncommitted, and another ` +
+  `admin’s commit and deploy of ${group} would push it as it is. Check the pack in Cribl.`
+
+// ── The pack sources' own settings ──────────────────────────────────────────
+
+/** Behind the ⓘ on the source controls' heading. */
+export const SOURCE_SETTINGS_TIP =
+  'Each change is one confirmation: this app reads the source, shows what changes, replaces the whole source with only that key ' +
+  'moved, then commits the pack’s files and deploys the group. A source that changed after the confirmation opened is left alone.'
+
+export const ROTATE_EXPORTER =
+  `Gigamon AMX has to be given the new token, which is shown once after the change. Once the group is deployed, its POSTs to ${PACK_HTTP_INPUT_ID} are refused until it is.`
+
+export const ROTATE_UNDO = 'The old token cannot be put back: this app never reads a token. Rotate again for another new one.'
+
+/** Added to a failed rotation's step. */
+export const ROTATE_FAILED =
+  'If Cribl applied the change anyway, the source holds a token nobody was shown, and nothing was committed or deployed. Rotate again.'
+
+export const movePortSentence = (from: number | null, to: number): string =>
+  `After the deploy, ${PACK_HTTP_INPUT_ID} listens on ${to} and no longer on ${from ?? 'its current port'}; Gigamon AMX has to send to the new port.`
+
+export const movePortUndo = (from: number | null): string =>
+  from === null ? 'Move it again the same way.' : `Move it back to port ${from} the same way.`
+
+export const SAMPLE_STOP_KEEPS =
+  `The flows already written stay in ${PACK_SAMPLE_DATASET_ID} until its retention removes them; this app never deletes a Cribl Lake dataset.`
+
+export const SAMPLE_START_UNDO = `Stop sample data stops it again. What it wrote stays in ${PACK_SAMPLE_DATASET_ID} until its retention removes it.`
+export const SAMPLE_STOP_UNDO = 'Start sample data starts it again.'
+
+/** Why Start sample data is refused while its dataset does not exist. */
+export const SAMPLE_START_REFUSAL =
+  `Start sample data is not available: ${PACK_SAMPLE_DATASET_ID} does not exist yet. Onboarding with “Also send sample data” ticked creates it.`
 
 // ── Status rows ─────────────────────────────────────────────────────────────
 

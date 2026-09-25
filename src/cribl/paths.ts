@@ -143,20 +143,16 @@ export interface Unreached {
   reason: string
 }
 
-// src/cribl/packClient.ts was the first entry, built a slice ahead of its UI;
-// Guided Setup's onboarding panel imports it now, and its calls are granted
-// below and in config/policies.yml. The in-place upgrade was split out of it
-// into packUpgrade.ts so that its PATCH is not granted before a control can
-// send it. *(Corrected 2026-09-24, `feat/pack-onboarding-4a`: this list was
-// empty, and the upgrade's PATCH was granted for a control that rendered
-// refused.)*
-export const UNREACHED_MODULES: readonly Unreached[] = [
-  {
-    file: 'src/cribl/packUpgrade.ts',
-    reason:
-      'The in-place upgrade of the onboarding pack. No screen offers it yet: the design has it read the Raw HTTP source back after the upgrade and refuse to commit or deploy when its port, token or state was reset, and that is the next slice. Until then its PATCH is named here and not granted, so an admin is not asked to trust a write nothing can send.',
-  },
-]
+// Empty. src/cribl/packClient.ts was the first entry, built a slice ahead of
+// its UI; Guided Setup's onboarding panel imports it, and its calls are
+// granted below and in config/policies.yml. The in-place upgrade was split out
+// of it into packUpgrade.ts so that its PATCH was not granted before a control
+// could send it; that control and its read-back of the Raw HTTP source exist
+// now, so packUpgrade.ts left the list and its PATCH is granted.
+// *(Corrected 2026-09-24, `feat/pack-onboarding-slice3`: this list held
+// packUpgrade.ts. Before that, on `feat/pack-onboarding-4a`, it was empty while
+// the upgrade's PATCH was granted for a control that rendered refused.)*
+export const UNREACHED_MODULES: readonly Unreached[] = []
 
 /**
  * THE CALL SURFACE. Every entry is reachable from a click in this app, except
@@ -489,7 +485,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
     site: 'packUpgrade.ts upgradePack',
-    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. NOT GRANTED yet: packUpgrade.ts is on UNREACHED_MODULES, because no screen offers the upgrade until it can check the Raw HTTP source survives it.`,
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins, from Guided Setup's Upgrade confirmation — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. The pack's Raw HTTP source is read back afterwards, and nothing is committed or deployed when its port, token, TLS or state was reset.`,
   },
   {
     method: 'DELETE',
@@ -546,7 +542,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_HTTP_INPUT_ID}`,
     scope: 'product',
     site: 'packClient.ts patchPackInput',
-    why: 'Set what only an install can know on the pack’s Raw HTTP source — a free port, the auth token this app generates, TLS for the group’s hosting — and enable it. The body is the whole live source with those keys changed, because this endpoint deletes any field a PATCH omits.',
+    why: 'Set what only an install can know on the pack’s Raw HTTP source — a free port, the auth token this app generates, TLS for the group’s hosting — and enable it; and, from their own confirmations, rotate that token or move that port. The body is the whole live source with those keys changed, because this endpoint deletes any field a PATCH omits.',
   },
   {
     method: 'GET',

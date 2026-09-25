@@ -1,17 +1,22 @@
-// The onboarding pack's in-place upgrade, apart from packClient.ts until a
-// screen offers it.
+// The onboarding pack's in-place upgrade.
 //
 // WHY A MODULE OF ITS OWN. config/policies.yml is a grant an admin gives every
 // user the app is shared with, and policyCoverage.test.ts grants every call a
 // reachable module makes. While `upgradePack` sat in packClient.ts — which the
 // onboarding panel imports — its `PATCH /m/:gid/packs/cc-network-gigamon-ami`
-// had to be granted, although the only control naming it rendered refused and
-// could never send it. Here, on paths.ts `UNREACHED_MODULES`, the call is named
-// in `API_CALLS` and NOT granted, and `onboarding_pack.upgrade` is `unrendered`.
-// The slice that offers Upgrade (with the read-back of the Raw HTTP source's
-// port, token and state the design asks for) imports this, takes it off the
-// list, grants the PATCH and renders the control, in one change — which is
-// what the tests make it do.
+// had to be granted although no control could send it, so it was split out
+// here, onto paths.ts `UNREACHED_MODULES`, ungranted. Guided Setup's Upgrade
+// (components/OnboardingPanel.tsx, through cribl/onboarding/run.ts
+// `runPackUpgrade`) now offers it, with the read-back the design asks for: the
+// pack's Raw HTTP source is read after the upgrade, and nothing is committed or
+// deployed when its port, token, TLS or state was reset. So the module is
+// reached, off the list, its PATCH granted and `onboarding_pack.upgrade`
+// rendered. *(Corrected 2026-09-24, `feat/pack-onboarding-slice3`: this module
+// was unreached, and its PATCH ungranted, until that read-back existed.)*
+//
+// This function checks the release, ownership and direction, and the version
+// and source afterwards (`verifyInstalled`); what an upgrade does to settings
+// made after install is the run's to check, not this function's.
 
 import { capi, groupPath } from './capi'
 import { PACK_ID, PACK_URL, PACK_VERSION } from './pack'
