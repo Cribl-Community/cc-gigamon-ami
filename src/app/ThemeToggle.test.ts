@@ -199,6 +199,35 @@ describe('ThemeToggle', () => {
     await t.unmount()
   })
 
+  it('a click made before the document lands wins, and its one PUT keeps every stored flag', async () => {
+    // The likely case inside Cribl: after a reload the page shows the OS guess
+    // while the user id and the GET are still in flight, and that is when the
+    // viewer clicks. The click must hold over the older stored choice, and the
+    // write must carry the flags another feature stored, not just the theme.
+    localStorageThrows()
+    osPrefersLight()
+    const release = gatedUser('u-7')
+    const { store, calls } = stubStore({
+      'app/prefs/u-7': envelope({ tourSeen: true, intelPromptDismissed: true, theme: 'light' }),
+    })
+
+    const t = await mountToggle()
+    expect(isDark()).toBe(false)
+    await t.click() // before the document has landed
+    expect(isDark()).toBe(true)
+    release()
+    await t.settle()
+    expect(isDark(), 'the older stored choice overrode a click made while it loaded').toBe(true)
+    const puts = calls.filter((c) => c.method === 'PUT')
+    expect(puts).toHaveLength(1)
+    expect(docOf(store.get('app/prefs/u-7')), 'a click during the read wrote only its own flag').toEqual({
+      tourSeen: true,
+      intelPromptDismissed: true,
+      theme: 'dark',
+    })
+    await t.unmount()
+  })
+
   it('writes nothing on mount, and does not migrate a localStorage choice into the store', async () => {
     // A write on load is the rule that matters (AGENTS.md). localStorage says
     // dark, the store holds nothing: the page is dark, and the store stays empty.
