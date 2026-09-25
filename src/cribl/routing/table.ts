@@ -76,7 +76,11 @@ import { eligibility } from './eligibility'
 
 export type RouteTarget = 'json' | 'parquet'
 
-/** The parity run that justifies a `parquet` entry. */
+/**
+ * The parity run that justifies a `parquet` entry. `npm run parity:run`
+ * (scripts/parity-run.mjs, src/cribl/parityRun.ts) prints one in this exact
+ * shape for each entry that earned it; it never writes this file.
+ */
 export interface RouteEvidence {
   /** Where the report is kept: a path in this repo, or the proof install's record of it. */
   report: string

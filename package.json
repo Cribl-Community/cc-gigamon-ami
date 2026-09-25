@@ -20,6 +20,7 @@
     "lint": "oxlint",
     "test": "vitest run",
     "queries:extract": "node scripts/extract-queries.mjs",
+    "parity:run": "node scripts/parity-run.mjs",
     "assets:budget": "node scripts/asset-budget-cli.mjs",
     "pack:samples": "node scripts/gen-pack-samples.mjs",
     "pack:check": "node scripts/gen-pack-samples.mjs --check && node scripts/pack.mjs check",
