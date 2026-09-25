@@ -244,10 +244,17 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   },
   // Guided Setup's store benchmark. A `search` write like hung_job.cancel: it
   // starts the signed-in user's own search jobs and creates no configuration.
-  // It is gated for the same reason that one is: a person confirms it — here
-  // because it runs up to dozens of full scans in a row, whose work the dialog
-  // states — and if Cribl refuses the submit, the sentence should name the call
-  // rather than leave a run that silently did nothing.
+  // A person confirms it, because it runs up to dozens of full scans in a row
+  // whose work the dialog states. HOW THE GATE CLOSES is not the usual way:
+  // search.ts reports nothing to the ledger, and the dialog's <GatedControl>
+  // unmounts as the stage starts, before its first submit. So the runner
+  // (cribl/benchmarkRun.ts) recognises a 401/403 on POST …/search/jobs from
+  // search.ts's SearchRequestError and stops the plan there, and
+  // <BenchmarkPanel> latches this id itself; its two outer triggers read the
+  // gate (useWriteGate) and show the refusal beside them with Try again. A
+  // refusal of any other call — a status poll, a results read — is not latched:
+  // it fails its own row, as any failed search does. (Corrected 2026-09-25:
+  // this comment promised the latched sentence while nothing could latch it.)
   'benchmark.run': {
     surface: 'search',
     does: 'running the store benchmark',
@@ -462,9 +469,9 @@ export const WRITE_SITES: readonly WriteSite[] = [
   // --- Cribl Search jobs ---------------------------------------------------
   {
     at: 'cribl/search.ts#submitJob',
-    gates: [],
+    gates: ['benchmark.run'],
     surface: 'search',
-    why: 'POST creates a search job for this same user. Not configuration, and gating it would gate every panel on the dashboard.',
+    why: 'POST creates a search job for this same user. Not configuration, and gating it would gate every panel on the dashboard, so no panel’s submit is gated. The store benchmark’s submits are: a refusal of one latches benchmark.run (that entry says how).',
   },
   {
     at: 'cribl/search.ts#cancelJob',

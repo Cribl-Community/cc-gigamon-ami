@@ -40,7 +40,7 @@
 // decide. No threshold anywhere refuses a run for being expensive.
 
 import { REAL_DATASET, retargetQuery } from '../queries/datasets'
-import { BENCH_PARQUET_DATASET, BENCH_QUERIES, type BenchQuery, type BenchQueryId } from '../queries/benchmark'
+import { BENCH_PARQUET_DATASET, BENCH_QUERIES, type AnswerCheck, type BenchQuery, type BenchQueryId } from '../queries/benchmark'
 import {
   MEASURED_RUNS,
   STORE_WORDS,
@@ -55,7 +55,7 @@ import {
 import { CPU_SECONDS_PER_CREDIT } from './jobCost'
 import type { LakeDataset, ReadResult } from './lake'
 
-export { BENCH_QUERIES, type BenchQuery, type BenchQueryId }
+export { BENCH_QUERIES, type AnswerCheck, type BenchQuery, type BenchQueryId }
 
 export const queryById = (id: BenchQueryId): BenchQuery => {
   const q = BENCH_QUERIES.find((b) => b.id === id)
@@ -202,6 +202,28 @@ export interface BenchRun extends RunResult {
   /** The text that was submitted, dataset included. */
   query: string
   jobId: string | null
+  /**
+   * The rows it returned, in a canonical form that two stores' identical answers
+   * share — only for a search whose check is `values`, and null when the rows
+   * could not be read back in full (fewer read than the job produced). Absent
+   * for every other search.
+   */
+  answer?: string | null
+  /** Set when Cribl refused the job submit itself (401/403): what it refused. */
+  refused?: { method: string; path: string; status: number }
+}
+
+/**
+ * Rows as one string that does not depend on the order a store returned them
+ * in, nor on the order of the fields inside a row. Values are compared exactly:
+ * a sum that differs in its last digit is a different answer, and refusing a
+ * winner on it is the safe direction.
+ */
+export function canonicalAnswer(rows: readonly Record<string, unknown>[]): string {
+  return rows
+    .map((r) => JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]])))
+    .sort()
+    .join('\n')
 }
 
 export interface StageRecord {
@@ -211,9 +233,19 @@ export interface StageRecord {
   queryIds: readonly BenchQueryId[]
   targets: readonly BenchTarget[]
   runs: readonly BenchRun[]
-  /** How many runs the stage planned; fewer in `runs` means it was stopped. */
+  /** How many runs the stage planned. */
   planned: number
+  /**
+   * False while the stage is still running. Fewer runs than planned means the
+   * stage was stopped ONLY once it has ended — mid-run every stage is short of
+   * runs, and calling that "stopped" was a false sentence beside a live
+   * progress line.
+   */
+  ended: boolean
 }
+
+/** Ended with runs missing: stopped by a person, a refused submit or an error. */
+export const stageStopped = (r: StageRecord): boolean => r.ended && r.runs.length < r.planned
 
 const pairName = (r: BenchRun, targets: readonly BenchTarget[]) =>
   `${queryById(r.queryId).label} on ${targets.find((t) => t.id === r.targetId)?.dataset ?? r.targetId}`
@@ -226,6 +258,7 @@ export function fifteenRefusal(probe: StageRecord | null, key: string): string |
   if (!probe || probe.stage !== 'one' || probe.key !== key) {
     return 'Measure one minute first, for the searches and stores selected. The 15-minute stage is offered once that stage’s work is on screen.'
   }
+  if (!probe.ended) return 'The one-minute stage is still running.'
   if (probe.runs.length < probe.planned) {
     return 'The one-minute stage was stopped before every search ran. Run it again to completion first.'
   }
@@ -319,30 +352,115 @@ export interface QueryReport {
   decided: boolean
 }
 
-/** The verdict in words. Row counts, not values: the parity check compares values. */
-export function verdictWords(c: Comparison): string {
+/** What a named verdict says it checked, by the search's answer check. */
+const CHECKED_WORDS: Readonly<Record<Exclude<AnswerCheck, 'none'>, string>> = Object.freeze({
+  values: 'Every store returned the same rows, value for value.',
+  rows: 'Both stores returned the same number of rows; their values are not compared here.',
+})
+
+/**
+ * Why a comparison that named a winner must not, given what the search's
+ * answer check can see — or null when the winner stands.
+ *
+ * A search whose answer is one row (a count) or a fixed set of bins (a
+ * per-minute trend) returns the same NUMBER of rows from any store, so the
+ * row-count refusal in `compare` can never fire for it: a Parquet copy holding
+ * half the records would still return "the same number of rows", and a faster
+ * store would be named for a different answer. Those searches are checked on
+ * their values instead, and the one whose answer is known to differ is never
+ * given a winner at all.
+ */
+export function answerRefusal(check: AnswerCheck, measured: readonly BenchRun[]): { why: string; disagree: boolean } | null {
+  if (check === 'rows') return null
+  if (check === 'none') {
+    return {
+      why: 'This search’s answer is known to differ on the Parquet copy, so the stores are not compared on it and neither is named fastest. Its timings and work stand on their own.',
+      disagree: false,
+    }
+  }
+  const answers = measured.map((r) => r.answer ?? null)
+  if (answers.length === 0 || answers.some((a) => a === null)) {
+    return {
+      why: 'Its rows could not all be read back, so whether every store gave the same answer is unknown, and no store is named fastest.',
+      disagree: false,
+    }
+  }
+  if (new Set(answers).size > 1) {
+    return {
+      why: 'The stores returned the same number of rows but different values, so they did not answer the same question. A faster answer to a different question is not a faster store.',
+      disagree: true,
+    }
+  }
+  return null
+}
+
+/** The verdict in words. */
+export function verdictWords(c: Comparison, check: AnswerCheck = 'rows'): string {
   // One store measured is a choice on this screen (the Parquet copy unticked,
   // or absent), not a configuration fault, so it is said in those terms.
   if (c.summaries.length < 2) return 'Only one store was measured, so there is nothing to compare it against; its timings stand on their own.'
   if (!c.fastest) return c.noWinnerBecause ?? 'No verdict.'
   const by = c.speedup !== null && c.speedup > 1 ? `, ${c.speedup}× faster than the slowest by server time` : ' by server time'
-  return (
-    `${STORE_WORDS[c.fastest.target.kind]} answered fastest${by}. Both stores returned the same number of rows; ` +
-    'their values are not compared here.'
-  )
+  return `${STORE_WORDS[c.fastest.target.kind]} answered fastest${by}. ${CHECKED_WORDS[check === 'none' ? 'rows' : check]}`
 }
 
 export function benchReport(bench: StageRecord): QueryReport[] {
   return bench.queryIds.map((id) => {
     const runs = bench.runs.filter((r) => r.queryId === id)
     const summaries = live(bench.targets).map((t) => summarise(t, runs))
-    const comparison = compare(summaries)
-    return { query: queryById(id), comparison, verdict: verdictWords(comparison), decided: comparison.fastest !== null }
+    const query = queryById(id)
+    let comparison = compare(summaries)
+    if (comparison.fastest) {
+      const refused = answerRefusal(query.answer, runs.filter((r) => !r.warmup && !r.error))
+      if (refused) {
+        comparison = {
+          ...comparison,
+          fastest: null,
+          speedup: null,
+          noWinnerBecause: refused.why,
+          disagree: comparison.disagree || refused.disagree,
+        }
+      }
+    }
+    return { query, comparison, verdict: verdictWords(comparison, query.answer), decided: comparison.fastest !== null }
   })
 }
 
-/** Row counts that differ between stores for one search in the one-minute stage. */
+/**
+ * How the stores' answers to one search differ in the one-minute stage: in how
+ * many rows, in the values of the rows (only for a search checked on values,
+ * and only where every store's rows were read back in full), or not at all.
+ */
+export function probeDisagreement(probe: StageRecord, queryId: BenchQueryId): 'rows' | 'values' | null {
+  const mine = probe.runs.filter((r) => r.queryId === queryId && !r.error)
+  const rows = new Set(mine.filter((r) => r.rows !== null).map((r) => r.rows))
+  if (rows.size > 1) return 'rows'
+  if (queryById(queryId).answer !== 'values') return null
+  const answers = mine.map((r) => r.answer ?? null)
+  if (answers.some((a) => a === null)) return null
+  return new Set(answers).size > 1 ? 'values' : null
+}
+
+/** Whether the stores' answers to one search differ in the one-minute stage. */
 export function probeDisagrees(probe: StageRecord, queryId: BenchQueryId): boolean {
-  const rows = new Set(probe.runs.filter((r) => r.queryId === queryId && r.rows !== null).map((r) => r.rows))
-  return rows.size > 1
+  return probeDisagreement(probe, queryId) !== null
+}
+
+/**
+ * The stage's work in words. A run whose work Cribl did not report is NOT
+ * counted as zero (benchmark.ts: null "is not the same as zero and must not be
+ * rendered as it"): the figure becomes a floor, and the sentence says how many
+ * searches it leaves out.
+ */
+export function stageWorkWords(runs: readonly BenchRun[]): string {
+  const done = runs.filter((r) => !r.error)
+  const reported = done.filter((r) => r.cpuSeconds !== null)
+  const total = reported.reduce((s, r) => s + (r.cpuSeconds as number), 0)
+  const missing = done.length - reported.length
+  if (missing === 0) return `Work done by this stage: ${cpuWords(total)}.`
+  if (reported.length === 0) return 'Work done by this stage: not reported — Cribl did not report the work of any of its searches.'
+  return (
+    `Work done by this stage: at least ${cpuWords(total)} — Cribl did not report the work of ${missing} of its ` +
+    `${done.length} searches, and those are not counted.`
+  )
 }

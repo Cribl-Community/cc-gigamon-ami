@@ -23,7 +23,17 @@
 //     search (`fifteenRefusal`). Its confirmation quotes that measured work,
 //     multiplied out, as its cost line.
 //   * THE VERDICT IS benchmark.ts's `compare`, which refuses a winner when the
-//     stores returned different row counts.
+//     stores returned different row counts or tied, and `benchReport` on top of
+//     it: a search whose answer is a handful of rows (the count, the per-minute
+//     trend) is compared on its VALUES, since its row count matches whatever
+//     the stores hold, and the opening-tiles scan never names a winner.
+//   * "STOPPED" ONLY ONCE A STAGE HAS ENDED. Mid-run every stage is short of
+//     runs; that is progress, not a stop (`stageStopped`).
+//   * A REFUSED SUBMIT CLOSES THE GATE. The dialog's <GatedControl> is gone
+//     before the first search is sent (the dialog closes as the stage starts),
+//     so when Cribl answers the job submit with 401/403 the runner stops the
+//     plan and this panel latches 'benchmark.run' itself; both outer triggers
+//     then read that gate and say which call was refused.
 //   * NOTHING PERSISTS. Results live in this component's state; leaving the page
 //     drops them, and unmounting cancels the search in flight.
 //   * NOTHING ROUTES. A result here is a measurement on screen. Moving any query
@@ -35,7 +45,7 @@ import { Panel } from './Panel'
 import { PanelInfo } from './PanelInfo'
 import { InfoTip } from './InfoTip'
 import { ConfirmDialog, type ConfirmResource } from './ConfirmDialog'
-import { GatedControl } from './GatedControl'
+import { GateNote, GatedControl } from './GatedControl'
 import {
   FIFTEEN_RUNS_PER_PAIR,
   benchReport,
@@ -46,11 +56,13 @@ import {
   oneMinuteCostLine,
   parquetState,
   planFor,
-  probeDisagrees,
+  probeDisagreement,
   projectFifteen,
   queryById,
   selectionKey,
+  stageStopped,
   stageWindow,
+  stageWorkWords,
   type BenchQueryId,
   type BenchRun,
   type PlannedBenchRun,
@@ -58,11 +70,11 @@ import {
   type StageRecord,
 } from '../cribl/benchmarkPlan'
 import { BENCH_PARQUET_DATASET, BENCH_QUERIES, onParquet } from '../queries/benchmark'
-import { REAL_DATASET } from '../queries/datasets'
 import { STORE_WORDS, type BenchTarget } from '../cribl/benchmark'
 import { runPlan } from '../cribl/benchmarkRun'
 import { listDatasets, type LakeDataset, type ReadResult } from '../cribl/lake'
 import { useDatasetTarget } from '../cribl/datasetTarget'
+import { denialMark, latchDenial, useWriteGate } from '../cribl/authz'
 import { fmtMs } from '../lib/format'
 import {
   BENCH_LEAD,
@@ -81,6 +93,7 @@ import {
   ONE_STAGE_TIP,
   PARQUET_CHOICE,
   RESULTS_KEPT_TIP,
+  RUNNING_VERDICT,
   SEARCHES_LEGEND,
   SEARCHES_TIP,
   STOPPED_NOTE,
@@ -89,6 +102,7 @@ import {
   STORE_LINE,
   WINDOW_TIP,
   disagreeWords,
+  valuesDisagreeWords,
   fifteenTitle,
   oneTitle,
   progressWords,
@@ -128,6 +142,11 @@ export function BenchmarkPanel() {
   const abortRef = useRef<AbortController | null>(null)
   const oneReasonId = useId()
   const fifteenReasonId = useId()
+  const refusalId = useId()
+  // The refusal of a job submit, latched by this panel (see the header). Both
+  // outer triggers read it, so nobody is walked into a confirmation whose
+  // searches Cribl has just refused.
+  const gate = useWriteGate('benchmark.run')
 
   // The one request on mount: the Lake listing, which bills nothing and starts
   // no search. Refresh reads it again; nothing reads it on a timer.
@@ -176,6 +195,16 @@ export function BenchmarkPanel() {
   // selection. Before that there is nothing on screen to judge it against.
   const offerFifteen = probe !== null && probe.key === key
 
+  /** An outer trigger's aria wiring: its own reason, and the gate's refusal. */
+  const describe = (reason: string | null, reasonId: string) => {
+    const ids = [gate.denied ? refusalId : null, reason ? reasonId : null].filter((x): x is string => x !== null)
+    return {
+      'aria-disabled': ids.length > 0 ? true : undefined,
+      'aria-describedby': ids.length > 0 ? ids.join(' ') : undefined,
+    } as const
+  }
+  const blocked = (reason: string | null) => reason !== null || gate.denied !== null
+
   const toggle = (id: BenchQueryId, on: boolean) =>
     setChosen((was) => BENCH_QUERIES.map((q) => q.id).filter((x) => (x === id ? on : was.includes(x))))
 
@@ -195,10 +224,10 @@ export function BenchmarkPanel() {
     const window = stageWindow(stage, Date.now())
     const ctl = new AbortController()
     abortRef.current = ctl
-    const record: StageRecord = { stage, key, window, queryIds: [...chosen], targets, runs: [], planned: plan.length }
+    const record: StageRecord = { stage, key, window, queryIds: [...chosen], targets, runs: [], planned: plan.length, ended: false }
     const runs: BenchRun[] = []
-    const publish = () => {
-      const next = { ...record, runs: [...runs] }
+    const publish = (ended = false) => {
+      const next = { ...record, runs: [...runs], ended }
       if (stage === 'one') setProbe(next)
       else setBench(next)
     }
@@ -217,6 +246,11 @@ export function BenchmarkPanel() {
           runs.push(run)
           publish()
           setProgress((p) => (p ? { ...p, done } : p))
+          // Cribl refused the submit itself. The runner stops the plan here;
+          // the gate is latched so both triggers say which call was refused.
+          if (run.refused) {
+            latchDenial('benchmark.run', { ...run.refused, seq: denialMark(), origin: 'click' })
+          }
         },
         (next, index) => setProgress((p) => (p ? { ...p, done: index, next } : p)),
         ctl.signal,
@@ -225,6 +259,7 @@ export function BenchmarkPanel() {
       setFailure(err instanceof Error ? err.message : 'The benchmark stopped on an error.')
     } finally {
       if (abortRef.current === ctl) abortRef.current = null
+      publish(true)
       setProgress(null)
     }
   }
@@ -250,7 +285,7 @@ export function BenchmarkPanel() {
             <Checkbox checked={chosen.includes(q.id)} disabled={running} onChange={(e) => toggle(q.id, e.target.checked)}>
               {q.label}
             </Checkbox>
-            <PanelInfo label={`${q.label}: what it measures and the query it runs on ${REAL_DATASET}`} about={q.why} query={q.query} />
+            <PanelInfo label={`${q.label}: what it measures, and its query`} about={q.why} query={q.query} />
             {parquetOffered && (
               <PanelInfo
                 label={`${q.label}: the query it runs on ${BENCH_PARQUET_DATASET}`}
@@ -290,9 +325,8 @@ export function BenchmarkPanel() {
               <button
                 type="button"
                 className="btn btn-primary"
-                aria-disabled={oneReason ? true : undefined}
-                aria-describedby={oneReason ? oneReasonId : undefined}
-                onClick={() => { if (!oneReason) setDialog('one') }}
+                {...describe(oneReason, oneReasonId)}
+                onClick={() => { if (!blocked(oneReason)) setDialog('one') }}
               >
                 {ONE_LABEL}
               </button>
@@ -303,15 +337,15 @@ export function BenchmarkPanel() {
                 <button
                   type="button"
                   className="btn"
-                  aria-disabled={fifteenReason ? true : undefined}
-                  aria-describedby={fifteenReason ? fifteenReasonId : undefined}
-                  onClick={() => { if (!fifteenReason) setDialog('fifteen') }}
+                  {...describe(fifteenReason, fifteenReasonId)}
+                  onClick={() => { if (!blocked(fifteenReason)) setDialog('fifteen') }}
                 >
                   {FIFTEEN_LABEL}
                 </button>
                 {fifteenReason && <span id={fifteenReasonId}>{fifteenReason}</span>}
               </span>
             )}
+            <GateNote write="benchmark.run" textId={refusalId} />
           </>
         )}
         <span className="sl-actions-note">
@@ -419,9 +453,11 @@ function ColumnHead({ label, tip, num = true }: { label: string; tip: string; nu
 }
 
 function ProbeTable({ probe }: { probe: StageRecord }) {
-  const stopped = probe.runs.length < probe.planned
-  const total = probe.runs.reduce((s, r) => s + (r.cpuSeconds ?? 0), 0)
-  const disagree = probe.queryIds.filter((id) => probeDisagrees(probe, id))
+  const stopped = stageStopped(probe)
+  const disagree = probe.queryIds.flatMap((id) => {
+    const how = probeDisagreement(probe, id)
+    return how ? [{ id, how }] : []
+  })
   return (
     <section className="bm-stage" aria-label={ONE_HEADING}>
       <h4 className="bm-h">
@@ -465,9 +501,11 @@ function ProbeTable({ probe }: { probe: StageRecord }) {
           </tbody>
         </table>
       </div>
-      <p className="gs-action-note">Work done by this stage: {cpuWords(total)}.</p>
-      {disagree.map((id) => (
-        <p key={id} className="sl-note sl-note-warn">{disagreeWords(queryById(id).label)}</p>
+      <p className="gs-action-note">{stageWorkWords(probe.runs)}</p>
+      {disagree.map(({ id, how }) => (
+        <p key={id} className="sl-note sl-note-warn">
+          {how === 'rows' ? disagreeWords(queryById(id).label) : valuesDisagreeWords(queryById(id).label)}
+        </p>
       ))}
       {stopped && <p className="sl-note sl-note-warn">{STOPPED_NOTE}</p>}
     </section>
@@ -475,7 +513,8 @@ function ProbeTable({ probe }: { probe: StageRecord }) {
 }
 
 function BenchTable({ bench }: { bench: StageRecord }) {
-  const stopped = bench.runs.length < bench.planned
+  const stopped = stageStopped(bench)
+  const running = !bench.ended
   const reports = benchReport(bench)
   return (
     <section className="bm-stage" aria-label={FIFTEEN_HEADING}>
@@ -520,8 +559,14 @@ function BenchTable({ bench }: { bench: StageRecord }) {
                 )
               })}
               <tr>
-                <td colSpan={8} className={rep.decided && !stopped ? 'bm-verdict' : 'bm-verdict bm-verdict-none'}>
-                  {stopped ? STOPPED_VERDICT : rep.decided ? `Verdict: ${rep.verdict}` : `No verdict: ${rep.verdict}`}
+                <td colSpan={8} className={rep.decided && !stopped && !running ? 'bm-verdict' : 'bm-verdict bm-verdict-none'}>
+                  {running
+                    ? RUNNING_VERDICT
+                    : stopped
+                      ? STOPPED_VERDICT
+                      : rep.decided
+                        ? `Verdict: ${rep.verdict}`
+                        : `No verdict: ${rep.verdict}`}
                 </td>
               </tr>
             </tbody>

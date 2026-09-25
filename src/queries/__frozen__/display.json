@@ -27,7 +27,7 @@
     "src/components/BenchmarkPanel.tsx": {
       "q": {
         "from": "BENCH_QUERIES.map((x) => ({ label: x.id, value: x }))",
-        "value": "4 entries · sha256 a1d5abacb9b14621"
+        "value": "4 entries · sha256 7dbf06769cfde7a1"
       }
     },
     "src/tabs/DataFlow.tsx": {
@@ -188,7 +188,7 @@
   "modules": {
     "src/queries/benchmark.ts": {
       "BENCH_PARQUET_DATASET": "gigamon_ami_pq",
-      "BENCH_QUERIES": "4 entries · sha256 37499b009564c2d2",
+      "BENCH_QUERIES": "4 entries · sha256 6fbf604c9f001902",
       "onParquet(appSrc)": "dataset=\"gigamon_ami_pq\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
       "onParquet(count)": "dataset=\"gigamon_ami_pq\" | summarize c=count()",
       "onParquet(dupacks)": "dataset=\"gigamon_ami_pq\" protocol=6 | summarize v=sum(tcp_dup_ack), flows=count() by bin(_time, 1m) | sort by _time asc",
@@ -889,7 +889,7 @@
     },
     "src/components/BenchmarkPanel.tsx": {
       "surfaces": {
-        "PanelInfo · ${q.label}: what it measures and the query it runs on ${REAL_DATASET} · count": {
+        "PanelInfo · ${q.label}: what it measures, and its query · count": {
           "ref": "q.query",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize c=count()",
@@ -898,7 +898,7 @@
           ],
           "reads": "(unbound)"
         },
-        "PanelInfo · ${q.label}: what it measures and the query it runs on ${REAL_DATASET} · dupacks": {
+        "PanelInfo · ${q.label}: what it measures, and its query · dupacks": {
           "ref": "q.query",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" protocol=6 | summarize v=sum(tcp_dup_ack), flows=count() by bin(_time, 1m) | sort by _time asc",
@@ -907,7 +907,7 @@
           ],
           "reads": "(unbound)"
         },
-        "PanelInfo · ${q.label}: what it measures and the query it runs on ${REAL_DATASET} · appSrc": {
+        "PanelInfo · ${q.label}: what it measures, and its query · appSrc": {
           "ref": "q.query",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
@@ -916,7 +916,7 @@
           ],
           "reads": "(unbound)"
         },
-        "PanelInfo · ${q.label}: what it measures and the query it runs on ${REAL_DATASET} · overview": {
+        "PanelInfo · ${q.label}: what it measures, and its query · overview": {
           "ref": "q.query",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",

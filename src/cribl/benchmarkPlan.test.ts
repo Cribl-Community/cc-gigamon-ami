@@ -13,15 +13,19 @@ import {
   benchPlan,
   benchReport,
   benchTargets,
+  canonicalAnswer,
   fifteenCostLine,
   fifteenRefusal,
   parquetState,
+  probeDisagreement,
   probeDisagrees,
   probePlan,
   projectFifteen,
   queryFor,
   selectionKey,
+  stageStopped,
   stageWindow,
+  stageWorkWords,
   type BenchQueryId,
   type BenchRun,
   type StageRecord,
@@ -180,6 +184,7 @@ const probeOf = (runs: BenchRun[], ids: BenchQueryId[] = ['count']): StageRecord
   targets: both,
   runs,
   planned: probePlan(ids, both).length,
+  ended: true,
 })
 
 describe('the stage gate', () => {
@@ -238,30 +243,67 @@ describe('the 15-minute cost line', () => {
 })
 
 describe('the verdict', () => {
-  const bench = (runs: BenchRun[]): StageRecord => ({
+  const bench = (runs: BenchRun[], id: BenchQueryId = 'count'): StageRecord => ({
     stage: 'fifteen',
-    key: selectionKey(['count'], both),
+    key: selectionKey([id], both),
     window: { earliest: 0, latest: 900 },
-    queryIds: ['count'],
+    queryIds: [id],
     targets: both,
     runs,
     planned: runs.length,
+    ended: true,
   })
-  const protocol = (json: Partial<BenchRun>, pq: Partial<BenchRun>) =>
-    benchPlan(['count'], both).map((p) => run('count', p.target.id, { warmup: p.warmup, ...(p.target.id === JSON_TARGET_ID ? json : pq) }))
+  const protocol = (json: Partial<BenchRun>, pq: Partial<BenchRun>, id: BenchQueryId = 'count') =>
+    benchPlan([id], both).map((p) => run(id, p.target.id, { warmup: p.warmup, ...(p.target.id === JSON_TARGET_ID ? json : pq) }))
 
-  it('names the fastest store by server time when the row counts agree', () => {
-    const [r] = benchReport(bench(protocol({ serverMs: 900 }, { serverMs: 300 })))
+  it('names the fastest store by server time when the stores gave the same answer', () => {
+    const [r] = benchReport(bench(protocol({ serverMs: 900, answer: 'c=5' }, { serverMs: 300, answer: 'c=5' })))
     expect(r.decided).toBe(true)
     expect(r.verdict).toMatch(/^Cribl Lake · Parquet answered fastest, 3× faster/)
+    expect(r.verdict).toMatch(/same rows, value for value/)
+  })
+
+  it('says only the row count was checked for a search checked on rows', () => {
+    const [r] = benchReport(bench(protocol({ serverMs: 900 }, { serverMs: 300 }, 'appSrc'), 'appSrc'))
+    expect(r.decided).toBe(true)
     expect(r.verdict).toMatch(/values are not compared/)
   })
 
   it('REFUSES a verdict when the row counts disagree, however much faster one store is', () => {
-    const [r] = benchReport(bench(protocol({ serverMs: 900, rows: 18 }, { serverMs: 100, rows: 43_338 })))
+    const [r] = benchReport(bench(protocol({ serverMs: 900, rows: 18, answer: 'a' }, { serverMs: 100, rows: 43_338, answer: 'a' })))
     expect(r.decided).toBe(false)
     expect(r.comparison.disagree).toBe(true)
     expect(r.verdict).toMatch(/did not return the same number of rows/)
+  })
+
+  // The row count and the trend return the same NUMBER of rows from any store
+  // (one row; one per minute), so the row-count refusal can never fire for them.
+  // Before 2026-09-25 this named Parquet fastest for a count of 43,338 against 18.
+  it('REFUSES a verdict for the row count when the count itself differs, though both returned one row', () => {
+    const [r] = benchReport(bench(protocol({ serverMs: 900, rows: 1, answer: 'c=43338' }, { serverMs: 100, rows: 1, answer: 'c=18' })))
+    expect(r.decided).toBe(false)
+    expect(r.comparison.disagree).toBe(true)
+    expect(r.verdict).toMatch(/same number of rows but different values/)
+  })
+
+  it('refuses a verdict for a values-checked search whose rows were not all read back', () => {
+    const [r] = benchReport(bench(protocol({ serverMs: 900, answer: 'c=5' }, { serverMs: 100, answer: null }, 'dupacks'), 'dupacks'))
+    expect(r.decided).toBe(false)
+    expect(r.verdict).toMatch(/could not all be read back/)
+  })
+
+  it('never names a winner for the opening-tiles scan, whose answer is known to differ', () => {
+    const [r] = benchReport(bench(protocol({ serverMs: 900 }, { serverMs: 100 }, 'overview'), 'overview'))
+    expect(r.decided).toBe(false)
+    expect(r.verdict).toMatch(/known to differ on the Parquet copy/)
+    // …and still shows both stores' timings.
+    expect(r.comparison.summaries.map((s) => s.serverMs)).toEqual([900, 100])
+  })
+
+  it('names no winner on a tie', () => {
+    const [r] = benchReport(bench(protocol({ serverMs: 400, answer: 'a' }, { serverMs: 400, answer: 'a' })))
+    expect(r.decided).toBe(false)
+    expect(r.verdict).toMatch(/within 5% of each other/)
   })
 
   it('ignores the warm-up: a cold first run cannot move the median', () => {
@@ -282,5 +324,55 @@ describe('the verdict', () => {
     const p = probeOf([run('count', JSON_TARGET_ID, { rows: 10 }), run('count', PARQUET_TARGET_ID, { rows: 12 })])
     expect(probeDisagrees(p, 'count')).toBe(true)
     expect(probeDisagrees(probeOf([run('count', JSON_TARGET_ID), run('count', PARQUET_TARGET_ID)]), 'count')).toBe(false)
+  })
+
+  it('flags a one-minute count that differs in value, with one row from each store', () => {
+    const p = probeOf([run('count', JSON_TARGET_ID, { rows: 1, answer: 'c=10' }), run('count', PARQUET_TARGET_ID, { rows: 1, answer: 'c=12' })])
+    expect(probeDisagreement(p, 'count')).toBe('values')
+    const same = probeOf([run('count', JSON_TARGET_ID, { rows: 1, answer: 'c=10' }), run('count', PARQUET_TARGET_ID, { rows: 1, answer: 'c=10' })])
+    expect(probeDisagreement(same, 'count')).toBeNull()
+  })
+})
+
+describe('the canonical answer', () => {
+  it('does not depend on the order of the rows or of the fields in a row', () => {
+    expect(canonicalAnswer([{ a: 1, b: 2 }, { a: 3, b: 4 }])).toBe(canonicalAnswer([{ b: 4, a: 3 }, { b: 2, a: 1 }]))
+  })
+
+  it('tells a different value apart', () => {
+    expect(canonicalAnswer([{ c: 18 }])).not.toBe(canonicalAnswer([{ c: 43_338 }]))
+  })
+})
+
+describe('a stage that has not ended', () => {
+  const key = selectionKey(['count'], both)
+
+  it('is not called stopped while it runs, however few runs are in', () => {
+    const running = { ...probeOf([]), ended: false }
+    expect(stageStopped(running)).toBe(false)
+    expect(stageStopped({ ...running, ended: true })).toBe(true)
+  })
+
+  it('keeps the 15-minute stage refused while the one-minute stage runs, and says why', () => {
+    const running = { ...probeOf([run('count', JSON_TARGET_ID), run('count', PARQUET_TARGET_ID)]), ended: false }
+    expect(fifteenRefusal(running, key)).toBe('The one-minute stage is still running.')
+  })
+})
+
+describe('the stage’s work in words', () => {
+  it('states the total when every run’s work was reported', () => {
+    expect(stageWorkWords([run('count', JSON_TARGET_ID, { cpuSeconds: 2 }), run('count', PARQUET_TARGET_ID, { cpuSeconds: 4 })])).toBe(
+      'Work done by this stage: 6 CPU-seconds.',
+    )
+  })
+
+  it('never counts unreported work as zero: the figure becomes a floor, and says how many it leaves out', () => {
+    const words = stageWorkWords([run('count', JSON_TARGET_ID, { cpuSeconds: 2 }), run('count', PARQUET_TARGET_ID, { cpuSeconds: null })])
+    expect(words).toContain('at least 2 CPU-seconds')
+    expect(words).toContain('did not report the work of 1 of its 2 searches')
+  })
+
+  it('says not reported when nothing was', () => {
+    expect(stageWorkWords([run('count', JSON_TARGET_ID, { cpuSeconds: null })])).toMatch(/not reported/)
   })
 })

@@ -2,7 +2,7 @@
 // submits, what it reads back, and that a plan never has two searches in flight.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runOne, runPlan, WORK_RETRY_MS } from './benchmarkRun'
-import { benchPlan, benchTargets, PARQUET_DATASET, probePlan, stageWindow } from './benchmarkPlan'
+import { benchPlan, benchTargets, canonicalAnswer, PARQUET_DATASET, probePlan, stageWindow } from './benchmarkPlan'
 import { setQueryRouter } from './search'
 import type { LakeDataset, ReadResult } from './lake'
 
@@ -28,6 +28,10 @@ let inFlight = 0
 let maxInFlight = 0
 let meter: (jobId: string, read: number) => number
 let failNext = false
+/** When set, the status a job submit answers with (401/403 is Cribl refusing it). */
+let submitStatus: number | null = null
+/** When set, what a job's results read returns instead of the default. */
+let results: ((query: string) => { total: number; rows: object[] }) | null = null
 
 function res(status: number, body: unknown, text?: string) {
   const t = text ?? JSON.stringify(body)
@@ -39,6 +43,8 @@ beforeEach(() => {
   inFlight = 0
   maxInFlight = 0
   failNext = false
+  submitStatus = null
+  results = null
   const reads = new Map<string, number>()
   meter = () => 3.5
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -47,6 +53,7 @@ beforeEach(() => {
     if (method === 'POST' && /\/search\/jobs$/.test(u)) {
       const body = JSON.parse(String(init.body)) as Submit
       submits.push(body)
+      if (submitStatus !== null) return res(submitStatus, { message: 'Forbidden' })
       inFlight++
       maxInFlight = Math.max(maxInFlight, inFlight)
       return res(200, { items: [{ id: `job-${submits.length}` }] })
@@ -65,6 +72,10 @@ beforeEach(() => {
       if (kind === 'results') {
         inFlight--
         const q = submits[Number(id.split('-')[1]) - 1].query
+        if (results) {
+          const r = results(q)
+          return res(200, {}, [JSON.stringify({ totalEventCount: r.total, job: id }), ...r.rows.map((x) => JSON.stringify(x))].join('\n'))
+        }
         const rows = q.includes(PARQUET_DATASET) ? 7 : 5
         return res(200, {}, [JSON.stringify({ totalEventCount: rows, job: id }), '{"c":1}'].join('\n'))
       }
@@ -132,6 +143,20 @@ describe('one run', () => {
     expect((await pending2).cpuSeconds).toBeNull()
   })
 
+  it('keeps the answer of a search checked on values, and only when every row was read back', async () => {
+    const [plan] = probePlan(['count'], TARGETS.slice(0, 1))
+    results = () => ({ total: 1, rows: [{ c: 43_338 }] })
+    const whole = await runOne(plan, WINDOW)
+    expect(whole.rows).toBe(1)
+    expect(whole.answer).toBe(canonicalAnswer([{ c: 43_338 }]))
+    // Fewer rows read than the job produced: the answer is unknown, not partial.
+    results = () => ({ total: 2, rows: [{ c: 1 }] })
+    expect((await runOne(plan, WINDOW)).answer).toBeNull()
+    // A search checked on its row count carries no answer at all.
+    const [app] = probePlan(['appSrc'], TARGETS.slice(0, 1))
+    expect('answer' in (await runOne(app, WINDOW))).toBe(false)
+  })
+
   it('returns a failed search as a result carrying Cribl’s outcome, not as a thrown error', async () => {
     failNext = true
     const [plan] = probePlan(['count'], TARGETS.slice(0, 1))
@@ -151,6 +176,28 @@ describe('a plan', () => {
     expect(maxInFlight).toBe(1)
     expect(submits).toHaveLength(plan.length)
     expect(seen).toEqual(plan.map((p) => p.target.id))
+  })
+
+  // The 'benchmark.run' gate closes on this: before 2026-09-25 a refused submit
+  // was one more failed row, and every later search was sent to be refused too.
+  it('stops at a submit Cribl refuses (403), naming the call, and submits nothing after it', async () => {
+    submitStatus = 403
+    const plan = benchPlan(['count'], TARGETS)
+    const seen: { refused?: unknown; error?: string }[] = []
+    const out = await runPlan(plan, WINDOW, (r) => seen.push(r), () => undefined)
+    expect(out.stopped).toBe(true)
+    expect(submits).toHaveLength(1)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].refused).toEqual({ method: 'POST', path: '/m/default_search/search/jobs', status: 403 })
+    expect(seen[0].error).toMatch(/403/)
+  })
+
+  it('does not treat a failure that is not a refusal as one', async () => {
+    submitStatus = 400
+    const plan = benchPlan(['count'], TARGETS)
+    const out = await runPlan(plan, WINDOW, () => undefined, () => undefined)
+    expect(out.stopped).toBe(false)
+    expect(submits).toHaveLength(plan.length)
   })
 
   it('stops at an abort and submits nothing after it', async () => {

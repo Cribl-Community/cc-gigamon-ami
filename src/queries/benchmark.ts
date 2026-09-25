@@ -33,6 +33,23 @@ import { PACK_PARQUET_DATASET_ID } from '../cribl/pack'
 
 export type BenchQueryId = 'count' | 'dupacks' | 'appSrc' | 'overview'
 
+/**
+ * What "both stores answered the same question" can be checked against, for
+ * one search.
+ *
+ *   values — the answer is a handful of rows whatever the store holds (one row
+ *            for a count, one per minute bin for a trend), so its ROW COUNT
+ *            matches between stores however different the numbers in it are.
+ *            Every value is compared instead, and a winner is named only when
+ *            every measured run of every store read back the same rows in full.
+ *   rows   — a group-by whose row count moves with the data (one row per
+ *            application and source), so a store missing or mis-reading
+ *            records shows up as a different count. Values are not compared.
+ *   none   — its answer is known to differ on the Parquet copy, so no store is
+ *            ever named fastest for it: time and work only.
+ */
+export type AnswerCheck = 'values' | 'rows' | 'none'
+
 export interface BenchQuery {
   id: BenchQueryId
   /** What the reader calls it. */
@@ -43,6 +60,8 @@ export interface BenchQuery {
   why: string
   /** Ticked when the panel opens. */
   defaultOn: boolean
+  /** How a verdict checks that both stores gave the same answer. */
+  answer: AnswerCheck
 }
 
 /** The Parquet copy the benchmark may measure: the pack's own dataset id. */
@@ -57,6 +76,7 @@ export const BENCH_QUERIES: readonly BenchQuery[] = Object.freeze([
       'Counts every record in the window. It is the control: every store must read every row to answer it, so it shows ' +
       'the least any search of that store can cost.',
     defaultOn: true,
+    answer: 'values',
   },
   {
     id: 'dupacks',
@@ -64,6 +84,7 @@ export const BENCH_QUERIES: readonly BenchQuery[] = Object.freeze([
     query: buildTrendQuery('dupacks'),
     why: 'TCP Health’s per-minute duplicate-ACK trend, exactly as that panel runs it: a filter, a sum and a time bin.',
     defaultOn: true,
+    answer: 'values',
   },
   {
     id: 'appSrc',
@@ -73,6 +94,7 @@ export const BENCH_QUERIES: readonly BenchQuery[] = Object.freeze([
       'The scan behind the application-by-source panels: a group-by on two high-cardinality fields, the shape most ' +
       'likely to behave differently on a columnar store.',
     defaultOn: true,
+    answer: 'rows',
   },
   {
     id: 'overview',
@@ -82,6 +104,7 @@ export const BENCH_QUERIES: readonly BenchQuery[] = Object.freeze([
       'The single scan behind the opening tiles of five dashboards. Several of its figures read an absent field as empty ' +
       'or zero on the Parquet copy, so its answer is known to differ there: it measures time and work only.',
     defaultOn: false,
+    answer: 'none',
   },
 ])
 

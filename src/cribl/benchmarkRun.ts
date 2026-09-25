@@ -32,9 +32,10 @@
 // of this dataset never is.
 
 import { capi } from './capi'
-import { runSearch } from './search'
+import { SearchRequestError, runSearch } from './search'
+import { isDenial } from './authz'
 import { JOBS_PATH, runMeta } from './accel/status'
-import { queryById, queryFor, type BenchRun, type BenchWindow, type PlannedBenchRun } from './benchmarkPlan'
+import { canonicalAnswer, queryById, queryFor, type BenchRun, type BenchWindow, type PlannedBenchRun } from './benchmarkPlan'
 
 /** How long to wait before reading the work meter a second time. */
 export const WORK_RETRY_MS = 3_000
@@ -88,16 +89,25 @@ async function serverTime(jobId: string, signal?: AbortSignal): Promise<number |
 const isAbort = (err: unknown, signal?: AbortSignal) =>
   !!signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')
 
+/** Cribl refused the job submit itself: a 401/403 on POST …/search/jobs. */
+function refusedSubmit(err: unknown): BenchRun['refused'] {
+  if (!(err instanceof SearchRequestError) || !isDenial(err.status)) return undefined
+  if (err.method !== 'POST' || !err.path.endsWith('/search/jobs')) return undefined
+  return { method: err.method, path: err.path, status: err.status }
+}
+
 /**
  * Submit one planned run and measure it. A failed search is a RESULT (it carries
  * Cribl's own sentence); an abort is not, and is rethrown so the plan stops.
  */
 export async function runOne(p: PlannedBenchRun, window: BenchWindow, signal?: AbortSignal): Promise<BenchRun> {
-  const query = queryFor(queryById(p.queryId), p.target)
+  const bq = queryById(p.queryId)
+  const query = queryFor(bq, p.target)
   const base = { queryId: p.queryId, query, targetId: p.target.id, warmup: p.warmup }
   const t0 = now()
   let jobId: string
   let rows: number
+  let answer: string | null | undefined
   try {
     const res = await runSearch(query, {
       earliest: window.earliest,
@@ -110,8 +120,15 @@ export async function runOne(p: PlannedBenchRun, window: BenchWindow, signal?: A
     // Rows the job PRODUCED, not rows read back: the read is capped, and two
     // stores truncated to the same cap would look as if they agreed.
     rows = res.totalEventCount
+    // A search whose answer is a handful of rows (a count, a per-minute trend)
+    // returns the same NUMBER of rows from any store, so its values are what
+    // the verdict compares — and only when every row was read back.
+    if (bq.answer === 'values') {
+      answer = res.rows.length === res.totalEventCount ? canonicalAnswer(res.rows as Record<string, unknown>[]) : null
+    }
   } catch (err) {
     if (isAbort(err, signal)) throw err
+    const refused = refusedSubmit(err)
     return {
       ...base,
       jobId: null,
@@ -120,17 +137,21 @@ export async function runOne(p: PlannedBenchRun, window: BenchWindow, signal?: A
       cpuSeconds: null,
       rows: null,
       error: err instanceof Error ? err.message : 'The search failed.',
+      ...(refused ? { refused } : {}),
     }
   }
   const clientMs = now() - t0
   const [serverMs, cpuSeconds] = await Promise.all([serverTime(jobId, signal), readWork(jobId, signal)])
-  return { ...base, jobId, serverMs, clientMs, cpuSeconds, rows }
+  return { ...base, jobId, serverMs, clientMs, cpuSeconds, rows, ...(answer !== undefined ? { answer } : {}) }
 }
 
 /**
  * Run a plan to the end, one run at a time, handing each result over as it
  * lands. Stops at the first abort — the run in flight is cancelled on the
- * server by `runSearch` — and resolves with what completed.
+ * server by `runSearch` — and at the first submit Cribl REFUSED (401/403):
+ * every later submit is the same call and would be refused the same way, so
+ * sending them would only fill the table with the same refusal. Resolves with
+ * what completed.
  */
 export async function runPlan(
   plan: readonly PlannedBenchRun[],
@@ -145,6 +166,7 @@ export async function runPlan(
     try {
       const run = await runOne(plan[i], window, signal)
       onRun(run, i + 1)
+      if (run.refused) return { stopped: true }
     } catch (err) {
       if (isAbort(err, signal)) return { stopped: true }
       throw err
