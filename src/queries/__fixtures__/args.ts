@@ -173,6 +173,11 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     },
   },
 
+  'src/queries/benchmark.ts': {
+    // The benchmark's one move: each search in its set, pointed at the Parquet copy.
+    onParquet: { cases: 'BENCH_QUERIES.map((b) => ({ label: b.id, args: [b.query] }))' },
+  },
+
   'src/queries/dnsHealth.ts': {
     // A resolver name is runtime input; one documented example.
     resolverDrillQuery: { over: ["['10.0.0.53']"] },
