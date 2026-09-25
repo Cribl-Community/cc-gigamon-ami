@@ -197,7 +197,7 @@ describe('the tab, served from its two scheduled runs', () => {
     stub()
     await render()
 
-    expect(container.textContent, 'a stored figure appeared with no date on it').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(container.textContent, 'a stored figure appeared with no date on it').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
   })
 
   it('says in its ⓘ that the figure came from a schedule, and which one', async () => {
@@ -224,7 +224,7 @@ describe('the tab, served from its two scheduled runs', () => {
     await render()
 
     expect(liveScans()).toHaveLength(2)
-    expect(container.textContent, 'a live figure was dated as if it came from a run').not.toMatch(/snapshot \d{2}:\d{2}/)
+    expect(container.textContent, 'a live figure was dated as if it came from a run').not.toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
   })
 })
 

@@ -211,7 +211,7 @@ describe('the “In feed” list, served by the schedule', () => {
     stub()
     await render()
 
-    expect(sourceNote(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(sourceNote(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
     expect(note(), 'the note no longer says which sample this is').toContain('hourly sample')
     expect(note()).toContain('(5,000 rows)')
   })
@@ -288,7 +288,7 @@ describe('Run live', () => {
     await act(async () => { runLive().click() })
     await settle()
 
-    expect(sourceNote(), 'back on the stored sample, and the header stopped dating it').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(sourceNote(), 'back on the stored sample, and the header stopped dating it').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
     expect(note()).toContain('hourly sample')
     expect(sampleSubmits()).toHaveLength(2)
   })

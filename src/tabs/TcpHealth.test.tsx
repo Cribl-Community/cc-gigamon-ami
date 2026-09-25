@@ -228,7 +228,7 @@ describe('the heatmap, served from a scheduled run', () => {
     stub()
     await render()
 
-    expect(container.textContent, 'a stored figure appeared with no date on it').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(container.textContent, 'a stored figure appeared with no date on it').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
 
     const buttons = [...container.querySelectorAll<HTMLButtonElement>('.pinfo-btn')]
     let found = ''
@@ -250,7 +250,7 @@ describe('the heatmap, served from a scheduled run', () => {
     // `includes` rather than equality: search.ts prefixes a running-time cap
     // onto what it submits, which is execution and never part of the ⓘ.
     expect(liveScans().some((s) => s.query.includes(buildHeatQuery('resets', '24'))), 'the live fallback did not run the panel’s own query').toBe(true)
-    expect(container.textContent, 'a live figure was dated as if it came from a run').not.toMatch(/snapshot \d{2}:\d{2}/)
+    expect(container.textContent, 'a live figure was dated as if it came from a run').not.toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
   })
 })
 
