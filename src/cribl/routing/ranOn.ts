@@ -3,8 +3,18 @@
 //
 // Keyed by the query as written. The ⓘ shows what RAN, never a prediction: a
 // routing decision depends on the window and the moment, and only the submit
-// (routing/route.ts) knows both. Until a query has been routed elsewhere it
-// ran on gigamon_ami — today, always.
+// (routing/route.ts) knows both. And it is recorded when the job ANSWERS, not
+// when it is sent (search.ts calls `recordLanded` after reading the results),
+// so a job still in flight, one that fails and one that is aborted leave the ⓘ
+// naming the dataset of the figure still on screen. *(Corrected 2026-09-25,
+// review of `feat/phase8-1-router`: this was written at submit, so a refresh
+// routed elsewhere moved the ⓘ before — or without — the figure moving.)*
+// Until a query has been routed elsewhere it ran on gigamon_ami — today,
+// always.
+//
+// WHAT THIS STILL CANNOT SEE. Two panels showing the same query text share one
+// entry, and a panel whose figure is a stored run's is not this module's
+// business: PanelInfo names JSON for it before reading this.
 //
 // Its own module, apart from the router, so the ⓘ can read it without pulling
 // the routing table (and through it every src/queries module) into the first
@@ -29,7 +39,7 @@ function changed(): void {
   for (const l of listeners) l()
 }
 
-/** routing/route.ts, once per submit. */
+/** routing/route.ts `recordLanded`, once per routed job that answered. */
 export function recordRanOn(query: string, dataset: string): void {
   const was = ranOn(query)
   byQuery.set(query, dataset)

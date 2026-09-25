@@ -1,5 +1,8 @@
-// The query router: at submit, which dataset one query as written runs on. It
-// records each answer for the ⓘ (routing/ranOn.ts).
+// The query router: at submit, which dataset one query as written runs on. The
+// ⓘ (routing/ranOn.ts) is told where a query ran only once its job has
+// answered — `recordLanded`, which search.ts calls after the results are read —
+// so a job in flight, failed or aborted never moves the ⓘ off the dataset of
+// the figure still on screen.
 //
 // ── ORDER OF PRECEDENCE ─────────────────────────────────────────────────────
 // 1. `asWritten` (a measurement of `gigamon_ami` itself) — never routed.
@@ -104,11 +107,19 @@ export function decideRoute(query: string, window: WindowSpan, now: number): Rou
 /** The query the platform receives: `query` on its routed dataset. Installed into search.ts. */
 export function routeForSubmit(query: string, window: WindowSpan): string {
   const d = decideRoute(query, window, Math.floor(Date.now() / 1000))
-  recordRanOn(query, d.dataset)
   return d.dataset === REAL_DATASET ? query : retargetQuery(query, d.dataset)
+}
+
+/**
+ * A routed job of `query` answered, having run as `executed`. The router only
+ * ever sends a query as written or retargeted onto PARQUET_DATASET, so the text
+ * alone says which.
+ */
+export function recordLanded(query: string, executed: string): void {
+  recordRanOn(query, executed === query ? REAL_DATASET : PARQUET_DATASET)
 }
 
 /** Once, from main.tsx. */
 export function installQueryRouter(): void {
-  setQueryRouter(routeForSubmit)
+  setQueryRouter(routeForSubmit, recordLanded)
 }

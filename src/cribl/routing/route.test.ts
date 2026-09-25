@@ -52,6 +52,29 @@ async function submitted(query: string, opts: { earliest?: string | number; late
   return bodies[0].replace(/^(set [^;]+; )+/, '')
 }
 
+/**
+ * Run a job through the real client to its end, which is `status`. `onStatus`
+ * runs at each status poll, while the job is still in flight.
+ */
+async function ran(query: string, status: 'completed' | 'failed', onStatus?: () => void, signal?: AbortSignal): Promise<void> {
+  const json = (body: unknown) => ({ ok: true, status: 200, statusText: 'OK', json: async () => body, text: async () => JSON.stringify(body) })
+  vi.stubGlobal('fetch', async (url: string) => {
+    if (String(url).endsWith('/search/jobs')) return json({ items: [{ id: 'job-test' }] })
+    if (String(url).includes('/cancel')) return json({})
+    if (String(url).includes('/status')) {
+      onStatus?.()
+      return json({ items: [{ status }] })
+    }
+    if (String(url).includes('/diag') || String(url).includes('/logs')) return json({ items: [] })
+    return { ok: true, status: 200, statusText: 'OK', text: async () => '{"totalEventCount":0}', json: async () => ({}) }
+  })
+  try {
+    await runSearch(query, { earliest: WINDOW.earliest, latest: WINDOW.latest, pollMs: 1, signal })
+  } finally {
+    vi.unstubAllGlobals()
+  }
+}
+
 beforeEach(() => installQueryRouter())
 afterEach(() => {
   setQueryRouter(null)
@@ -106,6 +129,37 @@ describe('with a table that moves one query (test override)', () => {
     await submitted(TREND)
     overrideRouting({ ...MOVING, complete: () => ({ complete: false, why: 'gap' }) })
     await submitted(TREND)
+    expect(ranOn(TREND)).toBe(LAKE_DATASET)
+  })
+
+  it('names no new dataset while the job is still running: the figure on screen is the old one', async () => {
+    overrideRouting(MOVING)
+    let during: string | null = null
+    await ran(TREND, 'completed', () => {
+      during = ranOn(TREND)
+    })
+    expect(during, 'the job had not answered yet').toBe(LAKE_DATASET)
+    expect(ranOn(TREND), 'and once it answered, it names where it ran').toBe(PARQUET_DATASET)
+  })
+
+  it('keeps the ⓘ on the dataset of the figure still on screen when the next job fails', async () => {
+    overrideRouting(MOVING)
+    await ran(TREND, 'completed')
+    expect(ranOn(TREND)).toBe(PARQUET_DATASET)
+    // The next job routes to JSON and fails: the panel keeps the Parquet figure,
+    // so the ⓘ must keep naming Parquet.
+    overrideRouting({ ...MOVING, complete: () => ({ complete: false, why: 'gap' }) })
+    await expect(ran(TREND, 'failed')).rejects.toThrow('Cribl Search failed')
+    expect(ranOn(TREND)).toBe(PARQUET_DATASET)
+  })
+
+  it('keeps the ⓘ where it was when the next job is aborted', async () => {
+    overrideRouting({ ...MOVING, complete: () => ({ complete: false, why: 'gap' }) })
+    await ran(TREND, 'completed')
+    overrideRouting(MOVING)
+    const ac = new AbortController()
+    // Whether the client then throws or answers, the panel drops an aborted job's rows.
+    await ran(TREND, 'completed', () => ac.abort(), ac.signal).catch(() => undefined)
     expect(ranOn(TREND)).toBe(LAKE_DATASET)
   })
 

@@ -370,12 +370,14 @@ export function cancelJob(jobId: string): void {
  * seam — which takes precedence and, while the app reads the sample, is the
  * only move made — the installed router may send a query to the Parquet copy
  * (cribl/routing/route.ts). Computed ONCE per job, so the body sent and the
- * cost key filed describe the same run.
+ * cost key filed describe the same run. `routed` says the router was asked,
+ * so the client can tell it, once the job has answered, where it ran
+ * (`landed`, below).
  */
-function executedQuery(query: string, asWritten: boolean, earliest: string | number, latest: string | number): string {
-  if (asWritten) return query
-  if (activeDataset() !== LAKE_DATASET) return toActiveDataset(query)
-  return router(query, { earliest, latest })
+function executedQuery(query: string, asWritten: boolean, earliest: string | number, latest: string | number): { text: string; routed: boolean } {
+  if (asWritten) return { text: query, routed: false }
+  if (activeDataset() !== LAKE_DATASET) return { text: toActiveDataset(query), routed: false }
+  return { text: router(query, { earliest, latest }), routed: true }
 }
 
 /**
@@ -385,12 +387,27 @@ function executedQuery(query: string, asWritten: boolean, earliest: string | num
  */
 export type QueryRouter = (query: string, window: { earliest: string | number; latest: string | number }) => string
 
+/**
+ * Told, once a routed job's results have been read, the query as written and
+ * the text that ran — so the ⓘ names the dataset of the figure now on screen,
+ * never one a job still in flight, failed or aborted was sent to
+ * (routing/ranOn.ts).
+ */
+export type RouteLanded = (query: string, executed: string) => void
+
 const AS_WRITTEN: QueryRouter = (query) => query
 let router: QueryRouter = AS_WRITTEN
+let landed: RouteLanded | null = null
 
-/** main.tsx (through `installQueryRouter`) and tests. `null` puts back "run as written". */
-export function setQueryRouter(next: QueryRouter | null): void {
+/** main.tsx (through `installQueryRouter`) and tests. `null` puts back "run as written" and forgets `onLanded`. */
+export function setQueryRouter(next: QueryRouter | null, onLanded: RouteLanded | null = null): void {
   router = next ?? AS_WRITTEN
+  landed = next ? onLanded : null
+}
+
+/** A routed job answered and was not abandoned: say where it ran. */
+function reportLanded(query: string, executed: { text: string; routed: boolean }, signal: AbortSignal | undefined): void {
+  if (executed.routed && !signal?.aborted) landed?.(query, executed.text)
 }
 
 /** The cost slot's key: the window and the text that actually ran. */
@@ -500,11 +517,12 @@ async function runSearchInner(query: string, opts: SearchOptions = {}): Promise<
   const cap = capSecondsFor(earliest)
 
   const executed = executedQuery(query, asWritten, earliest, latest)
-  const jobId = await submitJob(executed, earliest, latest, signal, reuse)
+  const jobId = await submitJob(executed.text, earliest, latest, signal, reuse)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
-  if (costSlot) void recordJobCost(costSlot, costKey(executed, earliest), jobId)
+  if (costSlot) void recordJobCost(costSlot, costKey(executed.text, earliest), jobId)
 
   const { rows, totalEventCount } = await readJobResults(jobId, { limit, signal })
+  reportLanded(query, executed, signal)
   return { jobId, rows, totalEventCount }
 }
 
@@ -620,10 +638,11 @@ async function runFieldSummariesInner(query: string, opts: SearchOptions = {}): 
   const { earliest = '-15m', latest = 'now', signal, pollMs, timeoutMs, costSlot, reuse = false, asWritten = false } = opts
   const cap = capSecondsFor(earliest)
   const executed = executedQuery(query, asWritten, earliest, latest)
-  const jobId = await submitJob(executed, earliest, latest, signal, reuse)
+  const jobId = await submitJob(executed.text, earliest, latest, signal, reuse)
   await waitForJob(jobId, signal, pollMs, timeoutMs ?? clientTimeoutMs(cap), cap)
-  if (costSlot) void recordJobCost(costSlot, costKey(executed, earliest), jobId)
+  if (costSlot) void recordJobCost(costSlot, costKey(executed.text, earliest), jobId)
   const data = await api<{ fields?: FieldSummary[] }>(searchUrl(`/search/jobs/${jobId}/field-summaries`), { method: 'GET' }, signal)
+  reportLanded(query, executed, signal)
   const fields = data.fields ?? []
   const sampled = fields.reduce((m, f) => Math.max(m, f.count + f.countNull), 0)
   return { fields, sampled }
