@@ -266,6 +266,22 @@ export const PACK_SAMPLE_DATASET_ID = 'gigamon_ami_sample'
  */
 export const PACK_DATASETS_NOT_CREATED: readonly string[] = Object.freeze([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID])
 
+/**
+ * Every object the pack ships, by the kind of list it appears in. Here rather
+ * than in packClient.ts because the onboarding plan's confirmation names each
+ * one, and the plan may not import the client (it is on paths.ts
+ * `UNREACHED_MODULES`). packClient.ts re-exports it.
+ */
+export const PACK_OBJECTS = Object.freeze({
+  inputs: Object.freeze([PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID]),
+  breakers: Object.freeze([PACK_BREAKER_ID]),
+  pipelines: Object.freeze([PACK_PIPELINE_ID]),
+  routes: Object.freeze([PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID]),
+  outputs: Object.freeze([PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID]),
+})
+
+export type PackObjectKind = keyof typeof PACK_OBJECTS
+
 /** The ports a Cribl-managed (Cloud) worker group exposes for a source.
  *  pack.test.ts holds it equal to provision.ts's `CLOUD_PORT_RANGE`. */
 export const PACK_CLOUD_PORT_RANGE = Object.freeze({ min: 20000, max: 20010 })

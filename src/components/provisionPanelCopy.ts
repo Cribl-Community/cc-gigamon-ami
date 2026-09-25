@@ -160,7 +160,7 @@ export function pendingSentence(ctx: ProvisionConfirmContext): string {
  * than retreating to "some configuration files", which would cost the reader
  * the one fact they need: that `inputs.yml` is in the set at all.
  */
-function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
+export function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
   const files = ctx.scope?.carries ?? []
   if (files.length === 0) return `The change is committed and deployed to ${ctx.group}.`
   return (

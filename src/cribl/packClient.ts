@@ -105,18 +105,13 @@ import { sameDiff, type DiffRow } from './landing'
 import {
   PACK_BREAKER_ID,
   PACK_HTTP_INPUT_ID,
-  PACK_HTTP_JSON_ROUTE_ID,
-  PACK_HTTP_PARQUET_ROUTE_ID,
   PACK_ID,
-  PACK_JSON_OUTPUT_ID,
-  PACK_PARQUET_OUTPUT_ID,
-  PACK_PIPELINE_ID,
+  PACK_OBJECTS,
+  type PackObjectKind,
   PACK_PUBLISHED,
   PACK_PUBLISHED_VERSIONS,
   PACK_SAMPLE_DATASET_ID,
   PACK_SAMPLE_INPUT_ID,
-  PACK_SAMPLE_OUTPUT_ID,
-  PACK_SAMPLE_ROUTE_ID,
   PACK_SHA256,
   PACK_URL,
   PACK_VERSION,
@@ -228,16 +223,10 @@ export function compareVersions(a: string, b: string): number {
   return 0
 }
 
-/** Every object the pack ships, by the kind of list it appears in. */
-export const PACK_OBJECTS = Object.freeze({
-  inputs: Object.freeze([PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID]),
-  breakers: Object.freeze([PACK_BREAKER_ID]),
-  pipelines: Object.freeze([PACK_PIPELINE_ID]),
-  routes: Object.freeze([PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID]),
-  outputs: Object.freeze([PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID]),
-})
-
-export type PackObjectKind = keyof typeof PACK_OBJECTS
+/** Every object the pack ships, by the kind of list it appears in. pack.ts's,
+ *  re-exported: the onboarding plan names them too, and must not import this
+ *  module (see its header). */
+export { PACK_OBJECTS, type PackObjectKind }
 
 /** What the pack's Raw HTTP source says about itself. No token, only whether
  *  one is set. */
