@@ -5,14 +5,14 @@
 // bundles are tar archives built here and gzipped with zlib, and build/ is a
 // temporary directory. What GitHub actually holds is the command's to find out.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   APP_NAME, assetNames, checkBundle, fetchRelease, parseArgs, parseReleaseTag, pickLatestRelease,
-  readBundlePackageJson, readTarFile, type GhResult,
+  readBundlePackageJson, readTarFile, type FetchFs, type GhResult,
 } from '../scripts/fetch-release.mjs'
 
 // ── A minimal tar writer, for fixtures ────────────────────────────────────────
@@ -233,6 +233,102 @@ describe('fetchRelease, against a fake gh', () => {
     const r = await fetchRelease({ gh, buildDir: tempDir(), tmp: tempDir })
     expect(r.code).toBe(1)
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('fetchRelease: build/ and the temporary directory', () => {
+  const dirs: string[] = []
+  const tempDir = () => {
+    const d = mkdtempSync(join(tmpdir(), 'fetch-release-test-'))
+    dirs.push(d)
+    return d
+  }
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+  function gh(assets: Record<string, Buffer>, download: 'ok' | 'fail' = 'ok') {
+    return async (args: string[]): Promise<GhResult> => {
+      if (args[1] === 'list') return { code: 0, stdout: JSON.stringify([{ tagName: 'v1.1.1' }]), stderr: '' }
+      if (download === 'fail') return { code: 1, stdout: '', stderr: 'HTTP 404: Not Found' }
+      const dir = args[args.indexOf('--dir') + 1]
+      for (const [name, bytes] of Object.entries(assets)) writeFileSync(join(dir, name), bytes)
+      return { code: 0, stdout: '', stderr: '' }
+    }
+  }
+  const good = () => ({ 'cc-gigamon-ami-1.1.1.tgz': bundle(PKG('1.1.1')), 'cc-gigamon-ami-latest.tgz': bundle(PKG('1.1.1')) })
+  /** build/ holding the stale pair, as it did on 2026-09-25. */
+  function staleBuild() {
+    const buildDir = tempDir()
+    writeFileSync(join(buildDir, 'cc-gigamon-ami-latest.tgz'), 'the old latest')
+    writeFileSync(join(buildDir, 'cc-gigamon-ami-1.1.1.tgz'), 'the old 1.1.1')
+    return buildDir
+  }
+  const unchanged = (buildDir: string) => {
+    expect(readFileSync(join(buildDir, 'cc-gigamon-ami-latest.tgz'), 'utf8')).toBe('the old latest')
+    expect(readFileSync(join(buildDir, 'cc-gigamon-ami-1.1.1.tgz'), 'utf8')).toBe('the old 1.1.1')
+    expect(readdirSync(buildDir).sort()).toEqual(['cc-gigamon-ami-1.1.1.tgz', 'cc-gigamon-ami-latest.tgz'])
+  }
+  /** Real file calls, with one of them made to fail on one target, as a file held open on Windows does. */
+  function failing(op: 'copyFile' | 'rename', on: string): FetchFs {
+    const busy = (to: string) => {
+      if (to.endsWith(on)) throw Object.assign(new Error(`EBUSY: resource busy or locked, '${to}'`), { code: 'EBUSY' })
+    }
+    return {
+      copyFile: (from, to) => { if (op === 'copyFile') busy(to); copyFileSync(from, to) },
+      rename: (from, to) => { if (op === 'rename') busy(to); renameSync(from, to) },
+      rm: (p) => rmSync(p, { force: true }),
+    }
+  }
+
+  it('removes its temporary directory after a copy, after a refusal and after a failed download', async () => {
+    const made: string[] = []
+    const tmp = () => { const d = tempDir(); made.push(d); return d }
+    expect((await fetchRelease({ gh: gh(good()), buildDir: tempDir(), tmp })).code).toBe(0)
+    expect((await fetchRelease({ gh: gh({ ...good(), 'cc-gigamon-ami-latest.tgz': bundle(PKG('1.0.20')) }), buildDir: tempDir(), tmp })).code).toBe(1)
+    expect((await fetchRelease({ gh: gh(good(), 'fail'), buildDir: tempDir(), tmp })).code).toBe(1)
+    expect(made).toHaveLength(3)
+    for (const d of made) expect(existsSync(d), d).toBe(false)
+  })
+
+  it('says so, and leaves build/ as it was, when the download fails', async () => {
+    const buildDir = staleBuild()
+    const r = await fetchRelease({ gh: gh(good(), 'fail'), buildDir, tmp: tempDir })
+    expect(r.code).toBe(1)
+    expect(r.lines.join('\n')).toMatch(/gh release download v1\.1\.1 failed: HTTP 404[\s\S]*build\/ was not changed/)
+    unchanged(buildDir)
+  })
+
+  it('checks a -staging tag and writes nothing into build/, since its bundles carry the production version', async () => {
+    const buildDir = staleBuild()
+    const r = await fetchRelease({ tag: 'v1.1.1-staging', gh: gh(good()), buildDir, tmp: tempDir })
+    expect(r.code, r.lines.join('\n')).toBe(0)
+    expect(r.lines.join('\n')).toMatch(/staging build[\s\S]*build\/ was not changed/)
+    unchanged(buildDir)
+  })
+
+  it('leaves build/ as it was, with a line and no throw, when a copy into it fails', async () => {
+    for (const on of ['.cc-gigamon-ami-latest.tgz.part', '.cc-gigamon-ami-1.1.1.tgz.part']) {
+      const buildDir = staleBuild()
+      const r = await fetchRelease({ gh: gh(good()), buildDir, tmp: tempDir, fs: failing('copyFile', on) })
+      expect(r.code, on).toBe(1)
+      expect(r.lines.join('\n'), on).toMatch(/EBUSY[\s\S]*build\/ was not changed/)
+      unchanged(buildDir)
+    }
+  })
+
+  it('puts the tracked latest alias in first, and names what was and was not replaced when a rename fails', async () => {
+    const first = staleBuild()
+    const r1 = await fetchRelease({ gh: gh(good()), buildDir: first, tmp: tempDir, fs: failing('rename', `${join(first, 'cc-gigamon-ami-latest.tgz')}`) })
+    expect(r1.code).toBe(1)
+    expect(r1.lines.join('\n')).toMatch(/build\/ was not changed/)
+    unchanged(first)
+
+    const second = staleBuild()
+    const r2 = await fetchRelease({ gh: gh(good()), buildDir: second, tmp: tempDir, fs: failing('rename', `${join(second, 'cc-gigamon-ami-1.1.1.tgz')}`) })
+    expect(r2.code).toBe(1)
+    expect(r2.lines.join('\n')).toMatch(/now holds cc-gigamon-ami-latest\.tgz from v1\.1\.1, but NOT cc-gigamon-ami-1\.1\.1\.tgz/)
+    expect(readFileSync(join(second, 'cc-gigamon-ami-latest.tgz')).equals(good()['cc-gigamon-ami-latest.tgz'])).toBe(true)
+    expect(readdirSync(second).sort()).toEqual(['cc-gigamon-ami-1.1.1.tgz', 'cc-gigamon-ami-latest.tgz'])
   })
 })
 

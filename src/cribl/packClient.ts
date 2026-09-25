@@ -46,8 +46,11 @@
 //     `<ConfirmDialog diff>`, with GETs only. Pass the diff the person approved
 //     to `applyPackInput` (or a named wrapper's `approved`), which refuses and
 //     sends nothing when the live source no longer gives that same diff.
-//   * `commitAndDeployPack` requires `record`: ProvisionPanel's `recordCommit`,
-//     bound to the group and `PACK_COMMIT_KEY`. The stranded-commit repair
+//   * `commitAndDeployPack` requires `record`: the onboarding panel's
+//     `updateCommitMemory` (setupMemory.ts), bound to the group and
+//     `PACK_COMMIT_KEY`. *(Corrected 2026-09-25,
+//     `chore/release-fetch-and-doc-drift`: this named ProvisionPanel's
+//     `recordCommit`, which went with the Raw HTTP deploy.)* The stranded-commit repair
 //     deploys only a hash in that memory, so an unrecorded pack commit whose
 //     deploy failed could never be deployed by this app again. It also requires
 //     `wrote`, whether this run's pack write changed anything, because after a
@@ -827,7 +830,9 @@ export interface PackCommitOptions {
   wrote: boolean
   /**
    * Record a pack commit's hash in Guided Setup's commit memory under
-   * `(group, PACK_COMMIT_KEY)`: ProvisionPanel's `recordCommit`, bound. Called
+   * `(group, PACK_COMMIT_KEY)`: the onboarding panel's `updateCommitMemory`,
+   * bound (corrected 2026-09-25, `chore/release-fetch-and-doc-drift`: this
+   * named ProvisionPanel's `recordCommit`). Called
    * as soon as the commit step carries a hash — before the deploy, and also
    * when the deploy then fails — and awaited before this returns. Without it,
    * the stranded-commit repair refuses the pack's commit as "not made by this

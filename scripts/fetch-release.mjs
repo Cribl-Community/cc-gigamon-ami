@@ -14,7 +14,9 @@
 //   * with no `--tag`, picks the newest non-draft, non-prerelease release whose
 //     tag is `vX.Y.Z` (never a `gigamon-pack-v*` pack release, never
 //     `-staging`, never the moving `latest` tag). `--tag vX.Y.Z[-staging]`
-//     names one;
+//     names one, but a `-staging` tag is downloaded and checked only: its
+//     bundles carry the production version number, so written into build/ they
+//     could not be told from that version's release;
 //   * downloads both bundles with the gh CLI (`gh release download`, which
 //     uses the viewer's own gh login) into a fresh temporary directory, NOT
 //     into build/;
@@ -24,7 +26,13 @@
 //     another app, or carries a version other than the tag's (the tag less its
 //     `v` and any `-staging`, as release.yml computes it);
 //   * only when both pass does it copy them into build/, replacing
-//     `cc-gigamon-ami-latest.tgz` (the one tracked file there).
+//     `cc-gigamon-ami-latest.tgz` (the one tracked file there). Both are first
+//     copied beside their targets as `.<name>.part`; a failed copy removes the
+//     parts and leaves build/ as it was. Only then is each renamed into place,
+//     the tracked latest alias first; a rename that fails (a file held open on
+//     Windows) stops, and the lines name which files were and were not
+//     replaced. Every failure is a line and exit 1, never a thrown error, and
+//     the temporary directory is removed either way.
 //
 // NETWORK-DEPENDENT (GitHub only; it never talks to Cribl) and not part of
 // `npm test`. The unit tests (src/fetchRelease.test.ts) cover the pure parts —
@@ -33,7 +41,7 @@
 // request. This module runs nothing on import; the CLI file calls `main()`.
 
 import { execFile } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, mkdirSync, existsSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readFileSync, renameSync, rmSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -54,6 +62,9 @@ export function parseReleaseTag(tag) {
   if (!m) return null
   return { tag, version: `${m[1]}.${m[2]}.${m[3]}`, staging: m[4] !== undefined, rank: [Number(m[1]), Number(m[2]), Number(m[3])] }
 }
+
+/** The file system calls the copy into build/ makes; injectable for tests. */
+export const NODE_FS = { copyFile: copyFileSync, rename: renameSync, rm: (p) => rmSync(p, { force: true }) }
 
 /** The two asset names a release carries for a version. Pure. */
 export function assetNames(version) {
@@ -190,11 +201,12 @@ export function runGh(args) {
 
 /**
  * Resolve the tag, download both bundles to a temporary directory, check each,
- * and only then copy them into `buildDir`. `gh`, `buildDir` and `tmp` are
- * injectable, so tests make no request and touch no real build/.
+ * and only then copy them into `buildDir` (never for a `-staging` tag). `gh`,
+ * `buildDir`, `tmp` and `fs` are injectable, so tests make no request, touch no
+ * real build/, and can make a copy or rename fail.
  * @returns {Promise<{ code: number, lines: string[] }>}
  */
-export async function fetchRelease({ tag = null, gh = runGh, buildDir = BUILD_DIR, tmp = () => mkdtempSync(join(tmpdir(), 'release-fetch-')) } = {}) {
+export async function fetchRelease({ tag = null, gh = runGh, buildDir = BUILD_DIR, tmp = () => mkdtempSync(join(tmpdir(), 'release-fetch-')), fs = NODE_FS } = {}) {
   const lines = []
   let chosen = tag ? parseReleaseTag(tag) : null
   if (tag && !chosen) return { code: 2, lines: [`${tag} is not an app release tag`] }
@@ -242,13 +254,54 @@ export async function fetchRelease({ tag = null, gh = runGh, buildDir = BUILD_DI
     }
     if (!ok) return { code: 1, lines: [...lines, 'build/ was not changed'] }
 
-    mkdirSync(buildDir, { recursive: true })
-    for (const n of names) copyFileSync(join(dir, n), join(buildDir, n))
-    lines.push(`wrote ${names.map((n) => join(buildDir, n)).join(' and ')} from ${chosen.tag}`)
-    return { code: 0, lines }
+    if (chosen.staging) {
+      lines.push(`${chosen.tag} is a staging build: its bundles carry ${chosen.version}, the production version number, so they were checked only; build/ was not changed`)
+      return { code: 0, lines }
+    }
+    const placed = placeInBuild({ dir, buildDir, names, fs, tag: chosen.tag })
+    return { code: placed.code, lines: [...lines, ...placed.lines] }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    // A temporary file still held open must not turn the answer into a throw.
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* left in the OS temp directory */ }
   }
+}
+
+/**
+ * Copy the checked bundles into build/: each to a `.part` beside its target,
+ * then each renamed into place, the tracked latest alias first. Never throws.
+ * @returns {{ code: number, lines: string[] }}
+ */
+function placeInBuild({ dir, buildDir, names, fs, tag }) {
+  const out = []
+  const part = (n) => join(buildDir, `.${n}.part`)
+  // The latest alias is the one tracked file, so it goes in first.
+  const order = [...names].sort((a, b) => Number(b.endsWith('-latest.tgz')) - Number(a.endsWith('-latest.tgz')))
+  const clearParts = () => { for (const n of order) try { fs.rm(part(n)) } catch { /* reported by the caller's line */ } }
+  try {
+    mkdirSync(buildDir, { recursive: true })
+    for (const n of order) fs.copyFile(join(dir, n), part(n))
+  } catch (e) {
+    clearParts()
+    out.push(`could not copy into ${buildDir}: ${e.message}`, 'build/ was not changed')
+    return { code: 1, lines: out }
+  }
+  const replaced = []
+  for (const n of order) {
+    try {
+      fs.rename(part(n), join(buildDir, n))
+      replaced.push(n)
+    } catch (e) {
+      clearParts()
+      const rest = order.filter((x) => !replaced.includes(x))
+      out.push(`could not put ${n} into ${buildDir}: ${e.message}`)
+      out.push(replaced.length === 0
+        ? 'build/ was not changed'
+        : `build/ now holds ${replaced.join(' and ')} from ${tag}, but NOT ${rest.join(' and ')}; run the fetch again once the file is free`)
+      return { code: 1, lines: out }
+    }
+  }
+  out.push(`wrote ${order.map((n) => join(buildDir, n)).join(' and ')} from ${tag}`)
+  return { code: 0, lines: out }
 }
 
 export async function main() {
