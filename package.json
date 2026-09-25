@@ -5,7 +5,7 @@
   "type": "module",
   "displayName": "Gigamon Network Observability (preview)",
   "description": "PREVIEW: Gigamon Network Observability: Gigamon AMI ingest, storage, visualizations and workflows.",
-  "author": "James Pederson - jpederson@cribl.io",
+  "author": "Gigamon Alliances - alliances@gigamon.com",
   "license": "Apache-2.0",
   "tags": {
     "product": [
