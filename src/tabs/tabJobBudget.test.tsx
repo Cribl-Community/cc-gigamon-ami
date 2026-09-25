@@ -11,7 +11,7 @@
 // artifact path cannot shape, a stub-shaped change in read.ts) still renders the
 // same numbers, a little later, and every other test stays green.
 //
-// So every tab in App.tsx's TABS is rendered here, inside the real <App/>, in
+// So every tab in the tab bar's TABS (src/app/tabs.tsx) is rendered here, inside the real <App/>, in
 // Snapshot mode (the default), against ONE fetch stub that looks like a healthy
 // workspace:
 //
@@ -93,6 +93,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { DashboardProvider } from '../app/DashboardContext'
+import { TABS } from '../app/tabs'
 import { MANIFEST, accelSavedSearch, columnsOf, resolvedManifest, type AccelEntry, type AccelId, type AccelSavedSearch } from '../cribl/accel/manifest'
 import { accelServing, forgetAccelServing, loadAccelServing } from '../cribl/accel/serving'
 import { lakeWindow } from '../queries/lakeWindow'
@@ -483,6 +484,19 @@ const settle = async (turns: number) => {
 // `forgetLakeFacts`), and a setup file's hooks run before this file's own
 // beforeEach; they are not repeated here. What that hook does not own is reset
 // below.
+
+// THE TAB MODULES. Every tab but the landing one is a lazy chunk
+// (src/app/tabs.tsx), so rendering one is a real module import — transformed on
+// first use, inside the test that renders it. Under a busy full-suite run that
+// import alone has taken longer than a test's 5 s, and when it outlasts the
+// turn count in `renderAt` instead, the tab mounts after the count is read.
+// Load every tab here, once, through the tab bar's own `preload`, so each test
+// times the tab's reads and not its module. (`preload` swallows a failed
+// import; a tab that cannot load still fails its test, on the render.)
+beforeAll(async () => {
+  await Promise.all(TABS.map((t) => t.preload?.()))
+}, 60_000)
+
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -551,9 +565,9 @@ function identify(tab: string, submitted: string): string {
 // ── The gate ────────────────────────────────────────────────────────────────
 
 describe('the job budget covers every tab', () => {
-  it('has one row per tab in App’s TABS, and no row for a tab that is gone', async () => {
-    // TABS is not exported; the tab bar is rendered from it, so its links ARE
-    // the list. A tab added without a budget row fails here, before anything
+  it('has one row per tab in the tab bar’s TABS, and no row for a tab that is gone', async () => {
+    // The tab bar is rendered from TABS (src/app/tabs.tsx), so its links ARE
+    // the list, as the viewer sees it. A tab added without a budget row fails here, before anything
     // else can quietly skip it.
     await renderAt('/reference')
     const routes = [...container.querySelectorAll('nav.tab-bar a')].map((a) => a.getAttribute('href'))

@@ -5,7 +5,8 @@
 // tab → schedules from each panel's `queryId` prefix. A test that only re-ran
 // that derivation would pass on any prefix table at all, so this one reads the
 // tab components' SOURCE for the `gno_` ids they actually name and requires the
-// two to agree in both directions, and reads App.tsx for each route and label.
+// two to agree in both directions, and reads src/app/tabs.tsx (the tab bar's
+// TABS) for each route and label.
 // A panel moved to another tab, or a schedule a tab reads that the manifest
 // attributes elsewhere, fails here.
 //
@@ -16,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { TABS } from '../../app/tabs'
 import { rowAction, toggleNothingWords } from '../../components/accelPanelCopy'
 import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from '../../components/sampleDataCopy'
 import { MANIFEST, accelEntry, type AccelId } from './manifest'
@@ -43,13 +45,20 @@ const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8')
 const withoutComments = (text: string) =>
   text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '').replace(/\s\/\/[^'"`\n]*$/gm, '')
 
-/** App.tsx's TABS: route, label and the component, and the component's file. */
+/** The tab bar's TABS (src/app/tabs.tsx): route, label and the component, and
+ *  the component's file. A tab is either a static import (the landing tab) or
+ *  a `lazyTab(() => import('../tabs/X'), …)`; the landing route is the
+ *  LANDING_ROUTE constant, not a literal. Route and label are read by regex
+ *  from source because the file mapping has to be — and the "reads every tab of
+ *  the exported TABS" test below is what stops that regex going quietly empty. */
 function appTabs(): { route: string; label: string; file: string }[] {
-  const app = read('App.tsx')
+  const src = read('app/tabs.tsx')
   const files = new Map<string, string>()
-  for (const m of app.matchAll(/import \{ (\w+) \} from '\.\/tabs\/(\w+)'/g)) files.set(m[1], `tabs/${m[2]}.tsx`)
-  return [...app.matchAll(/\{ to: '([^']+)', label: '([^']+)', el: <(\w+) \/> \}/g)].map((m) => ({
-    route: m[1],
+  for (const m of src.matchAll(/import \{ (\w+) \} from '\.\.\/tabs\/(\w+)'/g)) files.set(m[1], `tabs/${m[2]}.tsx`)
+  for (const m of src.matchAll(/const (\w+) = lazyTab\(\(\) => import\('\.\.\/tabs\/(\w+)'\)/g)) files.set(m[1], `tabs/${m[2]}.tsx`)
+  const landing = /export const LANDING_ROUTE = '([^']+)'/.exec(src)?.[1] ?? ''
+  return [...src.matchAll(/\{ to: (?:'([^']+)'|LANDING_ROUTE), label: '([^']+)', el: <(\w+) \/>/g)].map((m) => ({
+    route: m[1] ?? landing,
     label: m[2],
     file: files.get(m[3]) ?? '',
   }))
@@ -109,10 +118,18 @@ describe('which tab a schedule serves', () => {
     expect(ACCEL_TABS.filter((t) => schedulesOfTab(t.key).length === 0).map((t) => t.key)).toEqual([])
   })
 
+  it('reads every tab of the exported TABS from src/app/tabs.tsx, each with its component file', () => {
+    // Without this, a TABS rewrite the regex does not match leaves appTabs()
+    // empty, and "no tab left without a switch" below passes against nothing.
+    const parsed = appTabs()
+    expect(parsed.map((a) => ({ route: a.route, label: a.label }))).toEqual(TABS.map((t) => ({ route: t.to, label: t.label })))
+    expect(parsed.filter((a) => a.file === '').map((a) => a.route)).toEqual([])
+  })
+
   it('uses the route and the label the tab bar uses', () => {
     const app = appTabs()
     for (const t of ACCEL_TABS) {
-      expect(app.find((a) => a.route === t.route), `${t.route} is not a route in App.tsx`).toMatchObject({ route: t.route, label: t.label })
+      expect(app.find((a) => a.route === t.route), `${t.route} is not a route in src/app/tabs.tsx`).toMatchObject({ route: t.route, label: t.label })
     }
   })
 

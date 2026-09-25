@@ -19,9 +19,6 @@
 // can draw — every job here answers with no rows, so each tab shows its empty
 // state. That the pack's samples light every tab is packSamples.test.ts's job.
 
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
@@ -37,10 +34,10 @@ import { resetSnapshotCensus } from '../components/snapshotCensus'
 import { SAMPLE_TITLE } from '../components/sampleDataCopy'
 import { REAL_DATA_PROBE_QUERY } from '../queries/datasets'
 import { LAKE_HELD_QUERY } from '../queries/dataFlow'
+import { TABS } from '../app/tabs'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-/** Every route in App.tsx's TABS, read from the source so a new tab is covered the day it lands. */
-const ROUTES = [...readFileSync(join(HERE, '..', 'App.tsx'), 'utf8').matchAll(/\{ to: '(\/[a-z-]+)', label:/g)].map((m) => m[1])
+/** Every route in the tab bar's TABS (src/app/tabs.tsx), so a new tab is covered the day it lands. */
+const ROUTES = TABS.map((t) => t.to)
 
 const NOW = Date.now()
 const runId = (id: string) => `${id}.${NOW - 60_000}.aB3dE9`

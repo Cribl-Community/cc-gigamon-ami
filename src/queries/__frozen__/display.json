@@ -19,7 +19,7 @@
     "prose": 19,
     "modules": 201,
     "catalogs": 14,
-    "states": 35,
+    "states": 36,
     "passthrough": 3,
     "unbound": 22
   },
@@ -84,6 +84,9 @@
     }
   },
   "states": {
+    "src/App.tsx": {
+      "pendingTo": "null"
+    },
     "src/components/JobWatchdog.tsx": {
       "announcement": "''",
       "confirming": "null"

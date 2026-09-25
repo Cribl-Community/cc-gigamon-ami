@@ -14,7 +14,7 @@
 // manifest. A new entry needs no edit here; a new tab slug with no row here
 // fails tabs.test.ts, which also reads every src/tabs/*.tsx for the `gno_` ids
 // it names and asserts the derived mapping agrees with the code in both
-// directions, and reads App.tsx for each route and label.
+// directions, and reads src/app/tabs.tsx for each route and label.
 //
 // ── THE RULE ────────────────────────────────────────────────────────────────
 // A schedule is enabled iff the master switch is on AND at least one tab it
@@ -74,9 +74,9 @@ import type { AccelRow, AccelState } from './provision'
 export interface AccelTab {
   /** The route's last segment, which is also the key. */
   readonly key: AccelTabKey
-  /** The route in src/App.tsx's TABS. Checked against that file by the test. */
+  /** The route in src/app/tabs.tsx's TABS. Checked against that file by the test. */
   readonly route: string
-  /** The label in src/App.tsx's TABS, so the switch says what the tab bar says. */
+  /** The label in src/app/tabs.tsx's TABS, so the switch says what the tab bar says. */
   readonly label: string
   /** The `queryId` prefix every panel on this tab uses in the manifest. */
   readonly prefix: string

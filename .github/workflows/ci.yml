@@ -45,3 +45,12 @@ jobs:
       - run: npm test --if-present
       # The onboarding pack: samples reproduce, and the pack validates.
       - run: npm run pack:check
+      # The asset-size budget: the JS a first page load downloads, the largest
+      # lazy chunk, and the total, against asset-budget.json. Reads the dist/
+      # and chunk graph the build step wrote, so it must come after the build.
+      # It comes after the tests and the pack check too: a failed step skips
+      # every step below it, and an over-budget PR must still show whether its
+      # tests pass and its pack validates.
+      # No `if:` and no `continue-on-error` on this step — src/assetBudget.test.ts
+      # reads this file as steps and fails if either appears.
+      - run: npm run assets:budget

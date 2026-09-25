@@ -1,0 +1,33 @@
+{
+  "about": "Limits for scripts/asset-budget.mjs (npm run assets:budget), in bytes of JavaScript as written to dist/. initialRaw and initialGzip are about 7% above what feat/route-code-splitting measured at e728bb7 on 2026-09-24, and were left alone at both merges of main since, because they still pass: at the merge of main 9108891 initial JS was 978854 B raw (+30164 over the previous merge, mainly main's sample-data and saved-search serving holds, which main.tsx starts before first paint), 2.6% under its limit. largestLazyRaw and totalRaw are about 7% above the 9108891 merge's own measurement. The chunk is Guided Setup, and it grew 63751 B raw (163515 -> 227266) when main's pack onboarding landed in it: OnboardingPanel, the onboarding plan and run, src/cribl/packClient.ts and src/cribl/packUpgrade.ts, which were unreachable at the previous merge. The previous note predicted this raise. Total JS grew by the same code (+87516 B, 1448063 -> 1535579). Raising a limit is allowed: say what grew and why in the commit.",
+  "measured": {
+    "commit": "merge of main 9108891 into feat/route-code-splitting",
+    "date": "2026-09-25",
+    "initialRaw": 978854,
+    "initialGzip": 300805,
+    "entryRaw": 835590,
+    "entryGzip": 254464,
+    "largestLazyRaw": 227266,
+    "largestLazyFile": "GuidedSetup",
+    "totalRaw": 1535579,
+    "totalChunks": 35
+  },
+  "budgets": {
+    "initialRaw": 1005000,
+    "initialGzip": 309000,
+    "largestLazyRaw": 243000,
+    "totalRaw": 1643000
+  },
+  "measuredBefore": {
+    "commit": "merge of main 0e7048a into feat/route-code-splitting",
+    "date": "2026-09-24",
+    "initialRaw": 948690,
+    "initialGzip": 291607,
+    "entryRaw": 837382,
+    "entryGzip": 255049,
+    "largestLazyRaw": 163515,
+    "largestLazyFile": "GuidedSetup",
+    "totalRaw": 1448063,
+    "totalChunks": 36
+  }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AUTO_REFRESH, TIME_RANGES, WITHHELD_REFRESH_SECONDS, useDashboard } from './app/DashboardContext'
 import { APP_VERSION, IS_INSTALLED } from './cribl/config'
@@ -16,37 +16,8 @@ import { ModeToggle } from './components/ModeToggle'
 import { SnapshotPicker } from './components/SnapshotPicker'
 import { useDataMode, useSnapshotWithheld } from './cribl/dataMode'
 import { JobWatchdogIndicator } from './components/JobWatchdog'
-import { Findings } from './tabs/Findings'
-import { Security } from './tabs/Security'
-import { WebApiHealth } from './tabs/WebApiHealth'
-import { FlowMap } from './tabs/FlowMap'
-import { CapacityTopTalkers } from './tabs/CapacityTopTalkers'
-import { TcpHealth } from './tabs/TcpHealth'
-import { DnsHealth } from './tabs/DnsHealth'
-import { TlsPosture } from './tabs/TlsPosture'
-import { PqcReadiness } from './tabs/PqcReadiness'
-import { ShadowAi } from './tabs/ShadowAi'
-import { DataFlow } from './tabs/DataFlow'
-import { FieldExplorer } from './tabs/FieldExplorer'
-import { AmiReference } from './tabs/AmiReference'
-import { GuidedSetup } from './tabs/GuidedSetup'
-
-const TABS = [
-  { to: '/findings', label: 'Findings', el: <Findings /> },
-  { to: '/security', label: 'Security', el: <Security /> },
-  { to: '/flow-map', label: 'Flow Map', el: <FlowMap /> },
-  { to: '/capacity', label: 'Capacity & Top Talkers', el: <CapacityTopTalkers /> },
-  { to: '/tcp-health', label: 'TCP Health', el: <TcpHealth /> },
-  { to: '/dns-health', label: 'DNS Health', el: <DnsHealth /> },
-  { to: '/web-api', label: 'Web & API', el: <WebApiHealth /> },
-  { to: '/tls-posture', label: 'TLS Posture', el: <TlsPosture /> },
-  { to: '/pqc', label: 'PQC Readiness', el: <PqcReadiness /> },
-  { to: '/ai-saas', label: 'Shadow AI', el: <ShadowAi /> },
-  { to: '/data-flow', label: 'Data Flow', el: <DataFlow /> },
-  { to: '/fields', label: 'Field Explorer', el: <FieldExplorer /> },
-  { to: '/reference', label: 'AMI Reference', el: <AmiReference /> },
-  { to: '/setup', label: 'Guided Setup', el: <GuidedSetup /> },
-]
+import { LANDING_ROUTE, TABS } from './app/tabs'
+import { TabLoading } from './components/TabLoading'
 
 function RefreshIcon() {
   return (
@@ -310,14 +281,59 @@ function Header({ tabName }: { tabName: string }) {
   )
 }
 
+/**
+ * THE PENDING TAB, AND WHY THE TAB BAR TRACKS IT ITSELF.
+ *
+ * `BrowserRouter` runs every navigation inside `startTransition`. On a first
+ * click to a lazy tab that means React keeps the old tab on screen and never
+ * shows `<TabLoading>` — correct for a fast chunk, and for a slow one nothing
+ * on screen changes until it arrives, which reads as a dead click.
+ * `useNavigation()` would answer this, but only under a data router; this app
+ * uses `BrowserRouter`. So the click itself records which tab it asked for, in
+ * an URGENT state update (the handler runs outside the router's transition),
+ * and the record is cleared the moment the router commits a NEW LOCATION —
+ * whichever tab that turns out to be, so a superseded click can never leave a
+ * spinner behind. Keyed on `location.key`, not the pathname: a click on the
+ * tab already open supersedes the pending one without changing the pathname,
+ * and a pathname-keyed clear left the first tab's spinner up for good.
+ *
+ * Preloading is the other half: hovering or focusing a link starts its chunk,
+ * so by the click it is usually in flight or done and the pending state lasts
+ * a frame.
+ */
 function TabBar() {
+  const { pathname, key } = useLocation()
+  const [pendingTo, setPendingTo] = useState<string | null>(null)
+  // Cleared by the commit of ANY navigation, not only the one asked for —
+  // including one back to the same pathname, which gets a new key.
+  useEffect(() => {
+    setPendingTo(null)
+  }, [key])
+  const pendingLabel = TABS.find((t) => t.to === pendingTo)?.label
   return (
     <nav className="tab-bar">
-      {TABS.map((t) => (
-        <NavLink key={t.to} to={t.to} className={({ isActive }) => `tab ${isActive ? 'tab-active' : ''}`}>
-          {t.label}
-        </NavLink>
-      ))}
+      {TABS.map((t) => {
+        const pending = t.to === pendingTo
+        return (
+          <NavLink
+            key={t.to}
+            to={t.to}
+            className={({ isActive }) => `tab ${isActive ? 'tab-active' : ''} ${pending ? 'tab-pending' : ''}`}
+            aria-busy={pending || undefined}
+            onPointerEnter={t.preload}
+            onFocus={t.preload}
+            onClick={(e) => {
+              // A modified click opens a new browser tab; this page does not navigate.
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+              if (!pathname.startsWith(t.to)) setPendingTo(t.to)
+            }}
+          >
+            {t.label}
+            {pending && <span className="spinner spinner-sm" aria-hidden />}
+          </NavLink>
+        )
+      })}
+      <span className="sr-only" role="status">{pendingLabel ? `Loading ${pendingLabel}…` : ''}</span>
     </nav>
   )
 }
@@ -336,8 +352,15 @@ export default function App() {
         <AppBanners />
         <main className="app-main">
           <ErrorBoundary resetKey={location.pathname}>
+            {/* Both inside <main>, so a tab whose chunk fails to load lands
+                on the boundary's Reload message (app/lazyTab.ts) with the
+                header and tab bar still standing — that is what
+                appShell.test.tsx holds. Their order relative to each other
+                changes nothing observable: a rejected lazy import throws
+                past Suspense to the nearest boundary either way. */}
+            <Suspense fallback={<TabLoading />}>
             <Routes>
-              <Route path="/" element={<Navigate to="/flow-map" replace />} />
+              <Route path="/" element={<Navigate to={LANDING_ROUTE} replace />} />
               {/* The Flow Map was called the Service Map until 2026-09-21, and
                   /service-map was the DEFAULT route — so it is what every
                   bookmark, every guided-tour anchor and every link anybody has
@@ -346,12 +369,13 @@ export default function App() {
                   the default route ever moves, an old Service Map link would
                   silently land on whatever became the default instead of on the
                   tab it names. This says where it goes, and why. */}
-              <Route path="/service-map" element={<Navigate to="/flow-map" replace />} />
+              <Route path="/service-map" element={<Navigate to={LANDING_ROUTE} replace />} />
               {TABS.map((t) => (
                 <Route key={t.to} path={t.to} element={t.el} />
               ))}
-              <Route path="*" element={<Navigate to="/flow-map" replace />} />
+              <Route path="*" element={<Navigate to={LANDING_ROUTE} replace />} />
             </Routes>
+            </Suspense>
           </ErrorBoundary>
         </main>
         <TourPicker />

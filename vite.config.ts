@@ -5,6 +5,9 @@ import { join } from 'path'
 import react from '@vitejs/plugin-react'
 // @ts-ignore
 import { servePackageTgz } from './scripts/pkgutil.mjs'
+// Writes the chunk graph the asset-size budget reads (npm run assets:budget).
+// Build-only, and it writes outside dist/ — see scripts/asset-budget.mjs.
+import { chunkGraphPlugin } from './scripts/asset-budget.mjs'
 import { createInitTracker, injectedInitSrc } from './scripts/devInitScript.ts'
 
 // App version from package.json, injected as a build-time constant so the UI
@@ -164,7 +167,7 @@ const injectScriptFromQueryPlugin = () => {
 };
 
 export default defineConfig({
-  plugins: [react(), packageEndpointPlugin(), injectScriptFromQueryPlugin()],
+  plugins: [react(), packageEndpointPlugin(), injectScriptFromQueryPlugin(), chunkGraphPlugin()],
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
