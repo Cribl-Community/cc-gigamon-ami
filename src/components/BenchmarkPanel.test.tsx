@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { BenchmarkPanel } from './BenchmarkPanel'
 import * as copy from './benchmarkCopy'
-import { BENCH_LEAD, BENCH_LEAD_TIP, FIFTEEN_LABEL, ONE_LABEL, PARQUET_CHOICE, STOPPED_NOTE, STOPPED_VERDICT } from './benchmarkCopy'
+import { BENCH_LEAD, BENCH_LEAD_TIP, FIFTEEN_LABEL, ONE_LABEL, PARQUET_CHOICE, STOPPED_NOTE, STOPPED_VERDICT, windowWords } from './benchmarkCopy'
 import { BENCH_QUERIES } from '../queries/benchmark'
 import { resetDenials } from '../cribl/authz'
 import { PARQUET_DATASET } from '../cribl/benchmarkPlan'
@@ -46,7 +46,7 @@ interface Workspace {
   /** What the work meter says. */
   work?: number
   /** While `on`, every job reports `running`: a stage caught mid-run. */
-  hold?: { on: boolean }
+  hold?: { readonly on: boolean }
   /** The status a job submit answers with (403: Cribl refuses it). */
   submitStatus?: number
   /**
@@ -461,6 +461,8 @@ describe('when Cribl refuses the search submit', () => {
 describe('the landing check before the 15-minute stage', () => {
   const fifteenRuns = () => sentBodies().filter((b) => !isLanding(b) && b.latest - b.earliest === 900)
   const section = () => (document.body.querySelector('section[aria-label="15-minute benchmark"]')?.textContent ?? '').replace(/\s+/g, ' ')
+  /** The 15-minute section's heading window, or null when the heading shows none. */
+  const headingWindow = () => document.body.querySelector('section[aria-label="15-minute benchmark"] .bm-window')?.firstChild?.textContent ?? null
 
   it('reads each store before the stage, as written, reuse off, and keeps the usual window when both cover it', async () => {
     stub({ pqSize: 5e8 })
@@ -482,8 +484,10 @@ describe('the landing check before the 15-minute stage', () => {
     // The usual window: whole minutes, ending ten minutes ago.
     const usualEnd = Math.floor(t0 / 60_000) * 60 - 600
     for (const b of fifteenRuns()) expect(Math.abs(b.latest - usualEnd)).toBeLessThanOrEqual(60)
-    expect(section()).toContain('Every store holds the whole window, so it was not moved.')
+    expect(section()).toContain('Every store’s newest record is late enough that the window was not moved.')
     expect(section()).toMatch(/Verdict:/)
+    const [end] = fifteenRuns().map((b) => b.latest)
+    expect(headingWindow()).toBe(windowWords({ earliest: end - 900, latest: end }))
   })
 
   it('moves the window back, in whole minutes, when the Parquet copy is behind', async () => {
@@ -494,15 +498,21 @@ describe('the landing check before the 15-minute stage', () => {
     await confirmStage(ONE_LABEL)
     const t0 = Math.floor(Date.now() / 1000)
     await confirmStage(FIFTEEN_LABEL)
+    // The stub dates the newest record when it reads results, between t0 and
+    // t1: the upper bound is taken after the stage, or a minute boundary
+    // crossed in between would fail a correct window.
+    const t1 = Math.floor(Date.now() / 1000)
     const runs = fifteenRuns()
     expect(runs).toHaveLength(24)
     const ends = new Set(runs.map((b) => b.latest))
     expect(ends.size).toBe(1)
     const [end] = [...ends]
     expect(end % 60).toBe(0)
-    expect(end).toBeLessThanOrEqual(t0 - 18 * 60 - 300)
+    expect(end).toBeLessThanOrEqual(t1 - 18 * 60 - 300)
     expect(end).toBeGreaterThan(t0 - 18 * 60 - 300 - 120)
-    expect(section()).toMatch(/The window was moved back \d+ minutes, so that every store holds all of it\./)
+    expect(section()).toMatch(/The window was moved back \d+ minutes, to end where every store’s newest record, less 5 minutes, allows\./)
+    // The heading shows the window the runs read, not the usual one.
+    expect(headingWindow()).toBe(windowWords({ earliest: end - 900, latest: end }))
     expect(section()).toContain(`${PARQUET_DATASET}’s newest record is from`)
   })
 
@@ -518,6 +528,8 @@ describe('the landing check before the 15-minute stage', () => {
     expect(section()).toContain(`${PARQUET_DATASET}’s newest record is from`)
     expect(section()).toContain('more than 15 minutes before the window’s usual end')
     expect(section()).toContain('The 15-minute stage ran nothing else')
+    // No window was measured, so the heading names none.
+    expect(headingWindow()).toBeNull()
     // A refusal is not a stop, and names no verdict.
     expect(bodyText()).not.toContain(STOPPED_VERDICT)
     expect(bodyText()).not.toMatch(/Verdict:/)
@@ -530,6 +542,49 @@ describe('the landing check before the 15-minute stage', () => {
     await confirmStage(FIFTEEN_LABEL)
     expect(fifteenRuns()).toEqual([])
     expect(section()).toContain(`Nothing has landed in ${PARQUET_DATASET} since`)
+  })
+
+  it('reads no further store once one already refuses the stage — each check is billed', async () => {
+    stub({ pqSize: 5e8, landedAgo: { json: null } })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    const before = submits().length
+    await confirmStage(FIFTEEN_LABEL)
+    // Only the JSON check went out: nothing the Parquet copy says could change the outcome.
+    expect(submits().length - before).toBe(1)
+    expect(sentBodies().filter(isLanding).map((b) => b.query)).toEqual([expect.stringContaining('dataset="gigamon_ami" |')])
+    expect(fifteenRuns()).toEqual([])
+    expect(section()).toContain('Nothing has landed in gigamon_ami since')
+    expect(section()).toContain(`${PARQUET_DATASET} was not checked`)
+    expect(bodyText()).not.toContain(STOPPED_VERDICT)
+  })
+
+  it('stops at a refused landing-check submit and closes the gate, naming the call', async () => {
+    const ws: Workspace = { pqSize: 5e8 }
+    stub(ws)
+    await mount()
+    await confirmStage(ONE_LABEL)
+    ws.submitStatus = 403
+    const before = submits().length
+    await confirmStage(FIFTEEN_LABEL)
+    // Exactly one landing submit: the next store's would be refused the same way.
+    expect(submits().length - before).toBe(1)
+    expect(sentBodies().filter(isLanding)).toHaveLength(1)
+    expect(fifteenRuns()).toEqual([])
+    expect(bodyText()).not.toContain(STOPPED_VERDICT)
+    // Both outer triggers are closed, announced as unavailable, and point at the refusal.
+    const why = 'Cribl refused POST /m/default_search/search/jobs (HTTP 403)'
+    expect(bodyText()).toContain(why)
+    for (const label of [ONE_LABEL, FIFTEEN_LABEL]) {
+      const b = buttonNamed(label)
+      expect(b, label).toBeTruthy()
+      expect(b!.getAttribute('aria-disabled')).toBe('true')
+      const ids = (b!.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
+      const described = ids.map((id) => document.getElementById(id)?.textContent ?? '').join(' ')
+      expect(described).toContain(why)
+      await press(b)
+      expect(dialog()).toBeNull()
+    }
   })
 
   it('checks the JSON dataset alone when the Parquet copy is not offered', async () => {
@@ -560,6 +615,29 @@ describe('the landing check before the 15-minute stage', () => {
     expect(fifteenRuns()).toEqual([])
     expect(bodyText()).toContain(STOPPED_VERDICT)
     expect(document.body.querySelector('.sl-note-warn[role="status"]')).toBeNull()
+  })
+
+  it('Stop part way through the check claims no window: it says the check was stopped', async () => {
+    // The JSON check completes; every job after the Parquet check's submit stays running.
+    const hold = { get on() { return sentBodies().filter(isLanding).length >= 2 } }
+    stub({ pqSize: 5e8, hold })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    await press(buttonNamed(FIFTEEN_LABEL))
+    await press(confirmButton())
+    const checkingPq = `Checking when the newest record landed in ${PARQUET_DATASET}…`
+    for (let i = 0; i < 200 && !bodyText().includes(checkingPq); i++) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 5)) })
+    }
+    expect(bodyText()).toContain(checkingPq)
+    await press(buttonNamed('Stop'))
+    await settle()
+    expect(fifteenRuns()).toEqual([])
+    expect(section()).toContain('gigamon_ami’s newest record is from')
+    expect(section()).toContain('The landing check was stopped before every store was checked, so no window was chosen.')
+    expect(section()).not.toMatch(/window was (not )?moved|moved back/)
+    expect(headingWindow()).toBeNull()
+    expect(bodyText()).toContain(STOPPED_VERDICT)
   })
 
   it('sends nothing for the landing check until the 15-minute stage is confirmed', async () => {

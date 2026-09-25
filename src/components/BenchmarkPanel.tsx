@@ -57,6 +57,7 @@ import {
   chooseWindow,
   landingCostLine,
   landingReadWindow,
+  readingRefuses,
   landingWords,
   oneMinuteCostLine,
   parquetState,
@@ -259,11 +260,11 @@ export function BenchmarkPanel() {
     try {
       if (stage === 'fifteen') {
         // The landing check: when each store's newest record landed, so the
-        // window ends where every store holds all of it — or the stage says
+        // window ends no later than every store's newest record allows — or the stage says
         // why it cannot, and runs nothing else (benchmarkPlan.ts).
         const read = landingReadWindow(nowMs)
         const readings: LagReading[] = []
-        record.landing = { read, readings: [], shiftedSeconds: 0, refusal: null }
+        record.landing = { read, readings: [], shiftedSeconds: 0, refusal: null, decided: false }
         for (const t of stores) {
           setProgress((p) => (p ? { ...p, checking: t.dataset } : p))
           const r = await readLanding(t, read, ctl.signal)
@@ -274,9 +275,12 @@ export function BenchmarkPanel() {
             latchDenial('benchmark.run', { ...r.refused, seq: denialMark(), origin: 'click' })
             break
           }
+          // This store alone already refuses the stage: the stores after it
+          // cannot change that, and each check is billed.
+          if (readingRefuses(r, nowMs)) break
         }
         const choice = chooseWindow(nowMs, readings.length === stores.length ? readings : [...readings, ...unread(stores, readings)])
-        record.landing = { read, readings: [...readings], shiftedSeconds: choice.shiftedSeconds, refusal: choice.refusal }
+        record.landing = { read, readings: [...readings], shiftedSeconds: choice.shiftedSeconds, refusal: choice.refusal, decided: true }
         if (choice.refusal) return
         window = choice.window
         record.window = window
@@ -461,11 +465,11 @@ export function BenchmarkPanel() {
   )
 }
 
-/** A stand-in for each store the landing check never reached (it stopped at a refusal). */
+/** A stand-in for each store the landing check never reached (it stopped at a refusal, or at a store that already refused). */
 function unread(stores: readonly BenchTarget[], readings: readonly LagReading[]): LagReading[] {
   return stores
     .filter((t) => !readings.some((r) => r.targetId === t.id))
-    .map((t) => ({ targetId: t.id, dataset: t.dataset, query: '', jobId: null, newest: null, count: null, cpuSeconds: null, error: 'it was not checked' }))
+    .map((t) => ({ targetId: t.id, dataset: t.dataset, query: '', jobId: null, newest: null, count: null, cpuSeconds: null, error: 'it was not checked', unchecked: true as const }))
 }
 
 /** The landing check's searches, one per store, ahead of the stage's own. */
@@ -580,16 +584,22 @@ function BenchTable({ bench }: { bench: StageRecord }) {
   const stopped = stageStopped(bench)
   const running = !bench.ended
   const reports = benchReport(bench)
-  const landing = bench.landing ? landingWords(bench.landing) : []
+  const landing = bench.landing ? landingWords(bench.landing, bench.ended) : []
   const refusal = bench.landing?.refusal ?? null
+  // The window is shown only once it is the one the runs read: not while the
+  // landing check is still choosing it, not after Stop ended the check, and
+  // not when the check refused — then nothing was measured over any window.
+  const windowChosen = !bench.landing || (bench.landing.decided && !refusal)
   return (
     <section className="bm-stage" aria-label={FIFTEEN_HEADING}>
       <h4 className="bm-h">
         {FIFTEEN_HEADING}
-        <span className="bm-window">
-          {windowWords(bench.window)}
-          <InfoTip text={FIFTEEN_WINDOW_TIP} />
-        </span>
+        {windowChosen && (
+          <span className="bm-window">
+            {windowWords(bench.window)}
+            <InfoTip text={FIFTEEN_WINDOW_TIP} />
+          </span>
+        )}
       </h4>
       {landing.map((line) => (
         <p key={line} className="gs-action-note">{line}</p>

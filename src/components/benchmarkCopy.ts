@@ -55,10 +55,11 @@ export const WINDOW_TIP =
   'of a stage reads the same window.'
 
 export const FIFTEEN_WINDOW_TIP =
-  'An absolute window on whole minutes, ending ten minutes ago — or earlier, when the landing check found a store had ' +
-  'not yet landed everything up to then. Before the stage, each store is asked when its newest record is from; the ' +
-  'window ends no later than five minutes before the oldest of those, so files still being written are left out, and ' +
-  'it moves back at most 15 minutes. Every run of the stage reads the same window.'
+  'An absolute window on whole minutes, ending ten minutes ago — or earlier, when a store’s newest record is earlier ' +
+  'than that. Before the stage, each store is asked when its newest record is from; the window ends no later than ' +
+  'five minutes before the oldest of those, so files still being written are left out, and it moves back at most 15 ' +
+  'minutes. The newest record cannot show a gap earlier in the window: a store missing records there shows up only ' +
+  'as a row or value disagreement. Every run of the stage reads the same window.'
 
 export const COLUMN_TIPS = Object.freeze({
   rows:
@@ -86,8 +87,8 @@ export const CONSEQUENCES = Object.freeze({
   stoppable: 'Stop, or leaving this page, cancels the search that is running.',
   warmup: 'The first run of each search on each store is a warm-up and is not reported.',
   landing:
-    'If a store has not landed the whole window yet, the window moves back until every store has; if that would take ' +
-    'more than 15 minutes, nothing after the landing check runs, and the reason is shown.',
+    'If a store’s newest record is earlier than the window’s usual end, the window moves back to end five minutes before it; if ' +
+    'that would take more than 15 minutes, nothing after the landing check runs, and the reason is shown.',
 })
 
 export const STOPPED_NOTE = 'Stopped before every run finished. Nothing is inferred from the runs that did not happen.'

@@ -226,6 +226,8 @@ export interface LagReading {
   cpuSeconds: number | null
   error?: string
   refused?: { method: string; path: string; status: number }
+  /** A stand-in for a store the check never reached: it had already refused on another. */
+  unchecked?: true
 }
 
 export interface LandingCheck {
@@ -235,12 +237,22 @@ export interface LandingCheck {
   shiftedSeconds: number
   /** Why the stage ran nothing more, or null. */
   refusal: string | null
+  /**
+   * True once `chooseWindow` has judged the readings. Until then — a check in
+   * progress, or one Stop ended part way — nothing may be said about the window.
+   */
+  decided: boolean
 }
 
 const clock = (epochSeconds: number) =>
   new Date(epochSeconds * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 
-/** The latest whole-minute end a reading shows its store holds everything up to. */
+/**
+ * The latest whole-minute end a reading lets the window reach: its newest
+ * record, less the margin. Inferred from the newest record alone — it cannot
+ * show a gap earlier in the window (the pack's Parquet destination drops under
+ * backpressure), which would surface only as a row or value disagreement.
+ */
 export function coveredEnd(r: LagReading): number | null {
   if (r.error || r.newest === null || !Number.isFinite(r.newest) || !r.count) return null
   return Math.floor((r.newest - LANDING_MARGIN_SECONDS) / 60) * 60
@@ -253,18 +265,38 @@ export function coveredEnd(r: LagReading): number | null {
  * refusal naming the store. Every reading must be present and read — a check
  * that did not complete proves nothing.
  */
+/** The earliest end the window may move back to before the stage refuses. */
+export function landingFloor(nowMs: number): number {
+  return stageWindow('fifteen', nowMs).latest - LANDING_MAX_SHIFT_SECONDS
+}
+
+/**
+ * True when this one reading already makes `chooseWindow` refuse, whatever the
+ * other stores say — so the check need not (and must not, it is billed) read
+ * the stores after it.
+ */
+export function readingRefuses(r: LagReading, nowMs: number): boolean {
+  if (r.error) return true
+  const end = coveredEnd(r)
+  return end === null || end < landingFloor(nowMs)
+}
+
 export function chooseWindow(
   nowMs: number,
   readings: readonly LagReading[],
 ): { window: BenchWindow; shiftedSeconds: number; refusal: string | null } {
   const usual = stageWindow('fifteen', nowMs)
-  const floor = usual.latest - LANDING_MAX_SHIFT_SECONDS
+  const floor = landingFloor(nowMs)
   const read = landingReadWindow(nowMs)
   const refusals: string[] = []
   let latest = usual.latest
   for (const r of readings) {
+    if (r.unchecked) {
+      refusals.push(`${r.dataset} was not checked: the check had already refused on another store.`)
+      continue
+    }
     if (r.error) {
-      refusals.push(`The landing check on ${r.dataset} did not complete (${r.error}), so whether it holds the whole window cannot be told.`)
+      refusals.push(`The landing check on ${r.dataset} did not complete (${r.error}), so when its newest record landed cannot be told.`)
       continue
     }
     const end = coveredEnd(r)
@@ -275,7 +307,7 @@ export function chooseWindow(
     if (end < floor) {
       refusals.push(
         `${r.dataset}’s newest record is from ${clock(r.newest as number)}. Allowing ${LANDING_MARGIN_SECONDS / 60} minutes for ` +
-          `files still being written, it holds everything only up to ${clock(end)} — more than ` +
+          `files still being written, the window could end no later than ${clock(end)} — more than ` +
           `${LANDING_MAX_SHIFT_SECONDS / 60} minutes before the window’s usual end, ${clock(usual.latest)}.`,
       )
       continue
@@ -293,8 +325,11 @@ export function chooseWindow(
   return { window: { earliest: latest - STAGE_SECONDS.fifteen, latest }, shiftedSeconds: usual.latest - latest, refusal: null }
 }
 
-/** What the landing check found, in words, for under the 15-minute table. */
-export function landingWords(check: LandingCheck): string[] {
+/**
+ * What the landing check found, in words, for under the 15-minute table.
+ * `ended`: the stage is over, so a check that never decided was stopped.
+ */
+export function landingWords(check: LandingCheck, ended = false): string[] {
   const found = check.readings
     .filter((r) => !r.error)
     .map((r) =>
@@ -304,11 +339,13 @@ export function landingWords(check: LandingCheck): string[] {
     )
   const out: string[] = []
   if (found.length > 0) out.push(`Landing check: ${found.join('; ')}.`)
-  if (!check.refusal && check.readings.length > 0) {
+  if (!check.decided) {
+    if (ended) out.push('The landing check was stopped before every store was checked, so no window was chosen.')
+  } else if (!check.refusal && check.readings.length > 0) {
     out.push(
       check.shiftedSeconds > 0
-        ? `The window was moved back ${Math.round(check.shiftedSeconds / 60)} minute${check.shiftedSeconds === 60 ? '' : 's'}, so that every store holds all of it.`
-        : 'Every store holds the whole window, so it was not moved.',
+        ? `The window was moved back ${Math.round(check.shiftedSeconds / 60)} minute${check.shiftedSeconds === 60 ? '' : 's'}, to end where every store’s newest record, less ${LANDING_MARGIN_SECONDS / 60} minutes, allows.`
+        : 'Every store’s newest record is late enough that the window was not moved.',
     )
   }
   const done = check.readings.filter((r) => !r.error)
@@ -538,7 +575,7 @@ export function landingCostLine(probe: StageRecord, targets: readonly BenchTarge
   const head =
     `First, ${stores.length === 1 ? 'one landing check reads' : `${stores.length} landing checks — one per store — read`} ` +
     `the last ${minutes} minutes to find when the newest record landed, and the window moves back up to ` +
-    `${LANDING_MAX_SHIFT_SECONDS / 60} minutes so every store holds all of it.`
+    `${LANDING_MAX_SHIFT_SECONDS / 60} minutes when a store’s newest record is earlier than the window’s usual end.`
   if (est.every((e) => e !== null)) {
     const total = est.reduce((a: number, e) => a + (e as number), 0)
     return (

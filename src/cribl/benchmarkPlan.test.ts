@@ -17,10 +17,12 @@ import {
   chooseWindow,
   coveredEnd,
   landingCostLine,
+  landingFloor,
   landingEstimate,
   landingQueryFor,
   landingReadWindow,
   landingWords,
+  readingRefuses,
   benchReport,
   benchTargets,
   canonicalAnswer,
@@ -220,14 +222,44 @@ describe('the landing check', () => {
 
   it('says what it found, whether the window moved, and its work — never counting unreported work as zero', () => {
     const read = landingReadWindow(now)
-    const moved = landingWords({ read, readings: [reading('gigamon_ami'), reading(PARQUET_DATASET)], shiftedSeconds: 180, refusal: null })
-    expect(moved.join(' ')).toContain('The window was moved back 3 minutes')
+    const moved = landingWords({ read, readings: [reading('gigamon_ami'), reading(PARQUET_DATASET)], shiftedSeconds: 180, refusal: null, decided: true })
+    expect(moved.join(' ')).toContain('The window was moved back 3 minutes, to end where every store’s newest record, less 5 minutes, allows.')
+    // Only the newest record was read: nothing claims a store holds every record in the window.
+    expect(moved.join(' ')).not.toMatch(/holds (all|the whole|everything)/)
     expect(moved.join(' ')).toContain('Work done by the landing check: 8 CPU-seconds.')
-    const kept = landingWords({ read, readings: [reading('gigamon_ami', { cpuSeconds: null }), reading(PARQUET_DATASET)], shiftedSeconds: 0, refusal: null })
-    expect(kept.join(' ')).toContain('Every store holds the whole window, so it was not moved.')
+    const kept = landingWords({ read, readings: [reading('gigamon_ami', { cpuSeconds: null }), reading(PARQUET_DATASET)], shiftedSeconds: 0, refusal: null, decided: true })
+    expect(kept.join(' ')).toContain('Every store’s newest record is late enough that the window was not moved.')
     expect(kept.join(' ')).toContain('at least 4 CPU-seconds')
-    const refused = landingWords({ read, readings: [reading(PARQUET_DATASET)], shiftedSeconds: 0, refusal: 'no' })
+    const refused = landingWords({ read, readings: [reading(PARQUET_DATASET)], shiftedSeconds: 0, refusal: 'no', decided: true })
     expect(refused.join(' ')).not.toMatch(/moved/)
+  })
+
+  it('says nothing about the window until the readings were judged, and says a stopped check was stopped', () => {
+    const read = landingReadWindow(now)
+    // Stop during the second store's check: the first reading is in, nothing was decided.
+    const partial = { read, readings: [reading('gigamon_ami')], shiftedSeconds: 0, refusal: null, decided: false }
+    expect(landingWords(partial).join(' ')).not.toMatch(/moved/)
+    expect(landingWords(partial).join(' ')).not.toContain('stopped')
+    const stopped = landingWords(partial, true).join(' ')
+    expect(stopped).not.toMatch(/moved/)
+    expect(stopped).toContain('The landing check was stopped before every store was checked, so no window was chosen.')
+  })
+
+  it('knows when one reading alone already refuses, so the stores after it need not be read', () => {
+    expect(readingRefuses(reading('gigamon_ami'), now)).toBe(false)
+    expect(readingRefuses(reading('gigamon_ami', { error: 'HTTP 500' }), now)).toBe(true)
+    expect(readingRefuses(reading('gigamon_ami', { newest: null, count: 0 }), now)).toBe(true)
+    const atLimit = usual.latest - LANDING_MAX_SHIFT_SECONDS + LANDING_MARGIN_SECONDS
+    expect(readingRefuses(reading('gigamon_ami', { newest: atLimit }), now)).toBe(false)
+    expect(readingRefuses(reading('gigamon_ami', { newest: atLimit - 60 }), now)).toBe(true)
+    expect(landingFloor(now)).toBe(usual.latest - LANDING_MAX_SHIFT_SECONDS)
+    // A store never reached is named as that, not as a check that failed.
+    const c = chooseWindow(now, [
+      reading('gigamon_ami', { newest: null, count: 0 }),
+      reading(PARQUET_DATASET, { newest: null, count: null, error: 'it was not checked', unchecked: true }),
+    ])
+    expect(c.refusal).toContain(`${PARQUET_DATASET} was not checked: the check had already refused on another store.`)
+    expect(c.refusal).not.toContain(`The landing check on ${PARQUET_DATASET} did not complete`)
   })
 
   it('prices itself from the row count’s one-minute work, and says so when it cannot', () => {
@@ -261,7 +293,7 @@ describe('the landing check', () => {
       runs: [],
       planned: 8,
       ended: true,
-      landing: { read: landingReadWindow(now), readings: [], shiftedSeconds: 0, refusal: 'behind' },
+      landing: { read: landingReadWindow(now), readings: [], shiftedSeconds: 0, refusal: 'behind', decided: true },
     }
     expect(stageStopped(rec)).toBe(false)
     expect(stageStopped({ ...rec, landing: undefined })).toBe(true)
