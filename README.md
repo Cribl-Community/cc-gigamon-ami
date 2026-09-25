@@ -53,8 +53,6 @@ into the raw Cribl Search UI whenever you want to go deeper.
    (slice 1.8, branch `feat/phase-1.8-hang-control`); the app's own preferences and settings store
    arrived in [PR #5](https://github.com/Cribl-Community/cc-gigamon-ami/pull/5).*
 
-![The Findings tab: severity-ranked detections — security exposures, wire faults, and service failures — each naming the AMI field that evidences it and drilling into the matching flows in Cribl Search](./docs/screenshot-findings.png)
-
 ## Features
 
 The dashboard is organized into tabs, each answering a different operational question:
