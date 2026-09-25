@@ -12,18 +12,24 @@
     "Do not hand-edit: change src/, re-run `npm run queries:extract`, and review the diff."
   ],
   "counts": {
-    "surfaces": 77,
+    "surfaces": 85,
     "searches": 38,
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 229,
+    "modules": 235,
     "catalogs": 15,
-    "states": 36,
+    "states": 44,
     "passthrough": 3,
-    "unbound": 22
+    "unbound": 30
   },
   "fixtures": {
+    "src/components/BenchmarkPanel.tsx": {
+      "q": {
+        "from": "BENCH_QUERIES.map((x) => ({ label: x.id, value: x }))",
+        "value": "4 entries · sha256 7dbf06769cfde7a1"
+      }
+    },
     "src/tabs/DataFlow.tsx": {
       "lake": {
         "from": "({ window: LAKE_DEFAULT_WINDOW, storedBytes: null, storedAsOf: null, error: null })",
@@ -86,6 +92,16 @@
   "states": {
     "src/App.tsx": {
       "pendingTo": "null"
+    },
+    "src/components/BenchmarkPanel.tsx": {
+      "bench": "null",
+      "dialog": "null",
+      "failure": "null",
+      "includeParquet": "true",
+      "listing": "null",
+      "probe": "null",
+      "progress": "null",
+      "reading": "true"
     },
     "src/components/JobWatchdog.tsx": {
       "announcement": "''",
@@ -170,6 +186,14 @@
     "src/data/techniques.ts › TECHNIQUES": "7 entries · sha256 2218150543922c22"
   },
   "modules": {
+    "src/queries/benchmark.ts": {
+      "BENCH_PARQUET_DATASET": "gigamon_ami_pq",
+      "BENCH_QUERIES": "4 entries · sha256 6fbf604c9f001902",
+      "onParquet(appSrc)": "dataset=\"gigamon_ami_pq\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
+      "onParquet(count)": "dataset=\"gigamon_ami_pq\" | summarize c=count()",
+      "onParquet(dupacks)": "dataset=\"gigamon_ami_pq\" protocol=6 | summarize v=sum(tcp_dup_ack), flows=count() by bin(_time, 1m) | sort by _time asc",
+      "onParquet(overview)": "dataset=\"gigamon_ami_pq\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
+    },
     "src/queries/capacityTopTalkers.ts": {
       "BYTES_AGG": "bytes=sum(total_bytes)",
       "KPI_AGGS": "total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
@@ -862,6 +886,86 @@
           "label": "What auto-refresh costs on this tab"
         }
       }
+    },
+    "src/components/BenchmarkPanel.tsx": {
+      "surfaces": {
+        "PanelInfo · ${q.label}: what it measures, and its query · count": {
+          "ref": "q.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" | summarize c=count()",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: what it measures, and its query · dupacks": {
+          "ref": "q.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" protocol=6 | summarize v=sum(tcp_dup_ack), flows=count() by bin(_time, 1m) | sort by _time asc",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: what it measures, and its query · appSrc": {
+          "ref": "q.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: what it measures, and its query · overview": {
+          "ref": "q.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: the query it runs on ${BENCH_PARQUET_DATASET} · count": {
+          "ref": "onParquet(q.query)",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami_pq\" | summarize c=count()",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: the query it runs on ${BENCH_PARQUET_DATASET} · dupacks": {
+          "ref": "onParquet(q.query)",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami_pq\" protocol=6 | summarize v=sum(tcp_dup_ack), flows=count() by bin(_time, 1m) | sort by _time asc",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: the query it runs on ${BENCH_PARQUET_DATASET} · appSrc": {
+          "ref": "onParquet(q.query)",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami_pq\" | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        },
+        "PanelInfo · ${q.label}: the query it runs on ${BENCH_PARQUET_DATASET} · overview": {
+          "ref": "onParquet(q.query)",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami_pq\" | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95=percentile(http_server_ms,95), hosts=dcount(http_host), h2=count(http2_code), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
+          "renderedOver": [
+            "BENCH_QUERIES"
+          ],
+          "reads": "(unbound)"
+        }
+      },
+      "searches": {},
+      "links": {},
+      "briefs": {},
+      "prose": {}
     },
     "src/components/JobWatchdog.tsx": {
       "surfaces": {},

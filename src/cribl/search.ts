@@ -9,7 +9,7 @@
 //   aggregations: count(), sum(f), avg(f), min/max(f), count_distinct(f), percentile(f,95)
 //   NOT `dc()` — use count_distinct(). Sorting is `sort by <col> desc`.
 
-import { activeDataset, searchUrl, toActiveDataset, LAKE_DATASET } from './config'
+import { API_BASE, activeDataset, searchUrl, toActiveDataset, LAKE_DATASET } from './config'
 import { beginQuery, endQuery } from './inflight'
 import { recordJobCost, type CostSlot } from './jobCost'
 
@@ -80,6 +80,27 @@ async function fetchRetry(url: string, init: RequestInit, signal?: AbortSignal, 
   throw lastErr instanceof Error ? lastErr : new Error('Cribl request failed')
 }
 
+/**
+ * A Cribl Search request that answered with an error status. The message is the
+ * one every caller has always shown; the fields are for a caller that has to
+ * tell a refusal (401/403) of ONE call from any other failure — the store
+ * benchmark latches its gate on a refused job submit, and only on that.
+ */
+export class SearchRequestError extends Error {
+  readonly status: number
+  readonly method: string
+  /** The path under the API base, query string dropped: what an admin grants. */
+  readonly path: string
+  constructor(status: number, statusText: string, method: string, url: string, detail: string) {
+    super(`Cribl API ${status} ${statusText}${detail ? ` — ${detail.slice(0, 300)}` : ''}`)
+    this.name = 'SearchRequestError'
+    this.status = status
+    this.method = method.toUpperCase()
+    const bare = url.split('?')[0]
+    this.path = bare.startsWith(API_BASE) ? bare.slice(API_BASE.length) : bare
+  }
+}
+
 async function api<T>(url: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
   const res = await fetchRetry(url, init, signal)
   if (!res.ok) {
@@ -89,7 +110,7 @@ async function api<T>(url: string, init: RequestInit, signal?: AbortSignal): Pro
     } catch {
       /* ignore */
     }
-    throw new Error(`Cribl API ${res.status} ${res.statusText}${detail ? ` — ${detail.slice(0, 300)}` : ''}`)
+    throw new SearchRequestError(res.status, res.statusText, init.method ?? 'GET', url, detail)
   }
   return res.json() as Promise<T>
 }

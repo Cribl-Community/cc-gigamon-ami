@@ -133,7 +133,7 @@ describe('reducing runs to a summary', () => {
   })
 })
 
-describe('the verdict, and the three times it refuses to give one', () => {
+describe('the verdict, and the four times it refuses to give one', () => {
   it('names the fastest by SERVER time, not by client wall', () => {
     // Client wall cannot resolve sub-second differences through the poll ramp,
     // so a verdict from it would be noise with a decimal point. Here Parquet is
@@ -171,6 +171,21 @@ describe('the verdict, and the three times it refuses to give one', () => {
     const c = compare([a, b])
     expect(c.fastest).toBeNull()
     expect(c.noWinnerBecause).toContain('Only one store returned a timing')
+  })
+
+  it('REFUSES a winner on a tie, exact or under 1.05×', () => {
+    // An exact tie used to name whichever store sorted first, "1× faster".
+    for (const pqMs of [4000, 3900]) {
+      const a = summarise(JSON_T, [run({ targetId: 'json', serverMs: 4000 })])
+      const b = summarise(PQ_T, [run({ targetId: 'pq', serverMs: pqMs })])
+      const c = compare([a, b])
+      expect(c.fastest, `${pqMs} ms`).toBeNull()
+      expect(c.speedup).toBeNull()
+      expect(c.noWinnerBecause).toContain('within 5% of each other')
+    }
+    // 1.05× rounds to 1.1 and is named.
+    const c = compare([summarise(JSON_T, [run({ targetId: 'json', serverMs: 4200 })]), summarise(PQ_T, [run({ targetId: 'pq', serverMs: 4000 })])])
+    expect(c.fastest?.target.id).toBe('pq')
   })
 
   it('still reports every summary when it refuses a winner', () => {

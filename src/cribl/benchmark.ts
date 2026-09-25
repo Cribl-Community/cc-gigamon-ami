@@ -184,7 +184,7 @@ export interface Comparison {
 /**
  * Reduce the summaries to a verdict, and REFUSE one where a verdict would lie.
  *
- * Three refusals, and each has cost somebody a wrong decision somewhere:
+ * Four refusals, and each has cost somebody a wrong decision somewhere:
  *
  *  • Fewer than two targets ran — a comparison of one is not a comparison.
  *  • The row counts disagree. A store answering a different question faster is
@@ -193,6 +193,8 @@ export interface Comparison {
  *    the same window. Naming that the winner is how the wrong format ships.
  *  • No server time. Client wall cannot resolve sub-second differences through
  *    a 700 ms poll, so a verdict from it would be noise with a decimal point.
+ *  • A tie. Medians under 1.05× apart are not one store faster than the other
+ *    (added 2026-09-25: an exact tie used to name whichever sorted first).
  */
 export function compare(summaries: readonly TargetSummary[]): Comparison {
   const ran = summaries.filter((s) => s.serverMs !== null)
@@ -211,12 +213,22 @@ export function compare(summaries: readonly TargetSummary[]): Comparison {
   }
 
   const byServer = [...ran].sort((a, b) => (a.serverMs as number) - (b.serverMs as number))
-  const fastest = noWinnerBecause === null ? (byServer[0] ?? null) : null
   const slowest = byServer[byServer.length - 1]
-  const speedup =
-    fastest && slowest && (fastest.serverMs as number) > 0
-      ? Number(((slowest.serverMs as number) / (fastest.serverMs as number)).toFixed(1))
+  const ratio = (s: TargetSummary | undefined) =>
+    s && slowest && (s.serverMs as number) > 0
+      ? Number(((slowest.serverMs as number) / (s.serverMs as number)).toFixed(1))
       : null
+
+  // A fourth refusal: a tie. Two stores whose medians round to the same speed
+  // (under 1.05×) are not one faster than the other, and naming whichever sorted
+  // first would be a coin toss printed as a finding.
+  if (noWinnerBecause === null && ratio(byServer[0]) === 1) {
+    noWinnerBecause =
+      'The stores’ median server times are within 5% of each other, so neither is named fastest. The timings below stand on their own.'
+  }
+
+  const fastest = noWinnerBecause === null ? (byServer[0] ?? null) : null
+  const speedup = fastest ? ratio(fastest) : null
 
   return { summaries, fastest, noWinnerBecause, disagree, speedup }
 }
@@ -235,6 +247,15 @@ export function compare(summaries: readonly TargetSummary[]): Comparison {
 // whoever happens to pay for it. It is the second axis of this comparison: a
 // store can win on wall-clock while doing far more work to get there, and that
 // gap predicts how it behaves under load in a way one timing cannot.
+//
+// *(Corrected 2026-09-25, `feat/phase9-benchmark-panel`: the screen that
+// renders this — Guided Setup's <BenchmarkPanel> — DOES confirm before it
+// submits, and states work in words. Not a cost gate: no threshold refuses a
+// run. It is the staging guard the Phase 8 design's §3.2 asks for, because
+// Cribl puts no bound on a search's CPU (a Parquet group-by stopped by its
+// 120 s cap billed 8,266 CPU-s): run each search once over one minute, show
+// what it did, and offer the 15-minute runs only after a person has seen that
+// figure multiplied out. benchmarkPlan.ts carries the rule.)*
 
 /** How many searches a full benchmark submits. */
 export function runCount(targets: readonly BenchTarget[]): number {

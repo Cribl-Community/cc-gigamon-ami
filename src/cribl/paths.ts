@@ -212,8 +212,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/${SEARCH_GROUP}/search/jobs/:jobId/metrics`,
     scope: 'product',
-    site: 'jobCost.ts readBillableCpuSeconds (also accel/status.ts lastRunCost)',
-    why: 'Read a completed job’s billable CPU-seconds for the header’s auto-refresh cost label. Denied, the app shows a cost figure that is wrong rather than an error, so it is declared like any other read.',
+    site: 'jobCost.ts readBillableCpuSeconds (also accel/status.ts lastRunCost, benchmarkRun.ts readMeter)',
+    why: 'Read a completed job’s billable CPU-seconds for the header’s auto-refresh cost label, and for the work each run of Guided Setup’s store benchmark did. Denied, the app shows a cost figure that is wrong rather than an error, so it is declared like any other read.',
   },
   {
     method: 'POST',

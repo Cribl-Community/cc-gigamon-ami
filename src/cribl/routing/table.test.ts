@@ -140,7 +140,10 @@ describe('coverage', () => {
     // parquetAudit.ts does read gigamon_ami, but only scripts/parquet-audit.mjs
     // submits it: parquetAudit.test.ts fails if any app module imports it, so no
     // query of it can reach the router, and listing it here would import it.
-    const NONE = ['lakeWindow.ts', 'parquetAudit.ts', 'routing.ts', 'stackIds.ts']
+    // benchmark.ts holds no string of its own: its set is other modules' strings
+    // (each listed under its own entry), and the store benchmark submits every
+    // run asWritten, so none reaches the router.
+    const NONE = ['benchmark.ts', 'lakeWindow.ts', 'parquetAudit.ts', 'routing.ts', 'stackIds.ts']
     expect(files.filter((f) => !NONE.includes(f)).length).toBe(Object.keys(MODULES).length)
   })
 
