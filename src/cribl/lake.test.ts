@@ -25,11 +25,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LAKE_DATASET } from './config'
 import { LAKE_DATASET_ID, LAKE_DESTINATION_ID } from './provision'
+import { PACK_ID, PACK_JSON_OUTPUT_ID } from './pack'
 import {
   getDataset,
   getDestination,
   getLakeConfig,
   getLocalSearch,
+  getPackDestination,
   getSearchDataset,
   LAKE_ADDRESSING,
   listDatasets,
@@ -82,6 +84,63 @@ describe('addressing', () => {
     expect(LAKE_ADDRESSING.datasetId).toBe(LAKE_DATASET)
     expect(LAKE_ADDRESSING.datasetId).toBe(LAKE_DATASET_ID)
     expect(LAKE_ADDRESSING.destinationId).toBe(LAKE_DESTINATION_ID)
+    expect(LAKE_ADDRESSING.packId).toBe(PACK_ID)
+    expect(LAKE_ADDRESSING.packDestinationId).toBe(PACK_JSON_OUTPUT_ID)
+  })
+})
+
+// ── The onboarding pack's destination, read only ────────────────────────────
+
+describe('getPackDestination', () => {
+  const PACKS = `/m/${GROUP}/packs`
+  const DEST = `/m/${GROUP}/p/${PACK_ID}/system/outputs/${PACK_JSON_OUTPUT_ID}`
+  const OBJECT = `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_JSON_OUTPUT_ID}`
+
+  it('reads the pack list first, and does not ask for the destination when the pack is not there', async () => {
+    const calls = stub({ [PACKS]: [200, { items: [{ id: 'some_other_pack' }] }] })
+    const r = await getPackDestination(GROUP)
+    expect(r.outcome).toBe('ok')
+    expect(r.value).toEqual({ installed: false, destination: null })
+    expect(calls.map((c) => c.path)).toEqual([PACKS])
+  })
+
+  it('never reads a pack list it could not get as "not installed"', async () => {
+    for (const status of [403, 404, 500]) {
+      const calls = stub({ [PACKS]: [status, { message: 'nope' }] })
+      const r = await getPackDestination(GROUP)
+      expect(r.outcome, String(status)).toBe(status === 403 ? 'not-readable' : 'failed')
+      expect(r.value, String(status)).toBeNull()
+      expect(r.object).toBe('/m/:gid/packs')
+      expect(calls.map((c) => c.path)).toEqual([PACKS])
+    }
+  })
+
+  it('answers the pack’s destination whole, with GETs only', async () => {
+    const calls = stub({
+      [PACKS]: [200, { items: [{ id: PACK_ID }] }],
+      [DEST]: [200, { items: [{ id: PACK_JSON_OUTPUT_ID, destPath: 'gigamon_ami', maxFileSizeMB: 5, onBackpressure: 'block', status: { health: 'green' } }] }],
+    })
+    const r = await getPackDestination(GROUP)
+    expect(r.outcome).toBe('ok')
+    expect(r.object).toBe(OBJECT)
+    expect(r.value?.installed).toBe(true)
+    expect(r.value?.destination?.health).toBe('green')
+    expect(r.value?.destination?.raw).toMatchObject({ destPath: 'gigamon_ami', maxFileSizeMB: 5, onBackpressure: 'block' })
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET ${PACKS}`, `GET ${DEST}`])
+  })
+
+  it('says an installed pack has no such destination rather than that there is no pack', async () => {
+    stub({ [PACKS]: [200, { items: [{ id: PACK_ID }] }], [DEST]: [404, { message: 'not found' }] })
+    const r = await getPackDestination(GROUP)
+    expect(r.outcome).toBe('ok')
+    expect(r.value).toEqual({ installed: true, destination: null })
+  })
+
+  it('names the destination when the pack is there and its destination is refused', async () => {
+    stub({ [PACKS]: [200, { items: [{ id: PACK_ID }] }], [DEST]: [403, { message: 'denied' }] })
+    const r = await getPackDestination(GROUP)
+    expect(r.outcome).toBe('not-readable')
+    expect(r.object).toBe(OBJECT)
   })
 })
 

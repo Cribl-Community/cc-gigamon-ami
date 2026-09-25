@@ -18,8 +18,8 @@
 //     the increase does neither and carries `undo` instead.
 //   * A SPEND ON LOAD. No Cribl Search job may be submitted by mounting this
 //     panel, by re-reading it, or by leaving it alone. Measurement is a button.
-//   * A PANEL-LEVEL STATE MACHINE WEARING NINE FIELDS. One endpoint is refused
-//     and the other eight rows must still render their values. On a healthy
+//   * A PANEL-LEVEL STATE MACHINE WEARING ONE FIELD PER ROW. One endpoint is refused
+//     and every other row must still render its value. On a healthy
 //     workspace a per-panel implementation is indistinguishable from a per-row
 //     one, which is why this is a test and not an eyeball.
 //
@@ -64,10 +64,15 @@ import {
   LAKE_LEAD_TIP,
   LAKE_RETENTION_WARNING,
   ROW_TIPS,
+  BOTH_DESTINATIONS_NOTE,
+  PACK_DESTINATION_LEAD,
+  PACK_DESTINATION_MARKER,
+  PACK_DESTINATION_TIP,
   PARTITION_CPU_SECONDS,
   PARTITION_GATE,
   READER_GATE,
   STALE_AFTER_MS,
+  backpressureWords,
   costLabel,
   destinationConsequences,
   destinationResources,
@@ -91,6 +96,8 @@ const ROUTES = '/m/default/routes'
 const LOCAL_SEARCH = '/m/default_search/search/local_search'
 const GROUPS = '/products/stream/groups'
 const JOBS = '/m/default_search/search/jobs'
+const PACKS = '/m/default/packs'
+const PACK_DESTINATION = '/m/default/p/cc-network-gigamon-ami/system/outputs/gigamon_ami_json_lake'
 const NOW = 1_789_600_000_000
 
 // ── The fake workspace ──────────────────────────────────────────────────────
@@ -123,6 +130,11 @@ interface WorkspaceOpts {
   searchRows?: Record<string, unknown>[]
   /** Seed the app's own store. */
   kv?: Record<string, unknown>
+  /** Install the onboarding pack in the group. Left out, the group has no pack.
+   *  `destination: null` is an installed pack with no gigamon_ami_json_lake. */
+  pack?: { destination?: Record<string, unknown> | null }
+  /** Leave the global gigamon_lake destination out of the group. */
+  noGlobalDestination?: boolean
 }
 
 function response(status: number, body: unknown) {
@@ -154,6 +166,20 @@ const LIVE_DESTINATION = {
   onBackpressure: 'block',
   notifications: ['someone_elses_notification'],
   environment: 'prod',
+  status: { health: 'green' },
+}
+
+/** The pack's JSON destination as pack 0.2.2 ships it: the same flush settings
+ *  as the app's own, blocking on backpressure. */
+const PACK_LIVE_DESTINATION = {
+  id: 'gigamon_ami_json_lake',
+  type: 'cribl_lake',
+  destPath: 'gigamon_ami',
+  format: 'json',
+  maxFileSizeMB: 5,
+  maxFileOpenTimeSec: 60,
+  maxFileIdleTimeSec: 15,
+  onBackpressure: 'block',
   status: { health: 'green' },
 }
 
@@ -233,7 +259,17 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
     }
     if (path === LOCAL_SEARCH) return response(404, { message: 'LocalSearch is not enabled' })
 
+    // The onboarding pack. Nothing in this panel may write under it.
+    if (path === PACKS) {
+      return response(200, { items: opts.pack ? [{ id: 'cc-network-gigamon-ami', version: '0.2.2' }] : [{ id: 'some_other_pack' }] })
+    }
+    if (path === PACK_DESTINATION && method === 'GET') {
+      if (!opts.pack || opts.pack.destination === null) return response(404, { message: 'not found' })
+      return response(200, { items: [{ ...PACK_LIVE_DESTINATION, ...opts.pack.destination }] })
+    }
+
     // Cribl Stream.
+    if (path === DESTINATION && opts.noGlobalDestination) return response(404, { message: 'not found' })
     if (path === DESTINATION) {
       if (method === 'PATCH') {
         Object.assign(destination, body)
@@ -348,7 +384,7 @@ afterEach(() => {
   expectNoConsoleErrors('in this test')
 })
 
-/** Let the environment run: the group read, the profile read, nine independent
+/** Let the environment run: the group read, the profile read, every independent row
  *  reads and the audit list all settle on their own turns. */
 async function settle(turns = 6) {
   for (let i = 0; i < turns; i++) {
@@ -680,11 +716,11 @@ describe('the controls this phase refused to build', () => {
 
 // ── The rendered panel ──────────────────────────────────────────────────────
 
-describe('the nine reads', () => {
+describe('the per-row reads', () => {
   it('paints the table before the first response, one busy cell per row', async () => {
     stubWorkspace()
     // A SYNCHRONOUS act: an async one flushes every pending microtask, which
-    // would resolve all nine stubbed reads before the assertion and make this
+    // would resolve every stubbed read before the assertion and make this
     // test pass against a panel that painted nothing until they had.
     act(() => {
       root.render(wrap(<LakeLandingPanel />))
@@ -705,7 +741,7 @@ describe('the nine reads', () => {
     expect(text).toContain('no local search engines')
     expect(text).toContain('QuickConnect from source in_gigamon_datagen')
     expect(text).toContain('Workers are running commit abcdef1234')
-    expect(text).toContain('9 reads · all readable')
+    expect(text).toContain('10 reads · all readable')
   })
 
   it('uses a real table with row headers, not a div grid', async () => {
@@ -721,21 +757,21 @@ describe('the nine reads', () => {
   })
 
   it('degrades exactly one row when one endpoint is refused', async () => {
-    // Preview 1.3 and 1.6. The other eight must still render values, and the
+    // Preview 1.3 and 1.6. Every other row must still render its value, and the
     // failed row must NAME the object an admin has to grant — "unavailable"
     // with nothing named is the state this requirement exists to prevent.
     stubWorkspace({ status: { [`GET ${DESTINATION}`]: 403 } })
     await mount()
     const text = bodyText()
     expect(text).toContain('needs GET on /m/:gid/system/outputs/gigamon_lake')
-    // The eight that resolved are still on screen.
+    // The rows that resolved are still on screen.
     expect(text).toContain('30 days')
     expect(text).toContain('no local search engines')
     expect(text).toContain('1 not readable')
   })
 
-  it('re-issues one GET on Retry, not nine', async () => {
-    // Preview 1.5. Nine reads to recover one row is eight requests nobody asked
+  it('re-issues one GET on Retry, not every read', async () => {
+    // Preview 1.5. Re-reading every row to recover one is requests nobody asked
     // for, on the panel whose commonest failure will go on failing.
     const { calls } = stubWorkspace({ status: { [`GET ${DESTINATION}`]: 500 } })
     await mount()
@@ -1184,6 +1220,96 @@ describe('the destination editor', () => {
     expect(buttonNamed('Retry the commit and deploy')).toBeTruthy()
     // The destination really was written; only the commit was refused.
     expect(calls.some((c) => c.method === 'PATCH' && c.path === DESTINATION)).toBe(true)
+  })
+})
+
+describe('the onboarding pack’s destination: shown, never edited', () => {
+  const packRow = () => rowNamed('Onboarding pack destination')
+
+  it('is not on the panel, and not read, where the pack is not installed', async () => {
+    const { calls } = stubWorkspace()
+    await mount()
+    expect(packRow()).toBeUndefined()
+    expect(visibleText()).not.toContain(PACK_DESTINATION_LEAD)
+    expect(calls.some((c) => c.path === PACK_DESTINATION)).toBe(false)
+    // The panel is otherwise as it was.
+    expect(rowLabels()).toContain('How objects are written')
+    expect(buttonNamed('Change…')).toBeTruthy()
+  })
+
+  it('shows its live flush and backpressure settings read only, with one lead line and its reason behind an ⓘ', async () => {
+    const { calls } = stubWorkspace({
+      pack: { destination: { maxFileOpenTimeSec: 120, onBackpressure: 'drop', status: { health: 'yellow' } } },
+      noGlobalDestination: true,
+    })
+    await mount()
+    const row = packRow()
+    expect(row).toBeTruthy()
+    const text = (row?.textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toContain('gigamon_ami_json_lake')
+    expect(text).toContain('5 MB · 120 s open · 15 s idle')
+    expect(text).toContain(backpressureWords({ onBackpressure: 'drop' }))
+    expect(text).toContain('health yellow')
+    expect(text).toContain(PACK_DESTINATION_MARKER)
+    // No control of any kind on the row.
+    expect(row?.querySelectorAll('button, input, textarea, select').length).toBe(0)
+
+    // One lead line, and the why one ⓘ away.
+    expect(visibleText()).toContain(PACK_DESTINATION_LEAD)
+    const tip = [...document.body.querySelectorAll('.gs-action-note .infotip')].map((t) => t.getAttribute('aria-label'))
+    expect(tip).toContain(PACK_DESTINATION_TIP)
+    expect(PACK_DESTINATION_TIP).toContain('local setting of the pack')
+    expect(PACK_DESTINATION_TIP).not.toMatch(TIP_HISTORY)
+    expect(visibleText().match(INTERNAL_HISTORY)?.[0]).toBeUndefined()
+    // gigamon_lake is not in this group, so there is no "both" line.
+    expect(visibleText()).not.toContain(BOTH_DESTINATIONS_NOTE)
+    // Reads only.
+    expect(calls.filter((c) => c.path === PACK_DESTINATION).map((c) => c.method)).toEqual(['GET'])
+    expect(criblWrites(calls)).toEqual([])
+  })
+
+  it('says in one line that gigamon_lake can still write gigamon_ami when both exist', async () => {
+    stubWorkspace({ pack: {} })
+    await mount()
+    expect(packRow()).toBeTruthy()
+    expect(visibleText()).toContain(BOTH_DESTINATIONS_NOTE)
+    expect(bodyText()).toContain('10 reads · all readable')
+  })
+
+  it('leaves the gigamon_lake editor exactly as it was, and never writes under the pack', async () => {
+    const { calls } = stubWorkspace({ pack: {} })
+    await mount()
+    await press(buttonStarting('Adjust how objects are written'))
+    const balanced = [...document.body.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find(
+      (i) => i.value === 'balanced',
+    )
+    await press(balanced)
+    await press(buttonNamed('Change…'))
+    expect(bodyText()).toContain('destination gigamon_lake in group default')
+    await press(buttonNamed('Yes, apply and deploy'))
+    const written = criblWrites(calls).map((c) => `${c.method} ${c.path}`)
+    expect(written).toEqual([`PATCH ${DESTINATION}`, 'POST /version/commit', `PATCH ${GROUPS}/default/deploy`])
+    expect(calls.some((c) => c.method !== 'GET' && c.path.includes('/p/cc-network-gigamon-ami'))).toBe(false)
+  })
+
+  it('says so when the installed pack has no gigamon_ami_json_lake, with no lead line', async () => {
+    stubWorkspace({ pack: { destination: null } })
+    await mount()
+    expect(packRow()?.textContent).toContain('the installed pack has no gigamon_ami_json_lake destination')
+    expect(visibleText()).not.toContain(PACK_DESTINATION_LEAD)
+  })
+
+  it('names the pack list when it cannot be read, rather than calling the group pack-free', async () => {
+    const { calls } = stubWorkspace({ status: { [`GET ${PACKS}`]: 403 } })
+    await mount()
+    expect(packRow()).toBeTruthy()
+    expect(bodyText()).toContain('needs GET on /m/:gid/packs')
+    expect(calls.some((c) => c.path === PACK_DESTINATION)).toBe(false)
+
+    // Its Retry re-issues that row's reads and nothing else.
+    const before = calls.length
+    await press(buttonNamed('Retry the read behind Onboarding pack destination'))
+    expect(calls.slice(before).map((c) => c.path)).toEqual([PACKS])
   })
 })
 

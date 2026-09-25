@@ -212,7 +212,7 @@ afterEach(() => { vi.unstubAllGlobals() })
 
 // ── readLanding ─────────────────────────────────────────────────────────────
 
-const ROWS: RowKey[] = ['lakeConfig', 'datasets', 'dataset', 'searchDataset', 'destination', 'inputs', 'routes', 'localSearch', 'groups']
+const ROWS: RowKey[] = ['lakeConfig', 'datasets', 'dataset', 'searchDataset', 'destination', 'inputs', 'routes', 'localSearch', 'groups', 'packDestination']
 
 describe('readLanding', () => {
   it('starts with nine rows that each already know which endpoint they came from', () => {
@@ -242,6 +242,24 @@ describe('readLanding', () => {
     for (const key of ROWS.filter((k) => k !== 'destination')) {
       expect(state[key].state, key).not.toBe('failed')
     }
+  })
+
+  it('reads the onboarding pack’s destination where the pack is installed, and writes nothing to it', async () => {
+    // Owner decision 2026-09-25: shown, never edited. A read of the panel with
+    // the pack installed is GETs only — the pack list, then its destination.
+    const PACK_DEST = `/m/${GROUP}/p/cc-network-gigamon-ami/system/outputs/gigamon_ami_json_lake`
+    const calls = stubWorld({
+      answers: {
+        [`/m/${GROUP}/packs`]: [200, { items: [{ id: 'cc-network-gigamon-ami' }] }],
+        [PACK_DEST]: [200, { items: [{ id: 'gigamon_ami_json_lake', destPath: 'gigamon_ami', onBackpressure: 'block' }] }],
+      },
+    })
+    const state = await readLanding(GROUP)
+    expect(state.packDestination.state).toBe('value')
+    expect(state.packDestination.value?.installed).toBe(true)
+    expect(state.packDestination.value?.destination?.raw).toMatchObject({ onBackpressure: 'block' })
+    expect(calls.filter((c) => c.path === PACK_DEST).map((c) => c.method)).toEqual(['GET'])
+    expect(writes(calls)).toEqual([])
   })
 
   it('names the object on the row the account may not read', async () => {

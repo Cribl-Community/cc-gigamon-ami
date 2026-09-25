@@ -412,6 +412,12 @@ policies:
     actions: ['GET']
   - object: '/m/:gid/p/cc-network-gigamon-ami/system/outputs'
     actions: ['GET']
+  # The pack's JSON destination, by id, READ ONLY — for the Lake landing
+  # panel, which shows its flush and backpressure settings where the pack is
+  # installed. Never PATCHed: an edit would become a local setting of the pack
+  # that later pack releases do not replace, so the pack's releases govern it.
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/outputs/gigamon_ami_json_lake'
+    actions: ['GET']
   # The pack's two sources, each read whole and PATCHed whole, because the
   # endpoint deletes any field a PATCH omits. The Raw HTTP source gets what only
   # an install can know — a free port, the auth token this app generates and

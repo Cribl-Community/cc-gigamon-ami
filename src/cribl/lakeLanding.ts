@@ -215,6 +215,7 @@ import {
   getDestination,
   getLakeConfig,
   getLocalSearch,
+  getPackDestination,
   getSearchDataset,
   listDatasets,
   listInputs,
@@ -224,6 +225,7 @@ import {
   type LakeDestination,
   type LakeLimits,
   type LocalSearchTier,
+  type PackDestinationRead,
   type ReadResult,
   type SearchDataset,
   type StreamGroupInfo,
@@ -287,9 +289,25 @@ const ABSENT_NOTES: Readonly<Record<RowKey, string>> = Object.freeze({
   // wording wrong the moment an engine existed.
   localSearch: 'Cribl Search local engines could not be listed for this workspace. A tenant with none is the normal state, and every search in this app runs the way it always has.',
   groups: 'This Leader returned no worker groups.',
+  // UNREACHABLE TODAY: `getPackDestination` answers "not installed" and "this
+  // version has no such destination" as values, and a 404 on the pack list as
+  // a failure. Kept because the table is total over RowKey.
+  packDestination: 'The onboarding pack answered nothing for its gigamon_ami destination.',
 })
 
-export type RowKey = 'lakeConfig' | 'datasets' | 'dataset' | 'searchDataset' | 'destination' | 'inputs' | 'routes' | 'localSearch' | 'groups'
+export type RowKey =
+  | 'lakeConfig'
+  | 'datasets'
+  | 'dataset'
+  | 'searchDataset'
+  | 'destination'
+  | 'inputs'
+  | 'routes'
+  | 'localSearch'
+  | 'groups'
+  /** The onboarding pack's own gigamon_ami destination — READ ONLY on this
+   *  panel, whatever the account may do (see `getPackDestination`). */
+  | 'packDestination'
 
 /** Every row, before anything has been asked. Exported so a component can paint
  *  the table's shape on first render rather than after the first response. */
@@ -305,6 +323,7 @@ export function loadingLanding(): LandingState {
     routes: row('/m/:gid/routes'),
     localSearch: row('/m/default_search/search/local_search'),
     groups: row('/products/stream/groups'),
+    packDestination: row('/m/:gid/p/cc-network-gigamon-ami/system/outputs/gigamon_ami_json_lake'),
   }
 }
 
@@ -337,6 +356,7 @@ export interface LandingState {
   routes: LandingRow<StreamRoute[]>
   localSearch: LandingRow<LocalSearchTier>
   groups: LandingRow<StreamGroupInfo[]>
+  packDestination: LandingRow<PackDestinationRead>
 }
 
 export interface ReadLandingOptions extends CapiInit {
@@ -398,6 +418,7 @@ export async function readLanding(group: string, opts: ReadLandingOptions = {}):
     fill('routes', listRoutes(group, init)),
     fill('localSearch', getLocalSearch(init)),
     fill('groups', listStreamGroupsCurrent(init)),
+    fill('packDestination', getPackDestination(group, init)),
   ])
 
   return state
