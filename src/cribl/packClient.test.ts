@@ -27,7 +27,10 @@ import {
   PACK_HTTP_INPUT_ID, PACK_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packReleaseUrl,
 } from './pack'
 
-type Client = typeof import('./packClient')
+// The client, with the in-place upgrade beside it (packUpgrade.ts, split out
+// so its PATCH is not granted before a screen offers it).
+type Client = typeof import('./packClient') & typeof import('./packUpgrade')
+const loadClient = async (): Promise<Client> => ({ ...(await import('./packClient')), ...(await import('./packUpgrade')) })
 
 const GROUP = 'default'
 const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90'
@@ -174,7 +177,7 @@ const liveSample = (extra: Record<string, unknown> = {}) => ({ id: PACK_SAMPLE_I
 async function today(): Promise<Client> {
   vi.resetModules()
   vi.doUnmock('./pack')
-  return import('./packClient')
+  return loadClient()
 }
 
 /** The client with 0.2.0's release recorded: pack.ts's three release
@@ -185,14 +188,14 @@ async function withRelease(): Promise<Client> {
     ...(await orig<typeof import('./pack')>()),
     PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', PACK_VERSION]),
   }))
-  return import('./packClient')
+  return loadClient()
 }
 
 /** The client with pack.ts's constants overridden. */
 async function withPack(over: Record<string, unknown>): Promise<Client> {
   vi.resetModules()
   vi.doMock('./pack', async (orig) => ({ ...(await orig<typeof import('./pack')>()), ...over }))
-  return import('./packClient')
+  return loadClient()
 }
 
 beforeEach(() => { calls = [] })
@@ -245,7 +248,7 @@ describe('the release gate', () => {
   it('refuses the release gate on the sha256 alone, too', async () => {
     vi.resetModules()
     vi.doMock('./pack', async (orig) => ({ ...(await orig<typeof import('./pack')>()), PACK_PUBLISHED: true, PACK_SHA256: null }))
-    const c: Client = await import('./packClient')
+    const c: Client = await loadClient()
     leader()
     expect((await c.installPack(GROUP))[0]).toMatchObject({ action: 'skipped', detail: expect.stringMatching(/sha256/) })
     expect(calls).toEqual([])
@@ -603,7 +606,7 @@ describe('committing the pack', () => {
       ...(await orig<typeof import('./setupMemory')>()),
       loadCommitMemory: async () => ({ [GROUP]: { onboarding_pack: { hash: HASH, message: 'm' } } }),
     }))
-    const c: Client = await import('./packClient')
+    const c: Client = await loadClient()
     expect(c.PACK_COMMIT_KEY).toBe('onboarding_pack')
     leader({ pending: [], commitNothing: true, deployed: 'cccc0000', head: HASH })
     const rec = record()

@@ -32,6 +32,7 @@ function everything(): string[] {
         httpStatusWords: [[{ port: 20005, tls: true, tokenSet: true, disabled: false }], [null]],
         accelStatusWords: [[{ total: 18, installed: 18, running: 3, error: null }], [{ total: 18, installed: 0, running: 0, error: null }]],
         keptDatasetsSentence: [[['gigamon_ami', 'gigamon_ami_pq', 'gigamon_ami_sample']]],
+        finishRemovalSentence: [['g1', ['groups/g1/default/cc-network-gigamon-ami/package.json']]],
       }[name] ?? [['g1']]
       for (const args of tries) {
         const r = fn(...args)

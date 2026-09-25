@@ -288,13 +288,16 @@ describe('the onboarding pack’s controls (Guided Setup’s onboarding panel)',
   // run's own claims, so a site dropped from its gate reads as what it is.
   const pack = (Object.keys(GATED_WRITES) as WriteId[]).filter((id) => id.startsWith('onboarding_pack.'))
 
-  it('renders every onboarding_pack.* id, and marks none of them unrendered', () => {
+  it('renders Onboard and Remove, and not Upgrade until its write can be reached', () => {
+    // Upgrade's write is in cribl/packUpgrade.ts, on UNREACHED_MODULES with its
+    // PATCH ungranted; the checks above hold an unrendered id to exactly that.
     expect(pack.sort()).toEqual(['onboarding_pack.install', 'onboarding_pack.remove', 'onboarding_pack.upgrade'])
     const rendered = new Set(controls.declared)
-    for (const id of pack) {
+    for (const id of ['onboarding_pack.install', 'onboarding_pack.remove'] as const) {
       expect(rendered.has(id), `${id} has no <GatedControl>`).toBe(true)
       expect(GATED_WRITES[id].unrendered, `${id} is still marked unrendered`).toBeUndefined()
     }
+    expect(rendered.has('onboarding_pack.upgrade'), 'a control renders Upgrade, whose write nothing can reach').toBe(false)
   })
 
   it('names Onboard on every write the one run makes, and Remove on its own', () => {
@@ -307,7 +310,10 @@ describe('the onboarding pack’s controls (Guided Setup’s onboarding panel)',
     for (const at of ['cribl/packClient.ts#removePack', 'cribl/provision.ts#commitAndDeploy', 'cribl/provision.ts#deployGroup']) {
       expect(gatesOf(at), at).toContain('onboarding_pack.remove')
     }
-    expect(gatesOf('cribl/packClient.ts#upgradePack')).toEqual(['onboarding_pack.upgrade'])
+    expect(gatesOf('cribl/packUpgrade.ts#upgradePack')).toEqual(['onboarding_pack.upgrade'])
+    // Upgrade has no control until it can run: its write is unreached, and so
+    // is its id.
+    expect(GATED_WRITES['onboarding_pack.upgrade'].unrendered).toBeTruthy()
     expect(GATED_WRITES['onboarding_pack.install'].does).toBe('onboarding Gigamon AMI (datasets, pack, scheduled searches)')
   })
 })

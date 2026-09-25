@@ -403,11 +403,10 @@ policies:
   # The onboarding pack itself, by its id and never any other pack's. DELETE is
   # Remove pack — only a copy this app installed from its own release of a
   # version it published, behind a type-to-confirm dialog that names what it
-  # keeps (all three Lake datasets, and the scheduled searches). PATCH is the
-  # in-place upgrade to the version this build pins; this release shows that
-  # control refused, and declares it because the client that holds it is loaded.
+  # keeps (all three Lake datasets, and the scheduled searches). No PATCH: the
+  # in-place upgrade is not offered by any screen yet, so it is not asked for.
   - object: '/m/:gid/packs/cc-network-gigamon-ami'
-    actions: ['PATCH', 'DELETE']
+    actions: ['DELETE']
   # The pack's objects, read for the status Guided Setup shows, and never
   # written: its event breaker ruleset, pipeline, routes and destinations.
   - object: '/m/:gid/p/cc-network-gigamon-ami/lib/breakers/gigamon_ami_http_json_array'

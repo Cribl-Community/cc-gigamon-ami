@@ -213,11 +213,11 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   // scheduled searches. So its id is on every one of those write sites below,
   // and a refusal anywhere in the run latches Onboard, with the path named.
   //
-  // UPGRADE RENDERS, REFUSED. Its control is on the panel for an owned copy
-  // that is behind, and always states why it will not run on this screen yet;
-  // `upgradePack` has no caller until it does. Its grant is declared because
-  // the module that holds it is reachable, and policyCoverage.test.ts asks
-  // exactly that.
+  // UPGRADE IS NOT RENDERED YET. Its write, `upgradePack`, is in packUpgrade.ts
+  // on paths.ts `UNREACHED_MODULES`, and its PATCH is not granted; the panel
+  // names the upgrade for an owned copy that is behind, as text, with why it is
+  // not offered. *(Corrected 2026-09-24, `feat/pack-onboarding-4a`: a refused
+  // control rendered it, which is what kept its PATCH granted.)*
   //
   // NO `configure` ID. The pack sources' settings outside a run (rotate the
   // token, move the port, start or stop the sample) have no control yet, and
@@ -231,6 +231,7 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   'onboarding_pack.upgrade': {
     surface: 'config',
     does: 'upgrading the Gigamon AMI onboarding pack',
+    unrendered: 'The in-place upgrade is offered by the slice that reads the Raw HTTP source back after it; until then packUpgrade.ts is unreached and its PATCH ungranted.',
   },
   'onboarding_pack.remove': {
     surface: 'config',
@@ -336,7 +337,7 @@ export const WRITE_SITES: readonly WriteSite[] = [
     why: 'POST /packs installs the pack from its pinned GitHub release into the picked group — refused until that release exists and its sha256 is recorded, and refused when the pack is already there.',
   },
   {
-    at: 'cribl/packClient.ts#upgradePack',
+    at: 'cribl/packUpgrade.ts#upgradePack',
     gates: ['onboarding_pack.upgrade'],
     surface: 'config',
     why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward.',

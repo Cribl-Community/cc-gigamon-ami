@@ -54,6 +54,7 @@ import type { AccelStatus } from '../cribl/accel/status'
 import { AccelPanel } from './AccelPanel'
 import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
+import { acquireSetupRun, resetSetupRunLock, setupRunHolder } from '../cribl/setupRunLock'
 // The words are next door, pure and DOM-free — most of what this screen can get
 // wrong is a sentence rather than a tag, so most of what follows is a function
 // call rather than a render.
@@ -311,6 +312,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   resetDenials()
+  resetSetupRunLock()
 })
 
 /** Let the environment run: the state read, the status read and the identity
@@ -790,6 +792,89 @@ describe('a confirmed write', () => {
     await settle()
     expect(accelServing(SAMPLE)).toBe('paused')
   })
+})
+
+describe('one Guided Setup run at a time', () => {
+  // The onboarding run's last step writes these same saved searches; two runs
+  // at once POST the same absent id twice, and the second one fails.
+  it('a confirmed Apply writes nothing while another run holds the page’s lock', async () => {
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
+    await mount()
+    await press(buttonNamed('Review changes…'))
+    const release = acquireSetupRun('onboarding_pack')!
+    await settle()
+    const yes = buttonNamed('Yes, create them')
+    expect(yes?.getAttribute('aria-disabled')).toBe('true')
+    await press(yes)
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+    release()
+  })
+
+  it('a confirmed Pause writes nothing while another run holds it', async () => {
+    const { calls } = stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    await mount()
+    await press(buttonNamed(rowActionName('pause', accelEntry(SAMPLE))))
+    const release = acquireSetupRun('lake_landing')!
+    await settle()
+    await press(buttonNamed('Yes, pause it'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+    release()
+  })
+
+  /** The run lock's holder at each saved-search write, as it is sent. */
+  function holdersAtWrites(): Array<string | null> {
+    const inner = globalThis.fetch
+    const held: Array<string | null> = []
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET' && String(url).includes('/search/saved')) held.push(setupRunHolder())
+      return inner(url, init)
+    })
+    return held
+  }
+  async function typeInDialog(text: string) {
+    const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input')
+    expect(input, 'the dialog has no field to type in').toBeTruthy()
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, text)
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await settle(2)
+  }
+
+  const flows: Array<[string, () => Promise<{ calls: Call[] }>, () => Promise<void>]> = [
+    ['Apply', async () => stubWorkspace({ lake: LAKE_30 }), async () => {
+      await press(buttonNamed('Review changes…'))
+      await press(buttonNamed('Yes, create them'))
+    }],
+    ['a row’s Pause', async () => stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } }), async () => {
+      await press(buttonNamed(rowActionName('pause', accelEntry(SAMPLE))))
+      await press(buttonNamed('Yes, pause it'))
+    }],
+    ['Remove', async () => stubWorkspace({ saved: { [LAKE]: await stored(LAKE) } }), async () => {
+      await press(buttonNamed('Remove acceleration…'))
+      await typeInDialog(REMOVE_LITERAL)
+      await press(buttonNamed('Yes, delete them'))
+    }],
+    ['a switch', async () => stubWorkspace({ saved: await everyEntry() }), async () => {
+      await press(switchNamed(switchName('capacity')))
+      await press(buttonNamed('Yes, pause them'))
+    }],
+  ]
+  for (const [name, setup, run] of flows) {
+    it(`${name} holds the lock for every write it sends, and gives it back`, async () => {
+      const { calls } = await setup()
+      const held = holdersAtWrites()
+      await mount()
+      await run()
+      await settle()
+      expect(savedWrites(calls).length, 'the flow sent no write').toBeGreaterThan(0)
+      expect(held).toEqual(savedWrites(calls).map(() => 'acceleration'))
+      expect(setupRunHolder()).toBeNull()
+    })
+  }
 })
 
 describe('the preset list', () => {

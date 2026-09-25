@@ -16,15 +16,19 @@
 // from `src/main.tsx` and is GRANTED in `config/policies.yml` — each pack path
 // named with exactly the methods called on it, and no `*` (policyCoverage
 // .test.ts holds both directions). Its writes are registered in
-// src/cribl/authz.ts under `onboarding_pack.install`, `.upgrade` and `.remove`,
-// each rendered by a `<GatedControl>` on that panel. *(Until 2026-09-24 this
+// src/cribl/authz.ts under `onboarding_pack.install` and `.remove`, each
+// rendered by a `<GatedControl>` on that panel. *(Until 2026-09-24 this
 // module was on paths.ts `UNREACHED_MODULES`, built a slice ahead of its UI,
 // with its grants deliberately withheld.)*
 //
-// Upgrade is not offered yet: its control renders, refused, and `upgradePack`
-// has no caller. The pack sources' own settings outside an onboarding run
-// (rotate the token, move the port, start or stop the sample) have no control
-// either, so their WriteId was withdrawn until they do.
+// The in-place upgrade is NOT here: it is packUpgrade.ts, on paths.ts
+// `UNREACHED_MODULES` with its PATCH named and not granted, until the slice that
+// offers it (and checks the Raw HTTP source survives it) renders its control.
+// The pack sources' own settings outside an onboarding run (rotate the token,
+// move the port, start or stop the sample) have no control either, so their
+// WriteId was withdrawn until they do. *(Corrected 2026-09-24,
+// `feat/pack-onboarding-4a`: `upgradePack` lived here, so its PATCH was granted
+// for a control that rendered refused and could never send it.)*
 //
 // ── WHAT EVERY WRITE HERE ASSUMES OF ITS CALLER ─────────────────────────────
 // Each export that writes is an entry point reached from a confirmed click and
@@ -173,15 +177,16 @@ export interface PackStep {
 // ── Reading ─────────────────────────────────────────────────────────────────
 
 /** This pack as the group's pack list reports it. */
-interface Installed {
+export interface Installed {
   version: string | null
   /** Where Cribl says the copy was installed from (PackInfo `source`). */
   source: string | null
 }
 
 /** The group's copy of this pack, `null` when it is not installed, or an error
- *  sentence when the list could not be read — which is never "not installed". */
-async function readInstalled(group: string): Promise<{ pack: Installed | null } | { error: string }> {
+ *  sentence when the list could not be read — which is never "not installed".
+ *  Exported for packUpgrade.ts, which holds the in-place upgrade. */
+export async function readInstalled(group: string): Promise<{ pack: Installed | null } | { error: string }> {
   const r = await capi('GET', groupPath(group, '/packs'))
   if (r.status !== 200) return { error: `the group’s pack list could not be read (HTTP ${r.status})` }
   const list = (r.body as { items?: unknown })?.items
@@ -204,8 +209,9 @@ function ownership(p: Installed): { published: boolean; fromRelease: boolean } {
 }
 
 /** Why the installed copy is not this app's to upgrade or remove, or null. The
- *  install source is never repeated: a Git URL can carry credentials. */
-function notOurs(p: Installed): string | null {
+ *  install source is never repeated: a Git URL can carry credentials. Exported
+ *  for packUpgrade.ts. */
+export function notOurs(p: Installed): string | null {
   const { published, fromRelease } = ownership(p)
   if (!published) return `kept — the installed ${PACK_ID} is version ${p.version ?? 'unknown'}, which this app did not publish`
   if (!fromRelease) {
@@ -381,8 +387,9 @@ export function thisPackRelease(): PackRelease {
 }
 
 /** Read back what an install or upgrade left: the pack list says `version`,
- *  names `PACK_URL` as the source, and the pack's Raw HTTP source exists. */
-async function verifyInstalled(group: string, version: string): Promise<PackStep> {
+ *  names `PACK_URL` as the source, and the pack's Raw HTTP source exists.
+ *  Exported for packUpgrade.ts. */
+export async function verifyInstalled(group: string, version: string): Promise<PackStep> {
   const found = await readInstalled(group)
   if ('error' in found) return { key: 'verify', action: 'error', detail: `could not check the install: ${found.error}` }
   if (!found.pack) return { key: 'verify', action: 'error', detail: `${PACK_ID} is not in the group’s pack list after the install` }
@@ -417,30 +424,6 @@ export async function installPack(group: string): Promise<PackStep[]> {
   const r = await capi('POST', groupPath(group, '/packs'), { id: PACK_ID, source: PACK_URL, allowCustomFunctions: false })
   if (r.status < 200 || r.status >= 300) return [{ key: 'pack', action: 'error', detail: scrubbedErrText(r, []) }]
   return [{ key: 'pack', action: 'created', detail: `${PACK_ID} ${PACK_VERSION}` }, await verifyInstalled(group, PACK_VERSION)]
-}
-
-/**
- * Upgrade an installed copy to `PACK_VERSION` in place (`PATCH /packs/<id>
- * {source}`, measured; `allowCustomFunctions: false` is not — see the header).
- * Only from a copy that is this app's by both signals, and never down: a newer
- * copy than this build knows is left as it is.
- */
-export async function upgradePack(group: string): Promise<PackStep[]> {
-  const refusal = installRefusal()
-  if (refusal) return [{ key: 'pack', action: 'skipped', detail: refusal }]
-  const found = await readInstalled(group)
-  if ('error' in found) return [{ key: 'pack', action: 'error', detail: found.error }]
-  if (!found.pack) return [{ key: 'pack', action: 'error', detail: `${PACK_ID} is not installed in ${group} — install it instead` }]
-  const kept = notOurs(found.pack)
-  if (kept) return [{ key: 'pack', action: 'error', detail: kept }]
-  const from = found.pack.version as string
-  if (from === PACK_VERSION) return [{ key: 'pack', action: 'exists', detail: `${PACK_ID} is already ${PACK_VERSION}` }]
-  if (compareVersions(from, PACK_VERSION) > 0) {
-    return [{ key: 'pack', action: 'error', detail: `kept — the installed ${from} is newer than the ${PACK_VERSION} this app installs` }]
-  }
-  const r = await capi('PATCH', groupPath(group, `/packs/${PACK_ID}`), { source: PACK_URL, allowCustomFunctions: false })
-  if (r.status < 200 || r.status >= 300) return [{ key: 'pack', action: 'error', detail: scrubbedErrText(r, []) }]
-  return [{ key: 'pack', action: 'updated', detail: `${PACK_ID} ${from} → ${PACK_VERSION}` }, await verifyInstalled(group, PACK_VERSION)]
 }
 
 /**

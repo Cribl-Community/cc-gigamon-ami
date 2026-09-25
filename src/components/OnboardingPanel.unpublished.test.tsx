@@ -7,7 +7,7 @@
 //   * the Raw HTTP stack's panel is the onboarding (`onboardingPath`), with its
 //     Deploy and its picker, exactly as before;
 //   * a copy this app owns (the published 0.1.0, from its release) is still
-//     offered Remove, and Upgrade renders refused;
+//     offered Remove, and the upgrade is named, with why it is not offered;
 //   * an installed build with no pack in the group shows no pack panel at all.
 
 import { act } from 'react'
@@ -28,7 +28,7 @@ function reply(status: number, value?: unknown) {
   return { ok: status >= 200 && status < 300, status, statusText: 'x', text: async () => text, json: async () => JSON.parse(text) as unknown }
 }
 
-function leader(o: { copy?: { version: string; source: string } } = {}) {
+function leader(o: { copy?: { version: string; source: string }; pending?: string[] } = {}) {
   calls = []
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -41,7 +41,7 @@ function leader(o: { copy?: { version: string; source: string } } = {}) {
     if (path === `/m/${GROUP}/p/${PACK_ID}/system/inputs`) return reply(200, { items: [] })
     if (path === `/m/${GROUP}/system/inputs`) return reply(200, { items: [] })
     if (path === '/products/lake/lakes/default/datasets') return reply(200, { items: [] })
-    if (path === '/version/status') return reply(200, { items: [] })
+    if (path === '/version/status') return reply(200, { items: [{ files: (o.pending ?? []).map((p) => ({ path: p })) }] })
     return reply(404, { message: 'not found' })
   })
 }
@@ -115,13 +115,14 @@ describe('10. while this build records no release', () => {
     expect(bodyText()).toContain(`Worker group ${GROUP}, picked in the panel below.`)
   })
 
-  it('a copy this app owns is offered Remove, and Upgrade renders refused with the reason', async () => {
+  it('a copy this app owns is offered Remove, and the upgrade is named with why it is not offered — as text, not a control', async () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') } })
     await mount(<OnboardingPanel />)
     expect(buttonNamed('Remove pack')).toBeTruthy()
-    const upgrade = buttonNamed(`Upgrade to ${PACK_VERSION}`)!
-    expect(upgrade.getAttribute('aria-disabled')).toBe('true')
-    expect(bodyText()).toContain(`Upgrade is not available: ${REFUSAL}.`)
+    // No button that can never run: the in-place upgrade's write is not granted
+    // until the slice that builds it.
+    expect(buttonNamed(`Upgrade to ${PACK_VERSION}`)).toBeUndefined()
+    expect(bodyText()).toContain(`Upgrade to ${PACK_VERSION} is not available: ${REFUSAL}.`)
     await act(async () => { buttonNamed('Remove pack')!.click() })
     await settle()
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(`Remove the Gigamon AMI pack from ${GROUP}`)
@@ -147,6 +148,27 @@ describe('10. while this build records no release', () => {
     // It still read, to know whether a pack is there.
     expect(calls.some((c) => c.path === `/m/${GROUP}/packs`)).toBe(true)
     expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
+    // …and nothing else a hidden panel has no use for: the datasets, the
+    // scheduled searches, the group's ports, the Leader's history.
+    const read = new Set(calls.map((c) => c.path))
+    for (const p of ['/products/lake/lakes/default/datasets', '/m/default_search/search/saved', `/m/${GROUP}/system/inputs`, '/version', '/products/stream/groups']) {
+      expect(read.has(p), `a hidden panel read ${p}`).toBe(false)
+    }
+  })
+
+  it('installed in Cribl, with no pack in the group but its removal left uncommitted: the panel shows, to finish it', async () => {
+    ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
+    vi.resetModules()
+    const { OnboardingPanel: Installed } = await import('./OnboardingPanel')
+    const { DashboardProvider: Provider } = await import('../app/DashboardContext')
+    leader({ pending: [`groups/${GROUP}/default/${PACK_ID}/package.json`] })
+    await act(async () => { root.render(<Provider><Installed /></Provider>) })
+    await settle()
+    expect(bodyText()).toContain('Onboard Gigamon AMI with the pack')
+    expect(buttonNamed('Finish removing the pack')).toBeTruthy()
+    expect(buttonNamed('Remove pack')).toBeUndefined()
+    // A panel that shows reads what its status rows say.
+    expect(calls.some((c) => c.path === '/products/lake/lakes/default/datasets')).toBe(true)
   })
 })
 

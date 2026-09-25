@@ -38,7 +38,7 @@ import {
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
-  nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
+  FINISH_REMOVAL_UNDO, finishRemovalSentence, nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
 } from '../../components/onboardingCopy'
 import { approvedWrites, type AccelState, type ApprovedWrites } from '../accel/provision'
 import { estimateScheduleSetCost } from '../accel/estimate'
@@ -631,5 +631,46 @@ export function packRemovalDialog(ctx: RemovalDialogContext): RemovalDialog {
     ],
     undo: REMOVE_PACK_UNDO,
     kept,
+  }
+}
+
+/** Everything the Finish-removal confirmation is built from. */
+export interface FinishRemovalContext {
+  group: string
+  /** The pack's files Git reports uncommitted in the group (`CommitScope.alreadyDirty`). */
+  files: readonly string[]
+  scope: CommitScope | null
+  undeployed: string | null
+  undeployedChecking?: boolean
+}
+
+export interface FinishRemovalDialog {
+  title: string
+  resources: ConfirmResource[]
+  consequences: string[]
+  undo: string
+}
+
+/**
+ * The confirmation for a Remove whose DELETE landed and whose commit did not:
+ * the pack is gone from the group, its removal is in no commit, and the Workers
+ * still run it. Nothing is deleted here — the deletion already happened — so it
+ * names the commit's files and the deploy, and needs no type-to-confirm.
+ */
+export function finishRemovalDialog(ctx: FinishRemovalContext): FinishRemovalDialog {
+  const { group } = ctx
+  const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
+  const undeployedLine = undeployedSentence(commitCtx)
+  return {
+    title: `Commit and deploy the pack’s removal from ${group}`,
+    resources: [{ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' }],
+    consequences: [
+      finishRemovalSentence(group, ctx.files),
+      carriesSentence(commitCtx, 'removal'),
+      pendingSentence(commitCtx),
+      ...(undeployedLine ? [undeployedLine] : []),
+      ...DEPLOY_CONSEQUENCES,
+    ],
+    undo: FINISH_REMOVAL_UNDO,
   }
 }

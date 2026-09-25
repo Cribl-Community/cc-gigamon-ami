@@ -143,12 +143,20 @@ export interface Unreached {
   reason: string
 }
 
-// EMPTY SINCE 2026-09-24. Its one entry was src/cribl/packClient.ts, the
-// onboarding pack client, built a slice ahead of its UI; Guided Setup's
-// onboarding panel now imports it, and its calls are granted below and in
-// config/policies.yml. The list stays so the next module built ahead of its
-// screen has somewhere to say so.
-export const UNREACHED_MODULES: readonly Unreached[] = []
+// src/cribl/packClient.ts was the first entry, built a slice ahead of its UI;
+// Guided Setup's onboarding panel imports it now, and its calls are granted
+// below and in config/policies.yml. The in-place upgrade was split out of it
+// into packUpgrade.ts so that its PATCH is not granted before a control can
+// send it. *(Corrected 2026-09-24, `feat/pack-onboarding-4a`: this list was
+// empty, and the upgrade's PATCH was granted for a control that rendered
+// refused.)*
+export const UNREACHED_MODULES: readonly Unreached[] = [
+  {
+    file: 'src/cribl/packUpgrade.ts',
+    reason:
+      'The in-place upgrade of the onboarding pack. No screen offers it yet: the design has it read the Raw HTTP source back after the upgrade and refuse to commit or deploy when its port, token or state was reset, and that is the next slice. Until then its PATCH is named here and not granted, so an admin is not asked to trust a write nothing can send.',
+  },
+]
 
 /**
  * THE CALL SURFACE. Every entry is reachable from a click in this app, except
@@ -480,8 +488,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'PATCH',
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
-    site: 'packClient.ts upgradePack',
-    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. This release shows the Upgrade control refused, so nothing sends it yet; it is declared because the client that holds it is loaded, and it is the same grant the upgrade will need.`,
+    site: 'packUpgrade.ts upgradePack',
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. NOT GRANTED yet: packUpgrade.ts is on UNREACHED_MODULES, because no screen offers the upgrade until it can check the Raw HTTP source survives it.`,
   },
   {
     method: 'DELETE',

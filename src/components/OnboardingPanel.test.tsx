@@ -60,7 +60,8 @@ function reply(status: number, value?: unknown) {
 
 /** A Cribl.Cloud Leader with two groups, real data in gigamon_ami, and — when
  *  asked — this app's current pack already installed in `default`. */
-function leader(o: { installed?: boolean; failHttp?: boolean; globalHttp?: boolean } = {}) {
+function leader(o: { installed?: boolean; failHttp?: boolean; globalHttp?: boolean; failCommitOnce?: boolean } = {}) {
+  let failCommit = o.failCommitOnce ?? false
   calls = []
   const pending: string[] = []
   const saved = new Map<string, unknown>()
@@ -89,6 +90,7 @@ function leader(o: { installed?: boolean; failHttp?: boolean; globalHttp?: boole
     if (at('GET', '/version/files')) return reply(200, { items: [] })
     if (at('GET', '/version/status')) return reply(200, { items: [{ files: pending.map((p) => ({ path: p })) }] })
     if (at('POST', '/version/commit')) {
+      if (failCommit) { failCommit = false; return reply(500, { message: 'commit refused' }) }
       const files = (body as { files: string[] }).files
       pending.splice(0, pending.length, ...pending.filter((f) => !files.includes(f)))
       return reply(200, { items: [{ commit: HASH }] })
@@ -380,6 +382,30 @@ describe('11. Remove pack', () => {
     expect(writes()).toEqual([])
     await typeInDialog('default')
     expect(buttonNamed('Yes, remove from default')?.getAttribute('aria-disabled')).toBeNull()
+  })
+})
+
+// ── A Remove whose commit failed ────────────────────────────────────────────
+
+describe('a Remove whose commit failed', () => {
+  it('offers to finish it: the uncommitted removal is committed and deployed, from its own confirmation', async () => {
+    leader({ installed: true, failCommitOnce: true })
+    await mount()
+    await removeThroughTheDialog()
+    // The pack is gone from the group, so there is nothing left to Remove —
+    // and the deletion is still in no commit the Workers run.
+    expect(buttonNamed('Remove pack')).toBeUndefined()
+    const finish = buttonNamed('Finish removing the pack')
+    expect(finish, 'nothing on the page can commit the removal').toBeTruthy()
+    const before = writes().length
+    await press(finish)
+    expect(dialogText()).toContain(`groups/default/default/${PACK_ID}/package.json`)
+    expect(writes().length, 'opening the confirmation wrote something').toBe(before)
+    await press(buttonNamed('Yes, commit and deploy default'), 30)
+    expect(writes().slice(before).map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /version/commit', 'PATCH /products/stream/groups/default/deploy',
+    ])
+    expect(buttonNamed('Finish removing the pack')).toBeUndefined()
   })
 })
 

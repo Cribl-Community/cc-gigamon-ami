@@ -1054,10 +1054,13 @@ describe('the onboarding pack’s grants (Guided Setup’s onboarding panel)', (
   // the pack's, so the grant an admin reads for it is exactly what is called.
   const packObjects = DECLARED.filter((d) => d.object.includes(PACK_ID) || d.object === '/m/:gid/packs')
 
-  it('reaches packClient.ts from src/main.tsx, so its grants are due — and nothing is left unreached', () => {
+  it('reaches packClient.ts from src/main.tsx, so its grants are due — and leaves only the upgrade unreached', () => {
     expect(REACHABLE.has('src/cribl/packClient.ts')).toBe(true)
     expect(REACHABLE.has('src/cribl/onboarding/run.ts')).toBe(true)
-    expect(UNREACHED_MODULES).toEqual([])
+    // The in-place upgrade has no control until the slice that checks the
+    // source survives it, so its PATCH is named and NOT granted.
+    expect(UNREACHED_MODULES.map((u) => u.file)).toEqual(['src/cribl/packUpgrade.ts'])
+    expect(REACHABLE.has('src/cribl/packUpgrade.ts')).toBe(false)
   })
 
   it('grants each pack path exactly the methods the code calls on it', () => {
@@ -1068,7 +1071,7 @@ describe('the onboarding pack’s grants (Guided Setup’s onboarding panel)', (
     }
     const byObject = Object.fromEntries(packObjects.map((d) => [d.object, [...d.actions].sort()]))
     expect(byObject['/m/:gid/packs']).toEqual(['GET', 'POST'])
-    expect(byObject[`/m/:gid/packs/${PACK_ID}`]).toEqual(['DELETE', 'PATCH'])
+    expect(byObject[`/m/:gid/packs/${PACK_ID}`]).toEqual(['DELETE'])
     expect(byObject[`/m/:gid/p/${PACK_ID}/system/inputs/in_gigamon_ami_http`]).toEqual(['GET', 'PATCH'])
     expect(byObject[`/m/:gid/p/${PACK_ID}/system/inputs/in_gigamon_ami_sample`]).toEqual(['GET', 'PATCH'])
   })

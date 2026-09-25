@@ -1,13 +1,24 @@
 // One Guided Setup run at a time, across every panel on the page.
 //
-// Two panels on Guided Setup commit and deploy a worker group: the Raw HTTP
-// stack's (ProvisionPanel) and the onboarding pack's (OnboardingPanel). Each
+// Four panels on Guided Setup write configuration. Three commit and deploy a
+// worker group: the Raw HTTP stack's (ProvisionPanel), the onboarding pack's
+// (OnboardingPanel) and the Lake landing panel's destination change
+// (LakeLandingPanel, which also edits gigamon_ami's retention — a value the
+// onboarding run reads and copies onto gigamon_ami_pq). The fourth, Acceleration
+// (AccelPanel), writes the same saved searches the onboarding run's last step
+// creates, so two at once POST one absent id twice and the second fails. Each
 // used to guard only its own `running` state, so nothing stopped a Remove on
-// one panel from committing and deploying while an Onboard on the other was
-// half way through its own commit. Two commits racing on one Leader can each
-// carry the other's files, and two deploys restart the group's Worker
-// Processes twice. So the lock is module state that both panels read, and a
-// run takes it before its first write and gives it back when it ends.
+// one panel from committing and deploying while an Onboard on another was half
+// way through its own commit. Two commits racing on one Leader can each carry
+// the other's files, and two deploys restart the group's Worker Processes
+// twice. So the lock is module state that every one of them reads, and a run
+// takes it before its first write and gives it back when it ends.
+//
+// A Lake landing write asks for its confirmation from INSIDE its run (the
+// writer re-reads before it asks), so that panel holds the lock while its
+// dialog is open; the other panels say another run is in progress until it is
+// answered. *(Corrected 2026-09-24, `feat/pack-onboarding-4a`: this covered
+// only ProvisionPanel and OnboardingPanel.)*
 //
 // ONE LOCK FOR THE PAGE, NOT ONE PER GROUP. Per group would be the narrower
 // rule, and the page only ever works on one group (useSetupGroup), so the two
@@ -19,7 +30,7 @@
 import { useSyncExternalStore } from 'react'
 
 /** Who holds the lock: a word for the step log, never shown as a reason alone. */
-export type SetupRunHolder = 'onboarding_stack' | 'onboarding_pack'
+export type SetupRunHolder = 'onboarding_stack' | 'onboarding_pack' | 'lake_landing' | 'acceleration'
 
 let holder: SetupRunHolder | null = null
 const listeners = new Set<() => void>()

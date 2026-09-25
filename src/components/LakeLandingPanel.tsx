@@ -177,6 +177,7 @@ import { DEFAULT_STREAM_GROUP } from '../cribl/provision'
 import { loadSetupGroup } from '../cribl/setupMemory'
 import { getDoc, listKeys, type LoggedEntry } from '../cribl/kv'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
+import { SETUP_RUN_BUSY, acquireSetupRun, useSetupRunHolder } from '../cribl/setupRunLock'
 
 // ── Identity of the things this panel talks about ───────────────────────────
 
@@ -327,6 +328,8 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
   const [storeRefused, setStoreRefused] = useState(false)
   const [asking, setAsking] = useState<Asking | null>(null)
   const [running, setRunning] = useState<RunningWrite>(null)
+  // Another Guided Setup run holding the page's lock (cribl/setupRunLock.ts).
+  const lockHolder = useSetupRunHolder()
   const [steps, setSteps] = useState<WriteStep[]>([])
   const [lastDiff, setLastDiff] = useState<readonly LandingDiffRow[]>([])
   const [measuring, setMeasuring] = useState<'lag' | 'partitions' | null>(null)
@@ -477,7 +480,22 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
 
   // ── The three writes ──────────────────────────────────────────────────────
 
+  /**
+   * Take the page's run lock for one write (cribl/setupRunLock.ts), or say why
+   * nothing was written. The onboarding panels commit and deploy this group
+   * from the same page, and the onboarding run reads gigamon_ami's retention.
+   * Held from the press through the confirmation — which this panel's writers
+   * ask for from inside the run — to the last step.
+   */
+  const takeLock = (): (() => void) | null => {
+    const unlock = acquireSetupRun('lake_landing')
+    if (!unlock) pushToast({ kind: 'error', text: `Nothing was written: ${SETUP_RUN_BUSY}` })
+    return unlock
+  }
+
   const applyRetention = async () => {
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('retention')
     setSteps([])
     try {
@@ -493,11 +511,14 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
       forgetLakeFacts()
       await afterWrite('Retention', result)
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
 
   const applyDescription = async () => {
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('description')
     setSteps([])
     try {
@@ -507,11 +528,14 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
       })
       await afterWrite('The dataset description', result)
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
 
   const applyDestination = async () => {
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('destination')
     setSteps([])
     try {
@@ -525,6 +549,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
       })
       await afterWrite('The Cribl Lake destination', result)
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
@@ -540,6 +565,8 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
    * change", leaving the commit undone forever.
    */
   const retryCommit = async () => {
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('destination')
     try {
       // A failed read falls back to the constructed path, as it always has —
@@ -578,6 +605,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
         steps: [...steps.filter((s) => s.key === 'destination'), ...next],
       })
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
@@ -699,7 +727,9 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
   const liveFlush = flushOf(destination)
   const flushChanged = liveFlush !== null && flushPresetOf(liveFlush) !== flushPresetOf(profile.flush)
 
-  const busy = running !== null ? 'Another change to this stack is already being applied.' : null
+  const busy = running !== null
+    ? 'Another change to this stack is already being applied.'
+    : lockHolder !== null ? SETUP_RUN_BUSY : null
 
   const failedSteps = steps.filter((s) => s.status === 'error')
   const destinationApplied = steps.some((s) => s.key === 'destination' && s.status === 'applied')

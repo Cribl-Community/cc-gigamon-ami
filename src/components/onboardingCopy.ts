@@ -241,6 +241,23 @@ export const REMOVE_PACK_UNDO =
 /** Type-to-confirm's label. */
 export const removeTypeLabel = (group: string): string => `To confirm, type the worker group name ${group}`
 
+// ── A removal that was never committed ──────────────────────────────────────
+
+/** Beside the Finish control, when the pack is gone but its removal is not committed. */
+export const finishRemovalNote = (group: string): string =>
+  `The pack is no longer installed in ${group}, but its removal was never committed or deployed.`
+
+/** In the Finish confirmation: which files, and why they are still uncommitted. */
+export function finishRemovalSentence(group: string, files: readonly string[]): string {
+  return (
+    `Git reports the pack’s removal from ${group} uncommitted: ${files.join(', ')}. Until it is committed and deployed, ` +
+    'the Workers keep running the pack as it was.'
+  )
+}
+
+export const FINISH_REMOVAL_UNDO =
+  'Onboard, on this tab, installs the pack again, with a new auth token.'
+
 // ── The Raw HTTP stack's panel, when the pack onboards ──────────────────────
 
 export const REMOVE_ONLY_LEAD = 'This group also has the Raw HTTP stack created outside the pack.'

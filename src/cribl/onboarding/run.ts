@@ -536,3 +536,37 @@ export async function runPackRemoval(group: string, io: RemovalIO): Promise<RunO
   const broken = committed.find((c) => c.action === 'error')
   return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
 }
+
+/**
+ * Commit and deploy a removal whose DELETE landed and whose commit did not — the
+ * pack is gone from the group, and the Workers still run it. Re-reads first:
+ * a pack that is installed again (or a list that cannot be read) writes
+ * nothing. The commit takes the pack's files Git still reports, and when
+ * somebody has committed them since, the step says so rather than failing.
+ */
+export async function finishPackRemoval(group: string, io: Pick<RemovalIO, 'onStep' | 'record'>): Promise<RunOutcome> {
+  const steps: RunStep[] = []
+  const step = (s: RunStep): RunStep => {
+    steps.push(s)
+    io.onStep(s)
+    return s
+  }
+  const finish = (stopped: RunStep | null): RunOutcome => {
+    void appendLog('gigamon', {
+      action: 'onboarding_pack.removed',
+      group,
+      outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
+      steps: steps.map((s) => `${s.key}:${s.action}`),
+    })
+    return { steps, stopped, pack: null }
+  }
+  const now = await readPackState(group)
+  if (now.error) return finish(step({ key: 'pack', label: labelOf('pack'), action: 'error', detail: `nothing was written: ${now.error}` }))
+  if (now.installed) {
+    return finish(step({ key: 'pack', label: labelOf('pack'), action: 'error', detail: `nothing was written: ${PACK_ID} is installed in ${group} again` }))
+  }
+  step({ key: 'pack', label: labelOf('pack'), action: 'exists', detail: 'not installed' })
+  const committed = await commitAndDeployPack(group, removeMessage(group), { wrote: false, record: io.record }, (c) => { step(fromCommit(c)) })
+  const broken = committed.find((c) => c.action === 'error')
+  return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
+}

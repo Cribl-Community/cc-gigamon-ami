@@ -9,12 +9,17 @@
 // `prepareOnboarding`, GETs only) and opens ONE <ConfirmDialog> built by
 // onboarding/plan.ts `onboardingDialog`; the dialog's own "Yes" runs
 // `runOnboarding` with exactly what it showed. Remove pack does the same with
-// `packRemovalDialog` and `runPackRemoval`, behind type-to-confirm.
+// `packRemovalDialog` and `runPackRemoval`, behind type-to-confirm. A Remove
+// whose DELETE landed and whose commit did not leaves the pack gone and its
+// removal in no commit; "Finish removing the pack" commits and deploys it
+// (`finishRemovalDialog`, `finishPackRemoval`), from Git's own pending list.
 //
 // WHILE THE PACK CANNOT BE INSTALLED (no release recorded in this build — see
 // pack.ts `PACK_PUBLISHED`), the panel still mounts, so its controls are in the
 // source the gate scans read, but it renders only where there is something to
-// show: in dev preview, or where the pack is already installed in the group.
+// show: in dev preview, where the pack is already installed in the group, or
+// where its removal is waiting to be committed. A panel that renders nothing
+// reads nothing but the group's pack list and Git's pending files.
 // Onboard is then refused with the release's own sentence, visibly, and
 // nothing can send `POST /packs`: this control refuses, and packClient.ts
 // `installPack` refuses again inside. An installed build with nothing
@@ -42,7 +47,8 @@ import { useSetupGroup } from './useSetupGroup'
 import {
   NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
   PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR, UPGRADE_NOT_OFFERED, accelStatusWords,
-  datasetWords, groupElsewhereNote, httpStatusWords, installedRefusal, onboardLabel, onboardNote, packStatusWords, removeTypeLabel,
+  datasetWords, finishRemovalNote, groupElsewhereNote, httpStatusWords, installedRefusal, onboardLabel, onboardNote, packStatusWords,
+  removeTypeLabel,
 } from './onboardingCopy'
 import { AUTH_HEADER, ENDPOINT_LEAD, TOKEN_ONCE, UNENCRYPTED_WARNING } from './provisionPanelCopy'
 import { MANIFEST } from '../cribl/accel/manifest'
@@ -52,10 +58,10 @@ import { IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
-  httpActionOf, onboardingDialog, onboardingPath, packRemovalDialog, type OnboardingDialog, type OnboardingDialogContext,
-  type RemovalDialog,
+  finishRemovalDialog, httpActionOf, onboardingDialog, onboardingPath, packRemovalDialog, type FinishRemovalDialog,
+  type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog,
 } from '../cribl/onboarding/plan'
-import { prepareOnboarding, runOnboarding, runPackRemoval, type RunStep } from '../cribl/onboarding/run'
+import { finishPackRemoval, prepareOnboarding, runOnboarding, runPackRemoval, type RunStep } from '../cribl/onboarding/run'
 import { PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_VERSION } from '../cribl/pack'
 import {
   PACK_COMMIT_KEY, compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackState,
@@ -77,6 +83,9 @@ interface PanelRead {
   /** Ports every other source in the group listens on; null = unreadable. */
   usedPorts: number[] | null
   accel: AccelState | null
+  /** The pack's files Git reports uncommitted while the pack is NOT installed:
+   *  a removal whose commit failed. Empty otherwise. */
+  stranded: string[]
 }
 
 interface UndeployedAtOpen { known: boolean; hash: string | null }
@@ -95,10 +104,11 @@ function accelCounts(a: AccelState | null): { total: number; installed: number; 
   return { total: MANIFEST.length, installed: installed.length, running: running.length, error: a.error }
 }
 
-/** The Upgrade control never runs on this release: `unavailable` is always
- *  set, and a GatedControl with a reason never calls `run`. Named, so the
- *  no-op is not mistaken for an upgrade that forgot to happen. */
-const UPGRADE_NOT_RUN = async (): Promise<void> => {}
+/** Whether the panel has anything to show (see the header): the pack can be
+ *  installed, this is dev preview, the pack is in the group, or its removal is
+ *  waiting to be committed. */
+const hasSomethingToShow = (installable: boolean, pack: PackState, stranded: readonly string[]): boolean =>
+  installable || !IS_INSTALLED || pack.installed || stranded.length > 0
 
 export function OnboardingPanel() {
   const { group, groups, groupReady, pickGroup } = useSetupGroup()
@@ -114,12 +124,13 @@ export function OnboardingPanel() {
   const [portText, setPortText] = useState('')
   // "Also send sample data": UNTICKED by default, and never remembered.
   const [sample, setSample] = useState(false)
-  const [confirming, setConfirming] = useState<'onboard' | 'remove' | null>(null)
+  const [confirming, setConfirming] = useState<'onboard' | 'remove' | 'finish' | null>(null)
   const [onboard, setOnboard] = useState<{ ctx: OnboardingDialogContext; dialog: OnboardingDialog } | null>(null)
   const [removal, setRemoval] = useState<RemovalDialog | null>(null)
+  const [finishing, setFinishing] = useState<FinishRemovalDialog | null>(null)
   const [openErr, setOpenErr] = useState<string | null>(null)
   const [opening, setOpening] = useState(false)
-  const [running, setRunning] = useState<'onboard' | 'remove' | null>(null)
+  const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, RunStep[]>>({})
   const [token, setToken] = useState<{ group: string; value: string; afterError: boolean } | null>(null)
   const [copied, setCopied] = useState<'url' | 'token' | null>(null)
@@ -127,19 +138,30 @@ export function OnboardingPanel() {
   const pendingNow = useRef<UndeployedAtOpen>(NOT_KNOWN)
 
   // Reads only. Only the latest refresh may set anything.
+  //
+  // In two rounds. The first — the pack list and Git's pending files — says
+  // whether the panel has anything to show; a panel that renders nothing reads
+  // nothing else (the Raw HTTP stack's and Acceleration's panels already read
+  // the group's ports, the datasets and the saved searches).
   const refresh = useCallback(async () => {
     const mine = ++seq.current
     const current = () => mine === seq.current
     pendingNow.current = NOT_KNOWN
     setLoading(true)
     setReadErr(null)
-    // Captured for the dialogs, never awaited by them (see ProvisionPanel).
-    void pendingDeploy(group).catch(() => null).then((h) => {
-      if (current()) pendingNow.current = { known: true, hash: h }
-    })
     try {
-      const [pack, datasets, groupsNow, usedPorts, accel] = await Promise.all([
-        readPackState(group),
+      const [pack, pending] = await Promise.all([readPackState(group), pendingConfigPaths().catch(() => null)])
+      if (!current()) return
+      const stranded = pack.installed || pack.error ? [] : packCommitScope(group, pending).alreadyDirty
+      if (!hasSomethingToShow(thisPackRelease().installable, pack, stranded)) {
+        setRead({ pack, datasets: null, hosting: null, usedPorts: null, accel: null, stranded })
+        return
+      }
+      // Captured for the dialogs, never awaited by them (see ProvisionPanel).
+      void pendingDeploy(group).catch(() => null).then((h) => {
+        if (current()) pendingNow.current = { known: true, hash: h }
+      })
+      const [datasets, groupsNow, usedPorts, accel] = await Promise.all([
         listDatasets(),
         listStreamGroupsCurrent(),
         portsOfOthers(group).catch(() => null),
@@ -148,7 +170,7 @@ export function OnboardingPanel() {
       if (!current()) return
       const rec = groupsNow.outcome === 'ok' ? groupsNow.value?.find((x) => x.id === group) : undefined
       const hosting: Hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
-      setRead({ pack, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel })
+      setRead({ pack, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel, stranded })
       // Offer a free port, but never overwrite one somebody is typing.
       setPortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
     } catch (e) {
@@ -193,9 +215,10 @@ export function OnboardingPanel() {
   const onboardBlocked = onboardRefusal !== null || busy !== null || loading || opening || installGate.denied !== null ||
     (release.installable && portIssue !== null)
   const removeBlocked = busy !== null || removeGate.denied !== null || opening
+  const stranded = !installed ? read?.stranded ?? [] : []
 
   // Rendered only where there is something to show — see the header.
-  const visible = release.installable || !IS_INSTALLED || installed
+  const visible = release.installable || !IS_INSTALLED || installed || stranded.length > 0
   const holdsPicker = onboardingPath(release, null).mode === 'pack'
 
   const openOnboard = async () => {
@@ -276,6 +299,56 @@ export function OnboardingPanel() {
       setConfirming('remove')
     } finally {
       setOpening(false)
+    }
+  }
+
+  // A removal whose commit failed: the files, as Git reports them now.
+  const openFinish = async () => {
+    if (removeBlocked) return
+    const mine = seq.current
+    setOpening(true)
+    setOpenErr(null)
+    try {
+      const [fresh, paths] = await Promise.all([readPackState(group), pendingConfigPaths().catch(() => null)])
+      if (mine !== seq.current) return
+      const scope = packCommitScope(group, paths)
+      if (fresh.error || fresh.installed || scope.alreadyDirty.length === 0) {
+        setOpenErr('The confirmation did not open: the pack’s removal is no longer waiting to be committed here.')
+        void refresh()
+        return
+      }
+      setFinishing(finishRemovalDialog({
+        group, files: scope.alreadyDirty, scope,
+        undeployed: pendingNow.current.hash, undeployedChecking: !pendingNow.current.known,
+      }))
+      setConfirming('finish')
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  // Reached only from the "Yes" inside the Finish confirmation.
+  const onFinish = async () => {
+    const gid = group
+    const unlock = acquireSetupRun('onboarding_pack')
+    setConfirming(null)
+    if (!unlock) {
+      setOpenErr(`Nothing was written: ${SETUP_RUN_BUSY}`)
+      return
+    }
+    setRunning('finish')
+    setOutcomes((prev) => ({ ...prev, [gid]: [] }))
+    try {
+      const out = await finishPackRemoval(gid, { onStep: (s) => appendStep(gid, s), record: record(gid) })
+      pushToast(out.stopped
+        ? { kind: 'error', text: `Finishing the removal stopped at “${out.stopped.label}”. The step list says what was done.` }
+        : { kind: 'done', text: `The pack’s removal from ${gid} is committed and deployed.` })
+      await refresh()
+    } catch (e) {
+      appendStep(gid, { key: 'run', label: 'Finish removing the pack', action: 'error', detail: (e as Error).message })
+    } finally {
+      setRunning(null)
+      unlock()
     }
   }
 
@@ -447,14 +520,12 @@ export function OnboardingPanel() {
             <GateNote write="onboarding_pack.install" />
             {openErr && <p className="gs-action-note gs-action-warn">{openErr}</p>}
             {!onboardRefusal && <p className="gs-action-note">{onboardNote(group)}</p>}
+            {/* Named, not offered: no control until the upgrade can run (its
+                write is unreached and ungranted — cribl/packUpgrade.ts). */}
             {behind && (
-              <GatedControl
-                write="onboarding_pack.upgrade"
-                label={`Upgrade to ${PACK_VERSION}`}
-                className="btn btn-ghost"
-                unavailable={release.refusal ? `Upgrade is not available: ${release.refusal}.` : UPGRADE_NOT_OFFERED}
-                run={UPGRADE_NOT_RUN}
-              />
+              <p className="gs-action-note">
+                {release.refusal ? `Upgrade to ${PACK_VERSION} is not available: ${release.refusal}.` : UPGRADE_NOT_OFFERED}
+              </p>
             )}
             {owned && (
               <>
@@ -465,6 +536,20 @@ export function OnboardingPanel() {
                   aria-disabled={removeBlocked || undefined}
                 >
                   Remove pack
+                </button>
+                <GateNote write="onboarding_pack.remove" />
+              </>
+            )}
+            {stranded.length > 0 && (
+              <>
+                <p className="gs-action-note gs-action-warn">{finishRemovalNote(group)}</p>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => void openFinish()}
+                  aria-disabled={removeBlocked || undefined}
+                >
+                  {running === 'finish' ? 'Committing…' : 'Finish removing the pack'}
                 </button>
                 <GateNote write="onboarding_pack.remove" />
               </>
@@ -509,6 +594,24 @@ export function OnboardingPanel() {
               className="btn btn-danger"
               unavailable={busy}
               run={onRemove}
+            />
+          }
+        />
+
+        <ConfirmDialog
+          isOpen={confirming === 'finish' && finishing !== null}
+          title={finishing?.title ?? ''}
+          resources={finishing?.resources ?? []}
+          consequences={finishing?.consequences}
+          undo={finishing?.undo}
+          onCancel={() => setConfirming(null)}
+          confirm={
+            <GatedControl
+              write="onboarding_pack.remove"
+              label={`Yes, commit and deploy ${group}`}
+              busyLabel="Committing…"
+              unavailable={busy}
+              run={onFinish}
             />
           }
         />

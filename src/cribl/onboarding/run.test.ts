@@ -19,10 +19,10 @@
 //   5. run order and scope for {sample ticked or not} × {pack absent or
 //      current}: the commit's files are the pack's alone, and the objects the
 //      dialog names are the objects written;
-//   6. every step's stop-or-continue;
-//   5. …and where a row could be named and not written (a sample source
+//      …and where a row could be named and not written (a sample source
 //      already running, a group with nothing left to change), it is not named:
 //      no source row, no deploy, no commit;
+//   6. every step's stop-or-continue;
 //   7. a source that moved sends nothing; at step 0, moved hosting, a taken
 //      port, gigamon_ami's retention, the source's planned action, a pack
 //      uninstalled, replaced or installed since, and a dataset that appeared or
@@ -34,7 +34,8 @@
 //   9. sample-only creates every schedule paused, an unresolved window creates
 //      no Lake entry, and nothing reads `$vt_results`;
 //  11. Remove: the pack's DELETE, never a Lake DELETE; nothing committed after
-//      it is an error.
+//      it is an error; a removal whose commit failed is finished by committing
+//      the pack's own files, and never while the pack is installed again.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -941,6 +942,25 @@ describe('11. Remove pack', () => {
     expect(out.stopped?.detail).toMatch(/^kept/)
     expect(writes()).toEqual([])
     expect(gone).toBe(0)
+  })
+
+  it('a removal whose commit failed is finished by committing and deploying the pack’s files, and nothing else', async () => {
+    leader({ datasets: REAL_DATA })
+    world.pending.push(`groups/${GROUP}/default/${PACK_ID}/package.json`)
+    const { run } = await load()
+    const out = await run.finishPackRemoval(GROUP, { onStep: () => {}, record: async () => {} })
+    expect(out.stopped).toBeNull()
+    expect(writes().map((c) => `${c.method} ${c.path}`)).toEqual(['POST /version/commit', `PATCH /products/stream/groups/${GROUP}/deploy`])
+    expect(world.committed).toEqual([[`groups/${GROUP}/default/${PACK_ID}/package.json`]])
+  })
+
+  it('finishing a removal writes nothing when the pack is installed again', async () => {
+    leader({ datasets: REAL_DATA, installed: {} })
+    world.pending.push(`groups/${GROUP}/default/${PACK_ID}/package.json`)
+    const { run } = await load()
+    const out = await run.finishPackRemoval(GROUP, { onStep: () => {}, record: async () => {} })
+    expect(out.stopped?.detail).toMatch(/^nothing was written/)
+    expect(writes()).toEqual([])
   })
 
   it('the published 0.1.0, installed from its release, is removed', async () => {
