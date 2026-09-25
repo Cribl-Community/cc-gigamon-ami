@@ -1,10 +1,12 @@
-// The onboarding panel in a build whose pinned pack is released. This build
-// pins 0.2.2 before its release (pack.ts), so the release constants are moved
-// forward below, as the flip after the tag will move them. *(Corrected
-// 2026-09-25, `feat/pack-022-parquet-pipeline`: from `feat/pack-flip-021`
-// until then this file swapped nothing, because the build shipped with 0.2.1
-// released. Before that it mocked a release in, as it does again now.)* The
-// unreleased build as it ships is OnboardingPanel.unpublished.test.tsx.
+// The onboarding panel in a build whose pinned pack is released — THIS build:
+// pack.ts pins 0.2.2, released and flipped (`feat/pack-flip-022`), so the
+// release constants are the real ones and nothing here swaps them. *(Corrected
+// 2026-09-25, `chore/release-fetch-and-doc-drift`: this said the build pinned
+// 0.2.2 before its release and moved the constants forward with a mock, which
+// the flip removed. Before that, `feat/pack-022-parquet-pipeline` had mocked a
+// release in; from `feat/pack-flip-021` until then nothing was swapped.)* An
+// unreleased pin is OnboardingPanel.unpublished.test.tsx, whose mock moves the
+// constants back.
 //
 //  10. the premise, pinned: this build installs, Onboard is offered (not
 //      aria-disabled) and opens a real dialog without a write, and an installed

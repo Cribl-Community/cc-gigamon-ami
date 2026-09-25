@@ -92,9 +92,12 @@ let commitQueue: Promise<unknown> = Promise.resolve()
  * Change one group's commit notes by READ, MERGE, WRITE — in turn, never two at
  * once — and answer the document as written and whether the store took it.
  *
- * TWO PANELS WRITE THIS DOCUMENT NOW. Guided Setup's Raw HTTP panel records
- * the stack's keys; the onboarding panel records the pack's commit under
- * `onboarding_pack` (packClient.ts `PACK_COMMIT_KEY`). A panel that wrote back
+ * TWO PANELS WRITE THIS DOCUMENT. The onboarding panel records the pack's
+ * commit under `onboarding_pack` (packClient.ts `PACK_COMMIT_KEY`); the global
+ * stacks' Remove-only ProvisionPanel only drops the keys of what it removed.
+ * *(Corrected 2026-09-25, `chore/release-fetch-and-doc-drift`: this said the
+ * Raw HTTP panel recorded the stack's keys, which went with its deploy.)* A
+ * panel that wrote back
  * the whole document it loaded on mount would drop the other panel's key — the
  * prefs.ts bug — and a dropped pack hash is one the stranded-commit repair then
  * refuses to deploy as "not made by this app". So every write reads the
