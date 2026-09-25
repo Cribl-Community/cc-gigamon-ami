@@ -1,6 +1,6 @@
 import { defineConfig, type IndexHtmlTransformContext, type IndexHtmlTransformResult, type ViteDevServer } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import { join } from 'path'
 import react from '@vitejs/plugin-react'
 // @ts-ignore
@@ -99,6 +99,39 @@ hot.on('${CONFIG_CHANGED_HMR_EVENT}', (data) => {
 });
 `;
 
+// The dev-only page trace, relayed (src/cribl/devTrace.ts `startRelay`). Cribl's Live Preview loads
+// this server in a sandboxed cross-origin frame that gets only ?init=, so ?trace and the console are
+// out of reach. While .dev/trace-on exists, every page served here is marked for tracing and posts
+// its trace to /__trace, appended as one JSON line to .dev/trace.ndjson (.dev/ is gitignored).
+// Delete the flag to stop. Dev server only: `vite build` never runs configureServer or serves HTML.
+const TRACE_FLAG = join('.dev', 'trace-on');
+const TRACE_OUT = join('.dev', 'trace.ndjson');
+const traceRelayPlugin = () => ({
+  name: 'trace-relay',
+  configureServer(server: ViteDevServer) {
+    server.middlewares.use('/__trace', (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(); return; }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => { body += chunk; if (body.length > 4_000_000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const trace: unknown = JSON.parse(body);
+          appendFileSync(join(server.config.root, TRACE_OUT), JSON.stringify({ received: Date.now(), trace }) + String.fromCharCode(10));
+          res.statusCode = 204;
+        } catch {
+          res.statusCode = 400;
+        }
+        res.end();
+      });
+    });
+  },
+  transformIndexHtml(_html: string, ctx: IndexHtmlTransformContext): IndexHtmlTransformResult {
+    if (!ctx.server || !existsSync(join(ctx.server.config.root, TRACE_FLAG))) return [];
+    return [{ tag: 'script', children: 'window.__GNO_TRACE__ = true;', injectTo: 'head-prepend' as const }];
+  },
+});
+
 const injectScriptFromQueryPlugin = () => {
   // Each Live Preview page's ?init=, remembered under the page's origin so an init-less reload of
   // /flow-map gets ITS workspace's bridge. See scripts/devInitScript.ts.
@@ -167,7 +200,7 @@ const injectScriptFromQueryPlugin = () => {
 };
 
 export default defineConfig({
-  plugins: [react(), packageEndpointPlugin(), injectScriptFromQueryPlugin(), chunkGraphPlugin()],
+  plugins: [react(), packageEndpointPlugin(), injectScriptFromQueryPlugin(), traceRelayPlugin(), chunkGraphPlugin()],
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
   },

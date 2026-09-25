@@ -13,7 +13,15 @@
 // trace would count them.
 //
 // READ FROM THE CONSOLE: `__gnoTrace.summary()`, or `__gnoTrace.reset()` before
-// a measured action. Nothing here is sent anywhere.
+// a measured action.
+//
+// OR FROM THE DEV SERVER, for Cribl's Live Preview. That page loads this dev
+// server in a sandboxed, cross-origin frame whose URL carries only `?init=`, so
+// neither `?trace` nor the console can reach it. With `.dev/trace-on` present
+// the dev server marks every page it serves for tracing (vite.config.ts), and
+// `startRelay` posts the trace back to that same dev server, which appends it
+// to `.dev/trace.ndjson`. It goes nowhere else: the URL is the dev server's
+// own, relative to the page.
 
 export type RequestKind =
   | 'history'
@@ -50,6 +58,8 @@ interface Trace {
 }
 
 let trace: Trace | null = null
+/** The page's own fetch, before the trace wrapped it, so the relay's posts are not traced. */
+let untraced: typeof fetch | null = null
 
 /** True when tracing is on for this page. */
 export function tracing(): boolean {
@@ -75,6 +85,7 @@ export function installTrace(win: Window & { __gnoTrace?: unknown } = window): v
   if (trace !== null) return
   trace = { requests: [], panels: new Map() }
   const inner = win.fetch.bind(win)
+  untraced = inner
   win.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
@@ -161,4 +172,23 @@ export function summary(): unknown {
     lastPaintMs: paints.length ? Math.max(...paints) : null,
     pending: panels.filter((p) => p.toPaintMs === null).map((p) => p.panel),
   }
+}
+
+/**
+ * Post the trace to the dev server whenever it has changed, once a second, so a
+ * page nobody can script (Live Preview's frame) still reports. Each post is the
+ * whole trace so far: the newest line for a page is its answer. Returns a stop.
+ */
+export function startRelay(win: Window = window, url = '/__trace', everyMs = 1000): () => void {
+  let last = ''
+  const id = win.setInterval(() => {
+    if (!trace || !untraced) return
+    const panels = [...trace.panels.entries()].map(([panel, m]) => ({ panel, ...m }))
+    const key = JSON.stringify([trace.requests.length, trace.requests.filter((r) => r.end !== null).length, panels.map((p) => [p.start, p.paint])])
+    if (key === last) return
+    last = key
+    const body = JSON.stringify({ page: win.location.pathname, origin: Math.round(performance.timeOrigin), summary: summary(), panels })
+    void untraced(url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body }).catch(() => {})
+  }, everyMs)
+  return () => win.clearInterval(id)
 }
