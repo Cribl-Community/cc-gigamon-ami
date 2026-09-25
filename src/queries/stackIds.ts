@@ -65,7 +65,7 @@
 
 import {
   PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_JSON_OUTPUT_ID,
-  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PIPELINE_ID, PACK_PUBLISHED_VERSIONS,
+  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PARQUET_PIPELINE_ID, PACK_PIPELINE_ID, PACK_PUBLISHED_VERSIONS,
   PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID, PACK_SAMPLE_ROUTE_ID,
   packInputLabel, packOutputLabel, packRouteLabel,
 } from '../cribl/pack'
@@ -167,15 +167,26 @@ export const STACKS: readonly Stack[] = [
     // The ids come from ../cribl/pack; the `<type>:` prefixes are the YAML's
     // `type:` fields, which stackIds.test.ts reads to hold them equal. The HTTP
     // source fans out: one route to the JSON dataset the dashboards read, one
-    // to the Parquet copy, both through the same cast/derive pipeline.
+    // to the Parquet copy.
     // (Keyed `pack-0.2.0`, and `unreleased`, until 2026-09-25.)
+    //
+    // 0.2.2 IS THIS STACK TOO. It adds one pipeline, which only the Parquet
+    // route runs, and keeps every source, route and destination id, so every
+    // label a counter filters on is the same; a second stack would count the
+    // JSON path twice. The Parquet path's `pipeline` names 0.2.2's
+    // (`PACK_PARQUET_PIPELINE_ID`; 0.2.0 and 0.2.1 ran `PACK_PIPELINE_ID` there)
+    // for the reader only: no counter names a pack pipeline (see the header),
+    // and the Parquet path is never counted into gigamon_ami figures, since
+    // COUNTED_PATHS keeps only paths whose dataset is gigamon_ami.
+    // *(Corrected 2026-09-25, `feat/pack-022-parquet-pipeline`: both HTTP paths
+    // named the one cast/derive pipeline.)*
     key: 'pack-0.2',
     scope: 'pack',
     status: PACK_PUBLISHED_VERSIONS.includes('0.2.0') ? 'released' : 'unreleased',
-    what: 'cc-network-gigamon-ami 0.2.0 and 0.2.1: Raw HTTP, dual-written as JSON and Parquet, plus a sample DataGen. 0.2.0 delivers nothing; 0.2.1 fixes its route filters.',
+    what: 'cc-network-gigamon-ami 0.2.0, 0.2.1 and 0.2.2: Raw HTTP, dual-written as JSON and Parquet, plus a sample DataGen. 0.2.0 delivers nothing; 0.2.1 fixes its route filters; 0.2.2 drops _raw from the Parquet copy through a pipeline of its own.',
     paths: [
       { route: packRouteLabel(PACK_HTTP_JSON_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_JSON_OUTPUT_ID), dataset: PACK_LAKE_DATASET_ID },
-      { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
+      { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PARQUET_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
       { route: packRouteLabel(PACK_SAMPLE_ROUTE_ID), input: packInputLabel('datagen', PACK_SAMPLE_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_SAMPLE_OUTPUT_ID), dataset: PACK_SAMPLE_DATASET_ID },
     ],
   },

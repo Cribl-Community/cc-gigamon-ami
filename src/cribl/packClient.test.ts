@@ -185,18 +185,27 @@ async function today(): Promise<Client> {
  *  constants moved as a release moves them (the version appended), nothing else. */
 async function withRelease(): Promise<Client> {
   vi.resetModules()
-  vi.doMock('./pack', async (orig) => ({
-    ...(await orig<typeof import('./pack')>()),
-    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0', PACK_VERSION]),
-  }))
+  vi.doMock('./pack', async (orig) => {
+    // Appended to every version already published, as the flip appends it.
+    // *(Until 2026-09-25, `feat/pack-022-parquet-pipeline`, this list was
+    // written out as ['0.1.0', '0.2.0', PACK_VERSION], which dropped 0.2.1
+    // once the pin moved past it.)*
+    const real = await orig<typeof import('./pack')>()
+    return {
+      ...real,
+      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
+      PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION), real.PACK_VERSION]),
+    }
+  })
   return loadClient()
 }
 
 /**
- * The client in a build that pins a version before its release exists, as
- * this one pinned 0.2.1 until 2026-09-25 — and as the next build that bumps
- * `PACK_VERSION` will, until its tag is pushed. The constants a release moves,
- * moved back: not published, no sha256, the pinned version off the list.
+ * The client in a build that pins a version before its release exists — THIS
+ * build, which pins 0.2.2 before its release (as it pinned 0.2.1 until
+ * 2026-09-25). The constants a release moves, moved back: not published, no
+ * sha256, the pinned version off the list; today that changes nothing, and it
+ * keeps these tests about an unreleased pin after the flip.
  */
 async function unreleased(): Promise<Client> {
   vi.resetModules()
@@ -233,17 +242,23 @@ describe('packPath', () => {
 })
 
 describe('the release gate', () => {
-  it('counts 0.1.0, 0.2.0 and 0.2.1 as published, and installs 0.2.1 today', async () => {
+  it('counts 0.1.0, 0.2.0 and 0.2.1 as published, and refuses to install 0.2.2 today: it is not released', async () => {
     const c = await today()
-    expect(PACK_VERSION).toBe('0.2.1')
+    expect(PACK_VERSION).toBe('0.2.2')
     expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1'])
-    expect(c.installRefusal()).toBeNull()
+    expect(c.installRefusal()).toBe('pack 0.2.2 has not been released, so there is nothing to install yet')
   })
 
   it('in a build whose pinned version has no release: counts only the earlier ones, and refuses', async () => {
     const c = await unreleased()
-    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0'])
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1'])
     expect(c.installRefusal()).toMatch(/has not been released/)
+  })
+
+  it('once 0.2.2 is released, counts it after every earlier version and installs it', async () => {
+    const c = await withRelease()
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1', '0.2.2'])
+    expect(c.installRefusal()).toBeNull()
   })
 
   it('refuses to install in a build with no release, and sends nothing at all', async () => {
@@ -264,7 +279,7 @@ describe('the release gate', () => {
   it('with the release recorded, installs from the pinned URL with custom functions refused, and reads it back', async () => {
     const c = await withRelease()
     expect(c.installRefusal()).toBeNull()
-    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', PACK_VERSION])
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1', PACK_VERSION])
     leader({ packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp(), liveSample()] })
     const steps = await c.installPack(GROUP)
     expect(sent('POST', PACKS)?.body).toEqual({ id: PACK_ID, source: PACK_URL, allowCustomFunctions: false })
@@ -324,9 +339,32 @@ describe('the release gate', () => {
     expect(sent('PATCH', PACK)?.body).toEqual({ source: PACK_URL, allowCustomFunctions: false })
     expect(steps.map((s) => s.action)).toEqual(['updated', 'exists'])
   })
+
+  it('upgrades a published 0.2.1 in place to 0.2.2, once 0.2.2 is released', async () => {
+    const c = await withRelease()
+    expect(PACK_VERSION).toBe('0.2.2')
+    leader({ packs: [ours('0.2.1')], packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp()] })
+    const steps = await c.upgradePack(GROUP)
+    expect(sent('PATCH', PACK)?.body).toEqual({ source: packReleaseUrl('0.2.2'), allowCustomFunctions: false })
+    expect(steps.map((s) => s.action)).toEqual(['updated', 'exists'])
+  })
+
+  it('refuses to upgrade 0.2.1 in this build, sending nothing: 0.2.2 is not released', async () => {
+    const c = await today()
+    leader({ packs: [ours('0.2.1')], packInputs: [liveHttp()] })
+    expect((await c.upgradePack(GROUP))[0]).toMatchObject({ action: expect.not.stringMatching(/^updated$/) })
+    expect(writes()).toEqual([])
+  })
 })
 
 describe('removePack', () => {
+  it('deletes an installed 0.2.1 in this build, while 0.2.2 is not released: it is still this app’s', async () => {
+    const c = await today()
+    leader({ packs: [ours('0.2.1')] })
+    expect(await c.removePack(GROUP)).toEqual({ key: 'pack', action: 'updated', detail: 'deleted' })
+    expect(writes()).toEqual([{ method: 'DELETE', path: PACK, body: undefined }])
+  })
+
   it('deletes a copy this app published, by its own id', async () => {
     const c = await today()
     leader({ packs: [{ id: 'other-pack', version: '1.0.0' }, ours('0.1.0')] })
@@ -413,7 +451,8 @@ describe('readPackState', () => {
     const c = await today()
     leader({ packs: [ours('0.1.0')], packInputsStatus: 500, objectsStatus: 403 })
     const s = await c.readPackState(GROUP)
-    expect(Object.values(s.objects).flatMap((o) => Object.values(o))).toEqual(Array(10).fill('unreadable'))
+    // Eleven since 0.2.2 added gigamon_ami_normalize_parquet.
+    expect(Object.values(s.objects).flatMap((o) => Object.values(o))).toEqual(Array(11).fill('unreadable'))
     expect(s.http).toBeNull()
   })
 })

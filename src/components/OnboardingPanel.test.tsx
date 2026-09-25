@@ -1,8 +1,10 @@
-// The onboarding panel in this build as it ships: 0.2.1 released, its sha256
-// recorded (pack.ts). Nothing here swaps a constant. *(Until 2026-09-25 this
-// file mocked a release in, because the build pinned 0.2.1 before its release;
-// the unreleased build is now OnboardingPanel.unpublished.test.tsx, with its
-// constants moved back explicitly.)*
+// The onboarding panel in a build whose pinned pack is released. This build
+// pins 0.2.2 before its release (pack.ts), so the release constants are moved
+// forward below, as the flip after the tag will move them. *(Corrected
+// 2026-09-25, `feat/pack-022-parquet-pipeline`: from `feat/pack-flip-021`
+// until then this file swapped nothing, because the build shipped with 0.2.1
+// released. Before that it mocked a release in, as it does again now.)* The
+// unreleased build as it ships is OnboardingPanel.unpublished.test.tsx.
 //
 //  10. the premise, pinned: this build installs, Onboard is offered (not
 //      aria-disabled) and opens a real dialog without a write, and an installed
@@ -44,6 +46,20 @@ vi.mock('./Toast', () => ({
   clearToastError: () => {},
   ToastProvider: () => null,
 }))
+vi.mock('../cribl/pack', async (orig) => {
+  // PACK_VERSION's release recorded, as the flip after its tag records it:
+  // published, a digest, and appended to the versions already published. This
+  // build pins 0.2.2 before its release (pack.ts), so without this every block
+  // below would describe the refusal, which OnboardingPanel.unpublished.test.tsx
+  // already pins. The flip removes this mock and repins block 10's premise to
+  // the real digest, as `feat/pack-flip-021` did for 0.2.1.
+  const real = await orig<typeof import('../cribl/pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
+    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
+  }
+})
 
 const GROUPS = ['default', 'lab']
 const HASH = 'dddd000011112222dddd000011112222dddd0000'
@@ -282,11 +298,11 @@ async function removeThroughTheDialog() {
 
 // ── 10 ──────────────────────────────────────────────────────────────────────
 
-describe('10. this build, as it ships: 0.2.1 released', () => {
-  it('pins the premise: the pinned release is installable, with the digest hashed from its asset', () => {
+describe('10. this build once its pin is released: 0.2.2, recorded by the mock above', () => {
+  it('pins the premise: the pinned release is installable (its digest mocked until the flip records the real one)', () => {
     expect(thisPackRelease()).toMatchObject({
-      version: '0.2.1', published: true, installable: true, refusal: null, url: PACK_URL,
-      sha256: '2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807',
+      version: '0.2.2', published: true, installable: true, refusal: null, url: PACK_URL,
+      sha256: 'ab'.repeat(32),
     })
   })
 

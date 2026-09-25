@@ -16,7 +16,8 @@
 // (routing/eligibility.ts). `tableProblems()` enforces both, and
 // routing/table.test.ts fails the build on any entry that breaks either. Today
 // no entry has evidence, so every entry says `json`: the Parquet dataset holds
-// no data yet (it fills from pack 0.2.1's HTTP source, not released).
+// no parity evidence yet (it fills only from the pack's HTTP source: 0.2.1's,
+// released 2026-09-25, and 0.2.2's, whose copy carries no `_raw`).
 //
 // Even a `parquet` entry routes only while the install's own density and a
 // completeness check agree at submit time (routing/route.ts): the table says a

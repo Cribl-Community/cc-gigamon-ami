@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packRelease, packReleaseUrl } from '../pack'
+import { PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_PARQUET_PIPELINE_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packRelease, packReleaseUrl } from '../pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const SHIPPED = (parse(readFileSync(join(ROOT, 'packs', PACK_ID, 'default', 'inputs.yml'), 'utf8')) as {
@@ -183,7 +183,7 @@ async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; pla
   } else {
     vi.doMock('../pack', async (orig) => ({
       ...(await orig<typeof import('../pack')>()),
-      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', MID, '0.2.0', PACK_VERSION, NEWER]),
+      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', MID, '0.2.0', '0.2.1', PACK_VERSION, NEWER]),
     }))
   }
   const [run, plan] = await Promise.all([import('./run'), import('./plan')])
@@ -213,6 +213,37 @@ async function upgrade(o: { between?: () => void; published?: boolean } = {}) {
 // ── The confirmation ────────────────────────────────────────────────────────
 
 describe('the Upgrade confirmation', () => {
+  it('0.2.1 → 0.2.2: the Parquet pipeline is the one object added; nothing is dropped', async () => {
+    const { plan } = await load()
+    expect(PACK_VERSION).toBe('0.2.2')
+    const changes = plan.upgradeObjectChanges('0.2.1')
+    expect(changes.added).toEqual([{ kind: 'pipelines', id: PACK_PARQUET_PIPELINE_ID }])
+    expect(changes.dropped).toEqual([])
+    expect(changes.kept.map((c) => c.id).sort()).toEqual(Object.values(PACK_0_2_1_OBJECTS).flat().sort())
+    expect(plan.upgradeObjectChanges('0.2.0')).toEqual(changes)
+  })
+
+  it('an installed 0.2.1 is offered the upgrade once 0.2.2 is released, and its dialog creates only the Parquet pipeline', async () => {
+    leader({ copy: { version: '0.2.1', source: packReleaseUrl('0.2.1') } })
+    const { run, plan } = await load()
+    const prepared = await run.prepareUpgrade(GROUP, { undeployed: null, undeployedChecking: false })
+    expect(prepared.ok).toBe(true)
+    if (!prepared.ok) return
+    const d = plan.packUpgradeDialog(prepared.ctx)
+    expect(d.resources[0].detail).toContain('0.2.1 → 0.2.2')
+    expect(d.resources.filter((r) => r.action === 'create').map((r) => r.id)).toEqual([PACK_PARQUET_PIPELINE_ID])
+    expect(d.resources.filter((r) => r.action === 'delete')).toEqual([])
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+
+  it('an installed 0.2.1 is refused the upgrade in this build, before anything is sent: 0.2.2 is not released', async () => {
+    leader({ copy: { version: '0.2.1', source: packReleaseUrl('0.2.1') } })
+    const { run } = await load({ published: false })
+    const prepared = await run.prepareUpgrade(GROUP, { undeployed: null, undeployedChecking: false })
+    expect(prepared.ok).toBe(false)
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+
   it('0.1.0 → this build: 0.1.0’s own objects are dropped (not claimed removed) and every current one is added, by id', async () => {
     const { plan } = await load()
     const changes = plan.upgradeObjectChanges('0.1.0')

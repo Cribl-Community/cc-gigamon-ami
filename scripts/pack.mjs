@@ -36,6 +36,14 @@
 //   - each Lake destination writes one of the pack's three datasets in that
 //     dataset's format (the dashboards read gigamon_ami as JSON), and a
 //     *_to_parquet route is the only kind that may reach a Parquet destination.
+//   - _raw (0.2.2 on): a route into a Parquet destination must run a pipeline
+//     whose enabled Eval, filter "true", removes _raw (and nothing after it adds
+//     it back); a route into a JSON destination must run one that removes it
+//     nowhere. The JSON datasets keep _raw because the app's evidence drills,
+//     Field Explorer and Copilot briefs read it; the Parquet copy would only
+//     carry a second copy of each record. Judged by what the pipeline does, not
+//     by its name, and narrowly (`rawHandling`): a removal written any other
+//     way is refused on a Parquet route rather than trusted.
 //   - no object id (or route name) starts with `gno_`, which is reserved for
 //     the app's acceleration schedules.
 //   - every output is a Cribl Lake destination. A `router` or `default` output
@@ -134,6 +142,33 @@ function routeFilterInput(filter) {
   const m = PACK_FILTER.exec(String(filter))
   return m ? { type: m[1], id: m[2] } : null
 }
+/** Whether an Eval field pattern (`*` is a wildcard) names `field`. */
+const namesField = (pattern, field) =>
+  typeof pattern === 'string' && new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`).test(field)
+
+/**
+ * What a pipeline does to `_raw`. `touched`: some enabled function lists it
+ * (or a wildcard matching it) in an Eval-style `remove`. `removed`: an enabled
+ * Eval with filter "true" removes it from every event — `keep` not holding it
+ * back — and no later enabled Eval `add` names it again. Only an Eval `add` is
+ * detected: another function that rebuilds `_raw` (a Serialize, a Parser writing
+ * to it) would pass this check, so review any function after the removal. Deliberately narrow: the
+ * only removal this recognises is the one the pack ships, so a cleverer one is
+ * refused on a Parquet route rather than trusted.
+ */
+export function rawHandling(conf) {
+  const fns = Array.isArray(conf?.functions) ? conf.functions.filter((f) => isPlainObject(f) && f.disabled !== true) : []
+  const lists = (f, key) => (Array.isArray(f.conf?.[key]) ? f.conf[key] : [])
+  const removes = (f) => lists(f, 'remove').some((p) => namesField(p, '_raw'))
+  const touched = fns.some(removes)
+  const at = fns.findIndex((f) =>
+    f.id === 'eval' && (f.filter === 'true' || f.filter === true) && removes(f) && !lists(f, 'keep').some((p) => namesField(p, '_raw')))
+  if (at === -1) return { touched, removed: false, why: 'no enabled Eval with filter "true" lists _raw under remove' }
+  const readds = fns.slice(at + 1).find((f) => lists(f, 'add').some((a) => a?.name === '_raw'))
+  if (readds) return { touched, removed: false, why: `a later function (${readds.description ?? readds.id}) adds _raw back` }
+  return { touched, removed: true, why: '' }
+}
+
 /** The word that marks an undecided placeholder (src/cribl/pack.ts `PACK_PENDING`). */
 const PENDING = /\bPENDING\b/
 
@@ -525,6 +560,18 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     const parquetRoute = String(route?.id).endsWith(PARQUET_ROUTE_SUFFIX)
     if (parquetRoute && lake?.format !== 'parquet') errors.push(`${where}: a *${PARQUET_ROUTE_SUFFIX} route may only target a Parquet destination, not ${route?.output}`)
     if (!parquetRoute && lake?.format === 'parquet') errors.push(`${where}: only a *${PARQUET_ROUTE_SUFFIX} route may target the Parquet destination ${route?.output}`)
+    // _raw: dropped from the Parquet copy, kept in every JSON dataset (the
+    // app's evidence drills, Field Explorer and Copilot briefs read it there).
+    const conf = yml[`default/pipelines/${route?.pipeline}/conf.yml`]
+    if (lake && isPlainObject(conf)) {
+      const raw = rawHandling(conf)
+      if (lake.format === 'parquet' && !raw.removed) {
+        errors.push(`${where}: writes the Parquet destination ${route?.output} through pipeline "${route?.pipeline}", which does not remove _raw; the Parquet copy must not carry it (${raw.why})`)
+      }
+      if (lake.format !== 'parquet' && raw.touched) {
+        errors.push(`${where}: writes the ${lake.format} dataset ${lake.destPath} through pipeline "${route?.pipeline}", which removes _raw; a JSON dataset keeps it`)
+      }
+    }
   }
   // Every route of an input is reached. Routes run in order and a final route
   // stops the event, so a final route ahead of another route of the same input

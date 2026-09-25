@@ -1,17 +1,38 @@
-# Pipeline gigamon_ami_normalize of the cc-network-gigamon-ami pack.
-# The functions are provision.ts's PIPELINE_SPEC, value for value: cast and
-# derive only. There is NO parse step. The HTTP input's breaker has already
-# split the POSTed array and extracted every record's fields, and the sample
-# DataGen's events arrive as objects, so every row lands in one shape. The JSON
-# and sample routes run this pipeline, and keep _raw; since 0.2.2 the Parquet
-# route runs gigamon_ami_normalize_parquet, these two functions plus one that
-# removes _raw. src/cribl/pack.test.ts fails if this and PIPELINE_SPEC drift,
-# so change them together.
+# Pipeline gigamon_ami_normalize_parquet of the cc-network-gigamon-ami pack.
+# Only the route gigamon_ami_http_to_parquet runs it (0.2.2 on). Its functions
+# are provision.ts's PARQUET_PIPELINE_SPEC, value for value: the same two Evals
+# as gigamon_ami_normalize (cast and derive, no parse step), then one Eval that
+# removes _raw. src/cribl/pack.test.ts fails if this and PARQUET_PIPELINE_SPEC
+# drift, or if its first two functions stop being PIPELINE_SPEC's.
+#
+# WHY _raw GOES HERE AND NOWHERE ELSE. After the breaker every field of a
+# record is already a column, and _raw is the record's whole JSON text again
+# (measured 2026-09-25: a 0.2.1 Parquet row carried the full _raw beside 48
+# columns). In the Parquet copy it is a second copy of every row. The JSON
+# dataset keeps it: the app's evidence drills, Field Explorer's presence view
+# and the Copilot briefs read _raw, and they are pinned to gigamon_ami.
+#
+# WHY AN EVAL `remove`. It is Cribl's documented way to take a top-level field
+# off an event: a list of field names removed after the Eval's `add`s, applied
+# to every event its filter matches ("true" here, so every one). The
+# alternatives are wrong for this: the Drop function drops the whole EVENT; the
+# Parser and Serialize functions rewrite _raw's content rather than remove the
+# field; and a post-processing pipeline bound to the Parquet destination would
+# make default/outputs.yml differ from landing.ts's destination body, which
+# pack.test.ts holds equal. A separate Eval, last, rather than a `remove` on the
+# derive Eval, so the first two functions stay PIPELINE_SPEC's byte for byte.
+#
+# ROUTE SEMANTICS, UNMEASURED HERE. The JSON route before this one is not final,
+# and Cribl documents that a non-final route hands its pipeline a COPY of the
+# event, so removing _raw on this route cannot touch what the JSON route wrote.
+# That is Cribl's documented behaviour; this project has not measured it. The
+# 0.2.2 proof install must check both: gigamon_ami rows still carry _raw, and
+# gigamon_ami_pq rows carry none.
 output: default
 streamtags: []
 groups: {}
 asyncFuncTimeout: 1000
-description: Gigamon AMI records, already objects (HTTP after the breaker, or sample) - cast and derive only.
+description: Gigamon AMI records for the Parquet copy - cast and derive, then remove _raw.
 functions:
   - id: eval
     filter: "true"
@@ -93,3 +114,10 @@ functions:
           value: typeof src_ip==='string'?src_ip.split('.').slice(0,2).join('.'):undefined
         - name: dst_subnet16
           value: typeof dst_ip==='string'?dst_ip.split('.').slice(0,2).join('.'):undefined
+  - id: eval
+    filter: "true"
+    disabled: false
+    description: Remove _raw from the Parquet copy
+    conf:
+      remove:
+        - _raw

@@ -1,11 +1,12 @@
 // The onboarding panel in a build that pins a pack version before its release
 // exists: pack.ts `PACK_PUBLISHED` false, no sha256, the pinned version off
-// `PACK_PUBLISHED_VERSIONS`. That was THIS build until 2026-09-25, and this
-// file used to swap nothing; 0.2.1 is released now, so the constants are moved
-// back below, explicitly, as the next build that bumps `PACK_VERSION` will
-// ship them until its tag is pushed. The published build's own behaviour is
-// OnboardingPanel.test.tsx (its "10. this build, as it ships" block). *(Corrected 2026-09-25,
-// `feat/pack-flip-021`.)* The refusal is what is pinned:
+// `PACK_PUBLISHED_VERSIONS`. That is THIS build again: it pins 0.2.2 before
+// its release, so the mock below changes nothing today; it stays so this file
+// keeps describing an unreleased pin after the flip, as it did while 0.2.1 was
+// released. The published build's behaviour is OnboardingPanel.test.tsx (its
+// block 10). *(Corrected 2026-09-25, `feat/pack-flip-021`, and again the same
+// day, `feat/pack-022-parquet-pipeline`, when the pin moved to the unreleased
+// 0.2.2.)* The refusal is what is pinned:
 //   * Onboard is aria-disabled, with the release's own sentence as visible text
 //     it points at, and pressing it opens nothing and sends nothing;
 //   * `POST /packs` is never sent, by anything on the page;
