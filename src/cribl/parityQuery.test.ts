@@ -13,7 +13,8 @@ import { SOURCES } from '../queries/security'
 import { APP_L4_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../queries/snapshots'
 import { buildTrendQuery } from '../queries/tcpHealth'
 import { SLOW } from '../queries/webApiHealth'
-import { classifyQuery, compareGrouped, type ClassHit, type GroupedSpec, type Row } from './parity'
+import { PARITY_CHECKS, classify, classifyQuery, compareGrouped, summarizeColumns, type ClassHit, type GroupedSpec, type Row } from './parity'
+import { eligibility } from './routing/eligibility'
 
 const has = (hits: ClassHit[], cls: string, field: string) => hits.some((h) => h.cls === cls && h.field === field)
 
@@ -85,6 +86,72 @@ describe('classifyQuery — a whole dashboard query', () => {
   })
 })
 
+// Shapes no dashboard query has TODAY, each of which once read as class-free —
+// so, once the type table was filled, as eligible for Parquet. The classifier's
+// promise is that every mistake it makes is towards "not eligible"; each of
+// these was a mistake the other way (review of feat/phase8-1-router).
+describe('classifyQuery — a class hidden inside an expression', () => {
+  const Q = (tail: string) => `dataset="gigamon_ami" ${tail}`
+  const NUM = { tcp_rtt: 'number', protocol: 'number', http_code: 'number' } as const
+
+  it.each([
+    ['round(avg(tcp_rtt), 1)', '| summarize rtt=round(avg(tcp_rtt), 1)'],
+    ['toint(percentile(tcp_rtt, 95))', '| summarize p=toint(percentile(tcp_rtt, 95))'],
+    ['percentiles(tcp_rtt, 50, 95)', '| summarize percentiles(tcp_rtt, 50, 95)'],
+    ['avgif(tcp_rtt, protocol == 6)', '| summarize a=avgif(tcp_rtt, protocol == 6)'],
+    ['minif(tcp_rtt, ...) under a where', '| where protocol == 6 | summarize lo=minif(tcp_rtt, protocol == 6) by bin(_time, 1m)'],
+    ['avg of an extend-made column', '| extend r=tcp_rtt * 1000 | summarize a=avg(r)'],
+    ['an aggregate over an aggregate', '| summarize m=max(tcp_rtt) by bin(_time, 1m) | summarize a=avg(m)'],
+  ])('finds E in %s, and the router refuses it on type-complete input', (_, tail) => {
+    const q = Q(tail)
+    expect(has(classifyQuery(q).hits, 'E', 'tcp_rtt'), q).toBe(true)
+    expect(eligibility(q, NUM).eligible, q).toBe(false)
+  })
+
+  it('finds B inside a wrapped count(field)', () => {
+    expect(has(classifyQuery(Q('| summarize n=tolong(count(http_code))')).hits, 'B', 'http_code')).toBe(true)
+  })
+
+  it('finds A on isnull as well as isnotnull, anywhere in an expression', () => {
+    expect(has(classifyQuery(Q('| summarize n=countif(isnull(snmp_community))')).hits, 'A', 'snmp_community')).toBe(true)
+  })
+
+  it.each([
+    ['a key made by extend', '| extend a=tolower(app_name) | summarize n=count() by a'],
+    ['a key that is an expression', '| summarize n=count() by tolower(app_name)'],
+    ['a named key expression', '| summarize n=count() by a=strcat(app_name, "/x")'],
+    ['a key made by extend from a made column', '| extend b=app_name | extend a=tolower(b) | summarize n=count() by a'],
+    ['a distinct stage', '| distinct app_name'],
+  ])('finds F on the raw field under %s, and refuses it while density is unmeasured', (_, tail) => {
+    const q = Q(tail)
+    expect(has(classifyQuery(q).hits, 'F', 'app_name'), q).toBe(true)
+    const e = eligibility(q, { app_name: 'string' })
+    expect(e.eligible, q).toBe(false)
+    expect(e.refusals.some((r) => r.kind === 'density' && r.words.includes('app_name')), q).toBe(true)
+  })
+
+  it('still exempts the normalised key, whether made by extend or named in the by clause', () => {
+    for (const tail of [
+      '| extend a=iif(isnotnull(app_name), app_name, "") | summarize n=count() by a',
+      '| summarize n=count() by a=iif(isnotnull(app_name), app_name, "")',
+      '| extend a=iif(isnotnull(app_name), app_name, "") | summarize n=count() by tolower(a)',
+    ]) {
+      expect(classifyQuery(Q(tail)).hits, tail).toEqual([])
+    }
+  })
+
+  it('never reads fewer classes than classify does, on any parity column', () => {
+    for (const check of PARITY_CHECKS) {
+      const { head, columns } = summarizeColumns(check.query)
+      for (const { expr } of columns) {
+        const want = classify(expr, head).filter((c) => c !== 'D')
+        const got = new Set(classifyQuery(`dataset="gigamon_ami" | summarize x=${expr}`).hits.map((h) => h.cls))
+        for (const c of want) expect(got.has(c), `${check.id}: ${expr} is ${c}`).toBe(true)
+      }
+    }
+  })
+})
+
 describe('compareGrouped — a top-N panel, JSON against Parquet', () => {
   const SPEC: GroupedSpec = { keys: ['host'], rank: 'n', n: 3, columns: { n: 'count', p95: 'distribution' } }
   const row = (host: string | null, n: number, p95 = 10): Row => (host === null ? { n, p95 } : { host, n, p95 })
@@ -114,15 +181,58 @@ describe('compareGrouped — a top-N panel, JSON against Parquet', () => {
     expect(r.verdict).toBe('fail')
   })
 
-  it('drops keys tied at the rank-N boundary on either side, then compares the rest', () => {
-    // c and d tie at 60 across the cut on JSON; which one makes the top 3 is
-    // not reproducible, so neither is compared — and neither fails the check.
+  it('excuses a two-sided tie only its place in the top N, and still compares its figures', () => {
+    // c and d tie at 60 across the cut on both sides; which one makes the top 3
+    // is not reproducible, so being in one side's top 3 and not the other's is
+    // not a failure. But both keys exist on both sides, so their figures are
+    // compared.
     const json = [row('a', 100), row('b', 80), row('c', 60), row('d', 60)]
     const pq = [row('a', 100), row('b', 80), row('d', 60), row('c', 60)]
     const r = compareGrouped(json, pq, SPEC)
     expect(r.tied.sort()).toEqual(['"c"', '"d"'])
     expect(r.verdict).toBe('pass')
-    expect(r.compared).toEqual(['"a"', '"b"'])
+    expect([...r.compared].sort()).toEqual(['"a"', '"b"', '"c"', '"d"'])
+    expect(r.onlyJson).toEqual([])
+    expect(r.onlyParquet).toEqual([])
+  })
+
+  it('fails a key tied on ONE side whose figure moved a long way on the other', () => {
+    // JSON ties c and d at the cut; Parquet ranks c at 90, inside its top 3 with
+    // no tie at all. The tie is JSON's, and it excuses nothing about c's 60 -> 90.
+    const json = [row('a', 100), row('b', 80), row('c', 60), row('d', 60)]
+    const pq = [row('a', 100), row('c', 90), row('b', 80), row('d', 5)]
+    const r = compareGrouped(json, pq, SPEC)
+    expect(r.verdict).toBe('fail')
+    expect(r.differs.map((d) => `${d.key}.${d.column}`)).toContain('"c".n')
+  })
+
+  it('fails the same case whichever of the tied keys JSON happened to rank first', () => {
+    const json = [row('a', 100), row('b', 80), row('d', 60), row('c', 60)]
+    const pq = [row('a', 100), row('c', 90), row('b', 80), row('d', 5)]
+    const r = compareGrouped(json, pq, SPEC)
+    expect(r.verdict).toBe('fail')
+    expect(r.differs.map((d) => `${d.key}.${d.column}`).sort()).toEqual(['"c".n', '"d".n'])
+  })
+
+  it('fails a "" key tied at the cut on Parquet only: a tie cannot excuse a key JSON never had', () => {
+    // Class F behind a tie: Parquet's "" group ties c at its cut. JSON has no
+    // "" group at all, and c moved 70 -> 60.
+    const json = [row('a', 100), row('b', 80), row('c', 70), row('d', 5)]
+    const pq = [row('a', 100), row('b', 80), row('', 60), row('c', 60)]
+    const r = compareGrouped(json, pq, SPEC)
+    expect(r.verdict).toBe('fail')
+    expect(r.onlyParquet).toEqual(['""'])
+    expect(r.differs.map((d) => `${d.key}.${d.column}`)).toContain('"c".n')
+  })
+
+  it('passes a one-sided tie whose keys agree on both sides', () => {
+    // JSON ties c and d at 60; Parquet has c 60, d 59.6. Whether JSON shows c
+    // or d is arbitrary, and each figure agrees within tolerance.
+    const json = [row('a', 100), row('b', 80), row('d', 60), row('c', 60)]
+    const pq = [row('a', 100), row('b', 80), row('c', 60), row('d', 59.6)]
+    const r = compareGrouped(json, pq, SPEC)
+    expect(r.verdict).toBe('pass')
+    expect(r.tied.sort()).toEqual(['"c"', '"d"'])
   })
 
   it('does not drop a tie that sits wholly inside the top N', () => {

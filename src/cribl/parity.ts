@@ -782,29 +782,47 @@ export function compareParity(
 // ── Reading a whole query: grouped, piped, and classes F and T ──────────────
 //
 // `classify` reads ONE aggregate under one head, which is all a scalar parity
-// check needs. The Phase 8 router (cribl/routing/*) needs the same judgement
-// about any dashboard query: grouped, with `extend`/`where` stages, a `by`
-// clause and a sort. `classifyQuery` walks such a query and calls `classify`
-// on every aggregate, so there is still one definition of A–E. It adds:
+// check needs, and it anchors every pattern at the start of the expression. The
+// Phase 8 router (cribl/routing/*) needs the same judgement about any dashboard
+// query: grouped, with `extend`/`where` stages, a `by` clause, a sort, and an
+// aggregate that may sit inside another call. `classifyQuery` walks such a query
+// and finds A, B, C and E ANYWHERE in an expression — `round(avg(x), 1)` and
+// `toint(percentile(x, 95))` are class E exactly as `avg(x)` is — with a
+// superset of `classify`'s patterns (the `…if` forms, `percentiles`, `median`,
+// `stdev`, `variance`, `isnull`); parityQuery.test.ts holds it to never reading
+// fewer classes than `classify` on any parity column. It adds:
 //
-//   F  `by f` on a raw field. JSON emits ONE group with the key omitted where
-//      rows lack `f` (measured 2026-09-23); Parquet emits a group keyed "" or
-//      0. Harmless only on a key present on every row.
+//   F  a grouping on a raw field: `by f`, `by tolower(f)`, `by k` where an
+//      `extend` made `k` from `f`, and `| distinct f`. JSON emits ONE group with
+//      the key omitted where rows lack `f` (measured 2026-09-23); Parquet emits
+//      a group keyed "" or 0. Harmless only on a key present on every row.
 //   T  any read of a field whose type differs between Parquet files. A file
 //      holding a string makes that column STRING (measured 2026-09-24), and
 //      `dcount` then splits 10 from "10". Known only from a type table.
+//
+// LINEAGE. Every column the query makes (`extend`, and `summarize`'s own
+// aggregates and keys) remembers the raw fields it was made from, so a class on
+// a made column lands on the raw field behind it: `extend r=x*1000 | summarize
+// avg(r)` is E on `x`, and `summarize m=max(x) by … | summarize avg(m)` is E on
+// `x` too (conservative: a made column carries every raw field its expression
+// read, whatever the function did to them).
 //
 // C is reported and is NEUTRAL (Phase 8 design §2.3): JSON already counts the
 // absent value as one distinct value on a sparse field (F-19), and Parquet's
 // fill is one distinct value too. The router does not refuse on it.
 //
-// The normalised key `iif(isnotnull(x), x, "")` (APP_L4) is recognised and is
-// neither A nor F: it reads "" for an absent `x` on both datasets.
+// The normalised key `iif(isnotnull(x), x, "")` (APP_L4) is recognised — made by
+// `extend` or named in the `by` clause — and is neither A nor F: it reads "" for
+// an absent `x` on both datasets. A column made from it carries no raw field.
 //
 // WHAT THIS CANNOT SEE. It reads the text, not the semantics: a column made in
 // a way it does not recognise (`parse`, `mv-expand`, a `project` rename) is read
-// as a raw field, never skipped, so every error it makes is towards "not
-// eligible" — the direction that keeps a query on JSON.
+// as a raw field, never skipped, and a stage it does not recognise still has
+// every raw field it names read (so the type table refuses an unknown one).
+// Every error it makes is meant to be towards "not eligible" — the direction
+// that keeps a query on JSON. *(Corrected 2026-09-25, review of
+// `feat/phase8-1-router`: this promise was false for a wrapped aggregate and a
+// derived group key, both read as class-free.)*
 
 /** The null classes plus the two that only a whole query shows. */
 export type QueryClass = NullClass | 'F' | 'T'
@@ -851,17 +869,64 @@ function splitOutside(s: string, sep: string): string[] {
 
 const KEYWORDS = new Set(['and', 'or', 'not', 'in', 'by', 'asc', 'desc', 'true', 'false', 'null'])
 const NORMALISED_RE = /^iif\(\s*isnotnull\(\s*([\w.]+)\s*\)\s*,\s*\1\s*,\s*""\s*\)$/
-const ISNOTNULL_RE = /\bisnotnull\(\s*([\w.]+)\s*\)/g
 
-/** The identifiers an expression reads: not a function name, keyword, literal, `_time` or a column the query made. */
-function identifiersOf(expr: string, defined: ReadonlySet<string>): string[] {
+/**
+ * The calls that make a class wherever they sit in an expression. A superset of
+ * `classify`'s anchored patterns: an aggregate wrapped in `round`, `toint` or any
+ * other call is still the aggregate. E is every aggregate a filled 0 pulls
+ * toward 0 or moves (a mean, a minimum, a quantile, a spread); `max` is not in
+ * it, as in `classify`.
+ */
+const CALL_CLASSES: Readonly<Record<string, NullClass>> = Object.freeze({
+  isnotnull: 'A',
+  isnull: 'A',
+  count: 'B',
+  dcount: 'C',
+  count_distinct: 'C',
+  dcountif: 'C',
+  avg: 'E',
+  avgif: 'E',
+  min: 'E',
+  minif: 'E',
+  percentile: 'E',
+  percentiles: 'E',
+  percentileif: 'E',
+  percentilesif: 'E',
+  median: 'E',
+  stdev: 'E',
+  stdevif: 'E',
+  stdevp: 'E',
+  variance: 'E',
+  varianceif: 'E',
+  variancep: 'E',
+})
+
+/** Every `name(args)` call in an expression, outside quotes, nested ones included, with its argument text. */
+function callsIn(expr: string): { name: string; args: string }[] {
+  const bare = expr.replace(/"[^"]*"|'[^']*'/g, '""')
+  const out: { name: string; args: string }[] = []
+  for (const m of bare.matchAll(/(?<![\w.])([A-Za-z_]\w*)\s*\(/g)) {
+    const open = m.index + m[0].length
+    let depth = 1
+    let i = open
+    for (; i < bare.length && depth > 0; i++) {
+      if (bare[i] === '(') depth++
+      else if (bare[i] === ')') depth--
+    }
+    out.push({ name: m[1].toLowerCase(), args: bare.slice(open, depth === 0 ? i - 1 : i) })
+  }
+  return out
+}
+
+/** Every identifier an expression reads: not a function name, keyword, literal or `_time`. */
+function identifiersOf(expr: string): string[] {
   const bare = expr.replace(/"[^"]*"|'[^']*'/g, '""')
   const out: string[] = []
   for (const m of bare.matchAll(/(?<![\w.])[A-Za-z_][\w.]*/g)) {
     const name = m[0]
     if (bare.slice(m.index + name.length).trimStart().startsWith('(')) continue
-    if (KEYWORDS.has(name.toLowerCase()) || name === '_time' || defined.has(name)) continue
-    out.push(name)
+    if (KEYWORDS.has(name.toLowerCase()) || name === '_time') continue
+    if (!out.includes(name)) out.push(name)
   }
   return out
 }
@@ -884,28 +949,46 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
   const head = stages.shift() ?? ''
   const hits: ClassHit[] = []
   const fields: string[] = []
-  const defined = new Set<string>()
+  /** Each column the query made → the raw fields it was made from ([] for a normalised key). */
+  const lineage = new Map<string, string[]>()
   const hit = (cls: QueryClass, field: string) => {
     if (!hits.some((h) => h.cls === cls && h.field === field)) hits.push({ cls, field })
   }
-  const read = (expr: string) => {
-    for (const f of identifiersOf(expr, defined)) if (!fields.includes(f)) fields.push(f)
-  }
-  /** Classes A, B, C and E of one expression, by `classify`, attributed to their field. */
-  const classes = (expr: string) => {
-    for (const m of expr.matchAll(ISNOTNULL_RE)) hit('A', m[1])
-    for (const cls of classify(expr, '')) {
-      if (cls === 'A') continue
-      const arg = /^\w+\(\s*([\w.]+)/.exec(expr)?.[1]
-      if (arg) hit(cls, arg)
+  /** The raw fields behind an expression, through every column the query made. */
+  const rawOf = (expr: string): string[] => {
+    const out: string[] = []
+    for (const id of identifiersOf(expr)) {
+      for (const f of lineage.get(id) ?? [id]) if (!out.includes(f)) out.push(f)
     }
+    return out
+  }
+  const read = (expr: string) => {
+    for (const f of rawOf(expr)) if (!fields.includes(f)) fields.push(f)
+  }
+  /** Classes A, B, C and E of one expression, wherever the call sits, attributed to the raw fields it reads. */
+  const classes = (expr: string) => {
+    for (const { name, args } of callsIn(expr)) {
+      const cls = CALL_CLASSES[name]
+      if (!cls) continue
+      // `count()` reads no field and is the one count that is not class B.
+      for (const f of rawOf(args)) hit(cls, f)
+    }
+  }
+  /** A column made from `expr`: normalised → no raw field; otherwise every raw field it reads. */
+  const make = (name: string, expr: string) => {
+    const norm = NORMALISED_RE.exec(expr)
+    lineage.set(name, norm ? [] : rawOf(expr))
+  }
+  const groupOn = (expr: string) => {
+    if (NORMALISED_RE.test(expr)) return
+    for (const f of rawOf(expr)) hit('F', f)
   }
 
   for (const m of head.matchAll(/(?:^|\s)([\w.]+)=\*(?=\s|$)/g)) hit('D', m[1])
   read(head.replace(/=\*/g, ''))
 
   for (const stage of stages) {
-    const verb = /^(\w+)/.exec(stage)?.[1] ?? ''
+    const verb = /^([\w-]+)/.exec(stage)?.[1] ?? ''
     const body = stage.slice(verb.length).trim()
     if (verb === 'extend') {
       for (const part of splitTopLevel(body)) {
@@ -916,29 +999,45 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
           classes(expr)
           read(expr)
         }
-        if (name) defined.add(name)
+        if (name) make(name, expr)
       }
     } else if (verb === 'where') {
       classes(body)
       read(body)
     } else if (verb === 'summarize') {
       const [aggs, keys = ''] = splitOutside(body, ' by ')
-      const made: string[] = []
+      const made: [string, string][] = []
       for (const part of splitTopLevel(aggs)) {
         const [name, expr] = named(part)
         classes(expr)
         read(expr)
-        if (name) made.push(name)
+        if (name) made.push([name, expr])
       }
       for (const key of splitTopLevel(keys)) {
         const [name, expr] = named(key)
-        if (/^[A-Za-z_][\w.]*$/.test(expr) && !defined.has(expr)) hit('F', expr)
-        read(expr)
-        made.push(name ?? expr)
+        groupOn(expr)
+        const norm = NORMALISED_RE.exec(expr)
+        read(norm ? norm[1] : expr)
+        made.push([name ?? expr, expr])
       }
-      for (const n of made) defined.add(n)
+      // After a summarize only its own columns exist; each carries its lineage.
+      const next = made.map(([n, e]) => [n, NORMALISED_RE.test(e) ? [] : rawOf(e)] as const)
+      for (const [n, raw] of next) lineage.set(n, [...raw])
+    } else if (verb === 'distinct') {
+      for (const part of splitTopLevel(body)) {
+        const [name, expr] = named(part)
+        groupOn(expr)
+        read(expr)
+        if (name) make(name, expr)
+        else if (/^[A-Za-z_][\w.]*$/.test(expr) && !lineage.has(expr)) lineage.set(expr, [expr])
+      }
+    } else {
+      // sort, limit, top, project and the rest. A column the query made reads
+      // as its lineage; a name it did not make reads as a raw field, so the
+      // type table refuses what this cannot place.
+      classes(body)
+      read(body)
     }
-    // sort, limit, top and the rest only name columns the query already made.
   }
   for (const f of fields) if (types[f] === 'mixed') hit('T', f)
   return { hits, fields }
@@ -950,16 +1049,34 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
 // list, a heatmap) answers many rows, and "whichever group came first" is not
 // a comparison. The rule (Phase 8 design §4, 8.1):
 //
-//   1. Take the top-N keys on each side, by the panel's own rank column.
-//   2. Drop every key tied with the N-th across the cut, on BOTH sides: which of
-//      two tied rows makes it is not reproducible (measured 2026-09-23), so it
-//      shows nothing either way.
-//   3. The rest must be the SAME SET. A key on one side only fails — that is
-//      exactly class F (a "" group taking slot 1) and class D (a filter
-//      admitting rows the other side never had).
-//   4. Every compared figure of every shared key must agree within `TOLERANCE`,
-//      counts widened by the control's own drift, as `allowedDifference` does
-//      for a scalar figure.
+//   1. Take the top-N keys on each side, by the panel's own rank column, and
+//      note every key tied with the N-th across the cut, on that side.
+//   2. A key in one side's top N and not the other's fails — that is exactly
+//      class F (a "" group taking slot 1) and class D (a filter admitting rows
+//      the other side never had) — UNLESS a tie explains it: the key is tied at
+//      the cut on either side, so which of the tied rows made the cut is not
+//      reproducible (measured 2026-09-23). A tie excuses ONLY that: a key's
+//      place in the top N.
+//   3. A key that one side's top N holds and the other side's rows do not hold
+//      AT ALL fails, tied or not. No tie-break can explain a key that does not
+//      exist on the other side, and this is where a one-sided "" group hides.
+//   4. Every key in either side's top N that both sides hold — tied keys
+//      included — has every compared figure held within `TOLERANCE`, counts
+//      widened by the control's own drift, as `allowedDifference` does for a
+//      scalar figure. A tie on one side says nothing about the other side's
+//      figure for the same key.
+//   5. `pass` needs at least one compared key tied on neither side; a check
+//      whose every compared key was tied is `unexercised`, since the ranking
+//      itself was never tested.
+//
+// THE CONSERVATIVE CHOICE, and why. The rule used to drop every key tied on
+// EITHER side from BOTH sides before comparing anything, so a key tied at the
+// cut on one side and ranked plainly on the other was never checked: a "" group
+// tied on Parquet only, or a key whose count moved 50 % while JSON happened to
+// tie it, both read as `pass` (review of feat/phase8-1-router, 2026-09-25).
+// Excusing membership only, and always comparing figures, can fail a panel
+// whose difference is real but below the cut, where the viewer would never see
+// it; a false fail keeps a query on JSON, and a false pass is what would move it.
 //
 // An absent key and an empty-string key are DIFFERENT keys here, on purpose:
 // JSON omits a key column that Parquet fills with "", and calling the two equal
@@ -986,12 +1103,15 @@ export interface GroupedDifference {
 }
 
 export interface GroupedReport {
-  /** `unexercised`: once ties were dropped, no key was left to compare. */
+  /** `unexercised`: no key tied on neither side was left to compare. */
   verdict: 'pass' | 'fail' | 'unexercised'
+  /** Every key whose figures were compared: in either side's top N and held by both, tied keys included. */
   compared: string[]
-  /** Keys dropped for a tie at the top-N boundary, on either side. */
+  /** Keys tied at the top-N boundary on either side. Their place in the top N was excused; their figures were not. */
   tied: string[]
+  /** In JSON's top N and neither in Parquet's nor excused by a tie, or absent from Parquet's rows altogether. */
   onlyJson: string[]
+  /** The same, the other way round. */
   onlyParquet: string[]
   differs: GroupedDifference[]
   sentence: string
@@ -1002,10 +1122,12 @@ function keyOf(row: Row, keys: readonly string[]): string {
   return keys.map((k) => (row[k] === undefined || row[k] === null ? '(absent)' : JSON.stringify(row[k]))).join(' · ')
 }
 
-/** One side's top-N keys, and every key tied with the N-th across the cut. */
-function topN(rows: readonly Row[], spec: GroupedSpec): { top: Map<string, Row>; tied: Set<string> } {
+/** One side's top-N keys, every key tied with the N-th across the cut, and every row by key. */
+function topN(rows: readonly Row[], spec: GroupedSpec): { top: Map<string, Row>; tied: Set<string>; all: Map<string, Row> } {
   const rankOf = (r: Row) => numberOf(r[spec.rank]) ?? -Infinity
   const ranked = [...rows].sort((a, b) => rankOf(b) - rankOf(a))
+  const all = new Map<string, Row>()
+  for (const r of ranked) if (!all.has(keyOf(r, spec.keys))) all.set(keyOf(r, spec.keys), r)
   const top = new Map<string, Row>()
   for (const r of ranked.slice(0, spec.n)) top.set(keyOf(r, spec.keys), r)
   const tied = new Set<string>()
@@ -1013,7 +1135,7 @@ function topN(rows: readonly Row[], spec: GroupedSpec): { top: Map<string, Row>;
     const boundary = rankOf(ranked[spec.n - 1])
     for (const r of ranked) if (rankOf(r) === boundary) tied.add(keyOf(r, spec.keys))
   }
-  return { top, tied }
+  return { top, tied, all }
 }
 
 /**
@@ -1027,17 +1149,34 @@ export function compareGrouped(jsonRows: readonly Row[], parquetRows: readonly R
   const j = topN(jsonRows, spec)
   const p = topN(parquetRows, spec)
   const tied = new Set([...j.tied, ...p.tied])
-  const jKeys = [...j.top.keys()].filter((k) => !tied.has(k))
-  const pKeys = [...p.top.keys()].filter((k) => !tied.has(k))
-  const onlyJson = jKeys.filter((k) => !pKeys.includes(k))
-  const onlyParquet = pKeys.filter((k) => !jKeys.includes(k))
-  const compared = jKeys.filter((k) => pKeys.includes(k))
+  const union = [...j.top.keys(), ...[...p.top.keys()].filter((k) => !j.top.has(k))]
+
+  const onlyJson: string[] = []
+  const onlyParquet: string[] = []
+  const compared: string[] = []
+  for (const key of union) {
+    const inJ = j.top.has(key)
+    const inP = p.top.has(key)
+    // Rule 3: a key the other side does not hold at all fails, tie or no tie.
+    if (!j.all.has(key)) {
+      onlyParquet.push(key)
+      continue
+    }
+    if (!p.all.has(key)) {
+      onlyJson.push(key)
+      continue
+    }
+    // Rule 2: in one top N only, and no tie on either side explains it.
+    if (inJ !== inP && !tied.has(key)) (inJ ? onlyJson : onlyParquet).push(key)
+    // Rule 4: held by both, so its figures are compared, tied or not.
+    compared.push(key)
+  }
 
   const differs: GroupedDifference[] = []
   for (const key of compared) {
     for (const [column, kind] of Object.entries(spec.columns)) {
-      const a = numberOf(j.top.get(key)![column])
-      const b = numberOf(p.top.get(key)![column])
+      const a = numberOf(j.all.get(key)![column])
+      const b = numberOf(p.all.get(key)![column])
       if (a === null || b === null) {
         // For a count, absent and 0 are one statement (see compareColumn); for a
         // distribution "no value" against a number is class E's failure.
@@ -1051,14 +1190,17 @@ export function compareGrouped(jsonRows: readonly Row[], parquetRows: readonly R
   }
 
   const failed = onlyJson.length > 0 || onlyParquet.length > 0 || differs.length > 0
-  const verdict: GroupedReport['verdict'] = failed ? 'fail' : compared.length ? 'pass' : 'unexercised'
+  // Rule 5: a pass needs a key whose ranking no tie excused.
+  const verdict: GroupedReport['verdict'] = failed ? 'fail' : compared.some((k) => !tied.has(k)) ? 'pass' : 'unexercised'
   const cut = `The top ${spec.n} by ${spec.rank}`
-  const tiedWords = tied.size ? ` ${tied.size} key${tied.size === 1 ? ' was' : 's were'} tied at the top-${spec.n} boundary and not compared.` : ''
+  const tiedWords = tied.size
+    ? ` ${tied.size} key${tied.size === 1 ? ' was' : 's were'} tied at the top-${spec.n} boundary: ${tied.size === 1 ? 'its' : 'their'} place in the top ${spec.n} was not compared, and every figure a key held on both sides was.`
+    : ''
   let sentence: string
   if (verdict === 'pass') {
     sentence = `${cut} held: the same ${compared.length} key${compared.length === 1 ? '' : 's'} on both sides, every figure within the difference it was allowed.${tiedWords}`
   } else if (verdict === 'unexercised') {
-    sentence = `${cut} was not exercised: no key was left to compare.${tiedWords}`
+    sentence = `${cut} was not exercised: no key outside a tie was left to compare.${tiedWords}`
   } else {
     const bits = [
       onlyJson.length ? `on JSON only: ${onlyJson.join(', ')}` : '',
