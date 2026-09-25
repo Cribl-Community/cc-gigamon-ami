@@ -1367,7 +1367,8 @@ describe('it is actually on the page', () => {
     // pinned the pack's facts, true only while 0.2.1 was the released pin.
     // Before `feat/pack-flip-021` it pinned the global stack's.)*
     const installable = packRelease().installable
-    expect(installable).toBe(false)
+    // This build records 0.2.2 as released (2026-09-25), so the pack's facts show.
+    expect(installable).toBe(true)
     const [shown, other] = installable ? [PACK_SETUP_FACTS, SETUP_FACTS] : [SETUP_FACTS, PACK_SETUP_FACTS]
     const facts = [...document.querySelectorAll('.gs-facts li')].map((li) => li.textContent ?? '')
     expect(facts).toHaveLength(shown.length)

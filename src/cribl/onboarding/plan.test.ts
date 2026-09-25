@@ -237,15 +237,14 @@ describe('onboardingPath — which onboarding the page offers', () => {
     }
   })
 
-  it('this build today: the global stack again, full, because 0.2.2 is pinned before its release', () => {
-    // The window between merging 0.2.2's pin and its flip: Onboard is refused,
-    // and the global Raw HTTP stack is the onboarding. It was the pack from
-    // `feat/pack-flip-021` (0.2.1 released) until `feat/pack-022-parquet-pipeline`,
-    // and it is again once 0.2.2's release is recorded.
+  it('this build today: the pack, because 0.2.2 is released', () => {
+    // 0.2.2 was released 2026-09-25 and this build records it, so the pack is the
+    // onboarding and the global Raw HTTP stack is remove-only while its objects
+    // may be present. The unreleased case stays pinned with explicit facts.
     const today = packRelease()
-    expect(today.installable).toBe(false)
-    expect(onboardingPath(today, null)).toEqual({ mode: 'global', provision: 'full', why: 'pack 0.2.2 has not been released, so there is nothing to install yet' })
-    expect(onboardingPath(packRelease({ published: true, sha256: 'ab'.repeat(32), version: '0.2.2' }), null)).toEqual({ mode: 'pack', provision: 'remove-only' })
+    expect(today.installable).toBe(true)
+    expect(onboardingPath(today, null)).toEqual({ mode: 'pack', provision: 'remove-only' })
+    expect(onboardingPath(packRelease({ published: false, sha256: null, version: '0.2.2' }), null)).toEqual({ mode: 'global', provision: 'full', why: 'pack 0.2.2 has not been released, so there is nothing to install yet' })
   })
 
   it('with the pack available, the global panel offers Remove only, and only while something is (or may be) there', () => {

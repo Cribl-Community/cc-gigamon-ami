@@ -139,16 +139,17 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 export const PACK_VERSION = '0.2.2'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. FALSE: 0.2.2 is not
- * released. (It was true for 0.2.1 from its release on 2026-09-25 until this
- * build moved the pin to 0.2.2, the same day.) It moves back in the same change
- * that sets `PACK_SHA256` and appends 0.2.2 to `PACK_PUBLISHED_VERSIONS`;
+ * Whether `PACK_VERSION`'s release exists on GitHub. TRUE: `gigamon-pack-v0.2.2`
+ * was published on 2026-09-25 (tag at 2207a65, not marked Latest). It was
+ * false for about an hour between this build pinning 0.2.2 and that release.
+ * It moves only in the same change that sets `PACK_SHA256` and appends the
+ * version to `PACK_PUBLISHED_VERSIONS`;
  * pack.test.ts fails if one moves without the others, and fails while
  * `PACK_PENDING` below still holds anything. While it is false
  * scripts/check-pack-release.mjs (CI) skips and says why; once true it
  * downloads `PACK_URL` and fails when its sha256 is not `PACK_SHA256`.
  */
-export const PACK_PUBLISHED: boolean = false
+export const PACK_PUBLISHED: boolean = true
 
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
@@ -158,11 +159,11 @@ export const PACK_PUBLISHED: boolean = false
  * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
  * sees the asset to hash it. CI does, instead: scripts/check-pack-release.mjs
  * downloads `PACK_URL` on every push and fails when the bytes hash to anything
- * else. Null only while no release exists (`PACK_PUBLISHED` false) — as now,
- * since 0.2.2 is unreleased. (Until this build pinned 0.2.2 it held 0.2.1's
- * digest, which is recorded beside 0.2.1 in `PACK_PUBLISHED_VERSIONS`.)
+ * else. Null only while no release exists (`PACK_PUBLISHED` false). This is
+ * 0.2.2's digest: the release asset downloaded after publishing, the local
+ * deterministic build, and the release workflow all agree (2026-09-25).
  */
-export const PACK_SHA256: string | null = null
+export const PACK_SHA256: string | null = 'e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0'
 
 /**
  * Where a pack keeps its routes, relative to the pack root. Measured on a
@@ -287,9 +288,13 @@ export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze([
   // gigamon-pack-v0.2.1, tag commit a034641, asset sha256
   // 2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807 (the
   // `PACK_SHA256` until this build pinned 0.2.2). Released 2026-09-25. An
-  // installed copy stays owned: Remove takes it, and Upgrade takes it to 0.2.2
-  // once 0.2.2 is released and appended here.
+  // installed copy stays owned: Remove takes it, and Upgrade takes it to 0.2.2.
   '0.2.1',
+  // gigamon-pack-v0.2.2, tag commit 2207a65, asset sha256
+  // e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0 (the
+  // current `PACK_SHA256`). Released 2026-09-25: the Parquet route's own
+  // pipeline removes _raw from gigamon_ami_pq; the JSON copy keeps it.
+  '0.2.2',
 ])
 
 // ── Objects inside the pack. Each is referenced by these ids in the pack's YAML.

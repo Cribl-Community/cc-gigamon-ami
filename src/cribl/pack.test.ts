@@ -818,20 +818,17 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
 // until its grants are declared). packClient.ts's `installRefusal` is this
 // function bound to the constants it imports, so the two cannot disagree.
 describe('packRelease — the pinned release, and why it cannot be installed', () => {
-  it('refuses 0.2.2 in this build: built, not released, so no digest is recorded', () => {
-    // 0.2.2 (the Parquet route's own pipeline) has no gigamon-pack-v0.2.2
-    // release yet. The flip after the tag sets PACK_PUBLISHED and PACK_SHA256
-    // and appends 0.2.2 to PACK_PUBLISHED_VERSIONS, as 0.2.1's did; until then
-    // Onboard and Upgrade are refused with this sentence, and CI's
-    // scripts/check-pack-release.mjs skips. (0.2.1, published 2026-09-25 with
-    // sha256 2a2a3c36…769807, was installable here until this build.)
+  it('installs 0.2.2 in this build: released, with its digest recorded', () => {
+    // gigamon-pack-v0.2.2 was published on 2026-09-25 (tag at 2207a65); its
+    // asset, the local build and the release workflow agree on this digest.
+    // (It was refused here for about an hour between the pin and the release.)
     const r = packRelease()
     expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
     expect(PACK_VERSION).toBe('0.2.2')
-    expect(PACK_PUBLISHED).toBe(false)
-    expect(PACK_SHA256).toBeNull()
-    expect(r.refusal).toBe('pack 0.2.2 has not been released, so there is nothing to install yet')
-    expect(r.installable).toBe(false)
+    expect(PACK_PUBLISHED).toBe(true)
+    expect(PACK_SHA256).toBe('e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0')
+    expect(r.refusal).toBeNull()
+    expect(r.installable).toBe(true)
   })
 
   it('refuses a version that has not been released, with the sentence a customer reads', () => {

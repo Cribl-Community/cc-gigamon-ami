@@ -46,20 +46,6 @@ vi.mock('./Toast', () => ({
   clearToastError: () => {},
   ToastProvider: () => null,
 }))
-vi.mock('../cribl/pack', async (orig) => {
-  // PACK_VERSION's release recorded, as the flip after its tag records it:
-  // published, a digest, and appended to the versions already published. This
-  // build pins 0.2.2 before its release (pack.ts), so without this every block
-  // below would describe the refusal, which OnboardingPanel.unpublished.test.tsx
-  // already pins. The flip removes this mock and repins block 10's premise to
-  // the real digest, as `feat/pack-flip-021` did for 0.2.1.
-  const real = await orig<typeof import('../cribl/pack')>()
-  return {
-    ...real,
-    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
-    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
-  }
-})
 
 const GROUPS = ['default', 'lab']
 const HASH = 'dddd000011112222dddd000011112222dddd0000'
@@ -298,11 +284,11 @@ async function removeThroughTheDialog() {
 
 // ── 10 ──────────────────────────────────────────────────────────────────────
 
-describe('10. this build once its pin is released: 0.2.2, recorded by the mock above', () => {
-  it('pins the premise: the pinned release is installable (its digest mocked until the flip records the real one)', () => {
+describe('10. this build, as it ships: 0.2.2, released and recorded', () => {
+  it('pins the premise: the pinned release is installable, with its real digest', () => {
     expect(thisPackRelease()).toMatchObject({
       version: '0.2.2', published: true, installable: true, refusal: null, url: PACK_URL,
-      sha256: 'ab'.repeat(32),
+      sha256: 'e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0',
     })
   })
 
