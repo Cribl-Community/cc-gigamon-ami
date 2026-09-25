@@ -242,11 +242,11 @@ describe('packPath', () => {
 })
 
 describe('the release gate', () => {
-  it('counts 0.1.0, 0.2.0 and 0.2.1 as published, and refuses to install 0.2.2 today: it is not released', async () => {
+  it('counts 0.1.0, 0.2.0, 0.2.1 and 0.2.2 as published, and installs 0.2.2 today: it is released', async () => {
     const c = await today()
     expect(PACK_VERSION).toBe('0.2.2')
-    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1'])
-    expect(c.installRefusal()).toBe('pack 0.2.2 has not been released, so there is nothing to install yet')
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1', '0.2.2'])
+    expect(c.installRefusal()).toBeNull()
   })
 
   it('in a build whose pinned version has no release: counts only the earlier ones, and refuses', async () => {
@@ -349,11 +349,12 @@ describe('the release gate', () => {
     expect(steps.map((s) => s.action)).toEqual(['updated', 'exists'])
   })
 
-  it('refuses to upgrade 0.2.1 in this build, sending nothing: 0.2.2 is not released', async () => {
+  it('upgrades an installed 0.2.1 to 0.2.2 in this build, which records 0.2.2 as released', async () => {
     const c = await today()
-    leader({ packs: [ours('0.2.1')], packInputs: [liveHttp()] })
-    expect((await c.upgradePack(GROUP))[0]).toMatchObject({ action: expect.not.stringMatching(/^updated$/) })
-    expect(writes()).toEqual([])
+    leader({ packs: [ours('0.2.1')], packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp()] })
+    const steps = await c.upgradePack(GROUP)
+    expect(sent('PATCH', PACK)?.body).toEqual({ source: packReleaseUrl('0.2.2'), allowCustomFunctions: false })
+    expect(steps.map((s) => s.action)).toEqual(['updated', 'exists'])
   })
 })
 
