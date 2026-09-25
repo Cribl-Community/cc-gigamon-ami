@@ -280,14 +280,30 @@ export interface AuditJob {
   window: AuditWindow
   query: string
   jobId: string | null
+  /** Wall-clock ISO time the job was submitted, or null when it never was. */
+  submittedAt: string | null
   status: string
   billableCPUSeconds: number | null
   elapsedMs: number | null
   error: string | null
+  /** null when no cancel was needed; 'sent', or 'failed: …', when the runner cancelled its own job. */
+  cancel: string | null
 }
 
 export interface AuditReport {
-  takenAt: string
+  /**
+   * The reference "now" the windows were computed from (ISO): `--at` when given,
+   * else the moment the runner started. Every window ends `lagMinutes` before it.
+   * NOT when the jobs ran — a re-run with the same `--at` reads the same windows
+   * hours or days later.
+   */
+  referenceAt: string
+  /** Where `referenceAt` came from: the `--at` option, or the runner's own start. */
+  referenceFrom: '--at' | 'run start'
+  /** Wall-clock ISO time the runner began submitting: when the measurement was actually taken. */
+  ranAt: string
+  /** Wall-clock ISO time the last job ended. */
+  finishedAt: string
   dataset: string
   capSeconds: number
   estimate: CostEstimate
@@ -306,12 +322,13 @@ const n = (x: number | null) => (x === null ? '—' : x.toLocaleString('en-US'))
 export function renderAuditMarkdown(r: AuditReport): string {
   const out: string[] = []
   out.push(`# Parquet read-side audit (Phase 8.0b / 8.0c)`, '')
-  out.push(`Taken ${r.takenAt} on \`${r.dataset}\` (JSON). Pinned: measurement. Running-time cap ${r.capSeconds} s per job.`, '')
+  out.push(`Taken ${r.ranAt} to ${r.finishedAt} on \`${r.dataset}\` (JSON). Pinned: measurement. Running-time cap ${r.capSeconds} s per job.`, '')
+  out.push(`Windows are measured back from the reference time ${r.referenceAt} (${r.referenceFrom === '--at' ? 'given by `--at`, not when the jobs ran' : 'the moment the runner started'}).`, '')
   out.push('Demo-feed or production figures alike, these describe THIS install over THESE windows. Nothing here gates a phase; the design (R4) says to audit again per release and per proof install.', '')
 
-  out.push('## Jobs', '', '| purpose | window (UTC) | job | status | billable CPU-s | elapsed |', '|---|---|---|---|---|---|')
+  out.push('## Jobs', '', '| purpose | window (UTC) | submitted | job | status | cancel | billable CPU-s | elapsed |', '|---|---|---|---|---|---|---|---|')
   for (const j of r.jobs) {
-    out.push(`| ${j.purpose} | ${j.window.label} | ${j.jobId ?? '—'} | ${j.status}${j.error ? `: ${j.error.replace(/\|/g, '/')}` : ''} | ${n(j.billableCPUSeconds)} | ${j.elapsedMs === null ? '—' : `${(j.elapsedMs / 1000).toFixed(1)} s`} |`)
+    out.push(`| ${j.purpose} | ${j.window.label} | ${j.submittedAt ?? '—'} | ${j.jobId ?? '—'} | ${j.status}${j.error ? `: ${j.error.replace(/\|/g, '/')}` : ''} | ${j.cancel ? j.cancel.replace(/\|/g, '/') : '—'} | ${n(j.billableCPUSeconds)} | ${j.elapsedMs === null ? '—' : `${(j.elapsedMs / 1000).toFixed(1)} s`} |`)
   }
   const spent = r.jobs.reduce((s, j) => s + (j.billableCPUSeconds ?? 0), 0)
   out.push('', `Billed in total: ${n(Math.round(spent))} CPU-s, against an estimate of ≈${n(Math.round(r.estimate.total))}.`, '')
@@ -357,4 +374,32 @@ export function renderAuditMarkdown(r: AuditReport): string {
     out.push(`${j.purpose}:`, '', '```kql', j.query, '```', '')
   }
   return out.join('\n')
+}
+
+// ── Where the report goes ───────────────────────────────────────────────────
+
+const compact = (iso: string, to: number) => iso.slice(0, to).replace(/[:-]/g, '')
+
+/**
+ * The report's file name, without extension. It names BOTH times: the reference
+ * time the windows came from, to the minute, and the wall-clock time the run
+ * began, to the second — so a re-run with the same `--at` gets a name of its own
+ * rather than the earlier report's.
+ */
+export function reportFileStem(referenceAt: string, ranAt: string): string {
+  return `parquet-audit-ref${compact(referenceAt, 16)}Z-ran${compact(ranAt, 19)}Z`
+}
+
+/**
+ * The first of `stem`, `stem-2`, `stem-3`, … for which no `.json` or `.md`
+ * exists (`taken(name)`), so two runs in the same second never share a name. The
+ * runner still writes with the exclusive flag: a report is evidence that cost
+ * CPU-s to take, and is never overwritten.
+ */
+export function freeReportStem(stem: string, taken: (fileName: string) => boolean, max = 99): string {
+  for (let i = 1; i <= max; i++) {
+    const s = i === 1 ? stem : `${stem}-${i}`
+    if (!taken(`${s}.json`) && !taken(`${s}.md`)) return s
+  }
+  throw new Error(`no free report name for ${stem} after ${max} tries`)
 }

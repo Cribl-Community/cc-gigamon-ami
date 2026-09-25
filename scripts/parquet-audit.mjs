@@ -6,6 +6,7 @@
 //
 // Options:
 //   --at <ISO time>          the reference "now" (default: the current time). Windows end 10 min before it.
+//                            The report records it as referenceAt, apart from ranAt (when the jobs ran).
 //   --offsets 0,6,12         hours before the newest window at which each 15-min sentinel window ends
 //   --cap <seconds>          running-time cap prefixed onto each job (default 300)
 //   --base <url>             API base (default http://localhost:5173/capi, the `npm run dev` proxy)
@@ -13,7 +14,15 @@
 //   --rows-per-hour <n>      the dataset's intake, for the estimate (default: D-10 s1, 1,050,992)
 //   --cpu-per-1k <n>         billable CPU-s per 1,000 JSON rows, for the estimate (default 0.45)
 //   --types-from <file.json> run the sentinel query with a prior report's census type table,
-//                            instead of both forms for every unresolved field
+//                            instead of both forms for every unresolved field. The 60-minute
+//                            census (job 1) STILL RUNS and is billed again; its fresh table is
+//                            recorded beside the prior one's types, not used for the sentinels.
+//
+// Reports are never overwritten: the file name carries the reference time and
+// the wall-clock start of the run (parquet-audit-ref<at>Z-ran<start>Z), a clash
+// gets -2, -3, …, and the files are opened with the exclusive flag. A job whose
+// poll or results read fails is cancelled (POST .../cancel), and the failure and
+// the cancel are recorded on that job in the report.
 //
 // WHAT IT NEEDS. `npm run dev` running, with `.dev/cribl.json` in place: the
 // Vite proxy at /capi injects the OAuth token (vite.config.ts). This script
@@ -36,7 +45,7 @@
 //
 // The app never runs these queries; nothing on a timer does either.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import nodeModule from 'node:module'
@@ -57,8 +66,7 @@ nodeModule.registerHooks({
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const Q = await import(pathToFileURL(join(ROOT, 'src/queries/parquetAudit.ts')).href)
 const R = await import(pathToFileURL(join(ROOT, 'src/cribl/parquetAuditReport.ts')).href)
-
-const SEARCH_GROUP = 'default_search'
+const J = await import(pathToFileURL(join(ROOT, 'scripts/parquet-audit-job.mjs')).href)
 
 function parseArgs(argv) {
   const out = { run: false, at: null, offsets: null, cap: 300, base: 'http://localhost:5173/capi', out: join(ROOT, '.dev', 'parquet-audit'), rowsPerHour: null, cpuPer1k: null, typesFrom: null }
@@ -79,7 +87,7 @@ function parseArgs(argv) {
     else if (a === '--cpu-per-1k') out.cpuPer1k = Number(next())
     else if (a === '--types-from') out.typesFrom = resolve(next())
     else if (a === '--help' || a === '-h') {
-      console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(0, 20).join('\n'))
+      console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(0, 30).join('\n'))
       process.exit(0)
     } else throw new Error(`unknown argument ${a}`)
   }
@@ -89,7 +97,8 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2))
-const nowSec = args.at ? Math.floor(Date.parse(args.at) / 1000) : Math.floor(Date.now() / 1000)
+const startedMs = Date.now()
+const nowSec = args.at ? Math.floor(Date.parse(args.at) / 1000) : Math.floor(startedMs / 1000)
 if (!Number.isFinite(nowSec)) throw new Error(`--at ${args.at} is not a date`)
 const windows = R.auditWindows(nowSec, args.offsets ? { sentinelOffsetsHours: args.offsets } : {})
 const basis = {
@@ -114,6 +123,7 @@ console.log('Jobs, in order:')
 console.log(`  1. 8.0b census + density   ${windows.census.label}`)
 windows.sentinel.forEach((w, i) => console.log(`  ${i + 2}. 8.0c sentinels          ${w.label}`))
 console.log(`Running-time cap per job: ${args.cap} s. Sentinel types: ${args.typesFrom ? `from ${args.typesFrom}` : 'static (both forms where unknown)'}.`)
+if (args.typesFrom) console.log('--types-from does not skip the census: job 1 runs and is billed again, and its fresh table is recorded beside the prior types.')
 console.log('')
 console.log('Expected cost:')
 for (const l of estimate.lines) console.log('  ' + l)
@@ -124,72 +134,19 @@ if (!args.run) {
 }
 
 // ── Running ─────────────────────────────────────────────────────────────────
-const url = (p) => `${args.base}/m/${SEARCH_GROUP}${p}`
+// The report directory is made before anything is billed, so a bad --out fails for free.
+mkdirSync(args.out, { recursive: true })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-async function api(method, path, body) {
-  const res = await fetch(url(path), {
-    method,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const text = await res.text()
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${text.slice(0, 200)}`)
-  return text
+const deps = {
+  api: J.makeApi({ base: args.base, fetch: (u, init) => fetch(u, init), sleep }),
+  sleep,
+  now: () => Date.now(),
+  log: (line) => console.log(line),
+  cap: args.cap,
 }
+const runJob = (purpose, window, query) => J.runAuditJob(deps, purpose, window, query)
 
-async function runJob(purpose, window, query) {
-  const executed = `set max_running_time_per_search=${args.cap}; ${query}`
-  const job = { purpose, window, query: executed, jobId: null, status: 'not submitted', billableCPUSeconds: null, elapsedMs: null, error: null }
-  const t0 = Date.now()
-  let rows = null
-  try {
-    const created = JSON.parse(await api('POST', '/search/jobs', { query: executed, earliest: window.earliest, latest: window.latest }))
-    job.jobId = created.items?.[0]?.id ?? null
-    if (!job.jobId) throw new Error('the job was not created (no id in the answer)')
-    console.log(`  ${purpose}: job ${job.jobId} submitted`)
-    const deadline = t0 + (args.cap + 60) * 1000
-    let wait = 250
-    for (;;) {
-      const st = JSON.parse(await api('GET', `/search/jobs/${encodeURIComponent(job.jobId)}/status`))
-      job.status = st.items?.[0]?.status ?? 'unknown'
-      if (job.status === 'completed' || job.status === 'failed' || job.status === 'canceled') break
-      if (Date.now() > deadline) {
-        await api('POST', `/search/jobs/${encodeURIComponent(job.jobId)}/cancel`).catch(() => {})
-        job.status = 'canceled by the runner (past cap + 60 s)'
-        break
-      }
-      await sleep(wait)
-      wait = Math.min(wait * 1.5, 2000)
-    }
-    job.elapsedMs = Date.now() - t0
-    if (job.status === 'completed') {
-      const text = await api('GET', `/search/jobs/${encodeURIComponent(job.jobId)}/results?limit=10`)
-      rows = text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
-        .filter((o) => !(typeof o.totalEventCount === 'number' && 'job' in o))
-      if (rows.length !== 1) throw new Error(`expected one summary row, got ${rows.length}`)
-    }
-  } catch (err) {
-    job.error = String(err.message ?? err)
-  }
-  // billableCPUSeconds reads 0 while a job runs and may lag its completion.
-  if (job.jobId) {
-    for (let i = 0; i < 3; i++) {
-      try {
-        const j = JSON.parse(await api('GET', `/search/jobs/${encodeURIComponent(job.jobId)}`))
-        const v = j.items?.[0]?.metrics?.cpuMetrics?.billableCPUSeconds
-        if (typeof v === 'number' && v > 0) {
-          job.billableCPUSeconds = v
-          break
-        }
-      } catch { /* the figure is reported as unknown */ }
-      await sleep(3000)
-    }
-  }
-  console.log(`  ${purpose}: ${job.status}${job.error ? ` — ${job.error}` : ''}; billable CPU-s ${job.billableCPUSeconds ?? 'unknown'}`)
-  return { job, row: rows?.[0] ?? null }
-}
-
+const ranAt = new Date().toISOString()
 console.log('Submitting, one job at a time:')
 const jobs = []
 const census = await runJob('8.0b census + density', windows.census, Q.TYPE_DENSITY_QUERY)
@@ -204,7 +161,10 @@ for (const w of windows.sentinel) {
 const censusEntries = census.row ? R.readTypeCensus(census.row) : null
 if (censusEntries && !args.typesFrom) sentinelTypes = R.censusTypeTable(censusEntries)
 const report = {
-  takenAt: new Date(nowSec * 1000).toISOString(),
+  referenceAt: new Date(nowSec * 1000).toISOString(),
+  referenceFrom: args.at ? '--at' : 'run start',
+  ranAt,
+  finishedAt: new Date().toISOString(),
   dataset: Q.AUDIT_DATASET,
   capSeconds: args.cap,
   estimate,
@@ -217,11 +177,20 @@ const report = {
   raw: { census: census.row, sentinels: sentinelRows },
 }
 
-mkdirSync(args.out, { recursive: true })
-const stamp = report.takenAt.slice(0, 16).replace(/:/g, '')
-const base = join(args.out, `parquet-audit-${stamp}Z`)
-writeFileSync(`${base}.json`, JSON.stringify(report, null, 2) + '\n')
-writeFileSync(`${base}.md`, R.renderAuditMarkdown(report) + '\n')
+// Never overwrite a report: it is evidence that cost CPU-s to take. A free name
+// is chosen, and the exclusive flag refuses one that appeared since.
+const stem = R.reportFileStem(report.referenceAt, report.ranAt)
+let base = null
+for (let attempt = 0; base === null; attempt++) {
+  const candidate = join(args.out, R.freeReportStem(stem, (name) => existsSync(join(args.out, name))))
+  try {
+    writeFileSync(`${candidate}.json`, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' })
+    base = candidate
+  } catch (err) {
+    if (err?.code !== 'EEXIST' || attempt >= 5) throw err
+  }
+}
+writeFileSync(`${base}.md`, R.renderAuditMarkdown(report) + '\n', { flag: 'wx' })
 console.log('')
 console.log(`Wrote ${base}.json and ${base}.md`)
 process.exit(jobs.every((j) => j.status === 'completed' && !j.error) ? 0 : 1)

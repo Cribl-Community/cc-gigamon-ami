@@ -2,6 +2,8 @@
 // --run. Nothing here reaches the network: the runner is spawned without --run,
 // pointed at a port nothing listens on, and must still exit cleanly.
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -12,10 +14,12 @@ import {
   auditWindows,
   censusControls,
   censusTypeTable,
+  freeReportStem,
   readDensity,
   readSentinels,
   readTypeCensus,
   renderAuditMarkdown,
+  reportFileStem,
   type AuditReport,
   type Row,
 } from './parquetAuditReport'
@@ -140,11 +144,14 @@ describe('the Markdown report', () => {
     const w = auditWindows(NOON)
     const census = readTypeCensus(censusRow({ tcp_rtt: { n: 6, s: 6, lo: 'string', hi: 'string' } }))
     const report: AuditReport = {
-      takenAt: '2026-09-25T12:00:30.000Z',
+      referenceAt: '2026-09-25T12:00:30.000Z',
+      referenceFrom: '--at',
+      ranAt: '2026-09-26T08:15:02.000Z',
+      finishedAt: '2026-09-26T08:21:40.000Z',
       dataset: 'gigamon_ami',
       capSeconds: 300,
       estimate: auditCostEstimate(w),
-      jobs: [{ purpose: '8.0b census + density', window: w.census, query: 'set max_running_time_per_search=300; dataset="gigamon_ami" | summarize rows=count()', jobId: '1.abc', status: 'completed', billableCPUSeconds: 401.5, elapsedMs: 2800, error: null }],
+      jobs: [{ purpose: '8.0b census + density', window: w.census, query: 'set max_running_time_per_search=300; dataset="gigamon_ami" | summarize rows=count()', jobId: '1.abc', submittedAt: '2026-09-26T08:15:02.000Z', status: 'completed', billableCPUSeconds: 401.5, elapsedMs: 2800, error: null, cancel: null }],
       census,
       controls: censusControls(census),
       density: readDensity({ rows: 10, d_tcp: 5, d_tcp_dst_subnet: 5 }),
@@ -156,6 +163,51 @@ describe('the Markdown report', () => {
     expect(md).toContain('| `tcp_rtt` (check) | 6 | 6 | string | string | number | **no** |')
     expect(md).toContain('set max_running_time_per_search=300; dataset="gigamon_ami"')
     expect(md).toContain('Billed in total: 402 CPU-s')
+    // The two times are kept apart: when the jobs ran, and what the windows were measured from.
+    expect(md).toContain('Taken 2026-09-26T08:15:02.000Z to 2026-09-26T08:21:40.000Z')
+    expect(md).toContain('reference time 2026-09-25T12:00:30.000Z (given by `--at`, not when the jobs ran)')
+    expect(md).not.toContain('Taken 2026-09-25T12:00:30')
+    expect(md).toContain('| 2026-09-26T08:15:02.000Z | 1.abc | completed | — |')
+    const own = renderAuditMarkdown({ ...report, referenceFrom: 'run start' })
+    expect(own).toContain('(the moment the runner started)')
+  })
+
+  it('records a job the runner cancelled after an error, with the error', () => {
+    const w = auditWindows(NOON)
+    const md = renderAuditMarkdown({
+      referenceAt: '2026-09-25T12:00:30.000Z', referenceFrom: 'run start', ranAt: '2026-09-25T12:00:31.000Z', finishedAt: '2026-09-25T12:01:00.000Z',
+      dataset: 'gigamon_ami', capSeconds: 300, estimate: auditCostEstimate(w),
+      jobs: [{ purpose: '8.0c sentinels', window: w.sentinel[0], query: 'q', jobId: '2.x', submittedAt: '2026-09-25T12:00:31.000Z', status: 'running; canceled by the runner after the error', billableCPUSeconds: null, elapsedMs: 1000, error: 'GET /search/jobs/2.x/status → 502 bad | gateway', cancel: 'sent' }],
+      census: null, controls: null, density: null, sentinelTypes: STATIC_FIELD_TYPES, sentinels: null,
+    })
+    expect(md).toContain('running; canceled by the runner after the error: GET /search/jobs/2.x/status → 502 bad / gateway | sent |')
+  })
+})
+
+describe('where the report is written', () => {
+  it('names both the reference time and the run time, so the same --at twice gives two names', () => {
+    const at = '2026-09-25T12:00:30.000Z'
+    const first = reportFileStem(at, '2026-09-25T12:01:02.123Z')
+    const second = reportFileStem(at, '2026-09-26T09:40:11.000Z')
+    expect(first).toBe('parquet-audit-ref20260925T1200Z-ran20260925T120102Z')
+    expect(second).not.toBe(first)
+  })
+
+  it('never hands out a name whose .json or .md already exists', () => {
+    const stem = 'parquet-audit-ref20260925T1200Z-ran20260925T120102Z'
+    expect(freeReportStem(stem, () => false)).toBe(stem)
+    const taken = new Set([`${stem}.json`, `${stem}-2.md`])
+    expect(freeReportStem(stem, (n) => taken.has(n))).toBe(`${stem}-3`)
+    expect(() => freeReportStem(stem, () => true, 3)).toThrow(/no free report name/)
+  })
+
+  it('the runner opens its report files exclusively, so nothing can replace an earlier one', () => {
+    const src = readFileSync(join(ROOT, 'scripts/parquet-audit.mjs'), 'utf8')
+    const writes = src.match(/writeFileSync\([^\n]*/g) ?? []
+    expect(writes.length).toBe(2)
+    for (const w of writes) expect(w).toContain("{ flag: 'wx' }")
+    expect(src).toContain('R.freeReportStem(')
+    expect(src).not.toMatch(/takenAt/)
   })
 })
 
@@ -168,6 +220,21 @@ describe('scripts/parquet-audit.mjs', () => {
     expect(r.stdout).toContain('Expected ≈828 CPU-s')
     expect(r.stdout).toContain('Nothing submitted. Re-run with --run')
     expect(r.stdout).not.toContain('submitted\n  ')
+  })
+
+  it('says in the plan that --types-from runs the census again', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pqa-'))
+    try {
+      const prior = join(dir, 'prior.json')
+      writeFileSync(prior, JSON.stringify({ census: readTypeCensus(censusRow()) }))
+      const r = spawnSync(process.execPath, ['scripts/parquet-audit.mjs', '--at', '2026-09-25T12:00:30Z', '--base', 'http://127.0.0.1:9/capi', '--types-from', prior], { cwd: ROOT, encoding: 'utf8' })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toContain('1. 8.0b census + density')
+      expect(r.stdout).toContain('--types-from does not skip the census: job 1 runs and is billed again')
+      expect(r.stdout).toContain('Nothing submitted.')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('refuses an argument it does not know rather than guessing', () => {
