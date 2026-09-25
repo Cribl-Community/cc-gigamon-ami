@@ -46,6 +46,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
   commitMatchingAndDeploy, commitScope, pendingConfigPaths, pendingDeploy, removeOnboardingStack, scrubbedErrText, tokensOf,
+  removeDirtyRefusal, removeDirtyVerdict, type RemoveDirtyInputs,
   undeployedHead, versionFilePaths,
   FILES_READ_CONCURRENCY, HISTORY_PAGE, HISTORY_PAGES,
   portProblem, portsInUse, postUrl, suggestPort, hostingOf, isCriblCloudHost,
@@ -148,7 +149,18 @@ interface LeaderOpts {
   /** Paths `/version/status` STILL reports after a successful commit — a file
    *  this run changed and its commit did not carry. */
   commitLeaves?: string[]
+  /** A status other than 200 makes `/version/commit` fail outright: the
+   *  interrupted run whose deletes landed and whose commit did not. */
+  commitStatus?: number
 }
+
+/** Where this app keeps its record of its own uncommitted removals. */
+const REMOVALS_KV = '/kvstore/guided_setup_memory/uncommitted_removals'
+
+/** What the KV store holds under `REMOVALS_KV` at the start of a test, as the
+ *  envelope kv.ts writes — carried across `stubLeader` calls, as the store is. */
+let removalsKv: string | undefined
+beforeEach(() => { removalsKv = undefined })
 
 /** The live pipeline and source the stub answers with by default: present, in
  *  a group that an earlier release provisioned and somebody later edited. */
@@ -200,7 +212,7 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
     pipeline = STALE_PIPELINE, source = STALE_SOURCE, breaker = { ...HTTP_BREAKER_SPEC },
     pipelineBetweenReads, sourceBetweenReads, routesBetweenReads, inputs = [], sourceStatus = 200,
     sourcePostEchoes = false, sourcePostError, sourcePatchError, deleteStatus = {}, packs = [], packsStatus = 200,
-    commitLeaves = [],
+    commitLeaves = [], commitStatus = 200,
   } = opts
   const history = opts.history ?? (head === configVersion
     ? [{ hash: head, refs: 'HEAD -> main', files: [] as string[] }]
@@ -259,6 +271,7 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
         ? reply(200, { items: [{ files: pendingNow.map((p) => ({ path: p })) }] })
         : reply(pendingStatus, { message: 'not granted' })
     }
+    if (at('POST', '/version/commit') && commitStatus !== 200) return reply(commitStatus, { message: 'commit refused' })
     if (at('POST', '/version/commit')) {
       if (commit !== null) {
         const carried = new Set((body as { files?: string[] } | undefined)?.files ?? [])
@@ -327,6 +340,18 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
 
     // The app's own audit trail (cribl/kv.ts) — not what these tests are about,
     // but it must not 404 its way into a console full of warnings.
+    // This app's record of its own uncommitted removals, kept as the store
+    // keeps it: the envelope kv.ts PUTs is what the next GET answers.
+    if (at('PUT', REMOVALS_KV)) {
+      removalsKv = JSON.stringify(body)
+      return reply(200, '')
+    }
+    if (at('GET', REMOVALS_KV)) {
+      const v = removalsKv
+      return v === undefined
+        ? reply(404, '')
+        : { ok: true, status: 200, statusText: 'OK', text: async () => v, json: async () => JSON.parse(v) as unknown }
+    }
     if (under('PUT', '/kvstore/')) return reply(200, '')
 
     // The commit memory decides whether a stranded commit is OURS to deploy.
@@ -1288,6 +1313,131 @@ describe('removing the onboarding stack', () => {
     expect(files).toContain(`groups/${GROUP}/local/cribl/pipelines/gigamon_syslog/conf.yml`)
     // A teardown never touches the destination, so it never commits its file.
     expect(files).not.toContain(`groups/${GROUP}/local/cribl/outputs.yml`)
+  })
+})
+
+// ── A Remove never commits somebody else's uncommitted work (runbook 4c P1) ──
+//
+// The teardown's commit takes whole files — `inputs.yml` holds every source in
+// the group, `pipelines/route.yml` is the one routing table — so a change
+// somebody left uncommitted in one of them used to be committed and deployed
+// with the removal, the dialog having named it. `removeDirtyRefusal` refuses
+// that, inside the run lock, before the first write; and it must not refuse
+// this app's own earlier removal whose commit failed, or the group could never
+// be retried from here.
+
+describe('removeDirtyVerdict', () => {
+  const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
+  const ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+  const base: RemoveDirtyInputs = {
+    group: GROUP, keys: ['legacy_source', 'legacy_route'], pending: [], record: null, head: HEAD, live: { source: 'absent', route: 'absent' },
+  }
+
+  it('lets a clean scope through, and ignores what is pending outside it', () => {
+    expect(removeDirtyVerdict(base)).toEqual({ ok: true, ownRetry: [] })
+    expect(removeDirtyVerdict({ ...base, pending: [`groups/other/local/cribl/inputs.yml`, `groups/${GROUP}/local/cribl/outputs.yml`] }).ok).toBe(true)
+  })
+
+  it('refuses a file of the scope that is already uncommitted, naming it', () => {
+    expect(removeDirtyVerdict({ ...base, pending: [INPUTS] })).toEqual({ ok: false, unknown: false, files: [INPUTS] })
+    expect(removeDirtyVerdict({ ...base, pending: [ROUTE] })).toEqual({ ok: false, unknown: false, files: [ROUTE] })
+  })
+
+  it('refuses when Git’s status could not be read', () => {
+    expect(removeDirtyVerdict({ ...base, pending: null })).toEqual({ ok: false, unknown: true, files: [] })
+  })
+
+  it('lets through a file whose only recorded change is this app’s own earlier removal, at the same HEAD', () => {
+    const v = removeDirtyVerdict({ ...base, pending: [INPUTS, ROUTE], record: { keys: ['source', 'route'], head: HEAD } })
+    expect(v).toEqual({ ok: true, ownRetry: [INPUTS, ROUTE] })
+  })
+
+  it('refuses the record once HEAD has moved, because a commit since may have carried it', () => {
+    const v = removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: DEPLOYED } })
+    expect(v).toEqual({ ok: false, unknown: false, files: [INPUTS] })
+    expect(removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: null } }).ok).toBe(false)
+    expect(removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: HEAD }, head: null }).ok).toBe(false)
+  })
+
+  it('refuses when the recorded object is back, or cannot be seen', () => {
+    for (const state of ['present', 'unreadable'] as const) {
+      expect(removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: HEAD }, live: { source: state } }).ok, state).toBe(false)
+    }
+  })
+
+  it('refuses a file the record says nothing about, even when it vouches for another', () => {
+    const v = removeDirtyVerdict({ ...base, pending: [INPUTS, ROUTE], record: { keys: ['source'], head: HEAD } })
+    expect(v).toEqual({ ok: false, unknown: false, files: [ROUTE] })
+  })
+})
+
+describe('removeDirtyRefusal, and the record a failed removal leaves', () => {
+  const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
+  const ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+  const LEGACY_DELETE = `/m/${GROUP}/system/inputs/in_gigamon_syslog`
+  const recorded = () => (removalsKv === undefined ? undefined : (JSON.parse(removalsKv) as { doc: Record<string, unknown> }).doc)
+
+  it('refuses a foreign change pending in inputs.yml, naming it and saying to commit in Cribl Stream, and writes nothing', async () => {
+    const calls = stubLeader({ pending: [INPUTS] })
+    const why = await removeDirtyRefusal(GROUP, { legacy_source: 'present' })
+    expect(why).toContain(INPUTS)
+    expect(why).toContain('Commit (or discard) them in Cribl Stream')
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+
+  it('refuses a foreign change pending in the routing table', async () => {
+    stubLeader({ pending: [ROUTE] })
+    expect(await removeDirtyRefusal(GROUP, { route: 'present', source: 'present' })).toContain(ROUTE)
+  })
+
+  it('refuses when Git’s status cannot be read, and says it could not tell', async () => {
+    const calls = stubLeader({ pendingStatus: 403 })
+    const why = await removeDirtyRefusal(GROUP, { legacy_source: 'present' })
+    expect(why).toContain(`Cribl did not report what is uncommitted in ${GROUP}`)
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+
+  it('answers nothing on a clean scope, after one Git status read and nothing else', async () => {
+    const calls = stubLeader({ pending: [`groups/${GROUP}/local/cribl/outputs.yml`] })
+    expect(await removeDirtyRefusal(GROUP, { legacy_source: 'present', route: 'present' })).toBeNull()
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /version/status'])
+  })
+
+  it('lets its own half-finished removal be retried: the DELETE landed, the commit failed, and the retry commits it', async () => {
+    // Run 1: the Raw HTTP source is deleted, the old Syslog source's DELETE is
+    // refused, and the commit fails — so this app's deletion sits in inputs.yml.
+    stubLeader({ pending: [INPUTS], commitStatus: 500, deleteStatus: { [LEGACY_DELETE]: 500 } })
+    const first = await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'present', legacy_source: 'present' })
+    expect(step(first, 'source')?.detail).toBe('deleted')
+    expect(step(first, 'commit')?.action).toBe('error')
+    expect(recorded()).toEqual({ [GROUP]: { keys: ['source'], head: HEAD } })
+
+    // Run 2: only the Syslog source is left, and inputs.yml is still pending.
+    // Without the record this is exactly the refusal above.
+    const calls = stubLeader({ pending: [INPUTS], sourceStatus: 404 })
+    expect(await removeDirtyRefusal(GROUP, { source: 'absent', legacy_source: 'present' })).toBeNull()
+    // (Run 1's audit-trail entry is not awaited, so it may land on this stub.)
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore/gigamon/log/')), 'the check wrote something').toEqual([])
+
+    await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'absent', legacy_source: 'present' })
+    const commit = calls.find((c) => c.method === 'POST' && c.path === '/version/commit')
+    expect((commit?.body as { files?: string[] }).files).toEqual([INPUTS])
+    expect(recorded(), 'a committed removal is still recorded as uncommitted').toEqual({})
+  })
+
+  it('does not believe that record once somebody has committed since', async () => {
+    stubLeader({ pending: [INPUTS], commitStatus: 500 })
+    await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'present' })
+    expect(recorded()).toEqual({ [GROUP]: { keys: ['source'], head: HEAD } })
+    stubLeader({ pending: [INPUTS], sourceStatus: 404, head: NEW_COMMIT })
+    expect(await removeDirtyRefusal(GROUP, { legacy_source: 'present' })).toContain(INPUTS)
+  })
+
+  it('does not believe it for an object that is back', async () => {
+    stubLeader({ pending: [INPUTS], commitStatus: 500 })
+    await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'present' })
+    stubLeader({ pending: [INPUTS] })
+    expect(await removeDirtyRefusal(GROUP, { legacy_source: 'present' })).toContain(INPUTS)
   })
 })
 

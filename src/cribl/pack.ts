@@ -83,12 +83,8 @@
 // NOT VERIFIED, AND LEFT FOR THE PROOF INSTALL (on a real Leader):
 //   - (the value of `__inputId` for an input inside a pack was on this list
 //     until 2026-09-25; it is measured now: see 0.2.1 above.)
-//   - that a pack's event breaker rulesets live in `default/breakers.yml`, and
-//     that a pack input's `breakerRulesets` resolves against them. No pack with
-//     a breaker has been read back from a Leader in this project; the path is
-//     the one another Cribl Community pack ships, and the global file's
-//     `default/cribl/breakers.yml` without the `cribl/` segment, as every other
-//     pack file drops it. See `PACK_BREAKERS_FILE`.
+//   - (where a pack keeps its event breaker rulesets was on this list until
+//     2026-09-25; it is measured now: see `PACK_BREAKERS_FILE`.)
 //   - (two more items were on this list until 2026-09-25, and were measured
 //     then. Unknown (f): a DataGen inside a pack emitting 0.2.0's exact sample
 //     format, `isTemplate: false` included, lands with `_time` as now. And
@@ -122,13 +118,13 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * NOT RELEASED YET: 0.2.2 (the Parquet route's own pipeline, which removes
- * `_raw`) is built here and has no `gigamon-pack-v0.2.2` release, so
- * `PACK_PUBLISHED` is false and Onboard and Upgrade are refused with
- * `packRelease`'s sentence until the flip — a separate commit after the tag,
- * as for 0.2.1, that sets `PACK_PUBLISHED` and `PACK_SHA256` and appends 0.2.2
- * to `PACK_PUBLISHED_VERSIONS`. An installed 0.2.1 (or 0.2.0, or 0.1.0) stays
- * owned meanwhile: Remove works, and Upgrade to 0.2.2 is what the flip offers.
+ * RELEASED: 0.2.2 (the Parquet route's own pipeline, which removes `_raw`) was
+ * published as `gigamon-pack-v0.2.2` on 2026-09-25, and the flip set
+ * `PACK_PUBLISHED` and `PACK_SHA256` below and appended 0.2.2 to
+ * `PACK_PUBLISHED_VERSIONS`. An installed 0.2.1 (or 0.2.0, or 0.1.0) is owned:
+ * Remove works, and Upgrade offers 0.2.2. *(Corrected 2026-09-25,
+ * `feat/remove-dirty-refusal`: this said "NOT RELEASED YET", with
+ * `PACK_PUBLISHED` false until the flip, after the flip had landed.)*
  * Bumping this constant is how the app ships a pack update;
  * `packs/cc-network-gigamon-ami/package.json` may run ahead of it, never
  * behind. *(0.2.1 until 2026-09-25, `feat/pack-022-parquet-pipeline`: 0.2.1 was
@@ -174,11 +170,15 @@ export const PACK_ROUTES_FILE = 'default/pipelines/route.yml'
 
 /**
  * Where a pack keeps its event breaker rulesets, relative to the pack root.
- * NOT MEASURED — see the header. Cribl keeps the global library in
- * `(default|local)/cribl/breakers.yml`; a pack keeps every other kind of object
- * one level up (`default/inputs.yml`, not `default/cribl/inputs.yml`), and
- * another Cribl Community pack ships its breakers here and references them from
- * its own sources. The proof install has to read it back.
+ * MEASURED on a Leader (2026-09-25, the pack README's "Verified on a Leader"):
+ * the ruleset read back from the pack's own library, and a JSON array POSTed
+ * to the pack's Raw HTTP source was split into one event per record, with every
+ * field extracted, in both the JSON and the Parquet copy — so the pack input's
+ * `breakerRulesets` resolves against this file. Cribl keeps the global library
+ * in `(default|local)/cribl/breakers.yml`; a pack drops the `cribl/` segment, as
+ * it does for every other kind of object. *(Corrected 2026-09-25,
+ * `feat/remove-dirty-refusal`: this said NOT MEASURED, and that the proof
+ * install had to read it back.)*
  */
 export const PACK_BREAKERS_FILE = 'default/breakers.yml'
 

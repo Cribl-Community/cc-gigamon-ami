@@ -205,6 +205,38 @@ export function leftAloneSentence(group: string, objects: readonly string[]): st
   )
 }
 
+/**
+ * The teardown's "already uncommitted" line. It names what `pendingSentence`
+ * names, from the Git status read when the dialog opened, and says what "Yes"
+ * does about it — which is no longer what `pendingSentence` says for the
+ * onboarding plan's dialogs ("which this press commits and deploys"): since
+ * 2026-09-25 the Remove re-reads Git's status inside the run lock and refuses,
+ * writing nothing, on a file it cannot account for as this app's own earlier
+ * removal, or on a status it cannot read (cribl/provision.ts
+ * `removeDirtyRefusal`). So the three states keep three sentences, and none of
+ * them promises the commit will carry somebody else's work.
+ */
+export function removalPendingSentence(ctx: ProvisionConfirmContext): string {
+  const { scope, group } = ctx
+  if (scope === null || scope.unknown) {
+    return (
+      `Cribl did not report what is already uncommitted in ${group}, so this app cannot tell you whether anybody else’s unfinished work is ` +
+      'sitting in those files. Yes reads it again before it writes anything, and removes nothing while it still cannot be read.'
+    )
+  }
+  if (scope.alreadyDirty.length === 0) {
+    return (
+      `Cribl reports nothing already uncommitted in those files. That was read when this dialog opened; Yes reads it again before it ` +
+      'writes anything, and removes nothing if a change has been saved in one of them since.'
+    )
+  }
+  return (
+    `Cribl reports ${scope.alreadyDirty.length} of those file${scope.alreadyDirty.length === 1 ? '' : 's'} already carrying uncommitted changes: ` +
+    `${scope.alreadyDirty.join(', ')}. Yes removes nothing unless every one of them holds only this app’s own earlier removal from ${group} ` +
+    'that was never committed; anything else is somebody else’s unfinished work, to commit in Cribl Stream first.'
+  )
+}
+
 const withUndeployed = (ctx: ProvisionConfirmContext): string[] => {
   const line = undeployedSentence(ctx)
   return line ? [line] : []
@@ -223,7 +255,7 @@ export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination
   return [
     `Cribl Lake destination ${keptDestination} and dataset ${keptDataset} are kept — they are shared, and the dashboards read that dataset.`,
     carriesSentence(ctx, 'removal'),
-    pendingSentence(ctx),
+    removalPendingSentence(ctx),
     ...withUndeployed(ctx),
     ...DEPLOY_CONSEQUENCES,
     HTTP_RESTART_PRECAUTION,

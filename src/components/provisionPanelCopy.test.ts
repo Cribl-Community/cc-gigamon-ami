@@ -24,7 +24,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AUTH_HEADER, ENDPOINT_LEAD, HTTP_RESTART_PRECAUTION, PACK_SETUP_FACTS, REMOVE_UNDO, TOKEN_ONCE, UNENCRYPTED_WARNING,
-  behindNote, behindTip, legacyNote, LEGACY_ONLY_TIP, LEGACY_TIP, leftAloneSentence, pendingSentence, removeConsequences,
+  behindNote, behindTip, legacyNote, LEGACY_ONLY_TIP, LEGACY_TIP, leftAloneSentence, pendingSentence, removalPendingSentence, removeConsequences,
   undeployedSentence,
 } from './provisionPanelCopy'
 import * as copy from './provisionPanelCopy'
@@ -106,6 +106,21 @@ describe('what the teardown confirmation claims about reach', () => {
     expect(clean).not.toContain('Assume it may be')
     expect(dirty).not.toContain('Assume it may be')
     expect(failed).toContain('Assume it may be')
+  })
+
+  it('names what is already uncommitted in the teardown, and no longer says Yes commits and deploys it', () => {
+    // Since 2026-09-25 the Remove refuses on such a file (provision.ts
+    // `removeDirtyRefusal`); the line naming it stays, and says so.
+    const dirty = all(removeConsequences(ctx([INPUTS]), 'gigamon_lake', 'gigamon_ami'))
+    expect(dirty).toContain(INPUTS)
+    expect(dirty).toContain('already carrying uncommitted changes')
+    expect(dirty).toContain('Yes removes nothing unless')
+    expect(dirty).not.toContain('which this press commits and deploys')
+    const clean = removalPendingSentence(ctx([]))
+    const failed = removalPendingSentence(ctx(null))
+    expect(new Set([clean, removalPendingSentence(ctx([INPUTS])), failed]).size).toBe(3)
+    expect(clean).toContain('Yes reads it again')
+    expect(failed).toContain('removes nothing while it still cannot be read')
   })
 
   it('carries every deploy consequence the rest of the app carries, verbatim', () => {
