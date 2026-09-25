@@ -57,6 +57,12 @@ const DATASET_ID = 'gigamon_ami'
 /** The Cribl Lake destination both feeds write through. Pinned to
  *  `LAKE_DESTINATION_ID` (provision.ts) in the test. */
 const DESTINATION_ID = 'gigamon_lake'
+/** The onboarding pack, and the destination inside it that writes gigamon_ami.
+ *  Pinned to `PACK_ID` and `PACK_JSON_OUTPUT_ID` (pack.ts) in the test. The
+ *  Lake landing panel READS this destination and never writes it: the pack's
+ *  releases govern it (see `getPackDestination`). */
+const PACK_ID = 'cc-network-gigamon-ami'
+const PACK_DESTINATION_ID = 'gigamon_ami_json_lake'
 /** `default` is the lake itself, not a placeholder — Cribl Lake exposes one and
  *  this app never addresses another. */
 const LAKE_ROOT = '/products/lake/lakes/default'
@@ -308,6 +314,62 @@ export async function getDestination(group: string, init: CapiInit = {}): Promis
     if (!first) return { outcome: 'absent', value: null, object, status: r.status, detail: null }
     const status = first.status && typeof first.status === 'object' ? (first.status as Record<string, unknown>) : null
     return ok(object, { id: text(first.id) ?? '', health: status ? text(status.health) : null, raw: Object.freeze({ ...first }) }, r.status)
+  } catch (err) {
+    return threw(object, err)
+  }
+}
+
+/** What the onboarding pack answers for the Lake landing panel. */
+export type PackDestinationRead =
+  /** The pack is not in this group's pack list. */
+  | { installed: false; destination: null }
+  /** The pack is installed. `destination` is null when this version of the pack
+   *  has no `gigamon_ami_json_lake` (0.1.0 wrote through its own ids). */
+  | { installed: true; destination: LakeDestination | null }
+
+/**
+ * The onboarding pack's `gigamon_ami_json_lake`, whole, for DISPLAY ONLY — in a
+ * group where the pack is installed it is what writes gigamon_ami for Gigamon
+ * AMX, and the panel shows its flush and backpressure settings beside the
+ * global `gigamon_lake`'s.
+ *
+ * NEVER WRITTEN FROM HERE (owner decision 2026-09-25). A change to a pack
+ * object is kept as a local setting of the pack, and an in-place upgrade keeps
+ * local settings (measured 2026-09-25, 0.1.0 → 0.2.0 on a Leader), so an edit
+ * would pin this destination against every later release of the pack. The
+ * pack's releases govern it; this read has no PATCH beside it.
+ *
+ * The pack list is read FIRST rather than taking a failed read of the
+ * destination for "not installed": what Cribl answers for a path inside a pack
+ * that is not installed is unmeasured. A pack list that cannot be read is
+ * `not-readable` / `failed`, never "not installed" — a 404 on the LIST says
+ * nothing about packs.
+ */
+export async function getPackDestination(group: string, init: CapiInit = {}): Promise<ReadResult<PackDestinationRead>> {
+  const object = `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_DESTINATION_ID}`
+  try {
+    const packs = await capi('GET', groupPath(group, '/packs'), undefined, init)
+    if (packs.status !== 200) {
+      const r = failed<PackDestinationRead>('/m/:gid/packs', packs)
+      return r.outcome === 'absent' ? { ...r, outcome: 'failed', detail: errText(packs) } : r
+    }
+    if (!items(packs.body).some((p) => text(p.id) === PACK_ID)) {
+      return ok(object, { installed: false, destination: null }, packs.status)
+    }
+    const r = await capi('GET', groupPath(group, `/p/${PACK_ID}/system/outputs/${PACK_DESTINATION_ID}`), undefined, init)
+    if (r.status === 404) return ok(object, { installed: true, destination: null }, r.status)
+    if (r.status !== 200) return failed(object, r)
+    const first = items(r.body)[0]
+    if (!first) return ok(object, { installed: true, destination: null }, r.status)
+    const status = first.status && typeof first.status === 'object' ? (first.status as Record<string, unknown>) : null
+    return ok(
+      object,
+      {
+        installed: true,
+        destination: { id: text(first.id) ?? '', health: status ? text(status.health) : null, raw: Object.freeze({ ...first }) },
+      },
+      r.status,
+    )
   } catch (err) {
     return threw(object, err)
   }
@@ -615,6 +677,8 @@ export async function listStreamGroupsCurrent(init: CapiInit = {}): Promise<Read
 export const LAKE_ADDRESSING = Object.freeze({
   datasetId: DATASET_ID,
   destinationId: DESTINATION_ID,
+  packId: PACK_ID,
+  packDestinationId: PACK_DESTINATION_ID,
   lakeRoot: LAKE_ROOT,
   searchRoot: SEARCH_ROOT,
 })

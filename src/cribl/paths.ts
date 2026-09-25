@@ -54,6 +54,7 @@ import {
   PACK_BREAKER_ID,
   PACK_HTTP_INPUT_ID,
   PACK_ID,
+  PACK_JSON_OUTPUT_ID,
   PACK_PARQUET_DATASET_ID,
   PACK_SAMPLE_DATASET_ID,
   PACK_SAMPLE_INPUT_ID,
@@ -529,6 +530,13 @@ export const API_CALLS: readonly ApiCall[] = [
     scope: 'product',
     site: 'packClient.ts readPackState',
     why: 'Ask whether the pack’s three Cribl Lake destinations are installed. Read only.',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_JSON_OUTPUT_ID}`,
+    scope: 'product',
+    site: 'lake.ts getPackDestination',
+    why: `Read the onboarding pack's '${PACK_JSON_OUTPUT_ID}' destination, for the Lake landing panel: where the pack is installed it writes ${LAKE_DATASET_ID} for Gigamon AMX, and the panel shows its flush and backpressure settings and its health. Read only — the panel never changes a pack object, because an edit would become a local pack setting that later pack releases do not replace.`,
   },
   {
     method: 'GET',
