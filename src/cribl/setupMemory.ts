@@ -115,6 +115,85 @@ export function updateCommitMemory(change: CommitMemoryChange): Promise<{ memory
   return turn
 }
 
+/**
+ * This app's own removals that were never committed, per worker group — the
+ * evidence `removeDirtyRefusal` (provision.ts) needs to let a Remove through a
+ * file that is already uncommitted because of this app's OWN earlier Remove.
+ *
+ * WHY IT EXISTS. A Remove whose DELETE landed and whose commit failed leaves
+ * this app's deletion pending in `inputs.yml`, `pipelines/route.yml` and the
+ * rest. The next Remove refuses on any pending file of its own scope, so
+ * without this record it would refuse every retry in the group, and this panel
+ * has no "finish removal" of its own. Git's status names files, never hunks,
+ * so a pending file cannot be read for WHOSE change it holds; this record is
+ * the app saying "that one was me", with the Leader's HEAD at the time, so a
+ * record that a later commit may have made stale is never believed.
+ *
+ * `keys` are provision.ts `CommitKey`s this app deleted in the group and whose
+ * commit did not land; `head` is the Leader's HEAD when that happened, or null
+ * when it could not be read — a record that then vouches for nothing.
+ *
+ * ONE WRITER: `removeOnboardingStack`, at the end of a confirmed run — never on
+ * load, render or a timer. A stale record is left where it is rather than
+ * cleared on a read (that would be a write on load); its HEAD no longer
+ * matching is what retires it.
+ */
+export interface UncommittedRemoval {
+  keys: string[]
+  head: string | null
+}
+
+/** group id → this app's uncommitted removal there. */
+export type UncommittedRemovals = Record<string, UncommittedRemoval>
+
+const REMOVALS_KEY = 'guided_setup_memory/uncommitted_removals'
+
+/** The record, or null when the store answered nothing usable — which a caller
+ *  must read as "no evidence", never as "nothing was left uncommitted". */
+export async function loadUncommittedRemovals(): Promise<UncommittedRemovals | null> {
+  const doc = await getDoc<UncommittedRemovals>(REMOVALS_KEY)
+  return doc && typeof doc === 'object' && !Array.isArray(doc) ? doc : null
+}
+
+/** One change to one group's record: keys left uncommitted at `head`, and keys
+ *  a commit has since carried. */
+export interface UncommittedRemovalChange {
+  group: string
+  add?: { keys: readonly string[]; head: string | null }
+  drop?: readonly string[]
+}
+
+let removalsQueue: Promise<unknown> = Promise.resolve()
+
+/**
+ * Change one group's record by read, merge, write, in turn. Keys added at the
+ * HEAD the record already holds join it; keys added at another HEAD replace it,
+ * because a commit in between may have carried the older ones. A group left
+ * with no keys is dropped, and a change that leaves nothing to say about a
+ * group the record never held writes nothing. Answers whether the store took it.
+ */
+export function updateUncommittedRemovals(change: UncommittedRemovalChange): Promise<boolean> {
+  const turn = removalsQueue.then(async () => {
+    const doc: UncommittedRemovals = { ...((await loadUncommittedRemovals()) ?? {}) }
+    const cur = doc[change.group]
+    let keys = cur ? [...cur.keys] : []
+    let head = cur ? cur.head : null
+    if (change.add && change.add.keys.length) {
+      if (!cur || cur.head === null || cur.head !== change.add.head) keys = []
+      head = change.add.head
+      for (const k of change.add.keys) if (!keys.includes(k)) keys.push(k)
+    }
+    const drop = change.drop ?? []
+    keys = keys.filter((k) => !drop.includes(k))
+    if (!cur && keys.length === 0) return true
+    if (keys.length) doc[change.group] = { keys, head }
+    else delete doc[change.group]
+    return putDoc(REMOVALS_KEY, doc)
+  })
+  removalsQueue = turn.catch(() => undefined)
+  return turn
+}
+
 /** What Guided Setup remembers about one viewer. A document rather than a bare
  *  string, so a second preference on this screen is a field rather than another
  *  key and another round trip. */

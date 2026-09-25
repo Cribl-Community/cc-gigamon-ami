@@ -51,7 +51,7 @@ import { appendLog } from './kv'
 import { DEFAULT_PROFILE, datasetSpec, pathFilterRows } from './landing'
 import { listInputs, listPackInputs, type StreamInput } from './lake'
 import { PACK_PARQUET_DATASET_ID } from './pack'
-import { loadCommitMemory } from './setupMemory'
+import { loadCommitMemory, loadUncommittedRemovals, updateUncommittedRemovals } from './setupMemory'
 
 /** The Raw HTTP source earlier releases created for Gigamon AMX to POST to.
  *  Global (not pack) ids, each distinct from every id in the onboarding pack
@@ -1511,9 +1511,161 @@ export async function removeOnboardingStack(
   // the real Git status (deletions/modifications show up there too).
   const files = await filesToCommit(group, touched)
   const cd = await commitAndDeploy(removeCommitMessage(group, touched), group, files, markersFor(touched), onStep, onPhase)
+  await recordUncommittedRemoval(group, touched, cd)
   const all = [...out, ...cd]
   logRun('onboarding_stack.removed', group, all)
   return all
+}
+
+/**
+ * Keep `removeDirtyRefusal`'s evidence current, at the end of a run and from
+ * nowhere else (setupMemory.ts `UncommittedRemoval`).
+ *
+ *   * THE COMMIT FAILED after deletes landed: this run's deletions are pending
+ *     in Git and nothing committed them, so they are recorded under the
+ *     Leader's HEAD as it is now. A commit that landed but left a file behind
+ *     ("commit incomplete") counts as failed: that file still holds this
+ *     run's change.
+ *   * THE COMMIT LANDED: every recorded key whose file this commit carried is
+ *     dropped — that earlier deletion is committed now.
+ *
+ * Best-effort, like the audit trail: a store that refuses the record costs a
+ * later retry its way through (it is refused, and says commit in Cribl Stream),
+ * never a write it should not make.
+ */
+async function recordUncommittedRemoval(group: string, touched: readonly CommitKey[], steps: readonly StepResult[]): Promise<void> {
+  if (touched.length === 0) return
+  const commit = steps.find((s) => s.key === 'commit')
+  try {
+    if (commit?.action === 'created') {
+      const carried = new Set(markersFor(touched))
+      const drop = ALL_COMMIT_KEYS.filter((k) => {
+        const m = fileMarker(k)
+        return m !== null && carried.has(m)
+      })
+      await updateUncommittedRemovals({ group, drop })
+    } else if (commit?.action === 'error') {
+      await updateUncommittedRemovals({ group, add: { keys: [...touched], head: await leaderHead() } })
+    }
+  } catch {
+    // The record is evidence for a later retry, not part of this run's outcome.
+  }
+}
+
+/** Every key a Guided Setup teardown commit can carry a file for. */
+const ALL_COMMIT_KEYS: readonly CommitKey[] = Object.freeze(['source', 'pipeline', 'route', 'breaker', ...LEGACY_KEYS])
+
+/** The Leader's local HEAD, or null when the history cannot be read. */
+async function leaderHead(): Promise<string | null> {
+  const items = await commitHistory(0).catch(() => null)
+  if (!items) return null
+  const i = headIndex(items)
+  return i >= 0 ? items[i].hash : null
+}
+
+// ── The Remove's own guard against committing somebody else's work ─────────
+//
+// `POST /version/commit` takes whole FILES, and the teardown's files are shared:
+// `inputs.yml` holds every source in the group, `pipelines/route.yml` is the one
+// routing table, `breakers.yml` the group's whole ruleset library. So a change
+// somebody left uncommitted in one of them is committed and deployed with the
+// removal — to running Worker Processes. The dialog has always NAMED such files
+// (`pendingSentence`); it did not stop. This does, inside the run lock and
+// before the first write: it re-reads Git's status, builds the run's commit
+// scope, and refuses while any file in that scope is already uncommitted, or
+// while the status cannot be read.
+//
+// ITS OWN RETRY IS NOT LOCKED OUT. A Remove whose DELETE landed and whose commit
+// failed leaves this app's deletion pending in exactly those files, and this
+// panel has no "finish removal". Git names files, not hunks, so the pending
+// change cannot be read for whose it is; the evidence is this app's own record
+// of the removals it left uncommitted (setupMemory.ts), made under the Leader's
+// HEAD. A pending file is let through only when that record, at the HEAD the
+// Leader still has, names an object of this app's in that file, and every such
+// recorded object is absent now (a fresh read: one re-created since would be a
+// change that is not this app's). Anything else is refused with the files
+// named, and the way out said: commit them in Cribl Stream.
+//
+// WHAT IT CANNOT SEE: an edit somebody saves to the SAME file after this app's
+// failed commit and before the retry, at an unchanged HEAD — Git's status looks
+// the same with or without it. And a save made after this check and before the
+// commit, which no re-read can close.
+// (Runbook 4c, P1: `removeDirtyRefusal`.)
+
+/** The verdict on the files a Remove's commit would carry. */
+export type RemoveDirtyVerdict =
+  | { ok: true; ownRetry: string[] }
+  | { ok: false; unknown: true; files: [] }
+  | { ok: false; unknown: false; files: string[] }
+
+/** What `removeDirtyVerdict` weighs, all of it read by the caller. */
+export interface RemoveDirtyInputs {
+  group: string
+  /** The keys this run will delete — the ones the confirmation named present. */
+  keys: readonly CommitKey[]
+  /** Git's pending paths, or null when the status read answered nothing. */
+  pending: readonly string[] | null
+  /** This app's record of its own uncommitted removal in `group`, or null. */
+  record: { keys: readonly string[]; head: string | null } | null
+  /** The Leader's HEAD now, or null when unread. */
+  head: string | null
+  /** Each of this app's objects as a fresh status read found it. */
+  live: Partial<Record<CommitKey, ResourceState>>
+}
+
+/** Pure: may a Remove over `keys` commit now? See the block above. */
+export function removeDirtyVerdict(i: RemoveDirtyInputs): RemoveDirtyVerdict {
+  const scope = commitScope(i.group, i.keys, i.pending)
+  if (scope.unknown) return { ok: false, unknown: true, files: [] }
+  if (scope.alreadyDirty.length === 0) return { ok: true, ownRetry: [] }
+  const vouches = i.record !== null && i.record.head !== null && i.head !== null && i.record.head === i.head
+  const recorded = new Set(vouches && i.record ? i.record.keys : [])
+  const ours = (file: string): boolean => {
+    const here = ALL_COMMIT_KEYS.filter((k) => {
+      const m = fileMarker(k)
+      return m !== null && file.includes(m) && recorded.has(k)
+    })
+    return here.length > 0 && here.every((k) => i.live[k] === 'absent')
+  }
+  const foreign = scope.alreadyDirty.filter((f) => !ours(f))
+  return foreign.length ? { ok: false, unknown: false, files: foreign } : { ok: true, ownRetry: [...scope.alreadyDirty] }
+}
+
+/** The refusal when Git's status cannot be read. */
+export const removeDirtyUnknownSentence = (group: string): string =>
+  `Cribl did not report what is uncommitted in ${group}, so this app cannot tell whether somebody else’s unfinished work is in ` +
+  'the files this removal commits whole. Try again once it can be read, or remove the objects in Cribl Stream'
+
+/** The refusal on a file already uncommitted with a change this app cannot
+ *  account for as its own earlier removal. */
+export const removeDirtySentence = (group: string, files: readonly string[]): string =>
+  `${files.join(', ')} ${files.length === 1 ? 'is' : 'are'} already uncommitted in ${group}, with changes this app cannot account ` +
+  'for as its own earlier removal, and this removal commits whole files, so it would commit and deploy those changes too. ' +
+  `Commit (or discard) them in Cribl Stream first, then press Remove again`
+
+/**
+ * Why a Remove over `present` may not commit now, or null — re-read at the
+ * moment it is asked. Reads only: Git's status, and — only when a file is
+ * already uncommitted — this app's record, the Leader's HEAD and the objects'
+ * state. The caller writes nothing when this answers a sentence.
+ */
+export async function removeDirtyRefusal(group: string, present: RemovalPresence): Promise<string | null> {
+  const keys = ALL_COMMIT_KEYS.filter((k) => present[k] === 'present')
+  const pending = await pendingConfigPaths()
+  const first = removeDirtyVerdict({ group, keys, pending, record: null, head: null, live: {} })
+  if (first.ok) return null
+  if (first.unknown) return removeDirtyUnknownSentence(group)
+  const [records, head, http, legacy] = await Promise.all([
+    loadUncommittedRemovals().catch(() => null),
+    leaderHead(),
+    checkStatus(group).catch(() => null),
+    checkLegacyStatus(group).catch(() => null),
+  ])
+  const verdict = removeDirtyVerdict({
+    group, keys, pending, record: records?.[group] ?? null, head, live: { ...(http ?? {}), ...(legacy ?? {}) },
+  })
+  if (verdict.ok) return null
+  return verdict.unknown ? removeDirtyUnknownSentence(group) : removeDirtySentence(group, verdict.files)
 }
 
 /**
