@@ -2,7 +2,7 @@
 // leaves a job it submitted running, and retries reads but never a submit.
 // Nothing here reaches the network: every call goes to the stub below.
 import { describe, expect, it } from 'vitest'
-import { isRetryable, makeApi, runAuditJob, type Api } from '../../scripts/parquet-audit-job.mjs'
+import { COST_READ_DELAYS_MS, isRetryable, makeApi, readBilledCpu, runAuditJob, type Api } from '../../scripts/parquet-audit-job.mjs'
 
 const WINDOW = { earliest: 1000, latest: 2000, label: 'w' }
 
@@ -38,7 +38,7 @@ describe('runAuditJob', () => {
       'POST /search/jobs': [created],
       [`GET ${J}/status`]: [status('running'), new Error('GET status → 502 bad gateway')],
       [`POST ${J}/cancel`]: ['{}'],
-      [`GET ${J}`]: [billed],
+      [`GET ${J}/metrics`]: [billed],
     })
     const { job, row } = await runAuditJob(deps(api), 'p', WINDOW, 'q')
     expect(row).toBeNull()
@@ -55,12 +55,63 @@ describe('runAuditJob', () => {
       'POST /search/jobs': [created],
       [`GET ${J}/status`]: [new Error('network down')],
       [`POST ${J}/cancel`]: [new Error('POST cancel → 503')],
-      [`GET ${J}`]: [new Error('still down')],
+      [`GET ${J}/metrics`]: [new Error('still down')],
     })
     const { job } = await runAuditJob(deps(api), 'p', WINDOW, 'q')
     expect(job.error).toBe('network down')
     expect(job.cancel).toBe('failed: POST cancel → 503')
     expect(job.billableCPUSeconds).toBeNull()
+    expect(job.costRead).toMatch(/^not yet available/)
+  })
+
+  it('reads the cost from /metrics, waiting past the zeros a just-finished job reports', async () => {
+    // 2026-09-25: three reads over ~9 s all missed, and every job printed "unknown";
+    // the figures were readable about a minute later.
+    const zero = JSON.stringify({ items: [{ metrics: { cpuMetrics: { billableCPUSeconds: 0 } } }] })
+    const { api, calls } = fakeApi({
+      'POST /search/jobs': [created],
+      [`GET ${J}/status`]: [status('completed')],
+      [`GET ${J}/results?limit=10`]: ['{"rows":1}\n'],
+      [`GET ${J}/metrics`]: [zero, zero, zero, new Error('GET metrics → 502'), zero, billed],
+    })
+    const waits: number[] = []
+    const lines: string[] = []
+    const d = { ...deps(api), sleep: async (ms: number) => { waits.push(ms) }, log: (l: string) => lines.push(l) }
+    const { job } = await runAuditJob(d, 'p', WINDOW, 'q')
+    expect(job.billableCPUSeconds).toBe(12.5)
+    expect(calls.filter((c) => c === `GET ${J}/metrics`)).toHaveLength(6)
+    expect(waits).toEqual(COST_READ_DELAYS_MS.slice(0, 5))
+    expect(job.costRead).toBe(`read after ${Math.round(COST_READ_DELAYS_MS.slice(0, 5).reduce((s, x) => s + x, 0) / 1000)} s`)
+    expect(lines.at(-1)).toContain('billable CPU-s 12.5')
+  })
+
+  it('says "not yet available", never 0 or "unknown", when the figure never appears in ~90 s', async () => {
+    const zero = JSON.stringify({ items: [{ metrics: { cpuMetrics: { billableCPUSeconds: 0 } } }] })
+    const { api } = fakeApi({
+      'POST /search/jobs': [created],
+      [`GET ${J}/status`]: [status('completed')],
+      [`GET ${J}/results?limit=10`]: ['{"rows":1}\n'],
+      [`GET ${J}/metrics`]: [zero],
+    })
+    let waited = 0
+    const lines: string[] = []
+    const d = { ...deps(api), sleep: async (ms: number) => { waited += ms }, log: (l: string) => lines.push(l) }
+    const { job } = await runAuditJob(d, 'p', WINDOW, 'q')
+    expect(job.billableCPUSeconds).toBeNull()
+    expect(waited).toBeGreaterThanOrEqual(60_000)
+    expect(waited).toBeLessThanOrEqual(90_000)
+    expect(job.costRead).toBe(`not yet available after ${waited / 1000} s of reads`)
+    expect(lines.at(-1)).toContain('billable CPU-s not yet available')
+    expect(lines.at(-1)).not.toContain('unknown')
+  })
+
+  it('stops reading at the first positive figure', async () => {
+    const { api, calls } = fakeApi({ [`GET ${J}/metrics`]: [billed] })
+    let slept = 0
+    const r = await readBilledCpu(api, async () => { slept++ }, J)
+    expect(r).toEqual({ value: 12.5, note: 'read after 0 s' })
+    expect(calls).toEqual([`GET ${J}/metrics`])
+    expect(slept).toBe(0)
   })
 
   it('records a failed results read on a completed job, with nothing left running to cancel', async () => {
@@ -68,7 +119,7 @@ describe('runAuditJob', () => {
       'POST /search/jobs': [created],
       [`GET ${J}/status`]: [status('completed')],
       [`GET ${J}/results?limit=10`]: [new Error('GET results → 500')],
-      [`GET ${J}`]: [billed],
+      [`GET ${J}/metrics`]: [billed],
     })
     const { job, row } = await runAuditJob(deps(api), 'p', WINDOW, 'q')
     expect(row).toBeNull()
@@ -84,7 +135,7 @@ describe('runAuditJob', () => {
       'POST /search/jobs': [created],
       [`GET ${J}/status`]: [status('running'), status('completed')],
       [`GET ${J}/results?limit=10`]: ['{"totalEventCount":1,"job":{}}\n{"rows":7}\n'],
-      [`GET ${J}`]: [billed],
+      [`GET ${J}/metrics`]: [billed],
     })
     const api: Api = (m, p, b) => {
       if (b !== undefined) posted.push(b)

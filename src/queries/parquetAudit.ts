@@ -139,11 +139,12 @@ export const CAST_CHECK_FIELDS: readonly string[] = Object.freeze([
 ])
 
 /**
- * The census's self-check. `gettype`'s vocabulary is not documented by a
- * measurement in this repo, so a string-typed control and a number-typed one
- * ride along: if `app_name` does not read all-"string", or `protocol` reads any
- * "string", the census cannot be trusted and the report says so rather than
- * typing every field wrong.
+ * The census's self-check. `gettype`'s vocabulary is measured only for the two
+ * names these controls read (2026-09-25: `app_name` "string", `protocol` "int"),
+ * so a string-typed control and a number-typed one ride along: if `app_name`
+ * does not read all-"string", or `protocol` does not read all-numeric, the
+ * census cannot be trusted and the report says so rather than typing every
+ * field wrong.
  */
 export const CENSUS_CONTROLS: Readonly<{ string: string; number: string }> = Object.freeze({
   string: 'app_name',
@@ -158,17 +159,50 @@ export const CENSUS_COLUMNS_FIELDS: readonly string[] = Object.freeze([
 ])
 
 /**
- * The four census columns per field.
+ * The type names the census counts, one column each.
  *
- * `tlo_`/`thi_` are the lowest and highest type NAME among the present values.
- * The `iif` guards use only measured semantics (a null condition takes the else
- * branch; strings order as strings): `"~"` sorts after every type name so `min`
- * ignores absent rows, and `""` sorts before every name so `max` does. Two names
- * that differ mean the field's values carry more than one type — class T.
+ * `string` and `int` are MEASURED names (the 2026-09-25 run: `app_name` and
+ * every uncast field counted as "string", `protocol` read "int"). `long` and
+ * `real` are the other two scalar numeric names Kusto's `gettype` gives. The
+ * earlier reader also accepted `double`, `decimal`, `number`, `float` and
+ * `integer` as numeric; those were guesses, never observed, and are not counted.
+ *
+ * A present value whose type is none of these is NOT lost: the report derives
+ * `other = present − (sum of these counts)`, and a non-zero `other` makes the
+ * verdict `other` (or `mixed`) with the count shown, so an unexpected name can
+ * never be read as a number or a string. Resolving it is a re-run with the name
+ * added here.
+ */
+export const GETTYPE_NAMES = Object.freeze(['string', 'int', 'long', 'real'] as const)
+export type GettypeName = (typeof GETTYPE_NAMES)[number]
+
+/** The counted names that are numbers. A field whose present values are all
+ *  among these reads `number`, whichever mix of them it holds. */
+export const NUMERIC_GETTYPE_NAMES: readonly GettypeName[] = Object.freeze(['int', 'long', 'real'])
+
+/** Column prefix per counted name: `ts_<field>` counts "string", and so on. */
+export const GETTYPE_COLUMN: Readonly<Record<GettypeName, string>> = Object.freeze({
+  string: 'ts',
+  int: 'ti',
+  long: 'tl',
+  real: 'tr',
+})
+
+/**
+ * The census columns per field: `tn_` the present count, then one
+ * `countif(gettype(f)=="<name>")` per `GETTYPE_NAMES` entry.
+ *
+ * Per-type COUNTS, not the lowest and highest type name. The first run
+ * (2026-09-25) used `min(iif(isnotnull(f),gettype(f),"~"))` and
+ * `max(iif(isnotnull(f),gettype(f),""))`, and on every SPARSE field they came
+ * back as junk (`"~"` and `0`), so `tcp_rtt`, `tcp_rtt_app`, `http_server_ms`,
+ * `dns_response_time` and `dst_port` read unresolved; only `protocol`, present
+ * on every row, typed. The same run's `countif(gettype(f)=="string")` counted
+ * sparse fields correctly (`krb5_message_type`: 113 of 113), so the census now
+ * uses only that form.
  */
 const censusAggs = (f: string): string =>
-  `tn_${f}=countif(isnotnull(${f})), ts_${f}=countif(gettype(${f})=="string"), ` +
-  `tlo_${f}=min(iif(isnotnull(${f}),gettype(${f}),"~")), thi_${f}=max(iif(isnotnull(${f}),gettype(${f}),""))`
+  [`tn_${f}=countif(isnotnull(${f}))`, ...GETTYPE_NAMES.map((t) => `${GETTYPE_COLUMN[t]}_${f}=countif(gettype(${f})=="${t}")`)].join(', ')
 
 // ── 8.0b: the density gaps ──────────────────────────────────────────────────
 
@@ -211,6 +245,24 @@ const densityAggs = (): string => [
  * absolute 60 minutes ending at least 10 minutes ago (landing lag).
  */
 export const TYPE_DENSITY_QUERY = head + densityAggs() + ', ' + CENSUS_COLUMNS_FIELDS.map(censusAggs).join(', ')
+
+/**
+ * The fields the numeric-only census types: the five cast-check fields and both
+ * controls (a census whose controls did not ride along could not be trusted).
+ */
+export const NUMERIC_CENSUS_FIELDS: readonly string[] = Object.freeze([
+  ...CAST_CHECK_FIELDS,
+  CENSUS_CONTROLS.number,
+  CENSUS_CONTROLS.string,
+])
+
+/**
+ * 8.0b, numeric-only: the same census columns over `NUMERIC_CENSUS_FIELDS` and
+ * nothing else — no density, no uncast fields. For re-running just the fields
+ * the 2026-09-25 run left unresolved, over one 15-minute window, at a fraction
+ * of the wide census's cost (`scripts/parquet-audit.mjs --census numeric`).
+ */
+export const NUMERIC_CENSUS_QUERY = head + NUMERIC_CENSUS_FIELDS.map(censusAggs).join(', ')
 
 // ── 8.0c: the sentinel audit ────────────────────────────────────────────────
 

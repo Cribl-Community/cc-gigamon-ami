@@ -19,7 +19,12 @@ import {
   CENSUS_FIELDS,
   DENSITY_CHECKS,
   DENSITY_SCOPES,
+  GETTYPE_COLUMN,
+  GETTYPE_NAMES,
   MEASURED_TYPES,
+  NUMERIC_CENSUS_FIELDS,
+  NUMERIC_CENSUS_QUERY,
+  NUMERIC_GETTYPE_NAMES,
   PQC_IN_LIST,
   SENTINEL_AUDIT_QUERY,
   SENTINEL_EXTRA_FIELDS,
@@ -85,7 +90,7 @@ describe('pinned: measurement, on the JSON dataset', () => {
     expect(AUDIT_DATASET).toBe(LAKE_DATASET)
     expect(AUDIT_DATASET).toBe('gigamon_ami')
     expect(AUDIT_PIN).toBe('measurement')
-    for (const text of [TYPE_DENSITY_QUERY, SENTINEL_AUDIT_QUERY, sentinelAuditQuery({})]) {
+    for (const text of [TYPE_DENSITY_QUERY, NUMERIC_CENSUS_QUERY, SENTINEL_AUDIT_QUERY, sentinelAuditQuery({})]) {
       expect(text.startsWith(`dataset="${LAKE_DATASET}" | summarize rows=count(), `)).toBe(true)
       expect(text.match(/dataset=/g)).toHaveLength(1)
       expect(text).not.toContain(`${LAKE_DATASET}_pq`)
@@ -159,13 +164,43 @@ describe('the census field list, derived', () => {
     expect(TYPED_BY_CODE[CENSUS_CONTROLS.number]).toEqual({ type: 'number', basis: 'cast' })
   })
 
-  it('reads four census columns for every field, and no column name twice', () => {
+  it('reads a present count and one count per gettype name for every field, and no column name twice', () => {
     for (const f of CENSUS_COLUMNS_FIELDS) {
-      for (const c of [`tn_${f}=`, `ts_${f}=`, `tlo_${f}=`, `thi_${f}=`]) expect(TYPE_DENSITY_QUERY, c).toContain(c)
+      expect(TYPE_DENSITY_QUERY).toContain(`tn_${f}=countif(isnotnull(${f}))`)
+      for (const t of GETTYPE_NAMES) expect(TYPE_DENSITY_QUERY).toContain(`${GETTYPE_COLUMN[t]}_${f}=countif(gettype(${f})=="${t}")`)
     }
     const names = [...TYPE_DENSITY_QUERY.matchAll(/(?:summarize |, )([a-z][a-z0-9_]*)=/g)].map((m) => m[1])
     expect(names.length).toBe(new Set(names).size)
-    expect(names.length).toBe(1 + Object.keys(DENSITY_SCOPES).length + DENSITY_CHECKS.length + 4 * CENSUS_COLUMNS_FIELDS.length)
+    expect(names.length).toBe(1 + Object.keys(DENSITY_SCOPES).length + DENSITY_CHECKS.length + (1 + GETTYPE_NAMES.length) * CENSUS_COLUMNS_FIELDS.length)
+  })
+
+  it('never probes a type with min or max over gettype: on sparse fields that answered "~" and 0 (2026-09-25)', () => {
+    for (const text of [TYPE_DENSITY_QUERY, NUMERIC_CENSUS_QUERY]) {
+      expect(text).not.toMatch(/\b(?:min|max)\(/)
+      expect(text).not.toMatch(/tlo_|thi_/)
+      for (const m of text.matchAll(/gettype\(/g)) expect(text.slice(m.index - 8, m.index)).toBe('countif(')
+    }
+  })
+
+  it('counts the two measured names and Kusto\'s other two numeric ones, and nothing guessed', () => {
+    expect([...GETTYPE_NAMES]).toEqual(['string', 'int', 'long', 'real'])
+    expect([...NUMERIC_GETTYPE_NAMES]).toEqual(['int', 'long', 'real'])
+    expect(new Set(Object.values(GETTYPE_COLUMN)).size).toBe(GETTYPE_NAMES.length)
+    expect(Object.values(GETTYPE_COLUMN)).not.toContain('tn')
+  })
+})
+
+describe('the numeric-only census', () => {
+  it('types exactly the five cast-check fields and both controls', () => {
+    expect([...NUMERIC_CENSUS_FIELDS]).toEqual([...CAST_CHECK_FIELDS, CENSUS_CONTROLS.number, CENSUS_CONTROLS.string])
+    const names = [...NUMERIC_CENSUS_QUERY.matchAll(/(?:summarize |, )([a-z][a-z0-9_]*)=/g)].map((m) => m[1])
+    expect(names.length).toBe(1 + (1 + GETTYPE_NAMES.length) * NUMERIC_CENSUS_FIELDS.length)
+    for (const f of NUMERIC_CENSUS_FIELDS) expect(NUMERIC_CENSUS_QUERY).toContain(`ti_${f}=countif(gettype(${f})=="int")`)
+  })
+
+  it('reads no density and no uncast field', () => {
+    expect(NUMERIC_CENSUS_QUERY).not.toContain('d_')
+    for (const f of CENSUS_FIELDS) if (f !== CENSUS_CONTROLS.string) expect(NUMERIC_CENSUS_QUERY, f).not.toContain(`(${f})`)
   })
 })
 
