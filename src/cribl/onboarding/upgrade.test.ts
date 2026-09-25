@@ -162,8 +162,18 @@ type Plan = typeof import('./plan')
 
 async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; plan: Plan }> {
   vi.resetModules()
-  if (opts.published === false) vi.doUnmock('../pack')
-  else {
+  if (opts.published === false) {
+    // A build that pins a version before its release, as this one pinned
+    // 0.2.1 until 2026-09-25: the constants a release moves, moved back.
+    vi.doMock('../pack', async (orig) => {
+      const real = await orig<typeof import('../pack')>()
+      return {
+        ...real,
+        PACK_PUBLISHED: false, PACK_SHA256: null,
+        PACK_PUBLISHED_VERSIONS: Object.freeze(real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION)),
+      }
+    })
+  } else {
     vi.doMock('../pack', async (orig) => ({
       ...(await orig<typeof import('../pack')>()),
       PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', MID, '0.2.0', PACK_VERSION, NEWER]),
@@ -289,7 +299,7 @@ describe('refused before anything is sent', () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null })
     const { prepared } = await upgrade({ published: false })
     expect(prepared.ok).toBe(false)
-    if (!prepared.ok) expect(prepared.why).toBe(packRelease().refusal)
+    if (!prepared.ok) expect(prepared.why).toBe(packRelease({ published: false, sha256: null, version: PACK_VERSION }).refusal)
     expect(writes()).toEqual([])
   })
 

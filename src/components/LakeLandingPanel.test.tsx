@@ -79,7 +79,7 @@ import {
   sizeSentence,
 } from './lakeLandingCopy'
 import { GuidedSetup } from '../tabs/GuidedSetup'
-import { SETUP_FACTS } from './provisionPanelCopy'
+import { PACK_SETUP_FACTS, SETUP_FACTS } from './provisionPanelCopy'
 
 const BASE = '/capi'
 const LAKE = '/products/lake/lakes/default'
@@ -1355,15 +1355,19 @@ describe('it is actually on the page', () => {
     expect(anchor?.querySelector('.panel')).toBeTruthy()
   })
 
-  it('the page has its heading, and today its facts describe the stack Guided Setup deploys', async () => {
+  it('the page has its heading, and today its facts describe the pack onboarding installs', async () => {
     stubWorkspace()
     await mount(<GuidedSetup />)
     const h2 = [...document.querySelectorAll('h2')].map((h) => h.textContent)
     expect(h2).toContain('Guided setup')
-    // The pack cannot be installed yet (no release), so the facts are the
-    // global Raw HTTP stack's, exactly as before.
+    // 0.2.1 is released, so the pack is the onboarding and the facts are the
+    // pack's. *(Corrected 2026-09-25, `feat/pack-flip-021`: until the release
+    // they were the global Raw HTTP stack's.)*
     const facts = [...document.querySelectorAll('.gs-facts li')].map((li) => li.textContent ?? '')
-    expect(facts).toHaveLength(SETUP_FACTS.length)
-    SETUP_FACTS.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
+    expect(facts).toHaveLength(PACK_SETUP_FACTS.length)
+    PACK_SETUP_FACTS.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
+    // …and not the global stack's: its first fact names a global object the
+    // pack does not create.
+    expect(facts.some((f) => f.startsWith(SETUP_FACTS[0].label))).toBe(false)
   })
 })

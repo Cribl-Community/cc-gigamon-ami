@@ -23,6 +23,17 @@
 // and no layout, so nothing below reports focus order, focus restoration to the
 // trigger, or whether the dialog is reachable at 400 px. Those are Preview
 // checks. What is asserted here is a request and a string.
+//
+// ── THE PREMISE: A BUILD WHOSE PACK CANNOT BE INSTALLED ─────────────────────
+//
+// Everything below is this panel as THE onboarding — Deploy, the picker, the
+// port, the token — which it is only while the pinned pack release cannot be
+// installed (onboarding/plan.ts `onboardingPath`). Since 2026-09-25 this build
+// pins the released 0.2.1, and there the panel is Remove-only (pinned in
+// OnboardingPanel.test.tsx and OnboardingPanel.published.test.tsx). The full
+// panel comes back in any build that pins a version before its release, so
+// pack.ts's release constants are moved back here, explicitly, and the first
+// test below checks that premise held.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -31,12 +42,24 @@ import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { ProvisionPanel } from './ProvisionPanel'
 import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
+import { thisPackRelease } from '../cribl/packClient'
 import {
   AUTH_HEADER, ENDPOINT_INCOMPLETE, GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployNote,
 } from './provisionPanelCopy'
 import {
   HTTP_BREAKER_ID, HTTP_BREAKER_SPEC, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, PIPELINE_SPEC, ROUTE_SPEC, SOURCE_SPEC,
 } from '../cribl/provision'
+
+vi.mock('../cribl/pack', async (orig) => {
+  // A build that pins a version before its release: not published, no sha256,
+  // the pinned version off the published list.
+  const real = await orig<typeof import('../cribl/pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: false, PACK_SHA256: null,
+    PACK_PUBLISHED_VERSIONS: Object.freeze(real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION)),
+  }
+})
 
 const GROUP = 'default'
 const OTHERS_WORK = `groups/${GROUP}/local/cribl/inputs.yml`
@@ -151,6 +174,16 @@ const press = async (el: Element | undefined) => {
 
 const statusReads = (calls: readonly Call[]) =>
   calls.filter((c) => c.method === 'GET' && c.path === '/version/status').length
+
+describe('the premise', () => {
+  it('the pinned pack cannot be installed in this file, so this panel is the onboarding', async () => {
+    expect(thisPackRelease()).toMatchObject({ installable: false, published: false, sha256: null })
+    stubLeader()
+    await mount()
+    expect(buttonNamed('Deploy onboarding stack')).toBeTruthy()
+    expect(document.body.querySelector('#gs-group-select')).not.toBeNull()
+  })
+})
 
 describe('the pending-file list the Guided Setup confirmation names', () => {
   it('is read when the dialog opens, not whenever the page last refreshed', async () => {

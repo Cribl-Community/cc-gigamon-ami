@@ -9,8 +9,10 @@
 // run is handed exactly what a person would have been shown.
 //
 // pack.ts's release constants are swapped for a recorded release (as a release
-// moves them) in every test but the unpublished-pin one: today's build refuses
-// to install, and that refusal is pinned there.
+// moves them) in every test but the unpublished-pin one, which moves them back:
+// a build that pins a version before its release refuses to install, and that
+// refusal is pinned there. *(Corrected 2026-09-25, `feat/pack-flip-021`: this
+// said "today's build refuses"; 0.2.1 is released, and today's build installs.)*
 //
 // What is held still, by the design's numbers:
 //   4. the token reaches one PATCH body and the caller's `onToken` — only after
@@ -288,14 +290,25 @@ type Plan = typeof import('./plan')
 type Target = typeof import('../datasetTarget')
 
 /** The run with PACK_VERSION's release recorded (as a release moves pack.ts's
- *  constants), or with pack.ts as it is today. */
+ *  constants), or — `published: false` — in a build that pins a version whose
+ *  release does not exist yet. */
 async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; plan: Plan; dt: Target }> {
   vi.resetModules()
   // The run generates its token itself; the tests know it by fixing the
   // generator, rather than through a hook on the run's own interface.
   vi.doMock('../provision', async (orig) => ({ ...(await orig<typeof import('../provision')>()), generateToken: () => TOKEN }))
-  if (opts.published === false) vi.doUnmock('../pack')
-  else {
+  if (opts.published === false) {
+    // A build that pins a version before its release, as this one pinned
+    // 0.2.1 until 2026-09-25: the constants a release moves, moved back.
+    vi.doMock('../pack', async (orig) => {
+      const real = await orig<typeof import('../pack')>()
+      return {
+        ...real,
+        PACK_PUBLISHED: false, PACK_SHA256: null,
+        PACK_PUBLISHED_VERSIONS: Object.freeze(real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION)),
+      }
+    })
+  } else {
     vi.doMock('../pack', async (orig) => ({
       ...(await orig<typeof import('../pack')>()),
       PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0', PACK_VERSION]),
@@ -876,7 +889,7 @@ describe('9. acceleration is always installed, and paused on sample data', () =>
   })
 })
 
-// ── 10. The unpublished pin, in the run ─────────────────────────────────────
+// ── 10. A pin with no release, in the run ───────────────────────────────────
 
 describe('10. while no release is recorded', () => {
   it('prepare refuses with the release’s own sentence, and nothing is sent', async () => {
@@ -895,10 +908,10 @@ describe('10. while no release is recorded', () => {
     const prepared = await published.run.prepareOnboarding(GROUP, { sample: false, port: 20007, target: published.dt.datasetTarget(), undeployed: null, undeployedChecking: false })
     if (!prepared.ok) throw new Error(prepared.why)
     const dialog = published.plan.onboardingDialog(prepared.ctx)
-    const today = await load({ published: false })
+    const unreleased = await load({ published: false })
     calls = []
-    const out = await today.run.runOnboarding(prepared.ctx, dialog, {
-      onStep: () => {}, onToken: () => {}, record: async () => {}, target: () => today.dt.datasetTarget(),
+    const out = await unreleased.run.runOnboarding(prepared.ctx, dialog, {
+      onStep: () => {}, onToken: () => {}, record: async () => {}, target: () => unreleased.dt.datasetTarget(),
     })
     expect(out.stopped?.key).toBe('precheck')
     expect(writes()).toEqual([])

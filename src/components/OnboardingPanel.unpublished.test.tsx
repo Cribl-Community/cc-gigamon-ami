@@ -1,6 +1,11 @@
-// The onboarding panel in THIS build: no pack release recorded (pack.ts
-// `PACK_PUBLISHED` false, no sha256). Nothing here swaps a constant — this is
-// the build as it ships, and the refusal is what is pinned:
+// The onboarding panel in a build that pins a pack version before its release
+// exists: pack.ts `PACK_PUBLISHED` false, no sha256, the pinned version off
+// `PACK_PUBLISHED_VERSIONS`. That was THIS build until 2026-09-25, and this
+// file used to swap nothing; 0.2.1 is released now, so the constants are moved
+// back below, explicitly, as the next build that bumps `PACK_VERSION` will
+// ship them until its tag is pushed. The published build's own behaviour is
+// OnboardingPanel.published.test.tsx. *(Corrected 2026-09-25,
+// `feat/pack-flip-021`.)* The refusal is what is pinned:
 //   * Onboard is aria-disabled, with the release's own sentence as visible text
 //     it points at, and pressing it opens nothing and sends nothing;
 //   * `POST /packs` is never sent, by anything on the page;
@@ -17,9 +22,19 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
-import { PACK_ID, PACK_VERSION, packRelease, packReleaseUrl } from '../cribl/pack'
+import { PACK_ID, PACK_VERSION, packReleaseUrl } from '../cribl/pack'
+import { thisPackRelease } from '../cribl/packClient'
 import { OnboardingPanel } from './OnboardingPanel'
 import { ProvisionPanel } from './ProvisionPanel'
+
+vi.mock('../cribl/pack', async (orig) => {
+  const real = await orig<typeof import('../cribl/pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: false, PACK_SHA256: null,
+    PACK_PUBLISHED_VERSIONS: Object.freeze(real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION)),
+  }
+})
 
 const GROUP = 'default'
 interface Call { method: string; path: string }
@@ -88,8 +103,9 @@ const bodyText = () => (document.body.textContent ?? '').replace(/\s+/g, ' ')
 const REFUSAL = `pack ${PACK_VERSION} has not been released, so there is nothing to install yet`
 
 describe('10. while this build records no release', () => {
-  it('pins the premise: this build cannot install the pack', () => {
-    expect(packRelease()).toMatchObject({ installable: false, refusal: REFUSAL })
+  it('pins the premise: a build with no release recorded cannot install the pack', () => {
+    // What the panel reads (packClient.ts, bound to the constants moved above).
+    expect(thisPackRelease()).toMatchObject({ installable: false, refusal: REFUSAL })
   })
 
   it('Onboard is aria-disabled and points at the refusal, which is on screen; pressing it sends nothing', async () => {

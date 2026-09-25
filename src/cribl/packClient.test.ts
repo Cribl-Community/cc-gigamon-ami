@@ -173,7 +173,8 @@ const liveHttp = (extra: Record<string, unknown> = {}): Record<string, unknown> 
 })
 const liveSample = (extra: Record<string, unknown> = {}) => ({ id: PACK_SAMPLE_INPUT_ID, type: 'datagen', disabled: true, samples: [], ...extra })
 
-/** The client with pack.ts as it is today (0.1.0 and 0.2.0 released, no 0.2.1 release). */
+/** The client with pack.ts as it is today: 0.1.0, 0.2.0 and 0.2.1 released,
+ *  and 0.2.1 pinned with its sha256 (since 2026-09-25). */
 async function today(): Promise<Client> {
   vi.resetModules()
   vi.doUnmock('./pack')
@@ -188,6 +189,25 @@ async function withRelease(): Promise<Client> {
     ...(await orig<typeof import('./pack')>()),
     PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0', PACK_VERSION]),
   }))
+  return loadClient()
+}
+
+/**
+ * The client in a build that pins a version before its release exists, as
+ * this one pinned 0.2.1 until 2026-09-25 — and as the next build that bumps
+ * `PACK_VERSION` will, until its tag is pushed. The constants a release moves,
+ * moved back: not published, no sha256, the pinned version off the list.
+ */
+async function unreleased(): Promise<Client> {
+  vi.resetModules()
+  vi.doMock('./pack', async (orig) => {
+    const real = await orig<typeof import('./pack')>()
+    return {
+      ...real,
+      PACK_PUBLISHED: false, PACK_SHA256: null,
+      PACK_PUBLISHED_VERSIONS: Object.freeze(real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION)),
+    }
+  })
   return loadClient()
 }
 
@@ -213,23 +233,29 @@ describe('packPath', () => {
 })
 
 describe('the release gate', () => {
-  it('counts 0.1.0 and 0.2.0 as published while 0.2.1 has no release', async () => {
+  it('counts 0.1.0, 0.2.0 and 0.2.1 as published, and installs 0.2.1 today', async () => {
     const c = await today()
     expect(PACK_VERSION).toBe('0.2.1')
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1'])
+    expect(c.installRefusal()).toBeNull()
+  })
+
+  it('in a build whose pinned version has no release: counts only the earlier ones, and refuses', async () => {
+    const c = await unreleased()
     expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0'])
     expect(c.installRefusal()).toMatch(/has not been released/)
   })
 
-  it('refuses to install today, and sends nothing at all', async () => {
-    const c = await today()
+  it('refuses to install in a build with no release, and sends nothing at all', async () => {
+    const c = await unreleased()
     leader()
     const steps = await c.installPack(GROUP)
     expect(steps).toEqual([{ key: 'pack', action: 'skipped', detail: expect.stringMatching(/not been released/) }])
     expect(calls).toEqual([])
   })
 
-  it('refuses to upgrade today, and sends nothing at all', async () => {
-    const c = await today()
+  it('refuses to upgrade in a build with no release, and sends nothing at all', async () => {
+    const c = await unreleased()
     leader({ packs: [ours('0.1.0')] })
     expect((await c.upgradePack(GROUP))[0].action).toBe('skipped')
     expect(calls).toEqual([])
@@ -309,7 +335,7 @@ describe('removePack', () => {
   })
 
   it('keeps a version this app did not publish — including PACK_VERSION before its release', async () => {
-    const c = await today()
+    const c = await unreleased()
     for (const version of [PACK_VERSION, '9.9.9', undefined]) {
       leader({ packs: [{ id: PACK_ID, version, source: version ? packReleaseUrl(version) : undefined }] })
       expect(await c.removePack(GROUP)).toMatchObject({ action: 'error', detail: expect.stringMatching(/^kept/) })
@@ -718,7 +744,7 @@ describe('ownership: the id, a published version, AND this app’s release as th
 
 describe('readPackState.current', () => {
   it('is false for an installed copy of this build’s version that was never released — a dev build is not "up to date"', async () => {
-    const c = await today()
+    const c = await unreleased()
     leader({ packs: [ours(PACK_VERSION)] })
     expect(await c.readPackState(GROUP)).toMatchObject({ installed: true, version: PACK_VERSION, published: false, current: false })
   })
