@@ -38,10 +38,16 @@ vi.mock('./Toast', () => ({
   clearToastError: () => {},
   ToastProvider: () => null,
 }))
-vi.mock('../cribl/pack', async (orig) => ({
-  ...(await orig<typeof import('../cribl/pack')>()),
-  PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0']),
-}))
+vi.mock('../cribl/pack', async (orig) => {
+  // PACK_VERSION's release recorded, as a release records it: appended to
+  // the versions already published.
+  const real = await orig<typeof import('../cribl/pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
+    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
+  }
+})
 
 const GROUPS = ['default', 'lab']
 const HASH = 'dddd000011112222dddd000011112222dddd0000'

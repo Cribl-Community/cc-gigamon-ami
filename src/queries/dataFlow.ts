@@ -80,7 +80,10 @@ const RECEIVED = `metric=="total.in_events" and namespace=="data_insights" and $
  * (a routed path's `instance` is unmeasured), so that source is counted by what
  * the gigamon_ami destination received from it: `total.out_events` by
  * destination (and by source too only if that destination is shared), which
- * names exactly one path.
+ * names exactly one path. Every path inside the onboarding pack is counted
+ * that way too, dual-written or not: a pipeline's label inside a pack is
+ * unmeasured (2026-09-25), while its destination's is measured
+ * (`cribl_lake:<packId>.<id>`), so no pipeline term here names a pack pipeline.
  */
 const PROCESSED = 'namespace=="data_insights" and ' + anyOfAll([
   ...(PIPELINE_COUNTED_PATHS.length

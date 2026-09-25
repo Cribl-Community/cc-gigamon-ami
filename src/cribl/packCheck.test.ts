@@ -73,7 +73,7 @@ describe('pack.mjs check', () => {
   }, 30_000)
 
   it('passes when the version matches the tag, and fails when it does not', () => {
-    expect(run(['check', '--expect-version', '0.2.0', '--dir', copyPack()]).status).toBe(0)
+    expect(run(['check', '--expect-version', '0.2.1', '--dir', copyPack()]).status).toBe(0)
     const r = run(['check', '--expect-version', '9.9.9', '--dir', copyPack()])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/does not match the expected "9\.9\.9"/)
@@ -83,14 +83,14 @@ describe('pack.mjs check', () => {
   // PACK_PUBLISHED is still false at tag time (it is set in a later PR), so a
   // test keyed on PACK_PUBLISHED never fires when a tag is pushed. The refusal
   // has to live in the step that builds the published bytes.
-  it('passes the committed pack as a 0.2.0 release: nothing in it is PENDING', () => {
-    const r = run(['check', '--expect-version', '0.2.0'])
+  it('passes the committed pack as a 0.2.1 release: nothing in it is PENDING', () => {
+    const r = run(['check', '--expect-version', '0.2.1'])
     expect(r.out).not.toMatch(/PENDING/)
     expect(r.status).toBe(0)
   }, 30_000)
 
   it('refuses a release (--expect-version) while the pack still says PENDING', () => {
-    const r = run(['check', '--expect-version', '0.2.0', '--dir', copyPack(undecided)])
+    const r = run(['check', '--expect-version', '0.2.1', '--dir', copyPack(undecided)])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/README\.md: says PENDING; a release must not ship an undecided setting/)
     expect(r.out).toMatch(/default\/outputs\.yml: says PENDING/)
@@ -99,7 +99,7 @@ describe('pack.mjs check', () => {
   it('builds nothing for a release while the pack still says PENDING', () => {
     const out = mkdtempSync(join(tmpdir(), 'gigamon-crbl-'))
     scratch.push(out)
-    const r = run(['build', '--expect-version', '0.2.0', '--dir', copyPack(undecided), '--out', out])
+    const r = run(['build', '--expect-version', '0.2.1', '--dir', copyPack(undecided), '--out', out])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/says PENDING/)
     expect(readdirSync(out)).toEqual([])
@@ -227,8 +227,31 @@ describe('pack.mjs check', () => {
     ],
     [
       'a catch-all route filter',
-      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace("filter: __inputId=='datagen:in_gigamon_ami_sample'", 'filter: "true"')),
-      /gigamon_ami_sample: filter must be __inputId=='<type>:<id>' naming one input of this pack/,
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace("filter: __inputId=='datagen:cc-network-gigamon-ami.in_gigamon_ami_sample'", 'filter: "true"')),
+      /gigamon_ami_sample: filter must be __inputId=='<type>:cc-network-gigamon-ami\.<id>' naming one input of this pack/,
+    ],
+    // THE 0.2.0 BUG. Inside a pack __inputId is `<type>:<packId>.<inputId>`
+    // (measured 2026-09-25); 0.2.0 shipped exactly these global-form filters,
+    // which never match there, and with no catch-all dropped every event.
+    [
+      'the HTTP routes\' filters in the global form, as 0.2.0 shipped them',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replaceAll("__inputId=='http_raw:cc-network-gigamon-ami.in_gigamon_ami_http'", "__inputId=='http_raw:in_gigamon_ami_http'")),
+      /gigamon_ami_http_to_json: filter "__inputId=='http_raw:in_gigamon_ami_http'" names the input as a global one; inside a pack __inputId is '<type>:cc-network-gigamon-ami\.<id>'/,
+    ],
+    [
+      'the sample route\'s filter in the global form, as 0.2.0 shipped it',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace("__inputId=='datagen:cc-network-gigamon-ami.in_gigamon_ami_sample'", "__inputId=='datagen:in_gigamon_ami_sample'")),
+      /gigamon_ami_sample: filter "__inputId=='datagen:in_gigamon_ami_sample'" names the input as a global one/,
+    ],
+    [
+      'a filter naming the input under another pack\'s id',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace("__inputId=='datagen:cc-network-gigamon-ami.in_gigamon_ami_sample'", "__inputId=='datagen:cc-network-gigamon-ami-dgtest.in_gigamon_ami_sample'")),
+      /gigamon_ami_sample: filter must be __inputId=='<type>:cc-network-gigamon-ami\.<id>' naming one input of this pack/,
+    ],
+    [
+      'a filter naming an input the pack does not define',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace("__inputId=='datagen:cc-network-gigamon-ami.in_gigamon_ami_sample'", "__inputId=='datagen:cc-network-gigamon-ami.in_elsewhere'")),
+      /gigamon_ami_sample: filter names input datagen:cc-network-gigamon-ami\.in_elsewhere, which default\/inputs\.yml does not define/,
     ],
     // The Parquet route writes the Parquet copy and nothing else.
     [
@@ -393,7 +416,7 @@ describe('pack.mjs build', () => {
     scratch.push(out)
     const r = run(['build', '--dir', dir, '--out', out])
     expect(r.status, r.out).toBe(0)
-    return readFileSync(join(out, `${PACK_ID}-0.2.0.crbl`))
+    return readFileSync(join(out, `${PACK_ID}-0.2.1.crbl`))
   }
 
   it('writes the same bytes every time, and the same bytes from a CRLF working tree', () => {

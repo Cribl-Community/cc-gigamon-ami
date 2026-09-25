@@ -30,19 +30,32 @@
 // so every dimension above is measured on that path alone. What a ROUTED path's
 // rows carry is inferred from it, not measured.
 //
-// ── UNVERIFIED: HOW A PACK'S OBJECTS ARE NAMED ──────────────────────────────
+// ── HOW A PACK'S OBJECTS ARE NAMED (measured 2026-09-25) ────────────────────
 //
-// Nobody has measured whether an object inside a pack reports under its bare id
-// (`gigamon_ami_normalize`, `http_raw:in_gigamon_ami_http`) or a pack-qualified
-// one. Neither the vendored openapi.json nor anything else in this repo says.
-// The pack's paths below use the bare form, the same assumption the pack's route
-// filters already make about `__inputId`. When the proof install measures a
-// qualified form, add it to METRIC_ALIASES — one line per id — and every
-// counter matches both. That is safe to leave in place for both forms: a counter
-// row carries one value per dimension, so it matches one form or the other,
-// never both, and is summed once. (If Cribl turned out to emit the SAME event
-// under both forms as two rows, that would double — which is exactly what the
-// measurement has to rule out before an alias goes in.)
+// Inside a pack, cribl_metrics puts the pack id before the object's own id.
+// Measured on a Cribl.Cloud Leader with a test pack `cc-network-gigamon-ami-dgtest`
+// (throughput rows total.in_events / total.out_events / total.out_bytes,
+// route.in_events / route.out_events, and health.inputs):
+//
+//   input  = <type>:<packId>.<inputId>      datagen:cc-network-gigamon-ami-dgtest.dg_asis
+//   output = cribl_lake:<packId>.<outputId> cribl_lake:cc-network-gigamon-ami-dgtest.dg_sample_lake
+//   route  = <packId>.<routeId>             cc-network-gigamon-ami-dgtest.dg_all_inputs
+//
+// The pack stacks below name their inputs, outputs and routes that way
+// (../cribl/pack's `packInputLabel`, `packOutputLabel`, `packRouteLabel`, and
+// PACK_0_1_0.paths, corrected the same day). Until then they used the bare
+// global forms, which no pack row carries: every pack figure would have read 0.
+//
+// A PIPELINE INSIDE A PACK HAS NO MEASURED LABEL: no `pipe.*` row appeared for
+// the test pack's one-function pipeline in a 30-minute window. So no counter
+// here names a pack pipeline. Every path of a `scope: 'pack'` stack is counted
+// for Processing by what its destination wrote (DESTINATION_COUNTED_PATHS),
+// never by its pipeline, and its `pipeline` field is the id inside the pack,
+// kept for the reader, not a label anything filters on.
+//
+// METRIC_ALIASES stays empty: the bare output form was seen once, on
+// health/backpressure/blocked rows only, and the throughput rows the counters
+// sum were measured directly with the pack id.
 //
 // PURE DATA, loaded by the query extractor under plain Node: nothing here may
 // reach a .tsx or the network. ../cribl/pack is the one import, and it is pure
@@ -52,20 +65,25 @@
 
 import {
   PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_JSON_OUTPUT_ID,
-  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PIPELINE_ID, PACK_PUBLISHED,
+  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PIPELINE_ID, PACK_PUBLISHED_VERSIONS,
   PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID, PACK_SAMPLE_ROUTE_ID,
+  packInputLabel, packOutputLabel, packRouteLabel,
 } from '../cribl/pack'
 
 export interface StackPath {
-  /** The route that carries this path, or null for a QuickConnect connection. */
+  /** The route that carries this path, as cribl_metrics names it (`<packId>.<id>`
+   *  inside a pack), or null for a QuickConnect connection. */
   route: string | null
-  /** The source as cribl_metrics names it: `<type>:<id>` (the `input` and
-   *  `from_input` dimensions). */
+  /** The source as cribl_metrics names it: `<type>:<id>`, or
+   *  `<type>:<packId>.<id>` inside a pack (the `input` and `from_input`
+   *  dimensions). */
   input: string
-  /** The pipeline's id (the `id` dimension of `pipe.*` counters). */
+  /** The pipeline's id (the `id` dimension of `pipe.*` counters). For a
+   *  pack's path, its id inside the pack: its label is unmeasured, and no
+   *  counter filters on it (see the header). */
   pipeline: string
-  /** The destination as cribl_metrics names it: `<type>:<id>` (the `output`
-   *  dimension). */
+  /** The destination as cribl_metrics names it: `<type>:<id>`, or
+   *  `<type>:<packId>.<id>` inside a pack (the `output` dimension). */
   output: string
   /** The Lake dataset that destination writes. */
   dataset: string
@@ -131,9 +149,11 @@ export const STACKS: readonly Stack[] = [
   },
   {
     // The published 0.1.0 release, from ../cribl/pack's PACK_0_1_0 — literals
-    // read from that tag, never the 0.2.0 constants, several of which kept
+    // read from that tag, never the 0.2.x constants, several of which kept
     // their names while their values changed. A tenant that installed 0.1.0
-    // runs these ids until it upgrades.
+    // runs these ids until it upgrades. Its route filters never match inside a
+    // pack (the same global-form assumption as 0.2.0), so its sources can
+    // receive events that reach no destination; the plates show exactly that.
     key: 'pack-0.1.0',
     scope: 'pack',
     status: 'released',
@@ -141,30 +161,40 @@ export const STACKS: readonly Stack[] = [
     paths: PACK_0_1_0.paths,
   },
   {
+    // 0.2.0 (published 2026-09-25, whose route filters never match) and 0.2.1
+    // (this build's pin, which fixes them) ship the same objects under the
+    // same ids, so their metric labels are the same and one stack counts both.
     // The ids come from ../cribl/pack; the `<type>:` prefixes are the YAML's
     // `type:` fields, which stackIds.test.ts reads to hold them equal. The HTTP
     // source fans out: one route to the JSON dataset the dashboards read, one
     // to the Parquet copy, both through the same cast/derive pipeline.
-    key: 'pack-0.2.0',
+    // (Keyed `pack-0.2.0`, and `unreleased`, until 2026-09-25.)
+    key: 'pack-0.2',
     scope: 'pack',
-    status: PACK_PUBLISHED ? 'released' : 'unreleased',
-    what: 'cc-network-gigamon-ami 0.2.0: Raw HTTP, dual-written as JSON and Parquet, plus a sample DataGen.',
+    status: PACK_PUBLISHED_VERSIONS.includes('0.2.0') ? 'released' : 'unreleased',
+    what: 'cc-network-gigamon-ami 0.2.0 and 0.2.1: Raw HTTP, dual-written as JSON and Parquet, plus a sample DataGen. 0.2.0 delivers nothing; 0.2.1 fixes its route filters.',
     paths: [
-      { route: PACK_HTTP_JSON_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_JSON_OUTPUT_ID}`, dataset: PACK_LAKE_DATASET_ID },
-      { route: PACK_HTTP_PARQUET_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_PARQUET_OUTPUT_ID}`, dataset: PACK_PARQUET_DATASET_ID },
-      { route: PACK_SAMPLE_ROUTE_ID, input: `datagen:${PACK_SAMPLE_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_SAMPLE_OUTPUT_ID}`, dataset: PACK_SAMPLE_DATASET_ID },
+      { route: packRouteLabel(PACK_HTTP_JSON_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_JSON_OUTPUT_ID), dataset: PACK_LAKE_DATASET_ID },
+      { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
+      { route: packRouteLabel(PACK_SAMPLE_ROUTE_ID), input: packInputLabel('datagen', PACK_SAMPLE_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_SAMPLE_OUTPUT_ID), dataset: PACK_SAMPLE_DATASET_ID },
     ],
   },
 ]
 
 /**
- * A second name a counter may report an object under — `[bare, alias]`.
- * EMPTY, and UNVERIFIED: see the header. Add a pack-qualified form here only
- * once it has been seen in cribl_metrics.
+ * A second name a counter may report an object under — `[primary, alias]`.
+ * EMPTY: the pack's labels are measured (see the header) and the paths name
+ * them directly. Add a form here only once it has been seen on the throughput
+ * rows the counters sum.
  */
 export const METRIC_ALIASES: readonly (readonly [string, string])[] = []
 
 const PATHS: readonly StackPath[] = STACKS.flatMap((s) => s.paths)
+
+/** The paths whose objects live in the group's own config: the only ones a
+ *  pipeline counter may name, since a pipeline's label inside a pack is
+ *  unmeasured (see the header). */
+const GLOBAL_PATHS: readonly StackPath[] = STACKS.filter((s) => s.scope === 'global').flatMap((s) => s.paths)
 
 /** Every path into the counted dataset, in list order. */
 export const COUNTED_PATHS: readonly StackPath[] = PATHS.filter((p) => p.dataset === COUNTED_DATASET)
@@ -179,22 +209,29 @@ export const COUNTED_INPUTS: readonly string[] = uniq(COUNTED_PATHS.map((p) => p
 export const COUNTED_OUTPUTS: readonly string[] = uniq(COUNTED_PATHS.map((p) => p.output))
 
 /**
- * The counted paths whose pipeline counter is theirs alone: no other path —
- * into any dataset — runs the same source through the same pipeline. For these
- * `pipe.out_events` filtered by (pipeline, source) is one count per event.
+ * The counted GLOBAL paths whose pipeline counter is theirs alone: no other
+ * global path — into any dataset — runs the same source through the same
+ * pipeline. For these `pipe.out_events` filtered by (pipeline, source) is one
+ * count per event. A pack's path is never here: its pipeline's label is
+ * unmeasured (2026-09-25), so it is counted by its destination instead.
+ * (Pack paths are not compared either: a pack's pipeline is a different
+ * object from a global one of the same id, and never shares a source label
+ * with one.)
  */
 export const PIPELINE_COUNTED_PATHS: readonly StackPath[] = COUNTED_PATHS.filter(
-  (p) => PATHS.filter((o) => o.input === p.input && o.pipeline === p.pipeline).length === 1,
+  (p) => GLOBAL_PATHS.includes(p) && GLOBAL_PATHS.filter((o) => o.input === p.input && o.pipeline === p.pipeline).length === 1,
 )
 
 /**
- * The counted paths that SHARE their (source, pipeline) pair with another path —
- * the pack's JSON + Parquet dual-write. The pipeline runs once per path, and its
- * counter has no dimension naming the path (route instances are unmeasured), so
- * `pipe.out_events` would count each event twice. The destination's own counter
- * does name the path — `total.out_events` by destination, plus the source only
- * where that destination is shared (SHARED_OUTPUTS) — so the Processing figure
- * for these is what reached the gigamon_ami destination.
+ * The counted paths no pipeline counter can answer for: every path inside a
+ * pack, whose pipeline has no measured label (2026-09-25), and any path that
+ * SHARES its (source, pipeline) pair with another path — the pack's JSON +
+ * Parquet dual-write, where the pipeline runs once per path and its counter
+ * has no dimension naming the path, so `pipe.out_events` would count each
+ * event twice. The destination's own counter does name the path —
+ * `total.out_events` by destination, plus the source only where that
+ * destination is shared (SHARED_OUTPUTS) — so the Processing figure for these
+ * is what reached the gigamon_ami destination.
  */
 export const DESTINATION_COUNTED_PATHS: readonly StackPath[] = COUNTED_PATHS.filter(
   (p) => !PIPELINE_COUNTED_PATHS.includes(p),
@@ -204,12 +241,15 @@ const onePath = (key: (p: StackPath) => string) => (p: StackPath): boolean =>
   PATHS.filter((o) => key(o) === key(p)).length === 1
 
 /**
- * Pipelines more than one path runs. Only for these does a pipeline counter
- * need `from_input` to say which path it counted; every other pipeline is
- * filtered by `id` alone. `from_input` on a ROUTED path's rows is unmeasured
- * (see the header), so it is used only where a pipeline is shared.
+ * Global pipelines more than one global path runs. Only for these does a
+ * pipeline counter need `from_input` to say which path it counted; every other
+ * pipeline is filtered by `id` alone. `from_input` on a ROUTED path's rows is
+ * unmeasured (see the header), so it is used only where a pipeline is shared.
+ * Pack pipelines are left out: no counter names them.
  */
-export const SHARED_PIPELINES: readonly string[] = uniq(PATHS.filter((p) => !onePath((o) => o.pipeline)(p)).map((p) => p.pipeline))
+export const SHARED_PIPELINES: readonly string[] = uniq(
+  GLOBAL_PATHS.filter((p) => GLOBAL_PATHS.filter((o) => o.pipeline === p.pipeline).length > 1).map((p) => p.pipeline),
+)
 
 /** Destinations more than one path writes: the same rule, for `output`. */
 export const SHARED_OUTPUTS: readonly string[] = uniq(PATHS.filter((p) => !onePath((o) => o.output)(p)).map((p) => p.output))
@@ -247,11 +287,18 @@ const LATER = COUNTED_PATHS.some((p) => !SHOWN_PATHS.includes(p))
   ? ", plus the onboarding pack's once it is installed"
   : ''
 
+/** The Processing plate's version of that clause: a pack path is counted by
+ *  what its destination wrote, since a pipeline inside a pack has no measured
+ *  counter name. Every counted path the screen does not name is a pack's. */
+const LATER_PROCESSED = COUNTED_PATHS.some((p) => !SHOWN_PATHS.includes(p))
+  ? `, plus the onboarding pack's once it is installed, counted as what its destination writes to ${COUNTED_DATASET}`
+  : ''
+
 /** The Sources plate's ⓘ line: which sources its figure adds up. */
 export const COUNTED_SOURCES_PROSE = `The Sources figure adds up every source with a path into ${COUNTED_DATASET}: ${listed(SHOWN_INPUTS)}${LATER}. Each event is counted once, where it arrives.`
 
 /** The Processing plate's ⓘ line. */
-export const COUNTED_PIPELINES_PROSE = `The Processing figure adds up the pipelines on those paths: ${listed(SHOWN_PIPELINES)}${LATER}. Each event is counted once.`
+export const COUNTED_PIPELINES_PROSE = `The Processing figure adds up the pipelines on those paths: ${listed(SHOWN_PIPELINES)}${LATER_PROCESSED}. Each event is counted once.`
 
 /** The Destinations plate's and the Cribl Lake card's ⓘ line. */
 export const COUNTED_DESTINATIONS_PROSE = `The write counters add up only the destinations that write ${COUNTED_DATASET}: ${listed(SHOWN_OUTPUTS)}${LATER}. A copy written to any other dataset is not counted.`

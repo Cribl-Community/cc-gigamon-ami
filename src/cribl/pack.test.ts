@@ -47,7 +47,7 @@ import {
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
   PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_DECISIONS, PACK_0_1_0,
-  PACK_DATASETS_NOT_CREATED, packRelease,
+  PACK_DATASETS_NOT_CREATED, packRelease, packInputFilter, packInputLabel, packOutputLabel, packRouteLabel,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -218,7 +218,27 @@ describe('the pack Lake destinations are landing.ts\'s profile bodies', () => {
 })
 
 describe('the pack routes', () => {
-  const http = `__inputId=='http_raw:${PACK_HTTP_INPUT_ID}'`
+  const http = packInputFilter('http_raw', PACK_HTTP_INPUT_ID)
+  const sample = packInputFilter('datagen', PACK_SAMPLE_INPUT_ID)
+
+  it('select each source by its in-pack __inputId, <type>:<packId>.<id> (measured 2026-09-25)', () => {
+    // Inside a pack an event's __inputId carries the pack id. 0.2.0 shipped
+    // the global form, which never matches there, and dropped every event.
+    expect(http).toBe(`__inputId=='http_raw:${PACK_ID}.${PACK_HTTP_INPUT_ID}'`)
+    expect(sample).toBe(`__inputId=='datagen:${PACK_ID}.${PACK_SAMPLE_INPUT_ID}'`)
+    expect(http).toBe("__inputId=='http_raw:cc-network-gigamon-ami.in_gigamon_ami_http'")
+    expect(sample).toBe("__inputId=='datagen:cc-network-gigamon-ami.in_gigamon_ami_sample'")
+    for (const r of routes) {
+      expect(r.filter, `${r.id as string} names its source in the global form`).not.toMatch(/^__inputId=='[a-z_]+:[A-Za-z0-9_-]+'$/)
+      expect([http, sample]).toContain(r.filter)
+    }
+  })
+
+  it('spells the metric labels the same way as the filter', () => {
+    expect(packInputLabel('datagen', 'x')).toBe(`datagen:${PACK_ID}.x`)
+    expect(packOutputLabel('cribl_lake', 'y')).toBe(`cribl_lake:${PACK_ID}.y`)
+    expect(packRouteLabel('z')).toBe(`${PACK_ID}.z`)
+  })
 
   it('HTTP → JSON is ROUTE_SPEC with the pack ids, and NOT final', () => {
     expect(route(PACK_HTTP_JSON_ROUTE_ID)).toEqual({
@@ -252,7 +272,7 @@ describe('the pack routes', () => {
       name: PACK_SAMPLE_ROUTE_ID,
       final: true,
       disabled: false,
-      filter: `__inputId=='datagen:${PACK_SAMPLE_INPUT_ID}'`,
+      filter: sample,
       pipeline: PACK_PIPELINE_ID,
       output: PACK_SAMPLE_OUTPUT_ID,
       description: 'Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)',
@@ -488,14 +508,26 @@ describe('the published 0.1.0 pack is still named', () => {
       outputs: { lake: 'out_gno_lake', sample: 'out_gno_sample_lake' },
       samples: ['gno_dns', 'gno_security', 'gno_services', 'gno_tls_apps', 'gno_web_api'],
       sampleOriginField: 'gno_origin',
+      // Corrected 2026-09-25: the metric labels of objects inside a pack
+      // carry the pack id (measured). The ids above are unchanged.
       paths: [
-        { route: 'gno_syslog', input: 'syslog:in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:out_gno_lake', dataset: 'gigamon_ami' },
-        { route: 'gno_sample', input: 'datagen:in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:out_gno_sample_lake', dataset: 'gigamon_ami_sample' },
+        { route: 'cc-network-gigamon-ami.gno_syslog', input: 'syslog:cc-network-gigamon-ami.in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:cc-network-gigamon-ami.out_gno_lake', dataset: 'gigamon_ami' },
+        { route: 'cc-network-gigamon-ami.gno_sample', input: 'datagen:cc-network-gigamon-ami.in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:cc-network-gigamon-ami.out_gno_sample_lake', dataset: 'gigamon_ami_sample' },
       ],
     })
     expect(Object.isFrozen(PACK_0_1_0)).toBe(true)
     expect(Object.isFrozen(PACK_0_1_0.paths[0])).toBe(true)
     expect(packTag(PACK_0_1_0.version)).toBe(PACK_0_1_0.tag)
+  })
+
+  it('names its paths by the metric labels of its own objects', () => {
+    const [syslog, sample] = PACK_0_1_0.paths
+    expect(syslog.route).toBe(packRouteLabel(PACK_0_1_0.routes.syslog))
+    expect(syslog.input).toBe(packInputLabel('syslog', PACK_0_1_0.inputs.syslog))
+    expect(syslog.output).toBe(packOutputLabel('cribl_lake', PACK_0_1_0.outputs.lake))
+    expect(sample.route).toBe(packRouteLabel(PACK_0_1_0.routes.sample))
+    expect(sample.input).toBe(packInputLabel('datagen', PACK_0_1_0.inputs.sample))
+    expect(sample.output).toBe(packOutputLabel('cribl_lake', PACK_0_1_0.outputs.sample))
   })
 
   it('shares no object id with 0.2.0, so an upgrade\'s leftovers are told apart by id alone', () => {
@@ -539,13 +571,17 @@ describe('Data Flow\'s stack list names each pack release\'s own ids', () => {
     expect(stack('pack-0.1.0')?.paths).toEqual(PACK_0_1_0.paths)
   })
 
-  it('pack-0.2.0 is this build\'s pack ids', () => {
-    expect(stack('pack-0.2.0')?.status).toBe(PACK_PUBLISHED ? 'released' : 'unreleased')
-    expect(stack('pack-0.2.0')?.paths).toEqual([
-      { route: PACK_HTTP_JSON_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_JSON_OUTPUT_ID}`, dataset: PACK_LAKE_DATASET_ID },
-      { route: PACK_HTTP_PARQUET_ROUTE_ID, input: `http_raw:${PACK_HTTP_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_PARQUET_OUTPUT_ID}`, dataset: PACK_PARQUET_DATASET_ID },
-      { route: PACK_SAMPLE_ROUTE_ID, input: `datagen:${PACK_SAMPLE_INPUT_ID}`, pipeline: PACK_PIPELINE_ID, output: `cribl_lake:${PACK_SAMPLE_OUTPUT_ID}`, dataset: PACK_SAMPLE_DATASET_ID },
+  it('pack-0.2 is this build\'s pack ids, by their in-pack metric labels, and released since 0.2.0 was', () => {
+    // 0.2.0 (published) and 0.2.1 (this build) ship the same objects under the
+    // same ids, so one stack names both.
+    expect(PACK_PUBLISHED_VERSIONS).toContain('0.2.0')
+    expect(stack('pack-0.2')?.status).toBe('released')
+    expect(stack('pack-0.2')?.paths).toEqual([
+      { route: packRouteLabel(PACK_HTTP_JSON_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_JSON_OUTPUT_ID), dataset: PACK_LAKE_DATASET_ID },
+      { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
+      { route: packRouteLabel(PACK_SAMPLE_ROUTE_ID), input: packInputLabel('datagen', PACK_SAMPLE_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_SAMPLE_OUTPUT_ID), dataset: PACK_SAMPLE_DATASET_ID },
     ])
+    expect(stack('pack-0.2.0')).toBeUndefined()
   })
 })
 
@@ -644,7 +680,7 @@ describe('the pinned pack', () => {
     // APPEND to EVER_RELEASED when a release is published; never remove from
     // it. A version missing from the list is "not published" to every tenant
     // running it: packClient.ts's Remove keeps it and its Upgrade refuses it.
-    const EVER_RELEASED = ['0.1.0']
+    const EVER_RELEASED = ['0.1.0', '0.2.0']
     for (const v of EVER_RELEASED) expect(PACK_PUBLISHED_VERSIONS, `${v} was released and has left the list`).toContain(v)
     expect(PACK_PUBLISHED_VERSIONS).toContain(PACK_0_1_0.version)
     expect(PACK_PUBLISHED_VERSIONS.includes(PACK_VERSION)).toBe(PACK_PUBLISHED)
@@ -724,7 +760,7 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
 // until its grants are declared). packClient.ts's `installRefusal` is this
 // function bound to the constants it imports, so the two cannot disagree.
 describe('packRelease — the pinned release, and why it cannot be installed', () => {
-  it('refuses today: 0.2.0 has no release', () => {
+  it('refuses today: 0.2.1 has no release', () => {
     const r = packRelease()
     expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
     expect(r.refusal).toMatch(/has not been released/)

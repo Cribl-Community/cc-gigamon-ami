@@ -166,7 +166,7 @@ async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; pla
   else {
     vi.doMock('../pack', async (orig) => ({
       ...(await orig<typeof import('../pack')>()),
-      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', MID, PACK_VERSION, NEWER]),
+      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', MID, '0.2.0', PACK_VERSION, NEWER]),
     }))
   }
   const [run, plan] = await Promise.all([import('./run'), import('./plan')])

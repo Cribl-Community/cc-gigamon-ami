@@ -15,6 +15,26 @@
 // LAKE_TOTAL_QUERY, built from these ids), src/cribl/packClient.ts (the pack
 // install/upgrade client) and src/cribl/paths.ts (the grants that client needs).
 //
+// ── 0.2.1: THE ROUTE FILTERS NAME THE PACK ──────────────────────────────────
+//
+// Inside a pack an event's `__inputId` is `<type>:<packId>.<inputId>`, and
+// cribl_metrics names the pack's objects the same way (measured 2026-09-25 on
+// a Cribl.Cloud Leader, the Gigamon workspace's default group, with a test
+// pack `cc-network-gigamon-ami-dgtest`: its DataGen `dg_asis` stamped
+// `datagen:cc-network-gigamon-ami-dgtest.dg_asis` on every event, and its
+// throughput rows carried input `datagen:cc-network-gigamon-ami-dgtest.dg_asis`,
+// output `cribl_lake:cc-network-gigamon-ami-dgtest.dg_sample_lake` and route
+// `cc-network-gigamon-ami-dgtest.dg_all_inputs`). 0.2.0 (and 0.1.0 before
+// it) filtered on the global form `<type>:<inputId>`, which never matches
+// inside a pack: with no catch-all route, both dropped every event of every
+// source (observed for 0.2.0: sample DataGen running and Green, 0 rows in
+// gigamon_ami_sample after six minutes). 0.2.1 is 0.2.0 with the filters built
+// by `packInputFilter` below, and nothing else changed. `packInputLabel`,
+// `packOutputLabel` and `packRouteLabel` are the metric labels
+// src/queries/stackIds.ts counts by. A pipeline's label inside a pack is NOT
+// measured (no `pipe.*` row appeared for the test pack's pipeline in 30
+// minutes), so nothing here spells one.
+//
 // ── 0.2.0: RAW HTTP, DUAL-WRITTEN AS JSON AND PARQUET ───────────────────────
 //
 // Gigamon AMX delivers AMI records by HTTP POST, not syslog (owner, 2026-09-24),
@@ -42,28 +62,21 @@
 // ones it deliberately leaves alone, and why.
 //
 // NOT VERIFIED, AND LEFT FOR THE PROOF INSTALL (on a real Leader):
-//   - the value of `__inputId` for an input inside a pack. The pack's route
-//     filters assume `<type>:<id>`, as for a global input; a wrong filter
-//     drops the data silently.
+//   - (the value of `__inputId` for an input inside a pack was on this list
+//     until 2026-09-25; it is measured now: see 0.2.1 above.)
 //   - that a pack's event breaker rulesets live in `default/breakers.yml`, and
 //     that a pack input's `breakerRulesets` resolves against them. No pack with
 //     a breaker has been read back from a Leader in this project; the path is
 //     the one another Cribl Community pack ships, and the global file's
 //     `default/cribl/breakers.yml` without the `cribl/` segment, as every other
 //     pack file drops it. See `PACK_BREAKERS_FILE`.
-//   - unknown (f): whether a DataGen sample replays with `_time` as now. Every sample in
-//     default/samples.yml ships `isTemplate: false` (set in
-//     scripts/gen-pack-samples.mjs), while every live DataGen sample observed
-//     on a Leader is `isTemplate: true`. The value is left as it is until an
-//     install shows which one stamps the current time on replay; do not
-//     change it on a guess.
-//   - what an in-place upgrade from 0.1.0 leaves behind. 0.1.0 is published
-//     (`PACK_0_1_0` below) and shipped a syslog input; `PATCH /packs/<id>
-//     {source}` upgrades in place, and nobody has read back what then remains
-//     under the pack's `local/` (an override on `in_gno_syslog`, such as a port
-//     set after install, could survive as a listener no route reads). The proof
-//     install upgrades a 0.1.0 install with a local override and lists
-//     `local/` afterwards, by the ids in `PACK_0_1_0`.
+//   - (two more items were on this list until 2026-09-25, and were measured
+//     then. Unknown (f): a DataGen inside a pack emitting 0.2.0's exact sample
+//     format, `isTemplate: false` included, lands with `_time` as now. And
+//     what an in-place upgrade from 0.1.0 leaves behind: every local override
+//     survives the upgrade, including an override of an object the new version
+//     removed, so 0.1.0's `in_gno_syslog` stayed behind as an orphan. CLAUDE.md's
+//     onboarding section records what that means for the Upgrade dialog.)
 //   - that the Parquet destination's `onBackpressure: drop` keeps gigamon_ami
 //     flowing while gigamon_ami_pq does not exist or cannot be written.
 
@@ -73,15 +86,17 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * A PLACEHOLDER UNTIL ITS RELEASE EXISTS. No `gigamon-pack-v0.2.0` release has
+ * A PLACEHOLDER UNTIL ITS RELEASE EXISTS. No `gigamon-pack-v0.2.1` release has
  * been published, so `PACK_URL` below is a 404 today. Bumping this constant is
  * how the app ships a pack update; `packs/cc-network-gigamon-ami/package.json`
- * may run ahead of it, never behind.
+ * may run ahead of it, never behind. *(0.2.0 until 2026-09-25: 0.2.0 was
+ * released and delivers nothing, see 0.2.1 in the header, so this build pins
+ * the fix.)*
  */
-export const PACK_VERSION = '0.2.0'
+export const PACK_VERSION = '0.2.1'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. False: no 0.2.0 release has
+ * Whether `PACK_VERSION`'s release exists on GitHub. False: no 0.2.1 release has
  * been published. Set it to true in the same change that sets `PACK_SHA256`;
  * pack.test.ts fails if one moves without the other, and fails while
  * `PACK_PENDING` below still holds anything.
@@ -210,7 +225,16 @@ export function packRelease(
  * `PACK_SHA256`; pack.test.ts fails if the list and `PACK_PUBLISHED` disagree,
  * and if any version it has ever held is missing.
  */
-export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze(['0.1.0'])
+export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze([
+  '0.1.0',
+  // gigamon-pack-v0.2.0, tag commit 0d93f9c, asset sha256
+  // 978415d7b74d7217559800ac40f5e7ec893d5ae8df7d8ef9c394feb605e6bc6b. Released
+  // on 2026-09-25 while this build still pinned it unpublished; its route
+  // filters never match inside a pack, so it delivers nothing, but a tenant may
+  // hold it and Remove and Upgrade must recognise it. Its objects are this
+  // build's ids (`PACK_OBJECTS`): 0.2.1 renamed nothing.
+  '0.2.0',
+])
 
 // ── Objects inside the pack. Each is referenced by these ids in the pack's YAML.
 
@@ -334,13 +358,33 @@ export const PACK_DECISIONS: Readonly<Record<string, string>> = Object.freeze({
     `${PACK_PARQUET_DATASET_ID} is created with no partition fields (by the onboarding run, onboarding/plan.ts parquetDatasetSpec), because on 2026-09-24 a protocol partition on Search v2 pruned nothing (a protocol=6 search read the same 63,249 events and 2.69 MB from the partitioned and the flat twin) while costing 172% of the flat twin unfiltered and 197% under other filters.`,
 })
 
+// ── How Cribl names an object inside this pack (measured 2026-09-25) ────────
+
+/** `<type>:<packId>.<inputId>`: an in-pack source's `__inputId`, and its
+ *  `input` label on cribl_metrics throughput and health rows. */
+export const packInputLabel = (type: string, inputId: string): string => `${type}:${PACK_ID}.${inputId}`
+/** `<type>:<packId>.<outputId>`: an in-pack destination's `output` label on
+ *  cribl_metrics throughput rows. (Health, backpressure and blocked rows for
+ *  one output were once seen without the pack id; throughput rows, measured
+ *  directly, carry it.) */
+export const packOutputLabel = (type: string, outputId: string): string => `${type}:${PACK_ID}.${outputId}`
+/** `<packId>.<routeId>`: an in-pack route's `route` label on `route.*` rows. */
+export const packRouteLabel = (routeId: string): string => `${PACK_ID}.${routeId}`
+/** The route filter that selects one of this pack's own sources. The pack's
+ *  default/pipelines/route.yml spells exactly this; pack.test.ts holds it. */
+export const packInputFilter = (type: string, inputId: string): string => `__inputId=='${packInputLabel(type, inputId)}'`
+
 /** One path an event takes through a pack: the shape Data Flow's stack list uses. */
 export interface PackPath {
+  /** `<packId>.<routeId>`, as cribl_metrics names a route in a pack. */
   readonly route: string
-  /** `<type>:<id>`, as `__inputId` and cribl_metrics name a source. */
+  /** `<type>:<packId>.<id>`, as `__inputId` and cribl_metrics name a source
+   *  in a pack. */
   readonly input: string
+  /** The pipeline's id inside the pack. NOT its cribl_metrics label, which is
+   *  unmeasured for a pipeline in a pack: nothing may count by this. */
   readonly pipeline: string
-  /** `<type>:<id>`, as cribl_metrics names a destination. */
+  /** `<type>:<packId>.<id>`, as cribl_metrics names a destination in a pack. */
   readonly output: string
   readonly dataset: string
 }
@@ -349,14 +393,23 @@ export interface PackPath {
  * THE PUBLISHED 0.1.0 PACK, AS SHIPPED. Released as `gigamon-pack-v0.1.0` on
  * 2026-09-24 (the release's publishedAt and asset digest are below), with a
  * syslog input and a sample DataGen. Every id is a literal read from that tag's
- * pack source, not derived from the constants above: those name 0.2.0, and
- * several kept their names while their values changed.
+ * pack source, not derived from the constants above: those name the current
+ * version (`PACK_VERSION`), and several kept their names while their values changed.
  *
- * WHY IT IS KEPT. A tenant that installed 0.1.0 can upgrade in place to 0.2.0.
- * Anything the upgrade leaves under the pack's `local/` (see the header's
- * proof-install list) can only be found, and removed, by these ids; Data Flow's
- * stack list names 0.1.0's paths from `paths` here, never from the 0.2.0
- * constants. Frozen, and pinned whole by pack.test.ts.
+ * WHY IT IS KEPT. A tenant that installed 0.1.0 can upgrade in place to the
+ * current version. The upgrade keeps the pack's `local/` settings (measured
+ * 2026-09-25), including a changed source this version no longer ships, which
+ * can only be found, and removed, by these ids; Data Flow's stack list names
+ * 0.1.0's paths from `paths` here, never from the current constants. Frozen, and pinned whole by pack.test.ts.
+ *
+ * `paths` CORRECTED 2026-09-25. They named the route, source and destination
+ * by the global forms (`gno_syslog`, `syslog:in_gno_syslog`,
+ * `cribl_lake:out_gno_lake`), an assumption; measured on a Leader, cribl_metrics
+ * names an object inside a pack with the pack id before its own
+ * (`packInputLabel` and the rest above), so the counters would never have
+ * matched a 0.1.0 row. The object ids themselves are unchanged. 0.1.0's route
+ * filters made the same assumption, so a 0.1.0 source receives events that
+ * reach no destination.
  */
 export const PACK_0_1_0 = Object.freeze({
   version: '0.1.0',
@@ -370,8 +423,8 @@ export const PACK_0_1_0 = Object.freeze({
   samples: Object.freeze(['gno_dns', 'gno_security', 'gno_services', 'gno_tls_apps', 'gno_web_api']),
   sampleOriginField: 'gno_origin',
   paths: Object.freeze([
-    Object.freeze({ route: 'gno_syslog', input: 'syslog:in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:out_gno_lake', dataset: 'gigamon_ami' }),
-    Object.freeze({ route: 'gno_sample', input: 'datagen:in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:out_gno_sample_lake', dataset: 'gigamon_ami_sample' }),
+    Object.freeze({ route: 'cc-network-gigamon-ami.gno_syslog', input: 'syslog:cc-network-gigamon-ami.in_gno_syslog', pipeline: 'gno_syslog', output: 'cribl_lake:cc-network-gigamon-ami.out_gno_lake', dataset: 'gigamon_ami' }),
+    Object.freeze({ route: 'cc-network-gigamon-ami.gno_sample', input: 'datagen:cc-network-gigamon-ami.in_gno_sample', pipeline: 'gno_sample', output: 'cribl_lake:cc-network-gigamon-ami.out_gno_sample_lake', dataset: 'gigamon_ami_sample' }),
   ] as const satisfies readonly PackPath[]),
 })
 

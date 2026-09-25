@@ -278,7 +278,7 @@ export interface PackState {
   /**
    * The installed copy is THIS BUILD'S RELEASED VERSION, installed from its
    * release: `version === PACK_VERSION` and `published` and `fromRelease`. An
-   * unreleased 0.2.0 (a dev build, or this build before its release) is not
+   * unreleased PACK_VERSION (a dev build, or this build before its release) is not
    * current, so it can never be shown as up to date.
    */
   current: boolean
