@@ -393,14 +393,14 @@ export interface PackPath {
  * THE PUBLISHED 0.1.0 PACK, AS SHIPPED. Released as `gigamon-pack-v0.1.0` on
  * 2026-09-24 (the release's publishedAt and asset digest are below), with a
  * syslog input and a sample DataGen. Every id is a literal read from that tag's
- * pack source, not derived from the constants above: those name 0.2.0, and
- * several kept their names while their values changed.
+ * pack source, not derived from the constants above: those name the current
+ * version (`PACK_VERSION`), and several kept their names while their values changed.
  *
- * WHY IT IS KEPT. A tenant that installed 0.1.0 can upgrade in place to 0.2.0.
- * Anything the upgrade leaves under the pack's `local/` (see the header's
- * proof-install list) can only be found, and removed, by these ids; Data Flow's
- * stack list names 0.1.0's paths from `paths` here, never from the 0.2.0
- * constants. Frozen, and pinned whole by pack.test.ts.
+ * WHY IT IS KEPT. A tenant that installed 0.1.0 can upgrade in place to the
+ * current version. The upgrade keeps the pack's `local/` settings (measured
+ * 2026-09-25), including a changed source this version no longer ships, which
+ * can only be found, and removed, by these ids; Data Flow's stack list names
+ * 0.1.0's paths from `paths` here, never from the current constants. Frozen, and pinned whole by pack.test.ts.
  *
  * `paths` CORRECTED 2026-09-25. They named the route, source and destination
  * by the global forms (`gno_syslog`, `syslog:in_gno_syslog`,

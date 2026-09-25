@@ -83,20 +83,23 @@ one event per second each.
 `data/samples/*.json` and `default/samples.yml` are generated. Do not edit them by hand. Run
 `npm run pack:samples` to regenerate them, and `npm run pack:check` to validate the pack.
 
+## Measured on a Leader
+
+- **Inside a pack, `__inputId` is `<type>:<packId>.<inputId>`**, for example
+  `datagen:cc-network-gigamon-ami.in_gigamon_ami_sample`. The routes here filter on that form.
+- **The samples replay with `_time` as now**, with `isTemplate: false`, whatever time a sample
+  record carries.
+- **An in-place upgrade keeps the pack's `local/` settings.** That includes a setting made on a
+  source the new version no longer ships. Upgrading from 0.1.0 after changing `in_gno_syslog` leaves
+  that source behind in `local/`, disabled and read by no route. Delete it in Cribl if you changed it.
+
 ## Not verified yet
 
-These are left for the proof install on a real Leader:
+These are left for a later install on a real Leader:
 
 - **Where a pack keeps event breakers.** This pack puts them in `default/breakers.yml`, the global
   file's path without `cribl/`, as for every other pack file. Another Cribl Community pack does the
   same, but no pack breaker has yet been read back from a Leader.
-- **Whether the samples replay with `_time` as now.** Every sample in
-  `default/samples.yml` has `isTemplate: false`, while every live DataGen sample seen on a Leader has
-  `isTemplate: true`. The value stays as it is until the install shows which one is right.
-- **What an upgrade from 0.1.0 leaves behind.** 0.1.0 shipped a Syslog source, `in_gno_syslog`. An
-  in-place upgrade replaces the pack's `default/` files, but nobody has yet checked what stays in its
-  `local/` folder. A port set on that source after install could survive as a listener that no route
-  reads. The app keeps the 0.1.0 object ids so the install can find what is left.
 - **That the Parquet copy cannot stall the JSON feed.** `gigamon_ami_parquet_lake` drops events
   under backpressure rather than blocking. It shares its source with `gigamon_ami_json_lake`, and a
   blocked Parquet writer would otherwise stop the data every dashboard reads. The install has to show
@@ -107,6 +110,6 @@ These are left for the proof install on a real Leader:
 The pack is released on its own, from a `gigamon-pack-v<version>` tag, as a GitHub release asset
 named `cc-network-gigamon-ami-<version>.crbl`. The version is in this directory's `package.json`
 and is independent of the app's version. Version 0.1.0 received Syslog. From 0.2.0 on, the pack
-receives Raw HTTP only. **Version 0.2.0 delivers nothing**: its route filters used the global form
-of `__inputId`, which never matches inside a pack, so it dropped every event from both its sources.
-Version 0.2.1 fixes the filters and changes nothing else.
+receives Raw HTTP only. **Versions 0.1.0 and 0.2.0 deliver nothing**: their route filters used the
+global form of `__inputId`, which never matches inside a pack, so each dropped every event from both
+its sources. Version 0.2.1 fixes the filters and changes nothing else; upgrade from either.
