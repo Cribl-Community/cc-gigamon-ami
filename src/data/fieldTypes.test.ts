@@ -40,7 +40,7 @@ describe('the table holds only measured types', () => {
     expect(Object.isFrozen(FIELD_TYPES)).toBe(true)
   })
 
-  it('types no field the audit census does not count — a pipeline cast is not a measurement', () => {
+  it('types no field the census queries of the audit do not count — a pipeline cast is not a measurement', () => {
     const counted = new Set([...CENSUS_COLUMNS_FIELDS, ...NUMERIC_CENSUS_FIELDS])
     expect(Object.keys(FIELD_TYPES).filter((f) => !counted.has(f))).toEqual([])
     // The pipeline's derived strings were never counted, so they stay unknown.
