@@ -12,6 +12,12 @@
 //   8. "Also send sample data" is unticked, and unticked names no sample row;
 //  11. Remove pack names the three datasets it keeps, deletes none, and needs
 //      the group typed;
+//  11. Upgrade: offered for an owned copy that is behind, its dialog lists what
+//      the new version adds and removes and says settings are not verified to
+//      survive, and a confirmed run upgrades, reads back, commits and deploys;
+//   the pack sources' own settings — Rotate token (the new token shown once),
+//   Move port, Start and Stop sample data (Start refused until its dataset
+//   exists) — each from its own confirmation, and none of them on load;
 //   and the Raw HTTP stack's panel steps aside once the pack onboards.
 
 import { act } from 'react'
@@ -20,11 +26,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
-import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION } from '../cribl/pack'
+import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packReleaseUrl } from '../cribl/pack'
 import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
 import { OnboardingPanel } from './OnboardingPanel'
 import { ProvisionPanel } from './ProvisionPanel'
-import { REMOVE_ONLY_LEAD, SAMPLE_LABEL } from './onboardingCopy'
+import { REMOVE_ONLY_LEAD, SAMPLE_LABEL, SAMPLE_START_REFUSAL, TOKEN_UNDEPLOYED } from './onboardingCopy'
 
 const toasts = vi.hoisted(() => [] as Array<{ kind: string; text: string }>)
 vi.mock('./Toast', () => ({
@@ -44,6 +50,8 @@ const SAVED = '/m/default_search/search/saved'
 
 interface Call { method: string; path: string; body: unknown }
 let calls: Call[] = []
+/** The fake Leader's uncommitted files — a test may add to them. */
+let heldManifest: string[] = []
 let fake: { packs: Record<string, Array<Record<string, unknown>>>; inputs: Record<string, Record<string, Record<string, unknown>>>; failHttp: boolean; globalHttp: boolean }
 
 const shippedHttp = () => ({
@@ -60,17 +68,44 @@ function reply(status: number, value?: unknown) {
 
 /** A Cribl.Cloud Leader with two groups, real data in gigamon_ami, and — when
  *  asked — this app's current pack already installed in `default`. */
-function leader(o: { installed?: boolean; failHttp?: boolean; globalHttp?: boolean; failCommitOnce?: boolean } = {}) {
+const OLD_TOKEN = 'e'.repeat(64)
+/** A Raw HTTP source that onboarding has configured: a token, a port, running. */
+const configuredHttp = () => ({ ...shippedHttp(), disabled: false, port: 20007, authTokensExt: [{ token: OLD_TOKEN, authType: 'manual' }] })
+
+function leader(o: {
+  installed?: boolean; failHttp?: boolean; globalHttp?: boolean; failCommitOnce?: boolean
+  /** The installed copy is the published 0.1.0, from its release. */
+  v010?: boolean
+  /** The installed copy's Raw HTTP source is configured and running. */
+  configured?: boolean
+  /** The sample source is running. */
+  sampleOn?: boolean
+  /** gigamon_ami_sample exists. */
+  sampleDataset?: boolean
+} = {}) {
   let failCommit = o.failCommitOnce ?? false
   calls = []
   const pending: string[] = []
+  heldManifest = pending
   const saved = new Map<string, unknown>()
   const datasets = new Map<string, Record<string, unknown>>([[PACK_LAKE_DATASET_ID, {
     id: PACK_LAKE_DATASET_ID, format: 'json', retentionPeriodInDays: 30, metrics: { currentSizeBytes: 5e6, metricsDate: '2026-09-24' },
   }]])
+  if (o.sampleDataset) datasets.set(PACK_SAMPLE_DATASET_ID, { id: PACK_SAMPLE_DATASET_ID, format: 'json', retentionPeriodInDays: 30 })
+  const installedInputs = () => ({
+    [PACK_HTTP_INPUT_ID]: o.configured ? configuredHttp() : shippedHttp(),
+    [PACK_SAMPLE_INPUT_ID]: { ...shippedSample(), disabled: !o.sampleOn },
+  })
   fake = {
-    packs: { default: o.installed ? [{ id: PACK_ID, version: PACK_VERSION, source: PACK_URL }] : [], lab: [] },
-    inputs: { default: o.installed ? { [PACK_HTTP_INPUT_ID]: shippedHttp(), [PACK_SAMPLE_INPUT_ID]: shippedSample() } : {}, lab: {} },
+    packs: {
+      default: o.v010 ? [{ id: PACK_ID, version: '0.1.0', source: packReleaseUrl('0.1.0') }]
+        : o.installed ? [{ id: PACK_ID, version: PACK_VERSION, source: PACK_URL }] : [],
+      lab: [],
+    },
+    inputs: {
+      default: o.v010 ? { in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 } } : o.installed ? installedInputs() : {},
+      lab: {},
+    },
     failHttp: o.failHttp ?? false,
     globalHttp: o.globalHttp ?? false,
   }
@@ -113,6 +148,12 @@ function leader(o: { installed?: boolean; failHttp?: boolean; globalHttp?: boole
       }
       if (at('GET', `/m/${g}/packs`)) return reply(200, { items: fake.packs[g] })
       if (at('POST', `/m/${g}/packs`)) {
+        fake.packs[g] = [{ id: PACK_ID, version: PACK_VERSION, source: (body as { source: string }).source }]
+        fake.inputs[g] = { [PACK_HTTP_INPUT_ID]: shippedHttp(), [PACK_SAMPLE_INPUT_ID]: shippedSample() }
+        pending.push(`groups/${g}/default/${PACK_ID}/package.json`)
+        return reply(200, { items: [{ id: PACK_ID }] })
+      }
+      if (at('PATCH', `/m/${g}/packs/${PACK_ID}`)) {
         fake.packs[g] = [{ id: PACK_ID, version: PACK_VERSION, source: (body as { source: string }).source }]
         fake.inputs[g] = { [PACK_HTTP_INPUT_ID]: shippedHttp(), [PACK_SAMPLE_INPUT_ID]: shippedSample() }
         pending.push(`groups/${g}/default/${PACK_ID}/package.json`)
@@ -438,6 +479,207 @@ describe('one run at a time, and one onboarding path', () => {
     expect(buttonNamed('Remove partial stack') ?? buttonNamed('Remove onboarding stack')).toBeTruthy()
     // The page's one picker is the pack panel's now.
     expect(document.body.querySelector('#gs-group-select')).toBeNull()
+  })
+})
+
+// ── 11: Upgrade ─────────────────────────────────────────────────────────────
+
+describe('11. Upgrade', () => {
+  it('is offered for this app’s older copy; opening its dialog and cancelling writes nothing', async () => {
+    leader({ v010: true })
+    await mount()
+    const upgrade = buttonNamed(`Upgrade to ${PACK_VERSION}`)
+    expect(upgrade?.getAttribute('aria-disabled')).toBeNull()
+    await press(upgrade)
+    const text = dialogText()
+    expect(text).toContain(`Upgrade the Gigamon AMI pack in default to ${PACK_VERSION}`)
+    expect(text).toContain('in_gno_syslog')
+    expect(text).toContain(PACK_HTTP_INPUT_ID)
+    expect(text).toContain('have not been verified to survive an upgrade')
+    await press(buttonNamed('Cancel'))
+    expect(dialog()).toBeNull()
+    expect(writes()).toEqual([])
+  })
+
+  it('confirmed: upgrades, reads the source back, then commits and deploys the pack’s files', async () => {
+    leader({ v010: true })
+    await mount()
+    await press(buttonNamed(`Upgrade to ${PACK_VERSION}`))
+    await press(buttonNamed('Yes, upgrade in default'), 40)
+    expect(writes().map((c) => `${c.method} ${c.path}`)).toEqual([
+      `PATCH /m/default/packs/${PACK_ID}`, 'POST /version/commit', 'PATCH /products/stream/groups/default/deploy',
+    ])
+    expect(toasts.at(-1)?.kind).toBe('done')
+  })
+
+  it('the lock taken by another panel while its dialog is open: Yes writes nothing', async () => {
+    leader({ v010: true })
+    await mount()
+    await press(buttonNamed(`Upgrade to ${PACK_VERSION}`))
+    expect(dialog()).not.toBeNull()
+    // Taken and pressed in one turn, before a render could mark the button.
+    let release: (() => void) | null = null
+    await act(async () => {
+      release = acquireSetupRun('lake_landing')
+      buttonNamed('Yes, upgrade in default')!.click()
+    })
+    await settle(30)
+    expect(writes()).toEqual([])
+    expect(bodyText()).toContain('Nothing was written: Another run is already in progress.')
+    ;(release as (() => void) | null)?.()
+  })
+
+  it('held because it reset the source: none of the source controls opens a dialog that would deploy it', async () => {
+    leader({ installed: true, configured: true, sampleOn: true })
+    await mount()
+    // The upgrade this app held: the pack's manifest uncommitted in the group.
+    heldManifest.push(`groups/default/default/${PACK_ID}/package.json`)
+    for (const label of ['Rotate token', 'Stop sample data']) {
+      await press(buttonNamed(label))
+      expect(dialog(), label).toBeNull()
+    }
+    expect(bodyText()).toContain('package.json in default is uncommitted')
+    expect(writes()).toEqual([])
+  })
+
+  it('is not offered for the current copy', async () => {
+    leader({ installed: true })
+    await mount()
+    expect(buttonNamed(`Upgrade to ${PACK_VERSION}`)).toBeUndefined()
+  })
+})
+
+// ── The pack sources' own settings ──────────────────────────────────────────
+
+describe('the pack sources’ own settings', () => {
+  it('opening and cancelling each of their dialogs writes nothing', async () => {
+    leader({ installed: true, configured: true, sampleDataset: true })
+    await mount()
+    for (const label of ['Rotate token', 'Move port', 'Start sample data']) {
+      await press(buttonNamed(label))
+      expect(dialog(), `${label} opened no dialog`).not.toBeNull()
+      await press(buttonNamed('Cancel'))
+    }
+    expect(writes()).toEqual([])
+  })
+
+  it('Rotate token: names the source and the exporter, then shows the new token once — and not in a toast or the store', async () => {
+    leader({ installed: true, configured: true })
+    await mount()
+    await press(buttonNamed('Rotate token'))
+    expect(dialogText()).toContain(`Rotate the auth token of ${PACK_HTTP_INPUT_ID} in default`)
+    expect(dialogText()).toContain('Gigamon AMX has to be given the new token')
+    expect(dialogText()).not.toMatch(/[0-9a-f]{64}/)
+    await press(buttonNamed('Yes, rotate the token'), 40)
+    const token = sentToken()
+    expect(token).toMatch(/^[0-9a-f]{64}$/)
+    expect(token).not.toBe(OLD_TOKEN)
+    expect(shownToken()).toBe(token)
+    expect(bodyText().split(token!).length - 1).toBe(1)
+    expect(JSON.stringify(toasts)).not.toContain(token)
+    for (const c of kvWrites()) expect(JSON.stringify(c.body)).not.toContain(token)
+    const patch = writes().find((c) => c.method === 'PATCH' && c.path.endsWith(`/system/inputs/${PACK_HTTP_INPUT_ID}`))!
+    // The whole source went back, with only the token moved.
+    expect(patch.body).toEqual({ ...configuredHttp(), authTokensExt: [{ token, authType: 'manual' }] })
+    expect(writes().map((c) => c.path).slice(-2)).toEqual(['/version/commit', '/products/stream/groups/default/deploy'])
+    // Gone after a group change there and back.
+    await pick('lab')
+    await pick('default')
+    expect(shownToken()).toBeNull()
+  })
+
+  it('Move port: the dialog names the new port, and the PATCH carries it', async () => {
+    leader({ installed: true, configured: true })
+    await mount()
+    await act(async () => {
+      const el = document.body.querySelector<HTMLInputElement>('#gs-onb-move-port')!
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(el, '20009')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await settle()
+    await press(buttonNamed('Move port'))
+    expect(dialogText()).toContain(`Move ${PACK_HTTP_INPUT_ID} in default to port 20009`)
+    await press(buttonNamed('Yes, move to port 20009'), 40)
+    const patch = writes().find((c) => c.method === 'PATCH' && c.path.endsWith(`/system/inputs/${PACK_HTTP_INPUT_ID}`))
+    expect((patch!.body as { port: number }).port).toBe(20009)
+  })
+
+  it('Start sample data is refused, with its reason on screen, until gigamon_ami_sample exists', async () => {
+    leader({ installed: true, configured: true, sampleDataset: false })
+    await mount()
+    const start = buttonNamed('Start sample data')
+    expect(start?.getAttribute('aria-disabled')).toBe('true')
+    expect(document.getElementById(start?.getAttribute('aria-describedby') ?? '')?.textContent).toBe(SAMPLE_START_REFUSAL)
+    await press(start)
+    expect(dialog()).toBeNull()
+    expect(writes()).toEqual([])
+  })
+
+  it('Stop sample data is offered whether or not the dataset exists, and stops it', async () => {
+    leader({ installed: true, configured: true, sampleOn: true, sampleDataset: false })
+    await mount()
+    const stop = buttonNamed('Stop sample data')
+    expect(stop?.getAttribute('aria-disabled')).toBeNull()
+    await press(stop)
+    await press(buttonNamed('Yes, stop the sample data'), 40)
+    const patch = writes().find((c) => c.method === 'PATCH' && c.path.endsWith(`/system/inputs/${PACK_SAMPLE_INPUT_ID}`))
+    expect((patch!.body as { disabled: boolean }).disabled).toBe(true)
+  })
+
+  it('a rotation whose commit failed: the token is shown once, and said not to be deployed', async () => {
+    leader({ installed: true, configured: true, failCommitOnce: true })
+    await mount()
+    await press(buttonNamed('Rotate token'))
+    await press(buttonNamed('Yes, rotate the token'), 40)
+    const token = sentToken()
+    expect(shownToken()).toBe(token)
+    expect(bodyText()).toContain(TOKEN_UNDEPLOYED)
+    expect(writes().map((c) => c.path).at(-1)).toBe('/version/commit')
+  })
+
+  it('a rotation that deployed carries no such warning', async () => {
+    leader({ installed: true, configured: true })
+    await mount()
+    await press(buttonNamed('Rotate token'))
+    await press(buttonNamed('Yes, rotate the token'), 40)
+    expect(shownToken()).toBe(sentToken())
+    expect(bodyText()).not.toContain(TOKEN_UNDEPLOYED)
+  })
+
+  it('the lock taken by another panel while a dialog is open: its Yes writes nothing', async () => {
+    for (const [label, yes] of [['Stop sample data', 'Yes, stop the sample data'], ['Rotate token', 'Yes, rotate the token']] as const) {
+      leader({ installed: true, configured: true, sampleOn: true })
+      await mount()
+      await press(buttonNamed(label))
+      expect(dialog(), label).not.toBeNull()
+      // Taken and pressed in one turn, before a render could mark the button.
+      let release: (() => void) | null = null
+      await act(async () => {
+        release = acquireSetupRun('lake_landing')
+        buttonNamed(yes)!.click()
+      })
+      await settle(30)
+      expect(writes(), label).toEqual([])
+      expect(bodyText()).toContain('Nothing was written: Another run is already in progress.')
+      ;(release as (() => void) | null)?.()
+      act(() => root.unmount())
+      root = createRoot(container)
+    }
+  })
+
+  it('while another Guided Setup run holds the lock, none of them opens', async () => {
+    leader({ installed: true, configured: true, sampleDataset: true })
+    await mount()
+    const release = acquireSetupRun('lake_landing')!
+    await settle()
+    for (const label of ['Rotate token', 'Move port', 'Start sample data']) {
+      expect(buttonNamed(label)?.getAttribute('aria-disabled'), label).toBe('true')
+      await press(buttonNamed(label))
+      expect(dialog()).toBeNull()
+    }
+    release()
+    expect(writes()).toEqual([])
   })
 })
 

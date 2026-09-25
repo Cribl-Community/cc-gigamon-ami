@@ -349,7 +349,7 @@ describe('readPackState', () => {
     })
     const s = await c.readPackState(GROUP)
     expect(s).toMatchObject({ installed: true, version: '0.1.0', published: true, current: false })
-    expect(s.http).toEqual({ disabled: false, port: 20003, tokenSet: true, tls: true })
+    expect(s.http).toEqual({ disabled: false, port: 20003, tokenSet: true, tls: true, tlsCert: '$CRIBL_CLOUD_CRT $CRIBL_CLOUD_KEY' })
     expect(s.sample).toEqual({ disabled: true })
     expect(s.objects.inputs).toEqual({ [PACK_HTTP_INPUT_ID]: 'present', [PACK_SAMPLE_INPUT_ID]: 'present' })
     expect(s.objects.routes).toEqual({ gigamon_ami_http_to_json: 'present', gigamon_ami_http_to_parquet: 'absent', gigamon_ami_sample: 'present' })

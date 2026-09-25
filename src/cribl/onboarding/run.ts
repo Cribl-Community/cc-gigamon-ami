@@ -1,5 +1,6 @@
 // The onboarding run: the reads that build its one confirmation, the steps it
-// takes once that confirmation is accepted, and Remove pack.
+// takes once that confirmation is accepted, Remove pack, Upgrade, and the pack
+// sources' own settings (Rotate token, Move port, Start and Stop sample data).
 //
 // ── STRICTLY SEQUENTIAL, AND STOPPED BY WHAT LATER STEPS NEED ───────────────
 // ./plan.ts `onboardingSteps` is the order and which failures stop the run;
@@ -24,10 +25,22 @@
 // Generated here, for step 3 only, and handed to the caller through
 // `io.onToken` — only when the PATCH that set it answered `updated`, or when
 // it answered an error AND a re-read shows the source now has a token (then
-// with a warning). It is in no step, no log entry and no error text.
+// with a warning). It is in no step, no log entry and no error text. A
+// rotation's (`runSourceChange`) is handed over once its commit and deploy have
+// ended, marked `undeployed` when either failed: the source holds the new token,
+// and the Workers still hold the old one.
+//
+// ── A HELD UPGRADE STAYS HELD ───────────────────────────────────────────────
+// `runPackUpgrade` commits nothing when the upgrade reset the Raw HTTP source.
+// Every source change commits all of the pack's pending files, so while the
+// pack's manifest is uncommitted, none of them opens or runs
+// (`manifestPendingRefusal`) — otherwise this app's own Stop sample data would
+// deploy the reset the upgrade held back. An unreadable source list is never
+// read as "this version has no Raw HTTP source" (`sourcesUnreadable`).
 //
 // ── NOTHING HERE RUNS ON ITS OWN ────────────────────────────────────────────
-// `runOnboarding` and `runPackRemoval` are reached from a confirmed click in
+// `runOnboarding`, `runPackRemoval`, `finishPackRemoval`, `runPackUpgrade` and
+// `runSourceChange` are reached from a confirmed click in
 // components/OnboardingPanel.tsx and from nowhere else; the panel holds the
 // page's run lock (../setupRunLock.ts) around each.
 
@@ -43,17 +56,22 @@ import {
   PACK_VERSION,
 } from '../pack'
 import {
-  commitAndDeployPack, configureHttpInput, enableHttpInput, installPack, packCommitScope, portsOfOthers, previewPackInput,
-  readPackState, removePack, setSampleEnabled, thisPackRelease, type PackState, type PackStep,
+  commitAndDeployPack, compareVersions, configureHttpInput, enableHttpInput, installPack, packCommitScope, portsOfOthers,
+  previewPackInput, readPackState, removePack, setHttpToken, setSampleEnabled, setSourcePort, thisPackRelease,
+  type PackInputChange, type PackState, type PackStep,
 } from '../packClient'
+import { upgradePack } from '../packUpgrade'
 import {
   HTTP_SOURCE_ID, LEGACY_SYSLOG_SOURCE_ID, ensureLakeDataset, generateToken, groupInputs, hostingOf, leaderHostname,
-  pendingConfigPaths, portProblem, type LakeDatasetStep, type StepResult,
+  pendingConfigPaths, portProblem, sameValue, type LakeDatasetStep, type StepResult,
 } from '../provision'
-import { installedRefusal } from '../../components/onboardingCopy'
 import {
-  SAMPLE_START_DIFF, accelMode, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites, type HttpAction,
-  type OnboardingDialog, type OnboardingDialogContext,
+  ROTATE_FAILED, installedRefusal, packManifestPendingSentence, packPendingUnknownSentence, upgradeHeldSentence, upgradeResetSentence,
+} from '../../components/onboardingCopy'
+import {
+  SAMPLE_START_DIFF, accelMode, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites, upgradeReadBack, type HttpAction,
+  type OnboardingDialog, type OnboardingDialogContext, type SourceChange, type SourceChangeContext, type SourceChangeDialog,
+  type SourceSnapshot, type UpgradeDialog, type UpgradeDialogContext,
 } from './plan'
 import type { DiffRow } from '../landing'
 
@@ -106,6 +124,7 @@ const LABELS: Record<string, string> = {
   deploy: 'Deploy',
   acceleration: 'Scheduled searches',
   recheck: 'Read back',
+  readback: `Raw HTTP source ${PACK_HTTP_INPUT_ID} read back`,
 }
 
 const labelOf = (key: string): string => LABELS[key] ?? key
@@ -568,5 +587,307 @@ export async function finishPackRemoval(group: string, io: Pick<RemovalIO, 'onSt
   step({ key: 'pack', label: labelOf('pack'), action: 'exists', detail: 'not installed' })
   const committed = await commitAndDeployPack(group, removeMessage(group), { wrote: false, record: io.record }, (c) => { step(fromCommit(c)) })
   const broken = committed.find((c) => c.action === 'error')
+  return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
+}
+
+// ── Upgrade ─────────────────────────────────────────────────────────────────
+//
+// The in-place upgrade (packUpgrade.ts `upgradePack`), and the one thing the
+// design asks of it that nothing else checks: settings made after install —
+// the Raw HTTP source's port, token, TLS and on state — are not known to
+// survive a `PATCH /packs/<id>` (unknown d). So the source is read back after
+// the upgrade, and a reset commits and deploys NOTHING: a commit would put the
+// reset on the Workers, and the step says so, and who else could.
+
+/** What the read-back compares, off `readPackState`. Never a token. */
+const snapshotOf = (p: PackState): SourceSnapshot => ({ http: p.http, sample: p.sample })
+
+/**
+ * The pack's source list could not be read. `readPackState` then reports
+ * `http: null` — the same as "this version has no Raw HTTP source" — and the
+ * read-back would compare null with null and find nothing to lose, so an
+ * unreadable list is a refusal, never an absent source.
+ */
+const sourcesUnreadable = (p: PackState): boolean => p.objects.inputs[PACK_HTTP_INPUT_ID] === 'unreadable'
+
+/** Why this copy is not one this app will upgrade to `to`, or null. */
+function upgradeRefusal(pack: PackState, group: string, to: string): string | null {
+  if (pack.error) return pack.error
+  if (!pack.installed) return `${PACK_ID} is not installed in ${group}`
+  if (sourcesUnreadable(pack)) {
+    return `the pack’s sources in ${group} could not be read, so this app cannot tell what an upgrade would reset on ${PACK_HTTP_INPUT_ID}`
+  }
+  if (!pack.published || !pack.fromRelease || pack.version === null) {
+    return installedRefusal({ version: pack.version, published: pack.published, fromRelease: pack.fromRelease, group })
+  }
+  const d = compareVersions(pack.version, to)
+  if (d === 0) return `${PACK_ID} ${to} is already installed in ${group}`
+  if (d > 0) return `the installed ${PACK_ID} ${pack.version} is newer than the ${to} this app installs, and this app does not downgrade`
+  return null
+}
+
+export type UpgradePrepareResult = { ok: true; ctx: UpgradeDialogContext } | { ok: false; why: string }
+
+/**
+ * The reads the Upgrade confirmation is built from — GETs only. Refused while
+ * this build records no release, for a copy this app did not install from its
+ * own release, and for one already current or newer (no downgrade).
+ */
+export async function prepareUpgrade(
+  group: string,
+  opts: { undeployed: string | null; undeployedChecking: boolean },
+): Promise<UpgradePrepareResult> {
+  const release = thisPackRelease()
+  if (!release.installable) return { ok: false, why: release.refusal ?? 'the pack’s release cannot be installed' }
+  const [pack, pending] = await Promise.all([readPackState(group), pendingConfigPaths().catch(() => null)])
+  const why = upgradeRefusal(pack, group, release.version)
+  if (why) return { ok: false, why }
+  return {
+    ok: true,
+    ctx: {
+      group, from: pack.version as string, release, before: snapshotOf(pack), scope: packCommitScope(group, pending),
+      undeployed: opts.undeployed, undeployedChecking: opts.undeployedChecking,
+    },
+  }
+}
+
+export const upgradeMessage = (group: string, from: string): string =>
+  `Gigamon AMI: upgrade pack ${PACK_ID} ${from} → ${PACK_VERSION} in ${group}`
+
+/**
+ * The upgrade, strictly in order: re-read (anything moved, nothing written),
+ * `upgradePack`, read the sources back, and only then commit the pack's files
+ * and deploy. A reset source, a read-back that fails and a failed install check
+ * each stop the run with nothing committed or deployed.
+ */
+export async function runPackUpgrade(ctx: UpgradeDialogContext, _dialog: UpgradeDialog, io: Pick<RemovalIO, 'onStep' | 'record'>): Promise<RunOutcome> {
+  const steps: RunStep[] = []
+  const step = (s: RunStep): RunStep => {
+    steps.push(s)
+    io.onStep(s)
+    return s
+  }
+  const finish = (stopped: RunStep | null, pack: PackState | null = null): RunOutcome => {
+    void appendLog('gigamon', {
+      action: 'onboarding_pack.upgraded',
+      group: ctx.group,
+      from: ctx.from,
+      outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
+      steps: steps.map((s) => `${s.key}:${s.action}`),
+    })
+    return { steps, stopped, pack }
+  }
+  const g = ctx.group
+
+  // 0. Nothing moved since the confirmation.
+  const moved: string[] = []
+  const release = thisPackRelease()
+  if (!release.installable) moved.push(release.refusal ?? 'the pack’s release can no longer be installed')
+  else if (release.version !== ctx.release.version) moved.push(`this app now installs ${release.version}, not ${ctx.release.version}`)
+  const now = await readPackState(g)
+  if (now.error) moved.push(`the group’s pack list could not be read again (${now.error})`)
+  else {
+    const why = upgradeRefusal(now, g, ctx.release.version)
+    if (why) moved.push(why)
+    else if (now.version !== ctx.from) moved.push(`${PACK_ID} is ${now.version ?? 'of an unknown version'} now, not ${ctx.from}`)
+    if (!sameValue(snapshotOf(now), ctx.before)) moved.push(`${PACK_HTTP_INPUT_ID} or ${PACK_SAMPLE_INPUT_ID} changed`)
+  }
+  if (moved.length) {
+    return finish(step({
+      key: 'precheck', label: labelOf('precheck'), action: 'error',
+      detail: `Nothing was written, because this changed after the confirmation was shown: ${moved.join('; ')}. Look again, and confirm again.`,
+    }))
+  }
+  step({ key: 'precheck', label: labelOf('precheck'), action: 'exists', detail: 'what the confirmation showed still holds' })
+
+  // 1. The upgrade, and its own read-back of the version and the source.
+  let upgraded = false
+  let failed: RunStep | null = null
+  for (const p of await upgradePack(g)) {
+    const s = step(fromPack(p))
+    if (p.key === 'pack' && p.action === 'updated') upgraded = true
+    if (p.action === 'error' || p.action === 'skipped' || (p.key === 'pack' && p.action === 'exists')) failed = failed ?? s
+  }
+  if (failed) {
+    if (upgraded) step({ key: 'readback', label: labelOf('readback'), action: 'error', detail: upgradeHeldSentence(g, 'the upgrade could not be checked') })
+    return finish(failed)
+  }
+
+  // 2. What was set after install, read back.
+  const after = await readPackState(g)
+  if (after.error || !after.installed || sourcesUnreadable(after)) {
+    return finish(step({
+      key: 'readback', label: labelOf('readback'), action: 'error',
+      detail: upgradeHeldSentence(g, `${PACK_HTTP_INPUT_ID} could not be read back after it`),
+    }))
+  }
+  const rb = upgradeReadBack(ctx.before, snapshotOf(after))
+  if (rb.reset.length) {
+    return finish(step({ key: 'readback', label: labelOf('readback'), action: 'error', detail: upgradeResetSentence(g, rb.reset) }), after)
+  }
+  step({
+    key: 'readback', label: labelOf('readback'), action: 'exists',
+    detail: ctx.before.http
+      ? `${PACK_HTTP_INPUT_ID} kept its port, auth token, TLS and state`
+      : `${PACK_HTTP_INPUT_ID} arrived switched off and without an auth token; Finish onboarding configures it`,
+  })
+  for (const note of rb.notes) step({ key: 'readback', label: labelOf('readback'), action: 'exists', warning: true, detail: note })
+
+  // 3. Commit the pack's files, then deploy.
+  const committed = await commitAndDeployPack(g, upgradeMessage(g, ctx.from), { wrote: true, record: io.record }, (r) => { step(fromCommit(r)) })
+  const broken = committed.find((r) => r.action === 'error')
+  if (broken) return finish(steps.find((s) => s.key === broken.key && s.action === 'error') ?? null, after)
+  return finish(null, await readPackState(g))
+}
+
+// ── The pack sources' own settings, outside a run ───────────────────────────
+
+/** What a source change needs from the screen. */
+export interface SourceChangeIO {
+  onStep: (s: RunStep) => void
+  /** A rotation's new token, handed over once, after the PATCH that set it
+   *  answered `updated` and the commit and deploy that followed ended —
+   *  `undeployed` when either failed, so the Workers still hold the old token.
+   *  Kept nowhere else. */
+  onToken: (token: string, undeployed: boolean) => void
+  record: (hash: string, message: string) => Promise<unknown>
+}
+
+export type SourceChangePrepareResult = { ok: true; ctx: SourceChangeContext } | { ok: false; why: string }
+
+/** The change as packClient.ts takes it. A rotation's token here is the
+ *  preview's, which is thrown away: the diff says "a new token (not shown)"
+ *  whatever its value, and the run generates its own. */
+function packChange(change: SourceChange, hosting: 'managed' | 'hybrid' | null, token: string): PackInputChange {
+  if (change.kind === 'token') return { kind: 'token', token }
+  if (change.kind === 'port') return { kind: 'port', port: change.port, hosting }
+  return { kind: 'sample', enabled: change.enabled }
+}
+
+const ownedCopy = (p: PackState): boolean => !p.error && p.installed && p.published && p.fromRelease
+
+/**
+ * Why a source change may not commit now, or null. A source change commits
+ * every pending file of the pack's, so while the pack's own manifest is
+ * uncommitted — above all an upgrade `runPackUpgrade` held because it reset
+ * the Raw HTTP source — its commit and deploy would push that upgrade, reset
+ * and all, which is exactly what holding it was for. Git's status unread is
+ * refused too: the held upgrade cannot be ruled out.
+ */
+function manifestPendingRefusal(group: string, pending: readonly string[] | null): string | null {
+  if (pending === null) return packPendingUnknownSentence(group)
+  const held = pending.find((f) => f.includes(`groups/${group}/`) && f.endsWith(`/${PACK_ID}/package.json`))
+  return held ? packManifestPendingSentence(group, held) : null
+}
+
+/**
+ * The reads a source change's confirmation is built from — GETs only:
+ * the pack (it must be this app's), the group's hosting for a port move, the
+ * change's own preview (packClient.ts `previewPackInput`, which checks a port is
+ * free and in range, and refuses to start the sample until its dataset
+ * exists), and what the commit would carry. A change that would change
+ * nothing opens no dialog.
+ */
+export async function prepareSourceChange(
+  group: string,
+  change: SourceChange,
+  opts: { undeployed: string | null; undeployedChecking: boolean },
+): Promise<SourceChangePrepareResult> {
+  const [pack, pending, groups] = await Promise.all([
+    readPackState(group),
+    pendingConfigPaths().catch(() => null),
+    change.kind === 'port' ? listStreamGroupsCurrent() : Promise.resolve(null),
+  ])
+  if (pack.error) return { ok: false, why: pack.error }
+  if (!ownedCopy(pack)) return { ok: false, why: `the pack in ${group} is not one this app installed from its own release` }
+  const held = manifestPendingRefusal(group, pending)
+  if (held) return { ok: false, why: held }
+  let hosting: 'managed' | 'hybrid' | null = null
+  if (groups) {
+    const rec = groups.outcome === 'ok' ? groups.value?.find((x) => x.id === group) : undefined
+    hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
+    if (hosting === null) return { ok: false, why: `this app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range` }
+  }
+  const preview = await previewPackInput(group, packChange(change, hosting, generateToken()))
+  if (!preview.ok) return { ok: false, why: preview.step.detail ?? 'the source could not be read' }
+  if (preview.diff.length === 0) return { ok: false, why: 'nothing would change: the source is already that way' }
+  return {
+    ok: true,
+    ctx: {
+      group, change, diff: preview.diff, fromPort: pack.http?.port ?? null, hosting, scope: packCommitScope(group, pending),
+      undeployed: opts.undeployed, undeployedChecking: opts.undeployedChecking,
+    },
+  }
+}
+
+const changeMessage = (group: string, change: SourceChange): string =>
+  change.kind === 'token'
+    ? `Gigamon AMI: rotate the auth token of ${PACK_HTTP_INPUT_ID} in ${group}`
+    : change.kind === 'port'
+      ? `Gigamon AMI: move ${PACK_HTTP_INPUT_ID} to port ${change.port} in ${group}`
+      : `Gigamon AMI: ${change.enabled ? 'start' : 'stop'} ${PACK_SAMPLE_INPUT_ID} in ${group}`
+
+/**
+ * One source change: re-read that the pack is still this app's, ONE whole-body
+ * PATCH held to the diff the dialog showed (packClient.ts sends nothing when
+ * the live source no longer gives it), then commit the pack's files and
+ * deploy — only after a write that answered `updated`. A rotation's token is
+ * generated here and handed to `onToken` only then; it is in no step, log
+ * entry or error text, and a failed rotation shows none.
+ */
+export async function runSourceChange(ctx: SourceChangeContext, dialog: SourceChangeDialog, io: SourceChangeIO): Promise<RunOutcome> {
+  const steps: RunStep[] = []
+  const step = (s: RunStep): RunStep => {
+    steps.push(s)
+    io.onStep(s)
+    return s
+  }
+  const finish = (stopped: RunStep | null): RunOutcome => {
+    void appendLog('gigamon', {
+      action: 'onboarding_pack.configured',
+      group: ctx.group,
+      change: ctx.change.kind,
+      outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
+      steps: steps.map((s) => `${s.key}:${s.action}`),
+    })
+    return { steps, stopped, pack: null }
+  }
+  const g = ctx.group
+  const now = await readPackState(g)
+  if (!ownedCopy(now)) {
+    return finish(step({
+      key: 'precheck', label: labelOf('precheck'), action: 'error',
+      detail: `Nothing was written: ${now.error ?? `the pack in ${g} is no longer one this app installed from its own release`}.`,
+    }))
+  }
+  const held = manifestPendingRefusal(g, await pendingConfigPaths())
+  if (held) return finish(step({ key: 'precheck', label: labelOf('precheck'), action: 'error', detail: `Nothing was written: ${held}.` }))
+
+  const change = ctx.change
+  const token = change.kind === 'token' ? generateToken() : null
+  const r: PackStep = change.kind === 'token'
+    ? await setHttpToken(g, token as string, dialog.approved)
+    : change.kind === 'port'
+      ? await setSourcePort(g, change.port, ctx.hosting, dialog.approved)
+      : await setSampleEnabled(g, change.enabled, dialog.approved)
+  if (r.action === 'exists') {
+    step(fromPack(r))
+    step({ key: 'commit', label: labelOf('commit'), action: 'skipped', detail: `nothing changed in ${g}, so nothing was committed or deployed` })
+    return finish(null)
+  }
+  if (r.action !== 'updated') return finish(step(fromPack(r, token !== null && r.sent ? `. ${ROTATE_FAILED}` : '')))
+  step(fromPack(r))
+
+  // A rotation's token is handed over after the commit and deploy, whatever
+  // they did — the source holds it now — and says whether it reached the Workers.
+  let broken: StepResult | undefined
+  let ended = false
+  try {
+    const committed = await commitAndDeployPack(g, changeMessage(g, change), { wrote: true, record: io.record }, (c) => { step(fromCommit(c)) })
+    broken = committed.find((c) => c.action === 'error')
+    ended = true
+  } finally {
+    if (token !== null) io.onToken(token, !ended || broken !== undefined)
+  }
   return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
 }

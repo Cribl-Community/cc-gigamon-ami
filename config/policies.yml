@@ -403,10 +403,12 @@ policies:
   # The onboarding pack itself, by its id and never any other pack's. DELETE is
   # Remove pack — only a copy this app installed from its own release of a
   # version it published, behind a type-to-confirm dialog that names what it
-  # keeps (all three Lake datasets, and the scheduled searches). No PATCH: the
-  # in-place upgrade is not offered by any screen yet, so it is not asked for.
+  # keeps (all three Lake datasets, and the scheduled searches). PATCH is
+  # Upgrade — in place, from the release this app build pins, never downward,
+  # with custom functions refused; the pack's Raw HTTP source is read back
+  # afterwards and nothing is committed or deployed if its settings were reset.
   - object: '/m/:gid/packs/cc-network-gigamon-ami'
-    actions: ['DELETE']
+    actions: ['PATCH', 'DELETE']
   # The pack's objects, read for the status Guided Setup shows, and never
   # written: its event breaker ruleset, pipeline, routes and destinations.
   - object: '/m/:gid/p/cc-network-gigamon-ami/lib/breakers/gigamon_ami_http_json_array'
@@ -420,9 +422,10 @@ policies:
   # The pack's two sources, each read whole and PATCHed whole, because the
   # endpoint deletes any field a PATCH omits. The Raw HTTP source gets what only
   # an install can know — a free port, the auth token this app generates and
-  # shows once, TLS for the group's hosting — and is started; the sample
-  # DataGen is started only when "Also send sample data" is ticked, and writes
-  # only to gigamon_ami_sample.
+  # shows once, TLS for the group's hosting — and is started; later, from their
+  # own confirmations, its token is rotated or its port moved. The sample
+  # DataGen is started when "Also send sample data" is ticked, or started and
+  # stopped on its own, and writes only to gigamon_ami_sample.
   - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gigamon_ami_http'
     actions: ['GET', 'PATCH']
   - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gigamon_ami_sample'

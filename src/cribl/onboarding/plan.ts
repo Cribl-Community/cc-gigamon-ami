@@ -39,6 +39,8 @@ import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
   FINISH_REMOVAL_UNDO, finishRemovalSentence, nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
+  ROTATE_EXPORTER, ROTATE_UNDO, SAMPLE_START_UNDO, SAMPLE_STOP_KEEPS, SAMPLE_STOP_UNDO, UPGRADE_UNVERIFIED, movePortSentence, movePortUndo,
+  upgradeNewSourceSentence, upgradeRemovedSourcesSentence, upgradeUndo,
 } from '../../components/onboardingCopy'
 import { approvedWrites, type AccelState, type ApprovedWrites } from '../accel/provision'
 import { estimateScheduleSetCost } from '../accel/estimate'
@@ -672,5 +674,231 @@ export function finishRemovalDialog(ctx: FinishRemovalContext): FinishRemovalDia
       ...DEPLOY_CONSEQUENCES,
     ],
     undo: FINISH_REMOVAL_UNDO,
+  }
+}
+
+// ── Upgrade ─────────────────────────────────────────────────────────────────
+
+/** One object of the pack, by the kind of list it is in. */
+export interface PackObjectRef {
+  kind: PackObjectKind
+  id: string
+}
+
+/**
+ * What an in-place upgrade from `from` to this build's version does to the
+ * pack's objects, by id: the ones only the installed version has (removed),
+ * the ones only the new version has (added), and the ones both carry (replaced
+ * by the new version's copy). The installed version's ids come from
+ * `packObjectsOf` — 0.1.0's from its published record, never the current ids.
+ */
+export function upgradeObjectChanges(from: string | null): { added: PackObjectRef[]; removed: PackObjectRef[]; kept: PackObjectRef[] } {
+  const before = packObjectsOf(from)
+  const added: PackObjectRef[] = []
+  const removed: PackObjectRef[] = []
+  const kept: PackObjectRef[] = []
+  for (const kind of Object.keys(PACK_OBJECTS) as PackObjectKind[]) {
+    const was = new Set(before[kind])
+    const now = new Set<string>(PACK_OBJECTS[kind])
+    for (const id of before[kind]) (now.has(id) ? kept : removed).push({ kind, id })
+    for (const id of PACK_OBJECTS[kind]) if (!was.has(id)) added.push({ kind, id })
+  }
+  return { added, removed, kept }
+}
+
+/** What the upgrade's read-back compares: the Raw HTTP source (never its
+ *  token, only whether one is set) and whether the sample runs. */
+export interface SourceSnapshot {
+  http: { port: number | null; tokenSet: boolean; disabled: boolean; tls: boolean; tlsCert: string | null } | null
+  sample: { disabled: boolean } | null
+}
+
+/**
+ * What an upgrade did to what was set after install. `reset` stops the run
+ * before any commit or deploy: the Raw HTTP source lost its token, its port,
+ * its on state or its TLS, or is gone. TLS is stricter than the design's list
+ * (token, port, on state) on purpose: a TLS block put back to the pack's own
+ * names a certificate a hybrid group does not have, so the source would never
+ * start — its on state lost by another route. So TLS counts as reset when it
+ * went on or off, AND when it stayed on with another certificate (`tlsCert`):
+ * a hybrid group's own certificate put back to the pack's `$CRIBL_CLOUD_CRT`
+ * is still "TLS on". A source the installed version
+ * did not have (0.1.0) had nothing to lose. `notes` are said and do not stop
+ * it: a sample that was running and is now stopped.
+ */
+export function upgradeReadBack(before: SourceSnapshot, after: SourceSnapshot): { reset: string[]; notes: string[] } {
+  const reset: string[] = []
+  const notes: string[] = []
+  const b = before.http
+  const a = after.http
+  if (b !== null) {
+    if (a === null) reset.push(`${PACK_HTTP_INPUT_ID} itself`)
+    else {
+      if (b.tokenSet && !a.tokenSet) reset.push('its auth token')
+      if (b.port !== null && a.port !== b.port) reset.push(`its port (${b.port}, now ${a.port ?? 'unknown'})`)
+      if (!b.disabled && a.disabled) reset.push('its on state')
+      if (b.tls !== a.tls) reset.push('its TLS')
+      else if (b.tls && b.tlsCert !== a.tlsCert) reset.push('its TLS certificate')
+    }
+  }
+  if (before.sample && !before.sample.disabled && (after.sample === null || after.sample.disabled)) {
+    notes.push(`${PACK_SAMPLE_INPUT_ID} was running and is not now; start it again with Start sample data if you want it.`)
+  }
+  return { reset, notes }
+}
+
+/** Everything the Upgrade confirmation is built from — read before it opens. */
+export interface UpgradeDialogContext {
+  group: string
+  /** The installed version (owned, and older than `release.version`). */
+  from: string
+  release: PackRelease
+  /** The sources as the dialog opened — what the read-back compares against. */
+  before: SourceSnapshot
+  scope: CommitScope | null
+  undeployed: string | null
+  undeployedChecking?: boolean
+}
+
+export interface UpgradeDialog {
+  title: string
+  resources: ConfirmResource[]
+  consequences: string[]
+  undo: string
+}
+
+/**
+ * The Upgrade confirmation: the pack, replaced in place; each object the new
+ * version adds, removes or replaces; the deploy; the commit's scope and every
+ * consequence — and, always, the plain statement that settings made after
+ * install are not verified to survive, with what the run does about it.
+ */
+export function packUpgradeDialog(ctx: UpgradeDialogContext): UpgradeDialog {
+  const { group, from } = ctx
+  const to = ctx.release.version
+  const { added, removed, kept } = upgradeObjectChanges(from)
+  const resources: ConfirmResource[] = [{
+    action: 'replace', kind: 'Pack', id: PACK_ID, group,
+    detail: `${from} → ${to} from ${ctx.release.url}, with custom functions refused`,
+  }]
+  for (const o of added) resources.push({ action: 'create', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `new in ${to}` })
+  for (const o of kept) resources.push({ action: 'replace', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `replaced by ${to}’s copy` })
+  for (const o of removed) resources.push({ action: 'delete', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `in ${from}, not in ${to}` })
+  resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
+
+  const removedInputs = removed.filter((o) => o.kind === 'inputs').map((o) => o.id)
+  const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
+  const undeployedLine = undeployedSentence(commitCtx)
+  return {
+    title: `Upgrade the Gigamon AMI pack in ${group} to ${to}`,
+    resources,
+    consequences: [
+      UPGRADE_UNVERIFIED,
+      ...(ctx.before.http === null ? [upgradeNewSourceSentence()] : []),
+      ...(removedInputs.length ? [upgradeRemovedSourcesSentence(removedInputs)] : []),
+      carriesSentence(commitCtx, 'change'),
+      pendingSentence(commitCtx),
+      ...(undeployedLine ? [undeployedLine] : []),
+      ...DEPLOY_CONSEQUENCES,
+      HTTP_RESTART_PRECAUTION,
+    ],
+    undo: upgradeUndo(group),
+  }
+}
+
+// ── The pack sources' own settings, outside a run ───────────────────────────
+
+/**
+ * One change to one of the pack's sources, as the screen offers it: a new auth
+ * token for the Raw HTTP source (generated inside the run, never here), a new
+ * port for it, or the sample DataGen started or stopped.
+ */
+export type SourceChange =
+  | { kind: 'token' }
+  | { kind: 'port'; port: number }
+  | { kind: 'sample'; enabled: boolean }
+
+/** Everything a source change's confirmation is built from. */
+export interface SourceChangeContext {
+  group: string
+  change: SourceChange
+  /** packClient.ts `previewPackInput`'s before→after, read as the dialog
+   *  opened. Never a token value. */
+  diff: readonly DiffRow[]
+  /** The Raw HTTP source's port as the dialog opened. */
+  fromPort: number | null
+  /** How the group is hosted: decides the port range. Null when not read. */
+  hosting: 'managed' | 'hybrid' | null
+  scope: CommitScope | null
+  undeployed: string | null
+  undeployedChecking?: boolean
+}
+
+export interface SourceChangeDialog {
+  title: string
+  resources: ConfirmResource[]
+  diff: DiffEntry[]
+  costLine?: string
+  consequences: string[]
+  undo: string
+  /** The diff shown — handed back to the write as `approved`. */
+  approved: readonly DiffRow[]
+}
+
+/**
+ * The confirmation for one source change: the source, replaced whole with one
+ * key moved, then the deploy; its before→after; and what follows from it —
+ * for a rotation, that Gigamon AMX has to be given the new token.
+ */
+export function sourceChangeDialog(ctx: SourceChangeContext): SourceChangeDialog {
+  const { group, change } = ctx
+  const http = change.kind !== 'sample'
+  const id = http ? PACK_HTTP_INPUT_ID : PACK_SAMPLE_INPUT_ID
+  const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
+  const undeployedLine = undeployedSentence(commitCtx)
+  const deployLines = [
+    carriesSentence(commitCtx, 'change'),
+    pendingSentence(commitCtx),
+    ...(undeployedLine ? [undeployedLine] : []),
+    ...DEPLOY_CONSEQUENCES,
+    ...(http ? [HTTP_RESTART_PRECAUTION] : []),
+  ]
+  let title: string
+  let detail: string
+  let first: string[] = []
+  let undo: string
+  let costLine: string | undefined
+  if (change.kind === 'token') {
+    title = `Rotate the auth token of ${id} in ${group}`
+    detail = 'a new auth token; the current one stops working when the group is deployed'
+    first = [ROTATE_EXPORTER]
+    undo = ROTATE_UNDO
+  } else if (change.kind === 'port') {
+    title = `Move ${id} in ${group} to port ${change.port}`
+    detail = `port ${ctx.fromPort ?? 'unknown'} → ${change.port}`
+    first = [movePortSentence(ctx.fromPort, change.port)]
+    undo = movePortUndo(ctx.fromPort)
+  } else if (change.enabled) {
+    title = `Start the sample data in ${group}`
+    detail = `started, writing only to ${PACK_SAMPLE_DATASET_ID}`
+    undo = SAMPLE_START_UNDO
+    costLine = sampleVolumeWords(sampleVolume())
+  } else {
+    title = `Stop the sample data in ${group}`
+    detail = 'stopped'
+    first = [SAMPLE_STOP_KEEPS]
+    undo = SAMPLE_STOP_UNDO
+  }
+  return {
+    title,
+    resources: [
+      { action: 'replace', kind: http ? 'Raw HTTP source' : 'Source', id, group, detail },
+      { action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' },
+    ],
+    diff: printed(id, ctx.diff),
+    ...(costLine ? { costLine } : {}),
+    consequences: [...first, ...deployLines],
+    undo,
+    approved: [...ctx.diff],
   }
 }

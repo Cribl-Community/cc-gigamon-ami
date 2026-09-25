@@ -33,6 +33,13 @@ function everything(): string[] {
         accelStatusWords: [[{ total: 18, installed: 18, running: 3, error: null }], [{ total: 18, installed: 0, running: 0, error: null }]],
         keptDatasetsSentence: [[['gigamon_ami', 'gigamon_ami_pq', 'gigamon_ami_sample']]],
         finishRemovalSentence: [['g1', ['groups/g1/default/cc-network-gigamon-ami/package.json']]],
+        upgradeRemovedSourcesSentence: [[['in_gno_syslog']], [['in_gno_syslog', 'in_gno_sample']]],
+        upgradeResetSentence: [['g1', ['its auth token']], ['g1', ['its auth token', 'its port (20007, now 20005)']]],
+        upgradeHeldSentence: [['g1', 'the upgrade could not be checked']],
+        upgradeNewSourceSentence: [[]],
+        packManifestPendingSentence: [['g1', 'groups/g1/default/cc-network-gigamon-ami/package.json']],
+        movePortSentence: [[20007, 20008], [null, 20008]],
+        movePortUndo: [[20007], [null]],
       }[name] ?? [['g1']]
       for (const args of tries) {
         const r = fn(...args)

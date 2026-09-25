@@ -7,7 +7,8 @@
 //   * the Raw HTTP stack's panel is the onboarding (`onboardingPath`), with its
 //     Deploy and its picker, exactly as before;
 //   * a copy this app owns (the published 0.1.0, from its release) is still
-//     offered Remove, and the upgrade is named, with why it is not offered;
+//     offered Remove, and Upgrade is aria-disabled with the release's refusal
+//     as the visible sentence it points at — pressing it sends nothing;
 //   * an installed build with no pack in the group shows no pack panel at all.
 
 import { act } from 'react'
@@ -115,14 +116,20 @@ describe('10. while this build records no release', () => {
     expect(bodyText()).toContain(`Worker group ${GROUP}, picked in the panel below.`)
   })
 
-  it('a copy this app owns is offered Remove, and the upgrade is named with why it is not offered — as text, not a control', async () => {
+  it('a copy this app owns is offered Remove, and Upgrade is aria-disabled, pointing at the release’s refusal; pressing it sends nothing', async () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') } })
     await mount(<OnboardingPanel />)
     expect(buttonNamed('Remove pack')).toBeTruthy()
-    // No button that can never run: the in-place upgrade's write is not granted
-    // until the slice that builds it.
-    expect(buttonNamed(`Upgrade to ${PACK_VERSION}`)).toBeUndefined()
-    expect(bodyText()).toContain(`Upgrade to ${PACK_VERSION} is not available: ${REFUSAL}.`)
+    const upgrade = buttonNamed(`Upgrade to ${PACK_VERSION}`)!
+    expect(upgrade.getAttribute('aria-disabled')).toBe('true')
+    expect(document.getElementById(upgrade.getAttribute('aria-describedby') ?? '')?.textContent)
+      .toBe(`Upgrade to ${PACK_VERSION} is not available: ${REFUSAL}.`)
+    const before = calls.length
+    await act(async () => { upgrade.click() })
+    await settle()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(calls.slice(before)).toEqual([])
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === `/m/${GROUP}/packs/${PACK_ID}`)).toBe(false)
     await act(async () => { buttonNamed('Remove pack')!.click() })
     await settle()
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(`Remove the Gigamon AMI pack from ${GROUP}`)

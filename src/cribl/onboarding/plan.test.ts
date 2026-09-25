@@ -16,7 +16,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ONBOARDING_RETENTION_DAYS, SAMPLE_DATASET_SPEC, SAMPLE_FEED, SAMPLE_START_DIFF, SHIPPED_HTTP_INPUT,
   accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingPath, onboardingSteps,
-  packObjectsOf, packRemovalDialog, parquetDatasetSpec, sampleVolume, sameWrites, type OnboardingDialogContext,
+  packObjectsOf, packRemovalDialog, packUpgradeDialog, parquetDatasetSpec, sampleVolume, sameWrites, sourceChangeDialog,
+  type OnboardingDialogContext,
 } from './plan'
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
@@ -516,6 +517,22 @@ describe('copy hygiene', () => {
     const text = [d.title, d.costLine, d.undo, ...d.consequences, ...d.resources.map((r) => `${r.kind} ${r.id} ${r.detail ?? ''}`)].join('\n')
     expect(text).not.toMatch(/\b(spike|Phase \d|A-SP|I-D\d|P-S\d|slice)\b/)
     expect(text).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
+  })
+
+  it('nor in anything Upgrade or a source change says', () => {
+    const release = packRelease({ published: true, sha256: 'ab'.repeat(32), version: '0.2.0' })
+    const up = packUpgradeDialog({
+      group: 'g1', from: '0.1.0', release, before: { http: null, sample: null }, scope: ctx().scope, undeployed: null,
+    })
+    const texts = [up.title, up.undo, ...up.consequences, ...up.resources.map((r) => `${r.kind} ${r.id} ${r.detail ?? ''}`)]
+    for (const change of [{ kind: 'token' }, { kind: 'port', port: 20008 }, { kind: 'sample', enabled: true }, { kind: 'sample', enabled: false }] as const) {
+      const d = sourceChangeDialog({ group: 'g1', change, diff: [], fromPort: 20007, hosting: 'managed', scope: ctx().scope, undeployed: null })
+      texts.push(d.title, d.undo, d.costLine ?? '', ...d.consequences, ...d.resources.map((r) => `${r.kind} ${r.id} ${r.detail ?? ''}`))
+    }
+    const text = texts.join('\n')
+    expect(text).not.toMatch(/\b(spike|Phase \d|A-SP|I-D\d|P-S\d|slice)\b/)
+    expect(text).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
+    expect(text).not.toMatch(/[0-9a-f]{32,}/)
   })
 
   it('nor in anything Remove pack says', () => {

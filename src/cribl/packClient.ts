@@ -16,19 +16,23 @@
 // from `src/main.tsx` and is GRANTED in `config/policies.yml` — each pack path
 // named with exactly the methods called on it, and no `*` (policyCoverage
 // .test.ts holds both directions). Its writes are registered in
-// src/cribl/authz.ts under `onboarding_pack.install` and `.remove`, each
-// rendered by a `<GatedControl>` on that panel. *(Until 2026-09-24 this
+// src/cribl/authz.ts under `onboarding_pack.install`, `.configure` and
+// `.remove` (and the upgrade's under `.upgrade`), each rendered by a
+// `<GatedControl>` on that panel. *(Until 2026-09-24 this
 // module was on paths.ts `UNREACHED_MODULES`, built a slice ahead of its UI,
 // with its grants deliberately withheld.)*
 //
-// The in-place upgrade is NOT here: it is packUpgrade.ts, on paths.ts
-// `UNREACHED_MODULES` with its PATCH named and not granted, until the slice that
-// offers it (and checks the Raw HTTP source survives it) renders its control.
-// The pack sources' own settings outside an onboarding run (rotate the token,
-// move the port, start or stop the sample) have no control either, so their
-// WriteId was withdrawn until they do. *(Corrected 2026-09-24,
-// `feat/pack-onboarding-4a`: `upgradePack` lived here, so its PATCH was granted
-// for a control that rendered refused and could never send it.)*
+// The in-place upgrade is NOT here: it is packUpgrade.ts, split out so that its
+// PATCH was not granted before a control could send it. Upgrade is offered now
+// (onboarding/run.ts `runPackUpgrade`, which reads the Raw HTTP source back),
+// so that module is reached and its PATCH granted. The pack sources' own
+// settings outside an onboarding run — rotate the token (`setHttpToken`), move
+// the port (`setSourcePort`), start or stop the sample (`setSampleEnabled`) —
+// are offered too, each gated by `onboarding_pack.configure`. *(Corrected
+// 2026-09-24, `feat/pack-onboarding-slice3`: this said neither had a control,
+// and that their WriteId was withdrawn. On `feat/pack-onboarding-4a`,
+// `upgradePack` lived here, so its PATCH was granted for a control that
+// rendered refused and could never send it.)*
 //
 // ── WHAT EVERY WRITE HERE ASSUMES OF ITS CALLER ─────────────────────────────
 // Each export that writes is an entry point reached from a confirmed click and
@@ -246,6 +250,19 @@ export interface HttpInputState {
   port: number | null
   tokenSet: boolean
   tls: boolean
+  /**
+   * Which certificate TLS uses, while it is on: the block's certificate name
+   * and its cert, key and CA paths, joined — never its passphrase. Null when
+   * TLS is off. An upgrade that puts a group's own certificate back to the
+   * pack's shipped one leaves `tls` true, and only this shows the change.
+   */
+  tlsCert: string | null
+}
+
+/** The TLS block's certificate, as `HttpInputState.tlsCert` names it. */
+function tlsCertOf(tls: Record<string, unknown>): string {
+  const text = (v: unknown) => (typeof v === 'string' ? v : '')
+  return [tls.certificateName, tls.certPath, tls.privKeyPath, tls.caPath].map(text).join(' ').trim()
 }
 
 export interface PackState {
@@ -350,12 +367,14 @@ export async function readPackState(group: string): Promise<PackState> {
     list.find((x) => x && typeof x === 'object' && (x as { id?: unknown }).id === id) as Record<string, unknown> | undefined
   const http = byId(PACK_HTTP_INPUT_ID)
   if (http) {
-    const tls = http.tls && typeof http.tls === 'object' ? (http.tls as { disabled?: unknown }) : null
+    const tls = http.tls && typeof http.tls === 'object' ? (http.tls as Record<string, unknown>) : null
+    const tlsOn = tls !== null && tls.disabled === false
     state.http = {
       disabled: http.disabled === true,
       port: numberOr(http.port),
       tokenSet: tokensOf(http).length > 0,
-      tls: tls !== null && tls.disabled === false,
+      tls: tlsOn,
+      tlsCert: tlsOn && tls ? tlsCertOf(tls) : null,
     }
   }
   const sample = byId(PACK_SAMPLE_INPUT_ID)

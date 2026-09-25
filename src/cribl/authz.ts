@@ -104,6 +104,7 @@ export type WriteId =
   | 'lake_landing.destination'
   | 'onboarding_pack.install'
   | 'onboarding_pack.upgrade'
+  | 'onboarding_pack.configure'
   | 'onboarding_pack.remove'
 
 export interface GatedWrite {
@@ -202,10 +203,10 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
     surface: 'config',
     does: 'changing how objects are written to Cribl Lake, and deploying it',
   },
-  // The onboarding pack's three (cribl/packClient.ts, cribl/onboarding/run.ts),
-  // each a <GatedControl> in components/OnboardingPanel.tsx. All `config`: each
-  // installs, edits or removes objects in a worker group and ends in a commit
-  // and a deploy.
+  // The onboarding pack's four (cribl/packClient.ts, cribl/packUpgrade.ts,
+  // cribl/onboarding/run.ts), each a <GatedControl> in
+  // components/OnboardingPanel.tsx. All `config`: each installs, edits or
+  // removes objects in a worker group and ends in a commit and a deploy.
   //
   // INSTALL IS THE WHOLE ONBOARDING RUN, not only the POST /packs: one Onboard
   // confirmation creates the Lake datasets, installs the pack, sets its Raw
@@ -213,17 +214,17 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   // scheduled searches. So its id is on every one of those write sites below,
   // and a refusal anywhere in the run latches Onboard, with the path named.
   //
-  // UPGRADE IS NOT RENDERED YET. Its write, `upgradePack`, is in packUpgrade.ts
-  // on paths.ts `UNREACHED_MODULES`, and its PATCH is not granted; the panel
-  // names the upgrade for an owned copy that is behind, as text, with why it is
-  // not offered. *(Corrected 2026-09-24, `feat/pack-onboarding-4a`: a refused
-  // control rendered it, which is what kept its PATCH granted.)*
+  // UPGRADE is rendered with its own confirmation, and its run reads the Raw
+  // HTTP source back after the PATCH, committing and deploying nothing when its
+  // port, token, TLS or state was reset. *(Corrected 2026-09-24,
+  // `feat/pack-onboarding-slice3`: it was `unrendered`, its write unreached and
+  // its PATCH ungranted, until that read-back existed.)*
   //
-  // NO `configure` ID. The pack sources' settings outside a run (rotate the
-  // token, move the port, start or stop the sample) have no control yet, and
-  // an id with no control is a promise this table cannot keep — so it was
-  // withdrawn (2026-09-24) rather than left `unrendered` on a reachable module.
-  // It comes back with those controls.
+  // CONFIGURE is the pack sources' own settings outside a run — Rotate token,
+  // Move port, Start and Stop sample data — each one whole-body PATCH of one
+  // source from its own confirmation, then the commit and deploy. *(Withdrawn
+  // on 2026-09-24 while nothing rendered it; back with its controls, on
+  // `feat/pack-onboarding-slice3`.)*
   'onboarding_pack.install': {
     surface: 'config',
     does: 'onboarding Gigamon AMI (datasets, pack, scheduled searches)',
@@ -231,7 +232,10 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
   'onboarding_pack.upgrade': {
     surface: 'config',
     does: 'upgrading the Gigamon AMI onboarding pack',
-    unrendered: 'The in-place upgrade is offered by the slice that reads the Raw HTTP source back after it; until then packUpgrade.ts is unreached and its PATCH ungranted.',
+  },
+  'onboarding_pack.configure': {
+    surface: 'config',
+    does: 'changing a source of the Gigamon AMI onboarding pack, and deploying it',
   },
   'onboarding_pack.remove': {
     surface: 'config',
@@ -306,13 +310,13 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
     surface: 'config',
     why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both Guided Setup controls end here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
     surface: 'config',
     why: 'POST /version/commit writes a Git commit on the Leader. Both Guided Setup controls end here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
@@ -340,7 +344,7 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/packUpgrade.ts#upgradePack',
     gates: ['onboarding_pack.upgrade'],
     surface: 'config',
-    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward.',
+    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward. From the Upgrade confirmation, which lists what the new version adds and removes; the run reads the Raw HTTP source back afterwards and commits and deploys nothing when its port, token, TLS or state was reset.',
   },
   {
     at: 'cribl/packClient.ts#removePack',
@@ -350,9 +354,9 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/packClient.ts#patchPackInput',
-    gates: ['onboarding_pack.install'],
+    gates: ['onboarding_pack.install', 'onboarding_pack.configure'],
     surface: 'config',
-    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read in the same call (readLive) with only the port, token, TLS or disabled flag changed — and nothing is sent when that read no longer gives the diff the confirmation showed. Reached today only from the onboarding run: a freshly installed Raw HTTP source is disabled with no token until this sets them, and the sample source starts only when sample data is ticked.',
+    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read in the same call (readLive) with only the port, token, TLS or disabled flag changed — and nothing is sent when that read no longer gives the diff the confirmation showed. Two controls reach it: the onboarding run (a freshly installed Raw HTTP source is disabled with no token until this sets them, and the sample source starts only when sample data is ticked), and the source settings outside a run — Rotate token, Move port, Start and Stop sample data — each from its own confirmation.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------

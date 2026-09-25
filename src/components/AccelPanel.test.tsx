@@ -52,7 +52,7 @@ import { accelWritesSettled } from '../cribl/accel/store'
 import { estimateWorkspaceSaving } from '../cribl/accel/estimate'
 import type { AccelStatus } from '../cribl/accel/status'
 import { AccelPanel } from './AccelPanel'
-import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
+import { ACCEL_UNVERIFIED_OFF, REAL_DATA_ARRIVED_OFF, SAMPLE_ACCEL_OFF, realDataArrivedOff } from './sampleDataCopy'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
 import { acquireSetupRun, resetSetupRunLock, setupRunHolder } from '../cribl/setupRunLock'
 // The words are next door, pure and DOM-free — most of what this screen can get
@@ -1253,6 +1253,58 @@ describe('where this is mounted', () => {
     const src = readFileSync(join(process.cwd(), 'src', 'tabs', 'GuidedSetup.tsx'), 'utf-8')
     expect(src).toContain("import { AccelPanel } from '../components/AccelPanel'")
     expect(src).toContain('<AccelPanel />')
+  })
+})
+
+// ── Real data has arrived, and acceleration is still off ────────────────────
+// Onboarding installs the schedules paused while only sample data exists. Once
+// data is SEEN in gigamon_ami, the panel says so and points at the master
+// switch — read-only, computed from the dataset verdict and the saved searches,
+// and it writes nothing.
+describe('the "real data has arrived" strip', () => {
+  const t = (reason: 'has-data' | 'probe-found' | 'no-sample' | 'deadline' | 'real-empty') => ({
+    known: true, reason, sample: reason === 'real-empty', dataset: reason === 'real-empty' ? 'gigamon_ami_sample' : 'gigamon_ami',
+  })
+
+  it('shows only when data was seen AND every installed schedule is paused', () => {
+    expect(realDataArrivedOff(t('has-data'), 'off')).toBe(true)
+    expect(realDataArrivedOff(t('probe-found'), 'off')).toBe(true)
+    // No data seen: "no sample dataset" is not "data arrived".
+    expect(realDataArrivedOff(t('no-sample'), 'off')).toBe(false)
+    expect(realDataArrivedOff(t('deadline'), 'off')).toBe(false)
+    expect(realDataArrivedOff(t('real-empty'), 'off')).toBe(false)
+    // Something is running, nothing is installed, or it could not be read.
+    expect(realDataArrivedOff(t('has-data'), 'on')).toBe(false)
+    expect(realDataArrivedOff(t('has-data'), 'mixed')).toBe(false)
+    expect(realDataArrivedOff(t('has-data'), 'unavailable')).toBe(false)
+    expect(realDataArrivedOff(t('has-data'), null)).toBe(false)
+    expect(realDataArrivedOff({ ...t('has-data'), known: false }, 'off')).toBe(false)
+  })
+
+  it('on screen above the master switch, with no write, once data is seen and every schedule is paused', async () => {
+    settleDatasetTarget(false, 'has-data')
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    const strip = [...document.body.querySelectorAll('.ac-note')].find((n) => (n.textContent ?? '').includes(REAL_DATA_ARRIVED_OFF))
+    expect(strip, 'no strip').toBeTruthy()
+    expect(strip?.getAttribute('role')).toBe('status')
+    // It points at the master switch, by its name, in its tip.
+    expect(strip?.querySelector('[role="note"]')?.getAttribute('aria-label')).toContain('Every dashboard')
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.includes('/kvstore'))).toEqual([])
+  })
+
+  it('absent while one of them runs, and absent on the no-sample verdict', async () => {
+    settleDatasetTarget(false, 'has-data')
+    stubWorkspace({ saved: await everyEntry(MANIFEST.slice(1).map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).not.toContain(REAL_DATA_ARRIVED_OFF)
+  })
+
+  it('absent when the verdict never saw data', async () => {
+    settleDatasetTarget(false, 'no-sample')
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).not.toContain(REAL_DATA_ARRIVED_OFF)
   })
 })
 
