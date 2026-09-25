@@ -31,6 +31,17 @@
 // alone. Neither ever deletes the Lake dataset or the `gigamon_lake`
 // destination. Both take the page's run lock (cribl/setupRunLock.ts).
 //
+// A FILE ALREADY UNCOMMITTED STOPS THE REMOVE (2026-09-25, runbook 4c P1). The
+// commit takes whole files, shared with the rest of the group, so "Yes" re-reads
+// Git's status inside the run lock, before the first write, and refuses —
+// writing nothing, naming the files and saying to commit them in Cribl Stream —
+// while any file the removal commits is already uncommitted with a change this
+// app cannot account for as its own earlier removal, or while the status cannot
+// be read (cribl/provision.ts `removeDirtyRefusal`). The dialog still names those
+// files when it opens; the re-check is what catches a change saved while it was
+// open. *(Until then the dialog named them and "Yes" committed and deployed
+// them with the removal.)*
+//
 // Every write is two-stage — an outer button that only opens a confirmation,
 // and the "Yes, …" inside it that writes, which is a <GatedControl>. The outer
 // buttons read the same gate, so a refusal closes them too.
@@ -44,7 +55,7 @@ import { pushToast } from './Toast'
 import { useWriteGate } from '../cribl/authz'
 import { IS_INSTALLED } from '../cribl/config'
 import {
-  checkStatus, checkLegacyStatus, removeOnboardingStack, pendingDeploy, STEP_LABELS,
+  checkStatus, checkLegacyStatus, removeOnboardingStack, removeDirtyRefusal, pendingDeploy, STEP_LABELS,
   commitScope, pendingConfigPaths, legacyOnly, HTTP_KEYS, LEGACY_KEYS,
   type SetupStatus, type LegacyStatus, type StepResult, type HttpKey, type CommitKey,
   type RemovalPresence,
@@ -323,9 +334,21 @@ export function ProvisionPanel() {
     setRunning('remove')
     resetOutcome(gid)
     setConfirming(null)
+    const runPresence = scope === 'legacy' ? legacyOnly(presence) : presence
     try {
+      // INSIDE THE LOCK, BEFORE THE FIRST WRITE: the commit takes whole files,
+      // so a change somebody saved in one of them — even while this dialog was
+      // open — is refused here rather than committed and deployed with the
+      // removal. This app's own earlier, uncommitted removal is let through
+      // (cribl/provision.ts `removeDirtyRefusal`).
+      const refused = await removeDirtyRefusal(gid, runPresence)
+      if (refused) {
+        setGroupErr(gid, `Nothing was written: ${refused}.`)
+        await refresh()
+        return
+      }
       const results = await removeOnboardingStack(
-        (r) => appendStep(gid, r), gid, pushToast, scope === 'legacy' ? legacyOnly(presence) : presence,
+        (r) => appendStep(gid, r), gid, pushToast, runPresence,
       )
       // Removed objects no longer have a live config — drop their commit note.
       const removed = results

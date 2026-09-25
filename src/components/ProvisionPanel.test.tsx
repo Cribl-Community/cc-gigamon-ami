@@ -72,7 +72,9 @@ interface LeaderOpts {
  */
 function stubLeader(opts: LeaderOpts = {}) {
   const sent: Array<{ method: string; path: string; body: string }> = []
-  const state = { pending: [] as string[] }
+  // `statusCode`: what `/version/status` answers. `kv`: the app-scoped store's
+  // documents, by path, as kv.ts PUT them (an absent path answers 404).
+  const state = { pending: [] as string[], statusCode: 200, kv: {} as Record<string, string> }
   const holds = new Map<string, Promise<void>>()
   const hold = (path: string) => {
     let release = () => {}
@@ -105,7 +107,11 @@ function stubLeader(opts: LeaderOpts = {}) {
     if (held) await held
     const at = (m: string, p: string) => method === m && path === p
 
-    if (at('GET', '/version/status')) return reply(200, { items: [{ files: state.pending.map((p) => ({ path: p })) }] })
+    if (at('GET', '/version/status')) {
+      return state.statusCode === 200
+        ? reply(200, { items: [{ files: state.pending.map((p) => ({ path: p })) }] })
+        : reply(state.statusCode, { message: 'forbidden' })
+    }
     if (at('GET', '/version/files')) {
       return reply(200, { items: [{ count: 1, items: [{ name: `groups/${GROUP}/local/cribl/inputs.yml` }] }] })
     }
@@ -149,7 +155,17 @@ function stubLeader(opts: LeaderOpts = {}) {
       const status = opts.deleteStatus?.[path] ?? 200
       return reply(status, status === 200 ? { items: [] } : { message: 'refused' })
     }
-    if (path.startsWith('/kvstore')) return method === 'GET' ? reply(404, '') : reply(200, '')
+    if (path.startsWith('/kvstore')) {
+      if (method === 'PUT') {
+        state.kv[path] = bodyText
+        return reply(200, '')
+      }
+      const doc = state.kv[path]
+      if (method === 'GET' && doc !== undefined) {
+        return { ok: true, status: 200, statusText: 'OK', text: async () => doc, json: async () => JSON.parse(doc) as unknown }
+      }
+      return method === 'GET' ? reply(404, '') : reply(200, '')
+    }
     return reply(404, { message: `no stub for ${method} ${path}` })
   })
   return { sent, state, hold }
@@ -315,6 +331,83 @@ describe('the Remove confirmation', () => {
     expect(statusReads(sent), 'opening the dialog performed no Git status read').toBeGreaterThan(before)
     expect(dialogText()).toContain(OTHERS_WORK)
     expect(dialogText()).toContain('somebody else’s unfinished work')
+  })
+})
+
+// ── Yes re-checks Git inside the lock, and commits nobody else's work ───────
+// (runbook 4c, P1: cribl/provision.ts `removeDirtyRefusal`). Until 2026-09-25
+// the dialog NAMED a file somebody had left uncommitted and Yes committed and
+// deployed it with the removal; every test below but the last found a DELETE,
+// a commit and a deploy on that code.
+
+describe('a file the removal commits is already uncommitted', () => {
+  const ROUTE_FILE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+
+  it('refuses, writing nothing, when inputs.yml holds somebody else’s change, and says to commit it in Cribl Stream', async () => {
+    const { sent, state } = stubLeader({ legacy: 'present' })
+    state.pending = [OTHERS_WORK]
+    await mount()
+    await press(buttonNamed('Remove old Syslog stack'))
+    // The "already uncommitted" line stays in the dialog.
+    expect(dialogText()).toContain('already carrying uncommitted changes')
+    expect(dialogText()).toContain(OTHERS_WORK)
+    await typeGroup()
+    await press(buttonNamed(`Yes, delete from ${GROUP}`))
+    await settle(20)
+    expect(writes(sent)).toEqual([])
+    expect(bodyText()).toContain(`Nothing was written: ${OTHERS_WORK} is already uncommitted in ${GROUP}`)
+    expect(bodyText()).toContain('Commit (or discard) them in Cribl Stream first')
+  })
+
+  it('refuses a change pending in the routing table the same way', async () => {
+    const { sent, state } = stubLeader({ http: 'present' })
+    state.pending = [ROUTE_FILE]
+    await mount()
+    await removeThroughTheDialog('Remove Raw HTTP stack')
+    expect(writes(sent)).toEqual([])
+    expect(bodyText()).toContain(ROUTE_FILE)
+  })
+
+  it('refuses a change saved while the dialog was open', async () => {
+    const { sent, state } = stubLeader({ http: 'present' })
+    await mount()
+    await press(buttonNamed('Remove Raw HTTP stack'))
+    expect(dialogText()).toContain('nothing already uncommitted')
+    await typeGroup()
+    state.pending = [OTHERS_WORK]
+    await press(buttonNamed(`Yes, delete from ${GROUP}`))
+    await settle(20)
+    expect(writes(sent)).toEqual([])
+    expect(bodyText()).toContain(OTHERS_WORK)
+  })
+
+  it('refuses when Git’s status cannot be read at Yes', async () => {
+    const { sent, state } = stubLeader({ http: 'present' })
+    await mount()
+    await press(buttonNamed('Remove Raw HTTP stack'))
+    await typeGroup()
+    state.statusCode = 403
+    await press(buttonNamed(`Yes, delete from ${GROUP}`))
+    await settle(20)
+    expect(writes(sent)).toEqual([])
+    expect(bodyText()).toContain(`Cribl did not report what is uncommitted in ${GROUP}`)
+  })
+
+  it('lets through this app’s own earlier removal whose commit failed, and commits it', async () => {
+    // What a Remove whose Raw HTTP source DELETE landed and whose commit failed
+    // leaves: the source gone, inputs.yml pending, and this app's record of it
+    // at the Leader's HEAD (aaaa1111, as `/version` answers here).
+    const { sent, state } = stubLeader({ legacy: 'present' })
+    state.pending = [OTHERS_WORK]
+    state.kv['/kvstore/guided_setup_memory/uncommitted_removals'] = JSON.stringify({
+      version: 1, updatedAt: 0, doc: { [GROUP]: { keys: ['source'], head: 'aaaa1111' } },
+    })
+    await mount()
+    await removeThroughTheDialog('Remove old Syslog stack')
+    expect(deleted(sent)).toContain(`/m/${GROUP}/system/inputs/in_gigamon_syslog`)
+    const commit = sent.find((c) => c.method === 'POST' && c.path === '/version/commit')
+    expect(JSON.parse(commit?.body ?? '{}').files).toContain(OTHERS_WORK)
+    expect(bodyText()).not.toContain('Nothing was written')
   })
 })
 
