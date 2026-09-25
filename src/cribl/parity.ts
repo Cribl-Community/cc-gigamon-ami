@@ -10,14 +10,45 @@
 // src/cribl/*).
 //
 // ── WHY FIVE CLASSES, AND WHY RATIOS ────────────────────────────────────────
-// Automatic-schema Parquet reads an ABSENT field back as `""` or `0` (measured
-// 2026-09-21). Five kinds of aggregate change meaning under that:
+// Parquet reads an ABSENT field back as `""` (string) or `0` (numeric)
+// (measured 2026-09-21; proof (g), 2026-09-24, found the same with an explicit
+// `parquetSchema`, so no schema mode avoids it). Five kinds of aggregate change
+// meaning under that:
 //
 //   A  isnotnull(f)             measured: Q29 c_T1572 18 → 43,338
 //   B  count(f)                 measured: Q32 f2      18 → 43,338
-//   C  dcount(f)                NOT measured — expected +1, the "" value
-//   D  f=* presence filter      NOT measured — may admit every row
-//   E  percentile/avg/min(f)    NOT measured — dragged toward 0
+//   C  dcount(f)                JSON side measured; Parquet side NOT measured
+//   D  f=* presence filter      measured once: ≈2× the JSON value
+//   E  percentile/avg/min(f)    NOT measured on Parquet — dragged toward 0
+//
+// (Corrected 2026-09-25, Phase 8 design revision 2 §0.6. This table said C, D
+// and E were all "NOT measured".)
+//
+//   C  On JSON, `dcount(f)` over a sparse field ALREADY counts the null bucket
+//      as one value (F-19: `dcount(http_code)` 7 against 6 non-null; F-23).
+//      Parquet's fill is one extra value too, so the two are expected to AGREE
+//      as written — C is parity-neutral [inferred], except where a real `""`/`0`
+//      coexists with a fill, or a column's type drifted. The Parquet side has
+//      never been read. The check below still classifies `dcount` as C and
+//      still expects +1 (`NULL_CLASSES.C`, `CLASS_DETECTS`); that changes with
+//      the first real Parquet parity run (design §4 8.0e), not in a comment.
+//      The JSON +1 itself is a separate, existing correctness question (design
+//      §6), not a Parquet one.
+//   D  `b=*` read ≈2× the JSON value for one STRING field in the lab (proof
+//      (g), 2026-09-24). A numeric `0` fill is still unmeasured.
+//   E  All four E fields this app reads (`tcp_rtt`, `tcp_rtt_app`,
+//      `dns_response_time`, `http_server_ms`) are numeric, so the fill is `0`.
+//      Still unmeasured on Parquet; on the demo feed's density,
+//      `percentile(http_server_ms,95)` over all rows is inferred to read
+//      exactly 0.
+//
+// ── WHY THIS WILL RUN (owner, 2026-09-25) ───────────────────────────────────
+// Phase 8's Q1 — "what would make reading gigamon_ami_pq worth doing?" — was
+// answered (a), Live-mode latency: "the live queries will make it worth
+// landing the data in pq format." So the read side is to be built (§4 8.1),
+// and a query moves to Parquet only on a recorded run of THIS check that
+// agreed for it. Nothing reads gigamon_ami_pq until such a run exists; the
+// answer decides that the work is done, not that any query is equal there.
 //
 // The first version of this check asked only whether a figure was zero on one
 // side and non-zero on the other, and reported "no difference" while c_T1572
@@ -56,8 +87,11 @@
 // record the window edge added may be the first T1572 flow in it — so a
 // one-record window-edge difference is not reported as the class A failure.
 // 0 or 18 → 40,280 is still thousands of records outside it. The same slack
-// means a +1 distinct value (class C) cannot be seen on a run whose control
-// drifted, and the class C sentence says so rather than calling that a pass.
+// hides a +1 distinct value on a run whose control drifted. That is the +1 the
+// check still EXPECTS for class C (`NULL_CLASSES.C`) — not the effect Parquet
+// is expected to have, which the table above now infers is none (JSON already
+// counts the null bucket) — and the class C sentence says it could not be seen
+// rather than calling that a pass.
 //
 // ── THE EXTREMES UNDER DRIFT ────────────────────────────────────────────────
 // A min or a max is set by ONE record, so the records the control says one
@@ -78,9 +112,11 @@
 // * The tolerances are chosen, not measured. The only measured agreement is the
 //   bare count, within 0.2 % over "comparable" six-minute windows of two
 //   datasets fed by one generator. ±1 % and ±5 % are judgement.
-// * Class C's +1 is outside ±1 % only while the distinct count is under 100
-//   (1/100 = 1 %). On a larger count it is inside the tolerance and invisible,
-//   and the class sentence says so rather than implying otherwise.
+// * The +1 the check expects for class C (kept in code until the first real
+//   Parquet run; the table above infers C is parity-neutral) is outside ±1 %
+//   only while the distinct count is under 100 (1/100 = 1 %). On a larger count
+//   it is inside the tolerance and invisible, and the class sentence says so
+//   rather than implying otherwise.
 // * `dcount()` is approximate (≈ ±0.5 % at ~10k distinct values, exact at a few
 //   hundred — measured 2026-09-23), which is part of why C is not compared
 //   exactly.
@@ -94,7 +130,8 @@
 //   not measured here. If Cribl answers no row, an empty window reads as NOT
 //   RUN — the safe direction: neither a pass nor a failure.
 // * Nothing here has been run against Cribl. The C, D and E queries exist so
-//   that the next parity run MEASURES those three classes.
+//   that the next parity run MEASURES those three classes on Parquet (D's one
+//   lab reading and C's JSON side came from separate probes, not this check).
 
 import {
   PARITY_CAPACITY_KPI_QUERY,
