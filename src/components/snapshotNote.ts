@@ -102,6 +102,10 @@ const LIVE_WORDS: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   'aged-out': 'live · no stored result is left',
   unreadable: 'live · the stored result could not be read',
   off: 'live · you asked for this one now',
+  paused: 'live · its schedule is paused',
+  drifted: 'live · its schedule runs an older query — Re-apply in Guided Setup',
+  unscheduled: 'live · no schedule serves it',
+  reapplied: 'live · its schedule has not run this query yet',
   // Never reached through LIVE_WORDS — `no-run-at` is answered above, where the
   // words can say which times DO exist. Present because the record is total, so
   // a new outcome is a build error rather than a blank caption.
@@ -109,6 +113,10 @@ const LIVE_WORDS: Readonly<Record<AccelOutcome, string>> = Object.freeze({
   // shown nothing rather than a live number under a past label.
   unshaped: 'no snapshot for this panel at that time',
   'no-run-at': 'nothing stored from that time',
+  // Also answered above (source `none`), with NOTES as the title.
+  'drifted-at': 'stored runs are from an older query',
+  // The same, for a run from before the query was re-applied.
+  'reapplied-at': 'the run from then is from an older query',
 })
 
 /**
@@ -135,7 +143,11 @@ export function snapshotNote(state: PanelSnapshotState | null | undefined, now: 
   // an empty card and the caption is the only thing that says why.
   if (state.source === 'none') {
     return {
-      text: state.nearestAt != null ? `nothing at that time · nearest ${asOf(state.nearestAt, now) ?? 'another run'}` : 'nothing stored from that time',
+      // A drifted entry has runs from that time; they answered an older query.
+      // "nothing stored" would send the reader looking for a missing run.
+      text: state.outcome === 'drifted-at' || state.outcome === 'reapplied-at'
+        ? LIVE_WORDS[state.outcome] + (state.outcome === 'reapplied-at' && state.nearestAt != null ? ` · nearest ${asOf(state.nearestAt, now) ?? 'another run'}` : '')
+        : state.nearestAt != null ? `nothing at that time · nearest ${asOf(state.nearestAt, now) ?? 'another run'}` : 'nothing stored from that time',
       tone: 'absent',
       title: state.outcome ? NOTES[state.outcome] : NOTES['no-run-at'],
     }

@@ -72,6 +72,7 @@ describe('the title and the toast take their direction from the changes', () => 
     untouchable: [],
     already: [],
     tabsChanged: [],
+    refused: null,
   }
 
   it('says Resume for a plan that resumes, whatever the target says', () => {

@@ -54,6 +54,7 @@ import {
   PACK_BREAKER_ID,
   PACK_HTTP_INPUT_ID,
   PACK_ID,
+  PACK_PARQUET_DATASET_ID,
   PACK_SAMPLE_DATASET_ID,
   PACK_SAMPLE_INPUT_ID,
 } from './pack'
@@ -142,13 +143,16 @@ export interface Unreached {
   reason: string
 }
 
-export const UNREACHED_MODULES: readonly Unreached[] = [
-  {
-    file: 'src/cribl/packClient.ts',
-    reason:
-      'The onboarding pack client (install, upgrade, remove, and the pack source’s port, token, TLS and enable, then commit and deploy) is built a slice ahead of the Guided Setup UI that calls it. Until that UI lands nothing can press any of it, so none of its pack-scoped calls is asked of an admin yet.',
-  },
-]
+// Empty. src/cribl/packClient.ts was the first entry, built a slice ahead of
+// its UI; Guided Setup's onboarding panel imports it, and its calls are
+// granted below and in config/policies.yml. The in-place upgrade was split out
+// of it into packUpgrade.ts so that its PATCH was not granted before a control
+// could send it; that control and its read-back of the Raw HTTP source exist
+// now, so packUpgrade.ts left the list and its PATCH is granted.
+// *(Corrected 2026-09-24, `feat/pack-onboarding-slice3`: this list held
+// packUpgrade.ts. Before that, on `feat/pack-onboarding-4a`, it was empty while
+// the upgrade's PATCH was granted for a control that rendered refused.)*
+export const UNREACHED_MODULES: readonly Unreached[] = []
 
 /**
  * THE CALL SURFACE. Every entry is reachable from a click in this app, except
@@ -271,7 +275,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/${SEARCH_GROUP}/search/saved/:id`,
     scope: 'product',
     site: 'accel/provision.ts deleteSaved',
-    why: 'Remove one of this app’s scheduled searches again, from the confirmed Remove button — the only way a customer can stop the recurring spend this app started, since uninstalling the app leaves the schedules running. It deletes only an id matching `gno_` that is in this release’s manifest AND carries this app’s own stamp; a saved search with the same name that this app did not create is reported and left alone.',
+    why: 'Remove one of this app’s scheduled searches again, from the confirmed Remove button. The per-dashboard and master switches PAUSE the recurring spend (a PATCH, above); Remove is what deletes the scheduled searches themselves, and uninstalling the app leaves them in place either way. It deletes only an id matching `gno_` that is in this release’s manifest AND carries this app’s own stamp; a saved search with the same name that this app did not create is reported and left alone.',
     removes: 'accel_saved_search',
   },
 
@@ -346,15 +350,15 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/products/lake/lakes/default/datasets',
     scope: 'product',
-    site: 'provision.ts ensureDataset (also lake.ts listDatasets)',
+    site: 'provision.ts ensureLakeDataset (also lake.ts listDatasets)',
     why: `See whether the ${LAKE_DATASET_ID} dataset exists yet. Also the first thing the status check reads, so the tab can say what is already there, and what the Lake landing panel reads to tell "this tenant has no such dataset" from "this tenant has no Cribl Lake".`,
   },
   {
     method: 'POST',
     path: '/products/lake/lakes/default/datasets',
     scope: 'product',
-    site: 'provision.ts ensureDataset',
-    why: `Create the ${LAKE_DATASET_ID} dataset when it is absent. Additive: an existing dataset is left exactly as it is.`,
+    site: 'provision.ts ensureLakeDataset',
+    why: `Create a Cribl Lake dataset when it is absent: ${LAKE_DATASET_ID}, from Guided Setup's Raw HTTP deploy or its onboarding run, and — from the onboarding run only — the pack's Parquet copy ${PACK_PARQUET_DATASET_ID} and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}. Additive: an existing dataset is left exactly as it is.`,
     creates: 'dataset',
   },
 
@@ -460,13 +464,14 @@ export const API_CALLS: readonly ApiCall[] = [
     site: 'lake.ts listPackInputs',
     why: 'Read the sources inside each installed pack: their ports, so the new Raw HTTP source is not given one a pack source already listens on, and the event breaker rulesets they name, so Remove never deletes this app’s ruleset while a pack source still uses it. Read only; `:pack` is any installed pack’s id, because the port check has to see all of them.',
   },
-  // ── The onboarding pack (src/cribl/packClient.ts) — NOT YET GRANTED ───────
-  // Every entry below sits in a module on UNREACHED_MODULES: written, tested,
-  // and reached by nothing on screen until Guided Setup's pack UI lands. They
-  // are not in config/policies.yml, and must not be until then — see
-  // UNREACHED_MODULES. Each pack-scoped path names this app's pack by its id
-  // and, where one object is meant, that object, so the grant when it comes is
-  // "this pack's two sources", never "any source in any pack".
+  // ── The onboarding pack (src/cribl/packClient.ts) ─────────────────────────
+  // Reached from Guided Setup's onboarding panel (components/OnboardingPanel
+  // .tsx) through its run (cribl/onboarding/run.ts), and granted in
+  // config/policies.yml with exactly these methods. Each pack-scoped path names
+  // this app's pack by its id and, where one object is meant, that object, so
+  // the grant is "this pack's two sources", never "any source in any pack".
+  // *(Until 2026-09-24 these were written and deliberately not granted, while
+  // nothing on screen reached them.)*
   {
     method: 'POST',
     path: '/m/:gid/packs',
@@ -479,8 +484,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'PATCH',
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
-    site: 'packClient.ts upgradePack',
-    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused.`,
+    site: 'packUpgrade.ts upgradePack',
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins, from Guided Setup's Upgrade confirmation — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. The pack's Raw HTTP source is read back afterwards, and nothing is committed or deployed when its port, token, TLS or state was reset.`,
   },
   {
     method: 'DELETE',
@@ -537,7 +542,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_HTTP_INPUT_ID}`,
     scope: 'product',
     site: 'packClient.ts patchPackInput',
-    why: 'Set what only an install can know on the pack’s Raw HTTP source — a free port, the auth token this app generates, TLS for the group’s hosting — and enable it. The body is the whole live source with those keys changed, because this endpoint deletes any field a PATCH omits.',
+    why: 'Set what only an install can know on the pack’s Raw HTTP source — a free port, the auth token this app generates, TLS for the group’s hosting — and enable it; and, from their own confirmations, rotate that token or move that port. The body is the whole live source with those keys changed, because this endpoint deletes any field a PATCH omits.',
   },
   {
     method: 'GET',
@@ -790,7 +795,7 @@ export const LEFT_BEHIND: readonly LeftBehind[] = [
   {
     resource: 'dataset',
     reason:
-      `The ${LAKE_DATASET_ID} Lake dataset holds the customer's ingested flow records. A DELETE grant here would let this app destroy that data, and an uninstall that silently took the data with it is far worse than one that leaves a dataset behind. Removing it is a Cribl Lake operation the customer performs deliberately, in Cribl Lake, on a dataset they can see the size of.`,
+      `The ${LAKE_DATASET_ID} Lake dataset holds the customer's ingested flow records. A DELETE grant here would let this app destroy that data, and an uninstall that silently took the data with it is far worse than one that leaves a dataset behind. Removing it is a Cribl Lake operation the customer performs deliberately, in Cribl Lake, on a dataset they can see the size of. The onboarding run also creates ${PACK_PARQUET_DATASET_ID} (the Parquet copy of the same records) and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}; both are left behind for the same reason — Lake has no version control, and a pack cannot own a dataset — and Remove pack names all three as kept. For ${PACK_SAMPLE_DATASET_ID} its confirmation says to delete it in Cribl Lake to be rid of the sample flows.`,
   },
   {
     resource: 'destination',

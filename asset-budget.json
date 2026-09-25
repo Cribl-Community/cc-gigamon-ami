@@ -1,6 +1,24 @@
 {
-  "about": "Limits for scripts/asset-budget.mjs (npm run assets:budget), in bytes of JavaScript as written to dist/. initialRaw, initialGzip and totalRaw are about 7% above what feat/route-code-splitting measured at e728bb7 on 2026-09-24, and were left alone when main (0e7048a) was merged in: they still pass. largestLazyRaw is about 7% above the merge's own measurement, raised from 149000 because that chunk is Guided Setup and main's Raw HTTP onboarding, pack client, stack-id and Guided Setup declutter work landed in it (+27983 B raw, 135532 -> 163515). Guided Setup is still being rewritten: src/cribl/packClient.ts (about 43 kB of source) is unreachable only until its pack UI lands, and wiring that UI will put it in this chunk, so expect that PR to raise this limit again with its own measurement. Raising a limit is allowed: say what grew and why in the commit.",
+  "about": "Limits for scripts/asset-budget.mjs (npm run assets:budget), in bytes of JavaScript as written to dist/. initialRaw and initialGzip are about 7% above what feat/route-code-splitting measured at e728bb7 on 2026-09-24, and were left alone at both merges of main since, because they still pass: at the merge of main 9108891 initial JS was 978854 B raw (+30164 over the previous merge, mainly main's sample-data and saved-search serving holds, which main.tsx starts before first paint), 2.6% under its limit. largestLazyRaw and totalRaw are about 7% above the 9108891 merge's own measurement. The chunk is Guided Setup, and it grew 63751 B raw (163515 -> 227266) when main's pack onboarding landed in it: OnboardingPanel, the onboarding plan and run, src/cribl/packClient.ts and src/cribl/packUpgrade.ts, which were unreachable at the previous merge. The previous note predicted this raise. Total JS grew by the same code (+87516 B, 1448063 -> 1535579). Raising a limit is allowed: say what grew and why in the commit.",
   "measured": {
+    "commit": "merge of main 9108891 into feat/route-code-splitting",
+    "date": "2026-09-25",
+    "initialRaw": 978854,
+    "initialGzip": 300805,
+    "entryRaw": 835590,
+    "entryGzip": 254464,
+    "largestLazyRaw": 227266,
+    "largestLazyFile": "GuidedSetup",
+    "totalRaw": 1535579,
+    "totalChunks": 35
+  },
+  "budgets": {
+    "initialRaw": 1005000,
+    "initialGzip": 309000,
+    "largestLazyRaw": 243000,
+    "totalRaw": 1643000
+  },
+  "measuredBefore": {
     "commit": "merge of main 0e7048a into feat/route-code-splitting",
     "date": "2026-09-24",
     "initialRaw": 948690,
@@ -10,22 +28,6 @@
     "largestLazyRaw": 163515,
     "largestLazyFile": "GuidedSetup",
     "totalRaw": 1448063,
-    "totalChunks": 36
-  },
-  "budgets": {
-    "initialRaw": 1005000,
-    "initialGzip": 309000,
-    "largestLazyRaw": 175000,
-    "totalRaw": 1510000
-  },
-  "measuredBefore": {
-    "commit": "e728bb7",
-    "initialRaw": 938444,
-    "initialGzip": 288286,
-    "entryRaw": 835181,
-    "entryGzip": 254230,
-    "largestLazyRaw": 135532,
-    "totalRaw": 1408780,
     "totalChunks": 36
   }
 }

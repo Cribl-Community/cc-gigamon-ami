@@ -1048,3 +1048,46 @@ describe('how paths are matched', () => {
     expect(covers('/products/lake/lakes/default/datasets', '/products/lake/lakes/:lakeId/datasets')).toBe(false)
   })
 })
+
+describe('the onboarding pack’s grants (Guided Setup’s onboarding panel)', () => {
+  // The generic checks above hold both directions for every path; this names
+  // the pack's, so the grant an admin reads for it is exactly what is called.
+  const packObjects = DECLARED.filter((d) => d.object.includes(PACK_ID) || d.object === '/m/:gid/packs')
+
+  it('reaches packClient.ts and packUpgrade.ts from src/main.tsx, so their grants are due, and leaves nothing unreached', () => {
+    expect(REACHABLE.has('src/cribl/packClient.ts')).toBe(true)
+    expect(REACHABLE.has('src/cribl/onboarding/run.ts')).toBe(true)
+    // The in-place upgrade is offered now, with its read-back of the Raw HTTP
+    // source, so its PATCH is granted and its module is off the list.
+    expect(REACHABLE.has('src/cribl/packUpgrade.ts')).toBe(true)
+    expect(UNREACHED_MODULES).toEqual([])
+  })
+
+  it('grants each pack path exactly the methods the code calls on it', () => {
+    expect(packObjects.length).toBeGreaterThan(5)
+    for (const d of packObjects) {
+      const called = new Set(PRODUCT_CALLS.filter((c) => c.path === d.object).map((c) => c.method))
+      expect([...new Set(d.actions)].sort(), d.object).toEqual([...called].sort())
+    }
+    const byObject = Object.fromEntries(packObjects.map((d) => [d.object, [...d.actions].sort()]))
+    expect(byObject['/m/:gid/packs']).toEqual(['GET', 'POST'])
+    expect(byObject[`/m/:gid/packs/${PACK_ID}`]).toEqual(['DELETE', 'PATCH'])
+    expect(byObject[`/m/:gid/p/${PACK_ID}/system/inputs/in_gigamon_ami_http`]).toEqual(['GET', 'PATCH'])
+    expect(byObject[`/m/:gid/p/${PACK_ID}/system/inputs/in_gigamon_ami_sample`]).toEqual(['GET', 'PATCH'])
+  })
+
+  it('never PUT on a pack, never a Lake DELETE, and no wildcard anywhere', () => {
+    for (const d of DECLARED) {
+      if (d.object.includes('/packs')) expect(d.actions, d.object).not.toContain('PUT')
+      if (d.object.startsWith('/products/lake')) expect(d.actions, d.object).not.toContain('DELETE')
+      expect(d.object).not.toContain('*')
+    }
+  })
+
+  it('pairs the pack’s install with its removal, and names every dataset it leaves behind', () => {
+    expect(API_CALLS.find((c) => c.creates === 'pack')).toMatchObject({ method: 'POST', path: '/m/:gid/packs' })
+    expect(API_CALLS.find((c) => c.removes === 'pack')).toMatchObject({ method: 'DELETE', path: `/m/:gid/packs/${PACK_ID}` })
+    const dataset = LEFT_BEHIND.find((x) => x.resource === 'dataset')?.reason ?? ''
+    for (const id of ['gigamon_ami', 'gigamon_ami_pq', 'gigamon_ami_sample']) expect(dataset).toContain(id)
+  })
+})

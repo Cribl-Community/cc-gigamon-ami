@@ -908,6 +908,49 @@ describe('the live fallback', () => {
   })
 })
 
+// Review 2026-09-24, defects 1 and 5: what the saved search itself says
+// (accel/serving.ts). A paused schedule's last runs stay readable for days; its
+// panel must run live, as the switch's confirmation said and priced. A drifted
+// one's runs answered an older query than the ⓘ shows.
+describe('what the saved search says', () => {
+  for (const serving of ['paused', 'drifted', 'unscheduled'] as const) {
+    it(`sends a ${serving} entry live, reading no stored run and naming why`, async () => {
+      const { submits, urls } = stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+      const read = await readAccelRows(LAKE, { serving, now: NOW })
+      expect(read.source).toBe('live')
+      expect(read.outcome).toBe(serving)
+      expect(read.stale).toBe(false)
+      expect(read.note).toBe(NOTES[serving])
+      expect(read.data).toEqual([LIVE])
+      expect(vtSubmit(submits)).toBeUndefined()
+      expect(urls.some((u) => u.includes('/results') && !u.includes('job-')), 'an artifact was read').toBe(false)
+    })
+  }
+
+  for (const serving of ['scheduled', 'unknown'] as const) {
+    it(`reads the stored run as before when the verdict is ${serving}`, async () => {
+      const { submits } = stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+      const read = await readAccelRows(LAKE, { serving, now: NOW })
+      expect(read.source).toBe('schedule')
+      expect(liveSubmit(submits)).toBeUndefined()
+    })
+  }
+
+  it('does the same on the field-summaries path', async () => {
+    stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+    const live = vi.fn(async () => ({ fields: [], sampled: 0 }))
+    const read = await readAccelFieldSummaries(LAKE, { serving: 'paused', live, now: NOW })
+    expect(read.outcome).toBe('paused')
+    expect(live).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the viewer’s own Live ahead of it: `off` is the sentence when both apply', async () => {
+    stub({ ...healthy, vtRows: [{ ...STORED }], liveRows: [LIVE], history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { enabled: false, serving: 'paused', now: NOW })
+    expect(read.outcome).toBe('off')
+  })
+})
+
 describe('field summaries', () => {
   const field = (name: string, over: Partial<FieldSummary> = {}): FieldSummary => ({
     name,
@@ -1380,6 +1423,24 @@ describe('reading the state at a chosen moment', () => {
     expect(liveSubmit(submits)).toBeUndefined()
   })
 
+  it('shows nothing at a moment on a DRIFTED entry — every run there answered the older query', async () => {
+    const { submits, urls } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, serving: 'drifted', now: NOW })
+    expect(read.source).toBe('none')
+    expect(read.outcome).toBe('drifted-at')
+    expect(read.data).toEqual([])
+    expect(liveSubmit(submits), 'a picked moment ran the live query').toBeUndefined()
+    expect(fetchedRun(urls, R0820)).toBe(false)
+  })
+
+  it('still reads a moment on a PAUSED entry — that run is what the query answered then', async () => {
+    const { submits } = stub({ history: hourlyRuns, vtRows: [storedFrom(R0820)], liveRows: [LIVE] })
+    const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, serving: 'paused', now: NOW })
+    expect(read.source).toBe('schedule')
+    expect(read.at).toBe(NOW - 2 * HOUR)
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
   it('never calls a chosen moment stale, however old it is', async () => {
     // Staleness means "the newest run is older than the schedule promises". A
     // viewer looking at yesterday is not being shown something overdue, and
@@ -1513,5 +1574,104 @@ describe('the tail, over an artifact', () => {
     for (const tail of ['| project total=sum(bytes)', '| project a, b(c)', '', '| sort by x']) {
       expect(evaluateTail(tail, [{ a: 1 }], ALL), tail).toBeNull()
     }
+  })
+})
+
+// ── A RUN FROM BEFORE THE QUERY WAS RE-APPLIED ──────────────────────────────
+// Verifier, 2026-09-24, defect 3. Once Re-apply rewrites a body the verdict is
+// `scheduled` again — but the newest run (until the next fire) and every past
+// run from before the write came from the OLD query, and would be shown under
+// the NEW ⓘ. `appliedAt` is when this install wrote the query the saved search
+// runs now (accel/state's `bodyAt`); a run that BEGAN before it is refused.
+describe('a run from before the query was re-applied', () => {
+  // srcRun(): created, started NOW - HOUR, completed nine seconds later.
+  const AFTER_SRC = NOW - HOUR + 1_000
+  const BEFORE_SRC = NOW - 2 * HOUR
+
+  it('sends the newest-run read live when the newest run began before the write', async () => {
+    const { submits } = stub({ ...healthy, history: [] })
+    const read = await readAccelRows(LAKE, { appliedAt: AFTER_SRC, now: NOW })
+    expect(read.source).toBe('live')
+    expect(read.outcome).toBe('reapplied')
+    expect(read.note).toBe(NOTES.reapplied)
+    expect(read.data).toEqual([LIVE])
+    expect(liveSubmit(submits)).toBeDefined()
+  })
+
+  it('does the same on the artifact path, without reading the old artifact', async () => {
+    const { urls } = stub({ ...healthy, history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { appliedAt: AFTER_SRC, now: NOW })
+    expect(read.outcome).toBe('reapplied')
+    expect(read.data).toEqual([LIVE])
+    expect(urls.some((u) => u.includes(`/search/jobs/${encodeURIComponent(SRC)}/results`)), 'the old run’s artifact was downloaded').toBe(false)
+  })
+
+  it('does the same for field summaries', async () => {
+    stub({
+      ...healthy,
+      vtFields: [
+        { name: 'a', type: 'string', count: 1, countDistinct: 1, countNull: 0, topValues: [] },
+        { name: 'jobId', type: 'string', count: 1, countDistinct: 1, countNull: 0, topValues: [{ value: SRC, count: 1 }] },
+      ],
+      history: [],
+    })
+    const live = vi.fn(async () => ({ fields: [], sampled: 0 }))
+    const read = await readAccelFieldSummaries(LAKE, { appliedAt: AFTER_SRC, live, now: NOW })
+    expect(read.outcome).toBe('reapplied')
+    expect(live).toHaveBeenCalledOnce()
+  })
+
+  it('reads a run that began after the write, exactly as before', async () => {
+    const { submits } = stub({ ...healthy, history: [srcRun()] })
+    const read = await readAccelRows(LAKE, { appliedAt: BEFORE_SRC, now: NOW })
+    expect(read.source).toBe('schedule')
+    expect(liveSubmit(submits)).toBeUndefined()
+  })
+
+  it('bounds nothing without a recorded time', async () => {
+    stub({ ...healthy, history: [srcRun()] })
+    expect((await readAccelRows(LAKE, { appliedAt: null, now: NOW })).source).toBe('schedule')
+  })
+
+  describe('at a picked moment', () => {
+    const runs = [
+      { id: R0920, status: 'completed', timeCreated: NOW - HOUR, timeStarted: NOW - HOUR, timeCompleted: NOW - HOUR },
+      { id: R0820, status: 'completed', timeCreated: NOW - 2 * HOUR, timeStarted: NOW - 2 * HOUR, timeCompleted: NOW - 2 * HOUR },
+      { id: R0720, status: 'completed', timeCreated: NOW - 3 * HOUR, timeStarted: NOW - 3 * HOUR, timeCompleted: NOW - 3 * HOUR },
+    ]
+    const APPLIED = NOW - 1.5 * HOUR
+
+    it('shows nothing for a moment whose run came from the old query, and offers the first run after the write', async () => {
+      const { submits, urls } = stub({ history: runs, vtRows: [{ ...STORED, jobId: R0820 }], liveRows: [LIVE] })
+      const read = await readAccelRows(LAKE, { asOf: NOW - 2 * HOUR, appliedAt: APPLIED, now: NOW })
+      expect(read.source).toBe('none')
+      expect(read.outcome).toBe('reapplied-at')
+      expect(read.data).toEqual([])
+      expect(read.note).toBe(NOTES['reapplied-at'])
+      expect(read.nearestAt).toBe(NOW - HOUR)
+      expect(liveSubmit(submits), 'a picked moment ran the live query').toBeUndefined()
+      expect(urls.some((u) => u.includes(`/search/jobs/${encodeURIComponent(R0820)}/results`))).toBe(false)
+    })
+
+    it('refuses a pre-write run even when the moment picked is after the write', async () => {
+      // The newest run at or before 08:50 is 08:20's — begun before an 08:30 write.
+      stub({ history: runs, vtRows: [{ ...STORED, jobId: R0820 }], liveRows: [LIVE] })
+      const read = await readAccelRows(LAKE, { asOf: NOW - 1.2 * HOUR, appliedAt: APPLIED, now: NOW })
+      expect(read.outcome).toBe('reapplied-at')
+    })
+
+    it('reads a run from after the write', async () => {
+      stub({ history: runs, vtRows: [{ ...STORED, jobId: R0920 }], liveRows: [LIVE] })
+      const read = await readAccelRows(LAKE, { asOf: NOW - 0.5 * HOUR, appliedAt: APPLIED, now: NOW })
+      expect(read.source).toBe('schedule')
+      expect(read.at).toBe(NOW - HOUR)
+    })
+
+    it('does the same for field summaries', async () => {
+      stub({ history: runs, vtRows: [{ ...STORED, jobId: R0820 }], liveRows: [LIVE] })
+      const read = await readAccelFieldSummaries(LAKE, { asOf: NOW - 2 * HOUR, appliedAt: APPLIED, now: NOW })
+      expect(read.outcome).toBe('reapplied-at')
+      expect(read.source).toBe('none')
+    })
   })
 })

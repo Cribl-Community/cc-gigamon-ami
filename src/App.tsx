@@ -14,7 +14,7 @@ import { TourLauncher, TourPicker, TourStrip } from './components/Tour'
 import { AppBanners } from './components/AppBanners'
 import { ModeToggle } from './components/ModeToggle'
 import { SnapshotPicker } from './components/SnapshotPicker'
-import { useDataMode } from './cribl/dataMode'
+import { useDataMode, useSnapshotWithheld } from './cribl/dataMode'
 import { JobWatchdogIndicator } from './components/JobWatchdog'
 import { LANDING_ROUTE, TABS } from './app/tabs'
 import { TabLoading } from './components/TabLoading'
@@ -175,7 +175,10 @@ function useAutoRefreshCopy(tabName: string) {
 function Header({ tabName }: { tabName: string }) {
   const { range, setRange, refresh, autoSeconds, setAutoSeconds, lastRefresh } = useDashboard()
   const autoRefresh = useAutoRefreshCopy(tabName)
+  // `live` while Snapshot has stepped aside for sample data (cribl/dataMode.ts),
+  // so the range picker and "updated …" come back with no second condition.
   const mode = useDataMode()
+  const withheld = useSnapshotWithheld()
   // Spin for exactly as long as work is actually happening, rather than a fixed
   // timeout that finishes while queries are still running (reads as a stall).
   const inflight = useInflight()
@@ -266,7 +269,10 @@ function Header({ tabName }: { tabName: string }) {
             the refresh button", honoured by adjacency. The tour and theme
             buttons moved up to row 1 rather than this one moving, because they
             are session chrome and this is data state. */}
-        <ModeToggle tabName={tabName} />
+        {/* Absent, not disabled, while only sample data exists: there is no
+            stored run of the sample to choose, and the banner under the tab
+            bar says why in its ⓘ. */}
+        {!withheld && <ModeToggle tabName={tabName} />}
         <button type="button" className="btn" onClick={doRefresh} aria-busy={busy}>
           <span className={`refresh-ic ${busy ? 'spin' : ''}`}><RefreshIcon /></span> {busy ? 'Refreshing…' : 'Refresh'}
         </button>

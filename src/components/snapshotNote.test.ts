@@ -97,6 +97,40 @@ describe('snapshotNote', () => {
     }
   })
 
+  it('names a switched-off or drifted schedule as the reason a panel is live', () => {
+    // Review 2026-09-24: a paused schedule's panel used to say "schedule
+    // overdue — check the schedule". It is live now, and says why.
+    for (const outcome of ['paused', 'drifted', 'unscheduled'] as const) {
+      const note = snapshotNote({ source: 'live', outcome, at: null, stale: false }, NOW)
+      expect(note!.tone).toBe('live')
+      expect(note!.title).toBe(NOTES[outcome])
+    }
+    expect(snapshotNote({ source: 'live', outcome: 'paused', at: null, stale: false }, NOW)!.text).toBe('live · its schedule is paused')
+  })
+
+  it('does not say "nothing stored" at a moment whose runs answered an older query', () => {
+    // There ARE runs from that time; they are not shown because they came from
+    // a query the ⓘ no longer describes. "Nothing stored" would be false.
+    const note = snapshotNote({ source: 'none', outcome: 'drifted-at', at: null, stale: false, nearestAt: NOW - 3_600_000 }, NOW)
+    expect(note!.text).toBe('stored runs are from an older query')
+    expect(note!.tone).toBe('absent')
+    expect(note!.title).toBe(NOTES['drifted-at'])
+  })
+
+  it('says a re-applied entry has not run the new query yet, and offers the first run that did', () => {
+    // Verifier, 2026-09-24, defect 3: a run from before Re-apply answered the
+    // older query. Live on the newest read; nothing, with the nearest run of
+    // the new query, at a picked moment.
+    const live = snapshotNote({ source: 'live', outcome: 'reapplied', at: null, stale: false }, NOW)
+    expect(live!.tone).toBe('live')
+    expect(live!.title).toBe(NOTES.reapplied)
+    const at = snapshotNote({ source: 'none', outcome: 'reapplied-at', at: null, stale: false, nearestAt: NOW - 3_600_000 }, NOW)
+    expect(at!.tone).toBe('absent')
+    expect(at!.text).toMatch(/^the run from then is from an older query · nearest /)
+    expect(at!.title).toBe(NOTES['reapplied-at'])
+    expect(snapshotNote({ source: 'none', outcome: 'reapplied-at', at: null, stale: false, nearestAt: null }, NOW)!.text).toBe('the run from then is from an older query')
+  })
+
   it('falls back to live words rather than dating a run it cannot date', () => {
     // read.ts already refuses to return an undated stored result — an undated
     // number cannot be labelled, and the label is the whole safety argument.

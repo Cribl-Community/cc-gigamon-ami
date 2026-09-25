@@ -38,7 +38,12 @@
 #      ruleset, pipeline, route, Lake dataset, a Git commit on the Leader and a
 #      deploy that restarts that group's Worker Processes; and the removal of
 #      the Syslog stack an earlier release created. Behind a confirmation in
-#      components/ProvisionPanel.tsx that names each object.
+#      components/ProvisionPanel.tsx that names each object. And the onboarding
+#      pack (2026-09-24): its install from the pinned GitHub release, its two
+#      sources, its removal, the Lake datasets it writes to (created, never
+#      edited or deleted) and the scheduled searches, behind the one Onboard
+#      confirmation and the Remove pack confirmation in
+#      components/OnboardingPanel.tsx.
 #   2. The scheduled saved searches (acceleration) — created,
 #      corrected, paused, resumed and deleted. Behind confirmations in
 #      components/AccelPanel.tsx that name the ids and state the recurring cost.
@@ -206,8 +211,9 @@ policies:
   #   * nothing here runs on load, on render or on a timer.
   #
   # DELETE is not optional. Removing the app does not remove these searches —
-  # the platform gives an app no uninstall hook (I-D28) — so the Remove button
-  # is the only way a customer stops the spend, and this is the grant it needs.
+  # the platform gives an app no uninstall hook (I-D28). The switches in Guided
+  # Setup PAUSE the spend (the PATCH above); the Remove button is the only way a
+  # customer deletes the searches themselves, and this is the grant it needs.
   #
   # GET on the collection lists the whole workspace's saved searches, not just
   # ours: their names, queries and schedules, wherever the caller's own role
@@ -270,7 +276,10 @@ policies:
 
   # The Cribl Lake dataset the dashboards read. GET to see whether it exists,
   # POST to create it when it does not. `default` is the lake itself, not a
-  # placeholder — the app never addresses another one.
+  # placeholder — the app never addresses another one. The onboarding run
+  # (Guided Setup's Onboard) also creates, through the same POST and only when
+  # absent, the pack's Parquet copy `gigamon_ami_pq` and — only when "Also send
+  # sample data" is ticked — `gigamon_ami_sample`. None is ever edited here.
   #
   # No DELETE, on purpose. The dataset holds the customer's ingested flow
   # records, so a DELETE grant would let this app destroy that data; the teardown
@@ -380,10 +389,47 @@ policies:
   # keeps this app's ruleset while any other source, in a pack or not, still
   # names it. `:pack` is any installed pack, because the check has to see all
   # of them; a pack that cannot be read blocks the check rather than passing it.
+  #
+  # POST on the pack list is the onboarding pack's install: Guided Setup's
+  # Onboard installs `cc-network-gigamon-ami` from the GitHub release this app
+  # build pins, with custom functions refused, from one confirmation naming the
+  # pack, its version, every object in it and the group. The Leader downloads
+  # the release itself.
   - object: '/m/:gid/packs'
-    actions: ['GET']
+    actions: ['GET', 'POST']
   - object: '/m/:gid/p/:pack/system/inputs'
     actions: ['GET']
+
+  # The onboarding pack itself, by its id and never any other pack's. DELETE is
+  # Remove pack — only a copy this app installed from its own release of a
+  # version it published, behind a type-to-confirm dialog that names what it
+  # keeps (all three Lake datasets, and the scheduled searches). PATCH is
+  # Upgrade — in place, from the release this app build pins, never downward,
+  # with custom functions refused; the pack's Raw HTTP source is read back
+  # afterwards and nothing is committed or deployed if its settings were reset.
+  - object: '/m/:gid/packs/cc-network-gigamon-ami'
+    actions: ['PATCH', 'DELETE']
+  # The pack's objects, read for the status Guided Setup shows, and never
+  # written: its event breaker ruleset, pipeline, routes and destinations.
+  - object: '/m/:gid/p/cc-network-gigamon-ami/lib/breakers/gigamon_ami_http_json_array'
+    actions: ['GET']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/pipelines'
+    actions: ['GET']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/routes'
+    actions: ['GET']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/outputs'
+    actions: ['GET']
+  # The pack's two sources, each read whole and PATCHed whole, because the
+  # endpoint deletes any field a PATCH omits. The Raw HTTP source gets what only
+  # an install can know — a free port, the auth token this app generates and
+  # shows once, TLS for the group's hosting — and is started; later, from their
+  # own confirmations, its token is rotated or its port moved. The sample
+  # DataGen is started when "Also send sample data" is ticked, or started and
+  # stopped on its own, and writes only to gigamon_ami_sample.
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gigamon_ami_http'
+    actions: ['GET', 'PATCH']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gigamon_ami_sample'
+    actions: ['GET', 'PATCH']
   - object: '/m/:gid/system/inputs/in_gigamon_http'
     actions: ['GET', 'PATCH', 'DELETE']
   # The Syslog source an earlier release created. GET so Remove can name it,

@@ -44,6 +44,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { forgetRunHistory } from '../cribl/accel/status'
+import { accelServing } from '../cribl/accel/serving'
 import { resetDenials } from '../cribl/authz'
 import { accelEntry, accelSavedSearch, MANIFEST } from '../cribl/accel/manifest'
 import { applyPlan, readAccelState, removalPlan, type AccelRow } from '../cribl/accel/provision'
@@ -51,6 +52,9 @@ import { accelWritesSettled } from '../cribl/accel/store'
 import { estimateWorkspaceSaving } from '../cribl/accel/estimate'
 import type { AccelStatus } from '../cribl/accel/status'
 import { AccelPanel } from './AccelPanel'
+import { ACCEL_UNVERIFIED_OFF, REAL_DATA_ARRIVED_OFF, SAMPLE_ACCEL_OFF, realDataArrivedOff } from './sampleDataCopy'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
+import { acquireSetupRun, resetSetupRunLock, setupRunHolder } from '../cribl/setupRunLock'
 // The words are next door, pure and DOM-free — most of what this screen can get
 // wrong is a sentence rather than a tag, so most of what follows is a function
 // call rather than a render.
@@ -65,12 +69,14 @@ import {
   creditSpanWords,
   healthOf,
   lastRunCostWords,
+  nothingToApplyWords,
   lastRunWhen,
   ownerOf,
   removeCostLine,
   removeResources,
   rowAction,
   rowActionName,
+  rowNote,
   showOwnerColumn,
   switchName,
   toggleNothingWords,
@@ -102,6 +108,18 @@ interface WorkspaceOpts {
   runs?: Record<string, Run[]>
   /** Billable CPU-seconds by job id. Absent means the metrics read 404s. */
   cpu?: Record<string, number>
+  /** The Lake API's dataset list. Absent means it answers 404, which leaves the
+   *  Lake total's window unresolved — and that entry neither created nor
+   *  overwritten (provision.ts `windowUnresolved`). */
+  lake?: unknown
+}
+
+/** A Lake API answering the way a working 30-day tenant's does. */
+const LAKE_30 = {
+  items: [
+    { id: 'gigamon_ami', retentionPeriodInDays: 30 },
+    { id: 'cribl_metrics', retentionPeriodInDays: 30 },
+  ],
 }
 
 function response(status: number, body: unknown) {
@@ -141,6 +159,10 @@ function stubWorkspace(opts: WorkspaceOpts = {}) {
       if (method === 'DELETE') return response(kv.delete(key) ? 200 : 404, '')
       const held = kv.get(key)
       return held === undefined ? response(404, '') : response(200, held)
+    }
+
+    if (path.endsWith('/lakes/default/datasets') && method === 'GET') {
+      return opts.lake ? response(200, opts.lake) : response(404, { message: 'no lake' })
     }
 
     if (path === JOBS && method === 'GET') {
@@ -290,6 +312,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   resetDenials()
+  resetSetupRunLock()
 })
 
 /** Let the environment run: the state read, the status read and the identity
@@ -485,7 +508,7 @@ describe('what a confirmation names', () => {
     // The guarantee cribl/accel/provision.ts asked for: a dialog that re-derives
     // its own list will eventually name a different set from the one the run
     // touches. Both directions.
-    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) }, lake: LAKE_30 })
     const state = await readAccelState()
     const plan = applyPlan(state)
     const named = applyResources(state).map((r) => r.id)
@@ -493,6 +516,55 @@ describe('what a confirmation names', () => {
     expect(named).toEqual(MANIFEST.map((e) => e.id).filter((id) => id !== SAMPLE))
     for (const id of named) expect(plan.willWrite.some((w) => w.includes(id))).toBe(true)
     for (const leave of plan.willLeave) expect(named.some((id) => leave.label.includes(id))).toBe(false)
+  })
+
+  it('does not offer to overwrite the Lake total while its window cannot be resolved, and says why', async () => {
+    // Verifier, 2026-09-24, defect 2. This stub's Lake API answers 404, so what
+    // this release "intends" for the Lake total is the manifest's DEFAULT
+    // window. A dialog offering to write that over the stored search would
+    // replace a window chosen from the tenant's retention with one nobody chose.
+    stubWorkspace({ saved: { [LAKE]: await drifted(LAKE), [SAMPLE]: await stored(SAMPLE) } })
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('differs')
+    expect(applyResources(state).map((r) => r.id)).not.toContain(LAKE)
+    const note = rowNote(row, healthOf(row.state, null))
+    expect(note).toContain('retention could not be read')
+    expect(note).toContain('Apply leaves it as it is')
+    expect(note).not.toContain('Apply overwrites it')
+  })
+
+  it('does not offer to create an absent Lake total while its window cannot be resolved, and says why', async () => {
+    // Owner decision, 2026-09-24: a create on the default window starts a
+    // billed daily schedule reading a window nobody chose. This stub's Lake API
+    // answers 404.
+    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('absent')
+    expect(applyResources(state).map((r) => r.id)).not.toContain(LAKE)
+    expect(applyPlan(state).willLeave.some((l) => l.label.includes(LAKE))).toBe(true)
+    const note = rowNote(row, healthOf(row.state, null))
+    expect(note).toContain('retention could not be read')
+    expect(note).toContain('window')
+    expect(note).toContain('Apply does not create it')
+  })
+
+  it('does not call the workspace complete when the Lake total is only held back', async () => {
+    // With every other entry stored and the Lake read failing, the plan writes
+    // nothing — but "every scheduled search is already exactly as it defines
+    // it" would be false: one of them does not exist.
+    const saved: Record<string, Record<string, unknown>> = {}
+    for (const e of MANIFEST) if (e.id !== LAKE) saved[e.id] = await stored(e.id as typeof SAMPLE)
+    stubWorkspace({ saved })
+    const state = await readAccelState()
+    expect(applyPlan(state).willWrite).toEqual([])
+    const words = nothingToApplyWords(state)
+    expect(words).not.toContain('every scheduled search this release defines is already')
+    expect(words).toContain('retention could not be read')
+    // …and on a genuinely complete workspace the old sentence stands.
+    stubWorkspace({ saved: { ...saved, [LAKE]: await stored(LAKE) }, lake: LAKE_30 })
+    expect(nothingToApplyWords(await readAccelState())).toContain('every scheduled search this release defines is already exactly as it defines it')
   })
 
   it('offers to delete only what this app can prove it created', async () => {
@@ -674,7 +746,7 @@ describe('no write without a confirmation', () => {
 
 describe('a confirmed write', () => {
   it('creates both scheduled searches, and nothing else', async () => {
-    const { calls } = stubWorkspace()
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
     await mount()
     await press(buttonNamed('Review changes…'))
     await press(buttonNamed('Yes, create them'))
@@ -704,6 +776,105 @@ describe('a confirmed write', () => {
     expect(patch?.body?.chartConfig).toEqual({ type: 'bar' })
     expect(patch?.body?.query).toBe(accelEntry(LAKE).body)
   })
+
+  it('tells the panels about a Pause the moment it lands, from the read the table already made', async () => {
+    // Review 2026-09-24, defect 1: the dialog says the panels go live. They do
+    // only if the read path hears about it — accel/serving.ts, fed here, with
+    // no second read of the saved searches.
+    // The sample, not the Lake total: this stub's Lake API answers 404, and a
+    // Lake entry whose window could not be resolved has no body verdict at all
+    // (`unknown` — provision.ts `windowUnresolved`), which is not this test.
+    stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    await mount()
+    expect(accelServing(SAMPLE)).toBe('scheduled')
+    await press(buttonNamed(rowActionName('pause', accelEntry(SAMPLE))))
+    await press(buttonNamed('Yes, pause it'))
+    await settle()
+    expect(accelServing(SAMPLE)).toBe('paused')
+  })
+})
+
+describe('one Guided Setup run at a time', () => {
+  // The onboarding run's last step writes these same saved searches; two runs
+  // at once POST the same absent id twice, and the second one fails.
+  it('a confirmed Apply writes nothing while another run holds the page’s lock', async () => {
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
+    await mount()
+    await press(buttonNamed('Review changes…'))
+    const release = acquireSetupRun('onboarding_pack')!
+    await settle()
+    const yes = buttonNamed('Yes, create them')
+    expect(yes?.getAttribute('aria-disabled')).toBe('true')
+    await press(yes)
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+    release()
+  })
+
+  it('a confirmed Pause writes nothing while another run holds it', async () => {
+    const { calls } = stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } })
+    await mount()
+    await press(buttonNamed(rowActionName('pause', accelEntry(SAMPLE))))
+    const release = acquireSetupRun('lake_landing')!
+    await settle()
+    await press(buttonNamed('Yes, pause it'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+    release()
+  })
+
+  /** The run lock's holder at each saved-search write, as it is sent. */
+  function holdersAtWrites(): Array<string | null> {
+    const inner = globalThis.fetch
+    const held: Array<string | null> = []
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET' && String(url).includes('/search/saved')) held.push(setupRunHolder())
+      return inner(url, init)
+    })
+    return held
+  }
+  async function typeInDialog(text: string) {
+    const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input')
+    expect(input, 'the dialog has no field to type in').toBeTruthy()
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, text)
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await settle(2)
+  }
+
+  const flows: Array<[string, () => Promise<{ calls: Call[] }>, () => Promise<void>]> = [
+    ['Apply', async () => stubWorkspace({ lake: LAKE_30 }), async () => {
+      await press(buttonNamed('Review changes…'))
+      await press(buttonNamed('Yes, create them'))
+    }],
+    ['a row’s Pause', async () => stubWorkspace({ saved: { [SAMPLE]: await stored(SAMPLE) } }), async () => {
+      await press(buttonNamed(rowActionName('pause', accelEntry(SAMPLE))))
+      await press(buttonNamed('Yes, pause it'))
+    }],
+    ['Remove', async () => stubWorkspace({ saved: { [LAKE]: await stored(LAKE) } }), async () => {
+      await press(buttonNamed('Remove acceleration…'))
+      await typeInDialog(REMOVE_LITERAL)
+      await press(buttonNamed('Yes, delete them'))
+    }],
+    ['a switch', async () => stubWorkspace({ saved: await everyEntry() }), async () => {
+      await press(switchNamed(switchName('capacity')))
+      await press(buttonNamed('Yes, pause them'))
+    }],
+  ]
+  for (const [name, setup, run] of flows) {
+    it(`${name} holds the lock for every write it sends, and gives it back`, async () => {
+      const { calls } = await setup()
+      const held = holdersAtWrites()
+      await mount()
+      await run()
+      await settle()
+      expect(savedWrites(calls).length, 'the flow sent no write').toBeGreaterThan(0)
+      expect(held).toEqual(savedWrites(calls).map(() => 'acceleration'))
+      expect(setupRunHolder()).toBeNull()
+    })
+  }
 })
 
 describe('the preset list', () => {
@@ -923,6 +1094,153 @@ describe('the per-dashboard switches', () => {
   })
 })
 
+// ── While only sample data exists ───────────────────────────────────────────
+// Every schedule scans the customer's dataset, which is empty then. Nothing on
+// this panel may offer to turn one ON, and the panel says why (owner decision,
+// 2026-09-24). Off stays available: it is the state the rule asks for.
+describe('while only sample data exists', () => {
+  beforeEach(() => settleDatasetTarget(true))
+
+  it('says why above the switches', async () => {
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).toContain(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of the master opens no dialog, writes nothing, and says why beside it', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+    expect(document.body.querySelector('.ac-switch-master .ac-switch-note')?.textContent).toBe(SAMPLE_ACCEL_OFF)
+  })
+
+  it('an ON flip of a tab opens no dialog either', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('dns-health')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('an OFF flip still asks to pause', async () => {
+    stubWorkspace({ saved: await everyEntry() })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()?.textContent ?? '').toContain('Yes, pause them')
+  })
+
+  it('offers no Review changes, which would create them running', async () => {
+    // Nothing created yet: Apply would have eighteen searches to write.
+    stubWorkspace({})
+    await mount()
+    expect(buttonNamed('Review changes…')).toBeUndefined()
+  })
+
+  it('offers no Resume on a paused row', async () => {
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(document.body.querySelector('button[aria-label^="Resume"]')).toBeNull()
+    expect(bodyText()).toContain('Off: sample data only')
+  })
+})
+
+// ── Before the dataset check has a final answer ─────────────────────────────
+// Review 2026-09-24, defect 2. `sample` is false while the check is still out
+// and in the provisional `deadline` state — neither is "real data exists". A
+// control that turns schedules on must wait for a final answer, and a dialog
+// opened before the answer turned out to be sample must not write after it.
+describe('before the dataset check has a final answer', () => {
+  /**
+   * A workspace whose dataset check cannot finish: both datasets listed, no
+   * size figure, and the one-record probe never answers — so the provisional
+   * answer stays put. (The listing itself must answer: the panel's own read
+   * resolves each schedule's window from it.)
+   */
+  function holdLakeListing(): void {
+    const base = globalThis.fetch
+    const listing = {
+      items: [
+        { id: 'gigamon_ami', retentionPeriodInDays: 30, metrics: {} },
+        { id: 'gigamon_ami_sample', retentionPeriodInDays: 7, metrics: {} },
+        { id: 'cribl_metrics', retentionPeriodInDays: 30, metrics: {} },
+      ],
+    }
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/lakes/default/datasets')) return Promise.resolve(response(200, listing))
+      if ((init?.method ?? 'GET') === 'POST' && /\/search\/jobs$/.test(u)) return new Promise(() => {})
+      return base(url, init)
+    })
+  }
+
+  it('in the provisional state: no Review changes, no Resume, no ON flip — and it says why', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    holdLakeListing()
+    settleDatasetTarget(false, 'deadline')
+    await mount()
+    expect(document.body.querySelector('button[aria-label^="Resume"]')).toBeNull()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()).toBeNull()
+    expect(savedWrites(calls)).toEqual([])
+    expect(document.body.querySelector('.ac-switch-master .ac-switch-note')?.textContent).toBe(ACCEL_UNVERIFIED_OFF)
+    expect(bodyText()).toContain(ACCEL_UNVERIFIED_OFF)
+    expect(bodyText()).not.toContain(SAMPLE_ACCEL_OFF)
+  })
+
+  it('in the provisional state: no Review changes on a workspace with nothing created', async () => {
+    stubWorkspace({})
+    holdLakeListing()
+    settleDatasetTarget(false, 'deadline')
+    await mount()
+    expect(buttonNamed('Review changes…')).toBeUndefined()
+  })
+
+  it('a create dialog opened on real data writes nothing once the answer turns out to be sample', async () => {
+    const { calls } = stubWorkspace({})
+    await mount()
+    await press(buttonNamed('Review changes…'))
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, create them'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('a resume-all dialog opened on real data writes nothing once the answer turns out to be sample', async () => {
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    await press(switchNamed(switchName('master')))
+    expect(dialog()?.textContent ?? '').toContain('Yes, resume them')
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, resume them'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('a row Resume dialog opened on real data writes nothing once the answer turns out to be sample', async () => {
+    const paused = await stored(LAKE)
+    paused.schedule = { ...(paused.schedule as Record<string, unknown>), enabled: false }
+    const { calls } = stubWorkspace({ saved: { [LAKE]: paused } })
+    await mount()
+    await press(buttonNamed(rowActionName('resume', accelEntry(LAKE))))
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, resume it'))
+    await settle()
+    expect(savedWrites(calls)).toEqual([])
+  })
+
+  it('a pause dialog still pauses after the answer turns out to be sample — off is what the rule asks for', async () => {
+    const { calls } = stubWorkspace({ saved: { [LAKE]: await stored(LAKE) } })
+    await mount()
+    await press(buttonNamed(rowActionName('pause', accelEntry(LAKE))))
+    await act(async () => { settleDatasetTarget(true) })
+    await press(buttonNamed('Yes, pause it'))
+    await settle()
+    expect(savedWrites(calls).map((c) => c.method)).toEqual(['PATCH'])
+  })
+})
+
 describe('where this is mounted', () => {
   it('is rendered by the Guided Setup tab', async () => {
     // Phase 1 shipped a whole settings panel that nothing rendered, and nobody
@@ -935,6 +1253,58 @@ describe('where this is mounted', () => {
     const src = readFileSync(join(process.cwd(), 'src', 'tabs', 'GuidedSetup.tsx'), 'utf-8')
     expect(src).toContain("import { AccelPanel } from '../components/AccelPanel'")
     expect(src).toContain('<AccelPanel />')
+  })
+})
+
+// ── Real data has arrived, and acceleration is still off ────────────────────
+// Onboarding installs the schedules paused while only sample data exists. Once
+// data is SEEN in gigamon_ami, the panel says so and points at the master
+// switch — read-only, computed from the dataset verdict and the saved searches,
+// and it writes nothing.
+describe('the "real data has arrived" strip', () => {
+  const t = (reason: 'has-data' | 'probe-found' | 'no-sample' | 'deadline' | 'real-empty') => ({
+    known: true, reason, sample: reason === 'real-empty', dataset: reason === 'real-empty' ? 'gigamon_ami_sample' : 'gigamon_ami',
+  })
+
+  it('shows only when data was seen AND every installed schedule is paused', () => {
+    expect(realDataArrivedOff(t('has-data'), 'off')).toBe(true)
+    expect(realDataArrivedOff(t('probe-found'), 'off')).toBe(true)
+    // No data seen: "no sample dataset" is not "data arrived".
+    expect(realDataArrivedOff(t('no-sample'), 'off')).toBe(false)
+    expect(realDataArrivedOff(t('deadline'), 'off')).toBe(false)
+    expect(realDataArrivedOff(t('real-empty'), 'off')).toBe(false)
+    // Something is running, nothing is installed, or it could not be read.
+    expect(realDataArrivedOff(t('has-data'), 'on')).toBe(false)
+    expect(realDataArrivedOff(t('has-data'), 'mixed')).toBe(false)
+    expect(realDataArrivedOff(t('has-data'), 'unavailable')).toBe(false)
+    expect(realDataArrivedOff(t('has-data'), null)).toBe(false)
+    expect(realDataArrivedOff({ ...t('has-data'), known: false }, 'off')).toBe(false)
+  })
+
+  it('on screen above the master switch, with no write, once data is seen and every schedule is paused', async () => {
+    settleDatasetTarget(false, 'has-data')
+    const { calls } = stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    const strip = [...document.body.querySelectorAll('.ac-note')].find((n) => (n.textContent ?? '').includes(REAL_DATA_ARRIVED_OFF))
+    expect(strip, 'no strip').toBeTruthy()
+    expect(strip?.getAttribute('role')).toBe('status')
+    // It points at the master switch, by its name, in its tip.
+    expect(strip?.querySelector('[role="note"]')?.getAttribute('aria-label')).toContain('Every dashboard')
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.includes('/kvstore'))).toEqual([])
+  })
+
+  it('absent while one of them runs, and absent on the no-sample verdict', async () => {
+    settleDatasetTarget(false, 'has-data')
+    stubWorkspace({ saved: await everyEntry(MANIFEST.slice(1).map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).not.toContain(REAL_DATA_ARRIVED_OFF)
+  })
+
+  it('absent when the verdict never saw data', async () => {
+    settleDatasetTarget(false, 'no-sample')
+    stubWorkspace({ saved: await everyEntry(MANIFEST.map((e) => e.id)) })
+    await mount()
+    expect(bodyText()).not.toContain(REAL_DATA_ARRIVED_OFF)
   })
 })
 

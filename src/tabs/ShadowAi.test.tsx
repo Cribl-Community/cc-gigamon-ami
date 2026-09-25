@@ -268,7 +268,7 @@ describe('Shadow AI, served by one hourly scan', () => {
     await render()
     const notes = sourceNotes()
     expect(notes.length, 'a served panel rendered no source caption').toBeGreaterThanOrEqual(3)
-    for (const n of notes) expect(n).toMatch(/snapshot \d{2}:\d{2}/)
+    for (const n of notes) expect(n).toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
   })
 })
 
@@ -285,7 +285,7 @@ describe('when the schedule cannot answer', () => {
     expect(tileValue('AI users')).toBe('99')
     expect(container.textContent).not.toContain('$vt_results')
     expect(container.textContent).not.toContain('Cribl API')
-    expect(sourceNotes().every((n) => !/snapshot \d{2}:\d{2}/.test(n))).toBe(true)
+    expect(sourceNotes().every((n) => !/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/.test(n))).toBe(true)
   })
 
   it('falls back when the schedule has never run, which is every fresh install', async () => {

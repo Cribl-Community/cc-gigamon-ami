@@ -41,12 +41,15 @@ import { LAKE_HELD_QUERY, LAKE_TOTAL_QUERY, METRICS_QUERY } from '../../queries/
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { denialMark, denialSince, resetDenials } from '../authz'
 import { SEARCH_GROUP } from '../config'
-import { MANIFEST, accelEntry, accelSavedSearch, type AccelId } from './manifest'
+import { MANIFEST, accelEntry, accelSavedSearch, resolveEntry, type AccelId } from './manifest'
+import { lakeWindow } from '../../queries/lakeWindow'
+import { servingVerdicts } from './serving'
 import {
   LIST_LIMIT,
   SAVED_PATH,
   applyAcceleration,
   applyPlan,
+  approvedWrites,
   carriesOwnerMark,
   parseStamp,
   pauseAcceleration,
@@ -89,6 +92,23 @@ const per = <T,>(exceptions: Partial<Record<AccelId, T>>, rest: T): T[] =>
 const idsExcept = (...ids: AccelId[]): AccelId[] => MANIFEST.map((e) => e.id).filter((id) => !ids.includes(id))
 const LAKE = 'gno_lake_30d_c1d'
 const SAMPLE = 'gno_sample_2m_c1h'
+/**
+ * A Lake API that answers with the default 30-day retention.
+ *
+ * The cases below that correct a drifted Lake entry pass it. They used to run
+ * against a Lake read that 404s, and so pinned — without meaning to — the
+ * overwrite the verifier found on 2026-09-24 (defect 2): with the retention
+ * unreadable, `intended` is the manifest's DEFAULT, and Apply wrote it over the
+ * stored search. That is refused now (`windowUnresolved`); what these cases are
+ * about is correcting drift, so they read the retention the way a working
+ * tenant does.
+ */
+const LAKE_30 = {
+  items: [
+    { id: 'gigamon_ami', retentionPeriodInDays: 30 },
+    { id: 'cribl_metrics', retentionPeriodInDays: 30 },
+  ],
+}
 
 interface Call {
   method: string
@@ -452,7 +472,10 @@ describe('a refusal is a state, not a crash', () => {
 
 describe('apply', () => {
   it('creates both, with exactly the body the manifest defines', async () => {
-    const { calls } = stubWorkspace()
+    // The Lake API answers, as on a working tenant: with the retention
+    // unreadable Apply does not create the Lake entry at all (owner decision,
+    // 2026-09-24 — the ‘retention cannot be read’ cases below).
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
     const result = await applyAcceleration()
     expect(result.steps.map((s) => s.action)).toEqual(each('created'))
     expect(result.unchanged).toBe(false)
@@ -464,7 +487,7 @@ describe('apply', () => {
   })
 
   it('records what it wrote, so a later teardown can prove it is ours', async () => {
-    const { calls } = stubWorkspace()
+    const { calls } = stubWorkspace({ lake: LAKE_30 })
     await applyAcceleration()
     await accelWritesSettled()
     const put = calls.find((c) => c.method === 'PUT' && c.path === '/kvstore/accel/state')
@@ -484,7 +507,7 @@ describe('apply', () => {
     const drifted = await correctPlusExtras(LAKE)
     drifted.schedule = { ...(drifted.schedule as Record<string, unknown>), cronSchedule: '0 3 * * *', tz: 'America/New_York' }
     drifted.latest = '-1d'
-    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) }, lake: LAKE_30 })
     const result = await applyAcceleration()
     expect(result.steps[0].action).toBe('updated')
     const body = bodyOf(savedCalls(calls).find((c) => c.method === 'PATCH'))
@@ -504,7 +527,7 @@ describe('apply', () => {
     // opposite of what the person who paused it asked for.
     const paused = await correct(LAKE)
     paused.schedule = { ...(paused.schedule as Record<string, unknown>), enabled: false, cronSchedule: '0 3 * * *' }
-    const { calls } = stubWorkspace({ saved: { [LAKE]: paused, [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: { [LAKE]: paused, [SAMPLE]: await correct(SAMPLE) }, lake: LAKE_30 })
     await applyAcceleration()
     const schedule = bodyOf(savedCalls(calls).find((c) => c.method === 'PATCH')).schedule as { enabled: boolean }
     expect(schedule.enabled).toBe(false)
@@ -532,7 +555,7 @@ describe('apply', () => {
   })
 
   it('reports a rejected create as an error rather than claiming success', async () => {
-    const { calls } = stubWorkspace({ status: { [`POST ${SAVED}`]: 500 } })
+    const { calls } = stubWorkspace({ status: { [`POST ${SAVED}`]: 500 }, lake: LAKE_30 })
     const result = await applyAcceleration()
     expect(result.steps.map((s) => s.action)).toEqual(each('error'))
     expect(result.unchanged).toBe(true)
@@ -552,7 +575,7 @@ describe('the set the confirmation named', () => {
   it('refuses a row that drifted between the dialog and the press', async () => {
     const drifted = await correctPlusExtras(LAKE)
     drifted.latest = '-1d'
-    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) }, lake: LAKE_30 })
     // The dialog was rendered when LAKE still matched, so it named nothing.
     const result = await applyAcceleration(() => {}, {})
     expect(result.steps[0].action).toBe('refused')
@@ -563,7 +586,7 @@ describe('the set the confirmation named', () => {
   it('refuses a row the dialog named as a create when it now exists and differs', async () => {
     const drifted = await correctPlusExtras(LAKE)
     drifted.latest = '-1d'
-    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) }, lake: LAKE_30 })
     const result = await applyAcceleration(() => {}, { [LAKE]: 'absent' })
     expect(result.steps[0].action).toBe('refused')
     expect(result.steps[0].detail).toContain("named as 'absent'")
@@ -573,7 +596,7 @@ describe('the set the confirmation named', () => {
   it('writes the row the dialog did name, in the state it named it', async () => {
     const drifted = await correctPlusExtras(LAKE)
     drifted.latest = '-1d'
-    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    const { calls } = stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) }, lake: LAKE_30 })
     const result = await applyAcceleration(() => {}, { [LAKE]: 'differs' })
     expect(result.steps[0].action).toBe('updated')
     expect(savedCalls(calls).some((c) => c.method === 'PATCH')).toBe(true)
@@ -585,7 +608,7 @@ describe('the set the confirmation named', () => {
     // second way for this function to mean two things.
     const drifted = await correctPlusExtras(LAKE)
     drifted.latest = '-1d'
-    stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) } })
+    stubWorkspace({ saved: { [LAKE]: drifted, [SAMPLE]: await correct(SAMPLE) }, lake: LAKE_30 })
     const result = await applyAcceleration()
     expect(result.steps[0].action).toBe('updated')
   })
@@ -885,7 +908,7 @@ describe('what a confirmation is given to say', () => {
   it('names every search Apply will write, and what it will leave', async () => {
     const drifted = await correct(SAMPLE)
     drifted.latest = '-1m'
-    stubWorkspace({ saved: { [SAMPLE]: drifted } })
+    stubWorkspace({ saved: { [SAMPLE]: drifted }, lake: LAKE_30 })
     const plan = applyPlan(await readAccelState())
     expect(plan.willWrite).toEqual([
       'GNO Lake total 30 days (gno_lake_30d_c1d) — create, running 10 0 * * * UTC',
@@ -1068,5 +1091,266 @@ describe('the hourly pipeline-telemetry schedule follows the stack list', () => 
   it('sees no drift when the schedule runs today’s body', async () => {
     stubWorkspace({ saved: { [PIPELINE]: await correct(PIPELINE) } })
     expect((await readAccelState()).rows.find((r) => r.id === PIPELINE)!.state).toBe('enabled')
+  })
+})
+
+// ── THE LAKE ENTRY WHEN ITS WINDOW COULD NOT BE RESOLVED ────────────────────
+// Verifier, 2026-09-24, defect 2. `readAccelState` resolves the Lake entry
+// against the dataset's retention. When that read fails, the INTENDED body is
+// the manifest's 30-day default — which, on a tenant whose retention (or method)
+// differs, is not what the saved search should run. Comparing the stored query
+// with that default reported a correct schedule as `differs`, and so: the
+// panel ran its most expensive query live (accel/serving.ts), and Apply offered
+// to overwrite the correct schedule with the default window, while the Lake
+// read was failing. That overwrite predates accel/serving.ts.
+describe('the Lake entry while the dataset’s retention cannot be read', () => {
+  /** The Lake search as this release writes it for a 365-day tenant. */
+  const applied365 = async () =>
+    (await accelSavedSearch(resolveEntry(accelEntry(LAKE), lakeWindow(365, 30)))) as unknown as Record<string, unknown>
+  const withSchedule = (obj: Record<string, unknown>, patch: Record<string, unknown>) => ({
+    ...obj,
+    schedule: { ...(obj.schedule as Record<string, unknown>), ...patch },
+  })
+
+  it('does not call a 365-day schedule drifted against the 30-day default', async () => {
+    stubWorkspace({ saved: await allCorrect({ [LAKE]: await applied365() }) }) // no `lake`: the read 404s
+    const row = (await readAccelState()).rows.find((r) => r.id === LAKE)!
+    expect(row.state, 'a correct schedule was reported as drifted against a window nobody resolved').toBe('enabled')
+    expect(row.differences).toEqual([])
+    expect(row.windowUnresolved).toBe(true)
+  })
+
+  it('gives the panels no verdict to act on — `unknown`, never `drifted`', async () => {
+    stubWorkspace({ saved: await allCorrect({ [LAKE]: await applied365() }) })
+    expect(servingVerdicts(await readAccelState()).get(LAKE)).toBe('unknown')
+  })
+
+  it('still reports a paused Lake schedule as paused — that needs no window', async () => {
+    stubWorkspace({ saved: await allCorrect({ [LAKE]: withSchedule(await applied365(), { enabled: false }) }) })
+    expect(servingVerdicts(await readAccelState()).get(LAKE)).toBe('paused')
+  })
+
+  it('never writes the unresolved default over it, even when something else about it differs', async () => {
+    const drifted = withSchedule(await applied365(), { cronSchedule: '30 1 * * *' })
+    const { calls } = stubWorkspace({ saved: await allCorrect({ [LAKE]: drifted }) })
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('differs')
+    expect(row.differences).toEqual(['when it runs'])
+    // Not offered…
+    expect(approvedWrites(state)[LAKE]).toBeUndefined()
+    const plan = applyPlan(state)
+    expect(plan.willWrite.some((w) => w.includes(LAKE))).toBe(false)
+    expect(plan.willLeave.find((l) => l.label.includes(LAKE))?.why).toContain('retention could not be read')
+    // …and not written if Apply runs anyway.
+    const result = await applyAcceleration()
+    expect(result.steps.find((s) => s.id === LAKE)?.action).toBe('skipped')
+    expect(writes(calls).filter((c) => c.path.endsWith(LAKE))).toEqual([])
+  })
+
+  // Owner decision, 2026-09-24: an ABSENT Lake entry is not created on the
+  // default window either. A create replaces nothing, but it starts a daily
+  // billed schedule reading a window nobody chose — and on a tenant whose
+  // retention is not 30 days, the Lake card would then serve a figure for the
+  // wrong window, dated as if it were right.
+  it('does not create an absent Lake entry on the default window, and says why — the others are still created', async () => {
+    stubWorkspace() // nothing stored; no `lake`: the read 404s
+    const state = await readAccelState()
+    const row = state.rows.find((r) => r.id === LAKE)!
+    expect(row.state).toBe('absent')
+    expect(row.windowUnresolved).toBe(true)
+    // Not offered…
+    const approved = approvedWrites(state)
+    expect(approved[LAKE]).toBeUndefined()
+    const plan = applyPlan(state)
+    expect(plan.willWrite.some((w) => w.includes(LAKE))).toBe(false)
+    expect(plan.willLeave.find((l) => l.label.includes(LAKE))?.why).toContain('retention could not be read')
+    // …and not written if Apply runs, with or without the confirmation's set.
+    for (const set of [undefined, approved]) {
+      const { calls } = stubWorkspace() // a fresh, empty workspace each pass
+      const result = await applyAcceleration(() => {}, set)
+      const step = result.steps.find((s) => s.id === LAKE)
+      expect(step?.action).toBe('skipped')
+      expect(step?.detail).toContain('retention could not be read')
+      expect(writes(calls).filter((c) => c.method === 'POST' && c.body?.id === LAKE)).toEqual([])
+      // Every other entry is still created in the same Apply.
+      const posted = writes(calls).filter((c) => c.method === 'POST').map((c) => String(c.body?.id))
+      expect(posted.sort()).toEqual(idsExcept(LAKE).sort())
+    }
+  })
+
+  it('creates the absent Lake entry on the resolved window once the retention reads', async () => {
+    const { calls } = stubWorkspace({
+      lake: { items: [{ id: 'gigamon_ami', retentionPeriodInDays: 365 }, { id: 'cribl_metrics', retentionPeriodInDays: 30 }] },
+    })
+    const state = await readAccelState()
+    expect(state.rows.find((r) => r.id === LAKE)!.windowUnresolved).toBe(false)
+    expect(approvedWrites(state)[LAKE]).toBe('absent')
+    const result = await applyAcceleration(() => {}, approvedWrites(state))
+    expect(result.steps.find((s) => s.id === LAKE)?.action).toBe('created')
+    const want = (await applied365()) as { earliest: string; latest: string; query: string }
+    const body = bodyOf(writes(calls).find((c) => c.method === 'POST' && c.body?.id === LAKE))
+    expect(body.earliest).toBe(want.earliest)
+    expect(body.latest).toBe(want.latest)
+    expect(body.query).toBe(want.query)
+    expect(body.earliest, 'the create used the default window, not the resolved one').not.toBe(accelEntry(LAKE).earliest)
+    expect(writes(calls).filter((c) => c.method === 'POST').length).toBe(MANIFEST.length)
+  })
+
+  it('the switches cannot create it: a flip on an absent Lake entry sends no POST', async () => {
+    const { calls } = stubWorkspace()
+    const [r] = await setAccelSchedules([{ id: LAKE, from: false, to: true }])
+    expect(r.ok).toBe(false)
+    expect(writes(calls)).toEqual([])
+  })
+
+  it('compares the window again the moment the retention can be read', async () => {
+    stubWorkspace({
+      saved: await allCorrect({ [LAKE]: await applied365() }),
+      lake: { items: [{ id: 'gigamon_ami', retentionPeriodInDays: 365 }, { id: 'cribl_metrics', retentionPeriodInDays: 30 }] },
+    })
+    const row = (await readAccelState()).rows.find((r) => r.id === LAKE)!
+    expect(row.windowUnresolved).toBe(false)
+    expect(row.state).toBe('enabled')
+  })
+})
+
+// ── WHEN THE QUERY A SAVED SEARCH RUNS LAST CHANGED ─────────────────────────
+// Verifier, 2026-09-24, defect 3. After Re-apply rewrites a body, the saved
+// search's newest run — until the next fire — and its past runs came from the
+// OLD query. `accel/state` records when this install wrote the query each
+// search runs (`bodyAt`), so the read path can refuse those runs.
+describe('the time a body was applied', () => {
+  const PIPELINE = 'gno_pipeline_c1h'
+  const OLD_METRICS = 'dataset="cribl_metrics" | summarize src_events=count()'
+  const appliedOld = async () => {
+    const base = accelEntry(PIPELINE)
+    return (await accelSavedSearch({
+      ...base,
+      body: OLD_METRICS,
+      panels: base.panels.map((p) => ({ ...p, display: OLD_METRICS })),
+    })) as unknown as Record<string, unknown>
+  }
+  const recordedDoc = (calls: readonly Call[]) => {
+    const put = calls.filter((c) => c.method === 'PUT' && c.path === '/kvstore/accel/state').pop()
+    return (bodyOf(put).doc as { created: Record<string, { bodyAt?: number; at: number }> }).created
+  }
+  const rec = (bodyAt?: number) => ({
+    at: 5,
+    appVersion: 'dev',
+    manifestVersion: 1,
+    bodySha: 'a'.repeat(12),
+    displaySha: 'b'.repeat(12),
+    by: null,
+    ...(bodyAt === undefined ? {} : { bodyAt }),
+  })
+
+  it('records bodyAt when Apply rewrites the query, and hands it back on the state it returns', async () => {
+    const t0 = Date.now()
+    const { calls } = stubWorkspace({ saved: await allCorrect({ [PIPELINE]: await appliedOld() }) })
+    const result = await applyAcceleration()
+    await accelWritesSettled()
+    expect(recordedDoc(calls)[PIPELINE].bodyAt).toBeGreaterThanOrEqual(t0)
+    expect(result.state.rows.find((r) => r.id === PIPELINE)!.bodyAt).toBeGreaterThanOrEqual(t0)
+  })
+
+  it('records bodyAt on a create', async () => {
+    const t0 = Date.now()
+    const { calls } = stubWorkspace()
+    await applyAcceleration()
+    await accelWritesSettled()
+    expect(recordedDoc(calls)[PIPELINE].bodyAt).toBeGreaterThanOrEqual(t0)
+  })
+
+  it('keeps the earlier bodyAt when Apply changes only when it runs', async () => {
+    const cur = await correct(PIPELINE)
+    const { calls } = stubWorkspace({
+      saved: await allCorrect({ [PIPELINE]: { ...cur, schedule: { ...(cur.schedule as Record<string, unknown>), cronSchedule: '7 * * * *' } } }),
+      kv: { 'accel/state': { version: 1, created: { [PIPELINE]: rec(1234) } } },
+    })
+    const result = await applyAcceleration()
+    await accelWritesSettled()
+    expect(recordedDoc(calls)[PIPELINE].bodyAt, 'a cron change moved the time the query changed').toBe(1234)
+    expect(result.state.rows.find((r) => r.id === PIPELINE)!.bodyAt).toBe(1234)
+  })
+
+  it('is read back by readAccelState, and absent is null — an older record bounds nothing', async () => {
+    stubWorkspace({ saved: await allCorrect(), kv: { 'accel/state': { version: 1, created: { [PIPELINE]: rec(4321), [LAKE]: rec() } } } })
+    const state = await readAccelState()
+    expect(state.rows.find((r) => r.id === PIPELINE)!.bodyAt).toBe(4321)
+    expect(state.rows.find((r) => r.id === LAKE)!.bodyAt).toBe(null)
+  })
+
+  it('keeps bodyAt on a list it could not read — a refused list must not lift the bound', async () => {
+    stubWorkspace({ status: { 'GET /m/default_search/search/saved': 500 }, kv: { 'accel/state': { version: 1, created: { [PIPELINE]: rec(4321) } } } })
+    const state = await readAccelState()
+    expect(state.error).not.toBe(null)
+    expect(state.rows.find((r) => r.id === PIPELINE)!.bodyAt).toBe(4321)
+  })
+
+  it('still hands bodyAt back when the store refused the record — this session wrote it', async () => {
+    const t0 = Date.now()
+    stubWorkspace({ saved: await allCorrect({ [PIPELINE]: await appliedOld() }), status: { 'PUT /kvstore/accel/state': 500 } })
+    const result = await applyAcceleration()
+    expect(result.state.rows.find((r) => r.id === PIPELINE)!.bodyAt).toBeGreaterThanOrEqual(t0)
+  })
+})
+
+// ── CREATING THE SCHEDULES PAUSED ───────────────────────────────────────────
+// Onboarding always installs acceleration (owner, 2026-09-24), but while only
+// sample data exists every schedule would scan an empty `gigamon_ami` and bill
+// for it. So the run creates them PAUSED, and the master switch turns them on
+// once real data lands. `{ enabled }` governs what a CREATE writes and nothing
+// else: a correction keeps the stored pause state, because Apply is not the
+// control that pauses or resumes (see `applyAcceleration`).
+describe('applyAcceleration { enabled: false } — installed, but paused', () => {
+  const resolved = { lake: LAKE_30 }
+  const PIPELINE = 'gno_pipeline_c1h'
+
+  it('every POST carries schedule.enabled:false, and the bodies are otherwise the running ones', async () => {
+    const paused = stubWorkspace(resolved)
+    await applyAcceleration(() => {}, approvedWrites(await readAccelState()), { enabled: false })
+    const pausedPosts = writes(paused.calls).filter((c) => c.method === 'POST')
+    expect(pausedPosts.map((c) => String(c.body?.id)).sort()).toEqual(MANIFEST.map((e) => e.id).sort())
+    for (const c of pausedPosts) expect((bodyOf(c).schedule as { enabled?: unknown }).enabled, String(c.body?.id)).toBe(false)
+
+    const running = stubWorkspace(resolved)
+    await applyAcceleration(() => {}, approvedWrites(await readAccelState()))
+    const runningPosts = writes(running.calls).filter((c) => c.method === 'POST')
+    for (const c of runningPosts) expect((bodyOf(c).schedule as { enabled?: unknown }).enabled, String(c.body?.id)).toBe(true)
+    const strip = (b: Record<string, unknown>) => ({ ...b, schedule: { ...(b.schedule as object), enabled: null } })
+    const byId = (cs: Call[]) => new Map(cs.map((c) => [String(c.body?.id), strip(bodyOf(c))]))
+    const p = byId(pausedPosts)
+    for (const [id, body] of byId(runningPosts)) {
+      // The stamp carries the app's write time nowhere, so the bodies are equal but for `enabled`.
+      expect(p.get(id), id).toEqual(body)
+    }
+  })
+
+  it('reads them back as paused', async () => {
+    stubWorkspace(resolved)
+    const result = await applyAcceleration(() => {}, undefined, { enabled: false })
+    expect(result.state.rows.every((r) => r.state === 'paused')).toBe(true)
+  })
+
+  it('does not pause a running schedule it corrects — only creates are paused', async () => {
+    const drifted = { ...(await correct(PIPELINE)), query: 'dataset="gigamon_ami" | limit 1' }
+    const { calls } = stubWorkspace({ ...resolved, saved: await allCorrect({ [PIPELINE]: drifted }) })
+    await applyAcceleration(() => {}, approvedWrites(await readAccelState()), { enabled: false })
+    const patch = writes(calls).find((c) => c.method === 'PATCH' && c.path.endsWith(PIPELINE))
+    expect((bodyOf(patch).schedule as { enabled?: unknown }).enabled).toBe(true)
+  })
+
+  // The unresolved-window guard (F1) sits inside applyAcceleration, ahead of
+  // every branch, so it holds for any caller and any `enabled`: the onboarding
+  // run passes `{ enabled }` and no dialog's set can smuggle the Lake entry in.
+  it('still never creates the Lake entry on a window nobody resolved', async () => {
+    const { calls } = stubWorkspace() // the Lake read 404s
+    const forged = { [LAKE]: 'absent' as const }
+    for (const enabled of [false, true]) {
+      const result = await applyAcceleration(() => {}, forged, { enabled })
+      expect(result.steps.find((s) => s.id === LAKE)?.action, String(enabled)).toBe('skipped')
+    }
+    expect(writes(calls).filter((c) => c.body?.id === LAKE || c.path.endsWith(LAKE))).toEqual([])
   })
 })

@@ -47,12 +47,14 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetDenials } from '../cribl/authz'
 import { DashboardProvider } from '../app/DashboardContext'
 import { DEPLOY_CONSEQUENCES, FLUSH_PRESETS, LANDING_TERMS, retentionChange } from '../cribl/landing'
 import { LANDING_PROFILE_KEY } from '../cribl/lakeLanding'
 import { LakeLandingPanel } from './LakeLandingPanel'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
+import { SETUP_RUN_BUSY, acquireSetupRun, resetSetupRunLock, setupRunHolder } from '../cribl/setupRunLock'
 // The words and the units, separately from the screen that renders them. Half
 // the assertions in this file never mount anything — see lakeLandingCopy.ts.
 import {
@@ -77,6 +79,7 @@ import {
   sizeSentence,
 } from './lakeLandingCopy'
 import { GuidedSetup } from '../tabs/GuidedSetup'
+import { SETUP_FACTS } from './provisionPanelCopy'
 
 const BASE = '/capi'
 const LAKE = '/products/lake/lakes/default'
@@ -276,7 +279,46 @@ const jobsSubmitted = (calls: readonly Call[]) => calls.filter((c) => c.method =
 let container: HTMLDivElement
 let root: Root
 
+/**
+ * Every `console.error` this file caused, as the text it would have printed.
+ *
+ * NOTHING HERE IS EXPECTED TO LOG AN ERROR, so any entry fails a test. This file
+ * passed for a while with a stack overflow printed to stderr by nine of its
+ * tests — React catches an error thrown from an event handler, reports it, and
+ * carries on, so the assertions after the click still ran against a page that
+ * had half-handled it. The calls still reach the real console, so the failure
+ * comes with the message beside it.
+ *
+ * Installed once for the file, by assignment rather than `vi.spyOn`, so the
+ * `vi.restoreAllMocks()` in each teardown does not take it away: an error a test
+ * leaves behind (a promise that settles after unmount) is still recorded, and
+ * fails the next test's setup, or the file's last hook when there is no next
+ * test. A spy made per test lost those, and when a teardown threw before its
+ * restore, the next test's spy wrapped the old one and called itself.
+ */
+const consoleErrors: string[] = []
+const realConsoleError = console.error
+const expectNoConsoleErrors = (when: string) =>
+  expect(consoleErrors.splice(0), `an error was logged ${when}`).toEqual([])
+
+beforeAll(() => {
+  console.error = (...args: unknown[]) => {
+    consoleErrors.push(args.map((a) => (a instanceof Error ? `${a.name}: ${a.message}` : String(a))).join(' '))
+    realConsoleError.apply(console, args)
+  }
+})
+
+afterAll(async () => {
+  // One turn of the event loop first, so an error the last test queued (a
+  // settled promise, a zero-delay timer) lands while this is still listening.
+  // One queued further out than that reaches the real console and fails nothing.
+  await new Promise((r) => setTimeout(r, 0))
+  console.error = realConsoleError
+  expectNoConsoleErrors('after the last test in this file')
+})
+
 beforeEach(() => {
+  expectNoConsoleErrors('after the previous test had finished')
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -290,13 +332,20 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  act(() => root.unmount())
-  container.remove()
-  document.body.innerHTML = ''
-  vi.unstubAllGlobals()
-  vi.restoreAllMocks()
-  vi.useRealTimers()
-  resetDenials()
+  // In a finally, so a teardown that throws still leaves the next test its
+  // globals, its timers and an unheld run lock.
+  try {
+    act(() => root.unmount())
+  } finally {
+    container.remove()
+    document.body.innerHTML = ''
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+    resetDenials()
+    resetSetupRunLock()
+  }
+  expectNoConsoleErrors('in this test')
 })
 
 /** Let the environment run: the group read, the profile read, nine independent
@@ -860,6 +909,18 @@ describe('measuring', () => {
     expect(stored, 'the measurement was not written to the app store').toBeTruthy()
   })
 
+  it('measures the customer dataset even while the app is reading the sample one', async () => {
+    // Every other query moves to gigamon_ami_sample while only sample data
+    // exists. This one is stored as gigamon_ami's landing lag, so it must not.
+    settleDatasetTarget(true)
+    const { calls } = stubWorkspace({ searchRows: [{ newest: 1, n: 5, lag_s: 8.25 }] })
+    await mount()
+    await press(controlIn('Landing lag', `Measure the landing lag for gigamon_ami — ${costLabel(LAG_CPU_SECONDS)}`))
+    const jobs = jobsSubmitted(calls)
+    expect(jobs).toHaveLength(1)
+    expect(String(jobs[0].body?.query)).toMatch(/; dataset="gigamon_ami" \|/)
+  })
+
   it('will not call an empty window a lag of zero', async () => {
     // That is the whole reason the query carries `n=count()` beside the lag: a
     // feed that stopped eleven minutes ago and a dataset nobody has ever
@@ -917,6 +978,95 @@ describe('no write without a confirmation', () => {
     const cells = [...(table?.querySelectorAll('td') ?? [])].map((td) => (td.textContent ?? '').trim())
     expect(cells).toContain('30')
     expect(cells).toContain('45')
+  })
+})
+
+describe('one Guided Setup run at a time', () => {
+  // The onboarding panels commit and deploy the same group from the same page.
+  it('while another run holds the page’s lock, Apply opens no dialog and writes nothing', async () => {
+    const { calls } = stubWorkspace()
+    await mount()
+    await typeInto(inputLabelled('Retention, in days'), '45')
+    // Inside act: taking the lock notifies the panel's store subscription, and
+    // a state update outside act is a warning — which fails this file.
+    let release: () => void = () => {}
+    await act(async () => {
+      release = acquireSetupRun('onboarding_pack')!
+    })
+    await settle()
+    const apply = controlIn('Retention', 'Apply')
+    expect(apply?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(SETUP_RUN_BUSY)
+    await press(apply)
+    expect(bodyText()).not.toContain('Raise retention on Cribl Lake dataset gigamon_ami')
+    expect(criblWrites(calls)).toEqual([])
+    act(() => release())
+  })
+
+  /** The run lock's holder at each request that changes Cribl, as it is sent. */
+  function holdersAtWrites(): Array<string | null> {
+    const inner = globalThis.fetch
+    const held: Array<string | null> = []
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (method !== 'GET' && !String(url).includes('/kvstore')) held.push(setupRunHolder())
+      return inner(url, init)
+    })
+    return held
+  }
+  async function changeFlush() {
+    await press(buttonStarting('Adjust how objects are written'))
+    const balanced = [...document.body.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find((i) => i.value === 'balanced')
+    await press(balanced)
+    await press(buttonNamed('Change…'))
+    await press(buttonNamed('Yes, apply and deploy'))
+  }
+
+  it('a destination change holds the lock through its commit and deploy, and gives it back', async () => {
+    const { calls } = stubWorkspace()
+    const held = holdersAtWrites()
+    await mount()
+    await changeFlush()
+    expect(criblWrites(calls).length).toBe(3)
+    expect(held).toEqual(['lake_landing', 'lake_landing', 'lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+
+  it('a retention change holds it, and gives it back', async () => {
+    const { calls } = stubWorkspace()
+    const held = holdersAtWrites()
+    await mount()
+    await typeInto(inputLabelled('Retention, in days'), '45')
+    await press(controlIn('Retention', 'Apply'))
+    await press(buttonNamed('Yes, raise it'))
+    expect(criblWrites(calls).length).toBe(1)
+    expect(held).toEqual(['lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+
+  it('a description change holds it, and gives it back', async () => {
+    const { calls } = stubWorkspace()
+    const held = holdersAtWrites()
+    await mount()
+    await typeInto(inputLabelled('Dataset description'), 'AMI flows from the lab')
+    await press(controlIn('Description', 'Apply'))
+    await press(buttonNamed('Yes, change it'))
+    expect(criblWrites(calls).length).toBe(1)
+    expect(held).toEqual(['lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+
+  it('the retry of a half-applied run holds it, and gives it back', async () => {
+    const { calls } = stubWorkspace({ status: { 'POST /version/commit': 500 } })
+    await mount()
+    await changeFlush()
+    const held = holdersAtWrites()
+    const before = calls.length
+    await press(buttonNamed('Retry the commit and deploy'))
+    await press(buttonNamed('Yes, commit and deploy'))
+    expect(criblWrites(calls.slice(before)).map((c) => `${c.method} ${c.path}`)).toEqual(['POST /version/commit'])
+    expect(held).toEqual(['lake_landing'])
+    expect(setupRunHolder()).toBeNull()
   })
 })
 
@@ -1203,5 +1353,17 @@ describe('it is actually on the page', () => {
     expect(anchor, 'the in-page anchor the dataset-absent state links to is not on the page').toBeTruthy()
     // The anchor really wraps the ingest panel, not something else.
     expect(anchor?.querySelector('.panel')).toBeTruthy()
+  })
+
+  it('the page has its heading, and today its facts describe the stack Guided Setup deploys', async () => {
+    stubWorkspace()
+    await mount(<GuidedSetup />)
+    const h2 = [...document.querySelectorAll('h2')].map((h) => h.textContent)
+    expect(h2).toContain('Guided setup')
+    // The pack cannot be installed yet (no release), so the facts are the
+    // global Raw HTTP stack's, exactly as before.
+    const facts = [...document.querySelectorAll('.gs-facts li')].map((li) => li.textContent ?? '')
+    expect(facts).toHaveLength(SETUP_FACTS.length)
+    SETUP_FACTS.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
   })
 })

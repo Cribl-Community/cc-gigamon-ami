@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import type { AccelSource } from '../cribl/accel/read'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
+import { useDatasetTarget } from '../cribl/datasetTarget'
+import { retargetQuery } from '../queries/datasets'
 
 /**
  * The clock a panel dates a stored result by: `14:07`, or `17 Sep 00:10` when
@@ -284,6 +286,20 @@ function pretty(q: string): string {
  */
 export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed, promql, promqlHref }: Props) {
   const { range } = useDashboard()
+  // THE QUERY AS IT RAN. Callers pass the query as written, against
+  // `gigamon_ami`; while only sample data exists the job ran against the sample
+  // dataset (cribl/search.ts), and an ⓘ naming the empty customer dataset beside
+  // a figure of thousands would be a false claim about provenance. So the block
+  // shows — and Copy copies — the dataset that actually answered. The deep links
+  // below keep `query`: searchUiUrl makes the same move itself (cribl/config.ts),
+  // and the display freeze counts those two calls as written.
+  const target = useDatasetTarget()
+  const shown = query === undefined ? undefined : retargetQuery(query, target.dataset)
+  // The prose follows for the same reason: a stage that says its panels query
+  // `dataset="gigamon_ami"` (Data Flow's Search stage) is the same claim. Only
+  // a dataset SELECTOR moves (queries/datasets.ts) — prose naming gigamon_ami
+  // as where the Lake destination writes stays true and is left alone.
+  const aboutShown = about === undefined ? undefined : retargetQuery(about, target.dataset)
   const [open, setOpen] = useState(false)
   const [place, setPlace] = useState<Placement>({ top: 0, left: 0, side: 'below' })
   const [copied, setCopied] = useState(false)
@@ -384,8 +400,8 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
   }
 
   const copy = () => {
-    if (!query) return
-    navigator.clipboard?.writeText(pretty(query)).then(() => {
+    if (!shown) return
+    navigator.clipboard?.writeText(pretty(shown)).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
     })
@@ -432,7 +448,7 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
           {about && (
             <div className="pinfo-block">
               <div className="pinfo-h">{aboutHeading}</div>
-              <p className="pinfo-about">{about}</p>
+              <p className="pinfo-about">{aboutShown}</p>
             </div>
           )}
           {links && links.length > 0 && (
@@ -474,7 +490,7 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
                 aria-label="Open this query in Cribl Search"
                 title="Open this query in Cribl Search (new tab)"
               >
-                <pre className="pinfo-code">{pretty(query)}</pre>
+                <pre className="pinfo-code">{pretty(shown ?? query)}</pre>
               </a>
             </div>
           )}

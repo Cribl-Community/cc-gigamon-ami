@@ -31,9 +31,11 @@ import { useSearchParams } from 'react-router-dom'
 import { capSecondsFor, runFieldSummaries, runSearch, SearchTimeLimitError, type FieldSummary } from '../cribl/search'
 import { useCostSlot } from '../cribl/jobCost'
 import { accelEntry, type AccelId } from '../cribl/accel/manifest'
-import { readAccelFieldSummaries, readAccelRows, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
+import { readAccelFieldSummaries, readAccelRows, runBegan, servingEffect, type AccelOutcome, type AccelSource } from '../cribl/accel/read'
 import { useSelectedSnapshot } from '../cribl/accel/selection'
+import { useAccelAppliedAt, useAccelServing, useReappliedRerun, type ServingVerdict } from '../cribl/accel/serving'
 import { useAccelEnabled } from '../cribl/useSearch'
+import { useDatasetTarget } from '../cribl/datasetTarget'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
@@ -205,7 +207,43 @@ export function FieldExplorer() {
   // deliberately overrides `accelOn` — there is no live answer to a question
   // about 04:20, and the "Run live" chip is hidden while one is picked for the
   // same reason <Panel> hides its own.
-  const moment = useSelectedSnapshot()
+  //
+  // NEVER WHILE ONLY SAMPLE DATA EXISTS: a stored run is a run over the
+  // customer's dataset, and the header offers no moment to pick then anyway
+  // (cribl/dataMode.ts drops it). Said here as well because this tab calls the
+  // stored-result reads directly rather than through useSearch.
+  const target = useDatasetTarget()
+  const picked = useSelectedSnapshot()
+  const moment = target.sample ? null : picked
+  // What each saved search says (accel/serving.ts): a paused, drifted or removed
+  // schedule sends its panel live, as useSearch does for every other tab. Not
+  // held back while the first read is pending — this tab never waited on the
+  // mode either — so a verdict that lands later re-runs a read only when it
+  // changes what that read does.
+  const known = (v: ServingVerdict | 'pending'): ServingVerdict => (v === 'pending' ? 'unknown' : v)
+  // A verdict is ASKED FOR only when a read could be served from a stored run —
+  // Snapshot mode, or a picked moment — as useSearch does (`servingAsked`).
+  // Otherwise both reads are live whatever the verdict says, and a verdict that
+  // lands after the first read would still move the key and submit both again:
+  // the default path on a sample install, whose mode reads Live and whose
+  // schedules the sample branch refuses to turn on (verifier, 2026-09-24,
+  // integration defect 1). `null` reads as `unknown`, which keys to nothing.
+  const servingId = (id: AccelId): AccelId | null => (accelOn || moment !== null ? id : null)
+  const sampleServing = known(useAccelServing(servingId(SAMPLE_ACCEL)))
+  const presenceServing = known(useAccelServing(servingId(PRESENCE_ACCEL)))
+  // …but the effects KEY on what a verdict makes the read do, never on the
+  // verdict (verifier, 2026-09-24, defect 1). Not holding means the verdict
+  // usually lands after the first read, as `scheduled` — which changes nothing
+  // either read does, and re-ran both.
+  const sampleServingKey = servingEffect(sampleServing, moment !== null)
+  const presenceServingKey = servingEffect(presenceServing, moment !== null)
+  // When this install last rewrote each query (defect 3): a run that began
+  // before it is not read. Keyed through `useReappliedRerun`, which re-runs a
+  // read only when the run it is SHOWING predates the write — see useSearch.
+  const sampleAppliedAt = useAccelAppliedAt(servingId(SAMPLE_ACCEL))
+  const presenceAppliedAt = useAccelAppliedAt(servingId(PRESENCE_ACCEL))
+  const { rerun: sampleRerun, shown: setSampleBegan } = useReappliedRerun(servingId(SAMPLE_ACCEL))
+  const { rerun: presenceRerun, shown: setPresenceBegan } = useReappliedRerun(servingId(PRESENCE_ACCEL))
   // This panel's row in the header's census. It is a <Panel> like any other, but
   // it builds its state from readAccelFieldSummaries rather than from useSearch,
   // so the `snapshot` prop is assembled by hand here. Without it the In-feed
@@ -239,10 +277,15 @@ export function FieldExplorer() {
   // changes when the sample was taken and never what it means. The one exception
   // is "Run live", which is the reader asking for the picker's window back.
   useEffect(() => {
+    // Nothing is asked until the app knows which dataset answers — see
+    // cribl/datasetTarget.ts; useSearch holds every other panel the same way.
+    if (!target.known) return
     const ctrl = new AbortController()
     setState((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelFieldSummaries(SAMPLE_ACCEL, {
       enabled: accelOn,
+      serving: sampleServing,
+      appliedAt: sampleAppliedAt,
       asOf: moment ?? undefined,
       signal: ctrl.signal,
       live: () => runFieldSummaries(FEED_SAMPLE_QUERY, {
@@ -252,16 +295,19 @@ export function FieldExplorer() {
         costSlot: summariesCost
       }),
     })
-      .then((r) => setState({
-        loading: false, error: null, errorTitle: null,
-        fields: r.data.fields, sampled: r.data.sampled,
-        // A live run was sampled now; a stored one carries the time its run
-        // finished. A read for a moment nothing was stored for carries NEITHER,
-        // and must stay null: `Date.now()` there would caption an empty list
-        // "sample taken just now", which is the one reading that is false.
-        source: r.source, outcome: r.outcome, at: r.at ?? (r.source === 'live' ? Date.now() : null),
-        stale: r.stale, note: r.note, nearestAt: r.nearestAt,
-      }))
+      .then((r) => {
+        setSampleBegan(r.source === 'schedule' && r.run ? runBegan(r.run) : null)
+        setState({
+          loading: false, error: null, errorTitle: null,
+          fields: r.data.fields, sampled: r.data.sampled,
+          // A live run was sampled now; a stored one carries the time its run
+          // finished. A read for a moment nothing was stored for carries NEITHER,
+          // and must stay null: `Date.now()` there would caption an empty list
+          // "sample taken just now", which is the one reading that is false.
+          source: r.source, outcome: r.outcome, at: r.at ?? (r.source === 'live' ? Date.now() : null),
+          stale: r.stale, note: r.note, nearestAt: r.nearestAt,
+        })
+      })
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
         setState((s) => ({ ...s, loading: false, error: (e as Error).message, errorTitle: stoppedTitle(e) }))
@@ -273,7 +319,7 @@ export function FieldExplorer() {
     // the identical stored rows. `sampleWindowKey` is what puts it back in the
     // key the moment the reader asks for live.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, moment, sampleWindowKey, sampleRefreshKey, nonce, summariesCost])
+  }, [accelOn, moment, sampleServingKey, sampleRerun, sampleWindowKey, sampleRefreshKey, nonce, summariesCost, target.known, target.dataset])
 
   // Whole-window presence counts for the AMI coverage view (accurate for rare
   // fields — one count() per field rather than a sample, which is why it is
@@ -284,10 +330,13 @@ export function FieldExplorer() {
   // so turning it on changes when the answer was computed and never what it
   // means; with acceleration off it follows the picker, as it always did.
   useEffect(() => {
+    if (!target.known) return
     const ctrl = new AbortController()
     setPresence((s) => ({ ...s, loading: true, error: null, errorTitle: null }))
     readAccelRows(PRESENCE_ACCEL, {
       enabled: accelOn,
+      serving: presenceServing,
+      appliedAt: presenceAppliedAt,
       asOf: moment ?? undefined,
       signal: ctrl.signal,
       live: () => runSearch(PRESENCE_QUERY, {
@@ -298,6 +347,7 @@ export function FieldExplorer() {
       }).then((res) => res.rows),
     })
       .then((r) => {
+        setPresenceBegan(r.source === 'schedule' && r.run ? runBegan(r.run) : null)
         const row = (r.data[0] ?? {}) as Record<string, unknown>
         // POSITIONAL ALIASES, AND THE HAZARD THEY CARRY. The body names its
         // counts `c0…cN` in CHECK_FIELDS order, so a stored run from before a
@@ -336,7 +386,7 @@ export function FieldExplorer() {
     // it: the picker cannot change what comes back from a stored run, so
     // re-running on a range change would submit a job to receive identical rows.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accelOn, moment, presenceWindowKey, presenceRefreshKey, nonce, presenceCost])
+  }, [accelOn, moment, presenceServingKey, presenceRerun, presenceWindowKey, presenceRefreshKey, nonce, presenceCost, target.known, target.dataset])
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {

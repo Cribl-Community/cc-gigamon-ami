@@ -17,7 +17,7 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 192,
+    "modules": 201,
     "catalogs": 14,
     "states": 36,
     "passthrough": 3,
@@ -207,6 +207,17 @@
       "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"http_raw:in_gigamon_http\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gigamon_http_normalize\") or (id==\"gno_syslog\"))) or (metric==\"total.out_events\" and (output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
       "VOLUME_AGGS": "events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "VOLUME_QUERY": "dataset=\"gigamon_ami\" | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
+    },
+    "src/queries/datasets.ts": {
+      "REAL_DATASET": "gigamon_ami",
+      "REAL_DATA_PROBE_QUERY": "dataset=\"gigamon_ami\" | limit 1",
+      "SAMPLE_DATASET": "gigamon_ami_sample",
+      "retargetQuery(a Copilot brief)": "Investigate a finding in the Cribl Lake dataset \"gigamon_ami_sample\". Matching filter: dataset=\"gigamon_ami_sample\" tls_version<3",
+      "retargetQuery(a Stream id beginning with the dataset name)": "dataset=\"cribl_metrics\" | where output==\"cribl_lake:gigamon_ami_json\"",
+      "retargetQuery(a dataset whose name extends it)": "dataset=\"gigamon_ami_pq\" | limit 1",
+      "retargetQuery(a panel query, on the customer dataset)": "dataset=\"gigamon_ami\" | limit 1",
+      "retargetQuery(a panel query, on the sample dataset)": "dataset=\"gigamon_ami_sample\" | limit 1",
+      "retargetQuery(a stored-result read)": "dataset=\"$vt_results\" jobName=\"gno_overview_c1h\""
     },
     "src/queries/dnsHealth.ts": {
       "OVERALL": "dataset=\"gigamon_ami\" app_name=\"dns\" | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), resolvers=dcount(dns_host)",
@@ -430,15 +441,20 @@
           "ref": "LANDING_LAG_QUERY",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | summarize newest=max(_time), n=count() | extend lag_s=now()-newest",
-          "options": "{ earliest: LANDING_LAG_EARLIEST }",
+          "options": "{ earliest: LANDING_LAG_EARLIEST, asWritten: true }",
           "optionsValue": {
-            "earliest": "-5m"
+            "earliest": "-5m",
+            "asWritten": true
           }
         },
         "candidateRun": {
           "ref": "PARTITION_CANDIDATES_QUERY",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize total=count(), n_protocol=count(protocol), d_protocol=dcount(protocol), n_l4_proto=count(l4_proto), d_l4_proto=dcount(l4_proto), n_app_name=count(app_name), d_app_name=dcount(app_name), n_ip_version=count(ip_version), d_ip_version=dcount(ip_version), n_dst_tag=count(dst_aws_flat_tags_name), d_dst_tag=dcount(dst_aws_flat_tags_name), n_src_tag=count(src_aws_flat_tags_name), d_src_tag=dcount(src_aws_flat_tags_name), n_platform=count(src_workload_platform), d_platform=dcount(src_workload_platform)"
+          "query": "dataset=\"gigamon_ami\" | summarize total=count(), n_protocol=count(protocol), d_protocol=dcount(protocol), n_l4_proto=count(l4_proto), d_l4_proto=dcount(l4_proto), n_app_name=count(app_name), d_app_name=dcount(app_name), n_ip_version=count(ip_version), d_ip_version=dcount(ip_version), n_dst_tag=count(dst_aws_flat_tags_name), d_dst_tag=dcount(dst_aws_flat_tags_name), n_src_tag=count(src_aws_flat_tags_name), d_src_tag=dcount(src_aws_flat_tags_name), n_platform=count(src_workload_platform), d_platform=dcount(src_workload_platform)",
+          "options": "{ asWritten: true }",
+          "optionsValue": {
+            "asWritten": true
+          }
         }
       },
       "links": {},
@@ -674,12 +690,13 @@
           "ref": "lakeRead.query",
           "shape": "query",
           "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0))",
-          "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, }",
+          "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, asWritten: true, }",
           "optionsValue": {
             "earliest": "-30d",
             "accel": "gno_lake_30d_c1d",
             "snapshotInLive": true,
-            "deferred": false
+            "deferred": false,
+            "asWritten": true
           }
         }
       },

@@ -121,6 +121,50 @@ describe('what one auto-refresh tick costs', () => {
     expect(tick).toEqual({ panels: 0, cpuSeconds: 0 })
     expect(live).toEqual({ panels: 0, cpuSeconds: 0, unpriced: 0 })
   })
+
+  it('does not go back for a figure once its panel has unmounted', async () => {
+    // The meter lags a completed job, so a read that comes back empty is tried
+    // again three seconds later. By then the panel may be gone, and nothing is
+    // left to show the figure to: the second read would be a request made for
+    // no one. (In the suite it was also a request made after the test's fetch
+    // stub had been taken away, and so reached the network.)
+    vi.useFakeTimers()
+    try {
+      let reads = 0
+      vi.stubGlobal('fetch', async () => {
+        reads++
+        return { ok: false, status: 404, json: async () => ({}) }
+      })
+      render([{ autoRefresh: true }])
+      const pending = recordJobCost(slots[0], 'a', 'job-1')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reads).toBe(1)
+      render([])
+      await vi.advanceTimersByTimeAsync(3000)
+      await pending
+      expect(reads).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still goes back once while its panel is mounted', async () => {
+    vi.useFakeTimers()
+    try {
+      let reads = 0
+      vi.stubGlobal('fetch', async () => {
+        reads++
+        return { ok: false, status: 404, json: async () => ({}) }
+      })
+      render([{ autoRefresh: true }])
+      const pending = recordJobCost(slots[0], 'a', 'job-1')
+      await vi.advanceTimersByTimeAsync(3000)
+      await pending
+      expect(reads).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('what running every mounted panel live costs', () => {

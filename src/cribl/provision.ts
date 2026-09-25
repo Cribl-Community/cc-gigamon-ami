@@ -90,10 +90,11 @@ import { capi, errText, groupPath, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
 import { appendLog } from './kv'
 import {
-  DEFAULT_PROFILE, datasetSpec, destinationSpec, sameDiff,
+  DEFAULT_PROFILE, datasetSpec, destinationSpec, pathFilterRows, sameDiff,
   type DiffRow, type LandingProfile,
 } from './landing'
 import { listInputs, listPackInputs, type StreamInput } from './lake'
+import { PACK_PARQUET_DATASET_ID } from './pack'
 import { loadCommitMemory } from './setupMemory'
 
 /** The Raw HTTP source Gigamon AMX POSTs to. Global (not pack) ids, and each is
@@ -400,6 +401,39 @@ export function suggestPort(managed: boolean, used: readonly number[] | null): n
  * `id`, so for this object the spec IS the create body.
  */
 export const DATASET_SPEC = datasetSpec(DEFAULT_PROFILE)
+
+/**
+ * The Cribl Lake dataset the onboarding pack's Parquet destination writes to
+ * (pack.ts `PACK_PARQUET_DATASET_ID`), as its create body.
+ *
+ * CREATED BY THE ONBOARDING RUN (onboarding/run.ts, step 1b), through
+ * `ensureLakeDataset` — created when absent and never edited — with the
+ * retention onboarding/plan.ts `parquetDatasetSpec` gives it. A pack cannot hold
+ * a dataset, so the app must. The run does NOT refuse to start the HTTP source
+ * when this step fails (design, owner-approved: "continue, with a warning"):
+ * the pack's routes ship enabled, so the Parquet destination then drops
+ * (`onBackpressure: drop`) every copy with no signal, and gigamon_ami keeps
+ * flowing — which is what the drop exists to protect. The step log says the
+ * dataset was not created.
+ *
+ * NO PARTITIONS, AND THE KEY IS ABSENT rather than `[]`: `acceleratedFields` is
+ * honoured only when a dataset is created, so this body is the whole of that
+ * decision (pack.ts `PACK_DECISIONS.parquet_partitions`). The other settings
+ * are gigamon_ami's own defaults: its retention, and the v2 reader. The reader
+ * gets the Parquet row alone, since this dataset has never held a JSON object.
+ * Not built with `datasetSpec`: that is gigamon_ami's body, whose Parquet case
+ * keeps a JSON row for the history written before a conversion.
+ */
+export const PARQUET_DATASET_SPEC = Object.freeze({
+  id: PACK_PARQUET_DATASET_ID,
+  description: 'Gigamon Application Metadata Intelligence (AMI) flow records, Parquet copy',
+  retentionPeriodInDays: DEFAULT_PROFILE.retentionDays,
+  format: 'parquet' as const,
+  searchConfig: Object.freeze({
+    searchVersion: 'v2' as const,
+    pathFilters: Object.freeze(pathFilterRows(['parquet']).map((r) => Object.freeze(r))),
+  }),
+})
 
 /**
  * The Cribl Lake destination body for a profile.
@@ -1259,18 +1293,85 @@ function mergeSourceAfterConfirm(
  * spec's 30 days would be that irreversible write with no dialog in front of it.
  */
 async function ensureDataset(ctx: EnsureCtx): Promise<StepResult> {
-  const list = await capi('GET', datasetsPath)
-  const items = (list.body as { items?: Array<{ id?: string }> })?.items || []
-  if (items.some((d) => d.id === LAKE_DATASET_ID)) return { key: 'dataset', action: 'exists' }
+  const r = await ensureLakeDataset(datasetSpec(ctx.profile) as LakeDatasetSpec, {
+    confirm: () => agreed(ctx.confirm, { key: 'dataset', action: 'create', object: RESOURCE_PHRASE.dataset, diff: [] }),
+  })
+  if (r.action === 'skipped') return refused('dataset')
+  // A dataset that exists with another format or partitions is left as it is —
+  // both are fixed at creation — and the step says so, rather than a bare
+  // "exists" over a dataset the saved landing does not describe.
+  const detail = r.differs?.length
+    ? `left as it is: ${r.differs.join('; ')} (format and partitions are fixed at creation)`
+    : r.detail
+  return detail === undefined ? { key: 'dataset', action: r.action } : { key: 'dataset', action: r.action, detail }
+}
 
-  const spec = datasetSpec(ctx.profile)
-  if (!(await agreed(ctx.confirm, { key: 'dataset', action: 'create', object: RESOURCE_PHRASE.dataset, diff: [] }))) {
-    return refused('dataset')
+/** A Lake dataset's create body: `id` plus whatever else Cribl Lake takes. */
+export interface LakeDatasetSpec {
+  readonly id: string
+  readonly format?: string
+  readonly acceleratedFields?: readonly string[]
+  readonly [key: string]: unknown
+}
+
+/** What `ensureLakeDataset` did. Never carries a PATCH: it has none. */
+export interface LakeDatasetStep {
+  id: string
+  action: 'created' | 'exists' | 'skipped' | 'error'
+  detail?: string
+  /**
+   * On `exists`: how the live dataset differs from the spec in the two
+   * settings that are FIXED AT CREATION (format and partitions), one phrase
+   * each. Absent when nothing does. Reported, never corrected — a PATCH of
+   * either answers 200 and changes nothing (measured 2026-09-21).
+   */
+  differs?: string[]
+}
+
+const partitionWords = (v: unknown): string =>
+  Array.isArray(v) && v.length > 0 ? v.map(String).join(', ') : 'none'
+
+/**
+ * A Cribl Lake dataset: CREATED WHEN ABSENT, AND NEVER EDITED. Guided Setup's
+ * dataset step is this with `gigamon_ami`'s spec; the onboarding run is to call
+ * it with the Parquet copy's and the sample dataset's.
+ *
+ * NO PATCH, ON PURPOSE. Retention and description on a live dataset are the
+ * Lake landing panel's to change (cribl/lakeLanding.ts), each behind a
+ * confirmation that can state what a retention DECREASE deletes; a re-run that
+ * quietly reset them to a spec would be that irreversible write with no dialog.
+ * Format and partitions are fixed at creation, so a live dataset whose format
+ * or partitions differ from the spec is reported (`differs`) and left alone.
+ *
+ * A LISTING IT COULD NOT READ WRITES NOTHING. The function this generalises
+ * read a refused listing as an empty one and POSTed; "could not tell" is never
+ * "absent".
+ *
+ * `confirm`, when given, is asked after the read and before the POST, and a no
+ * is `skipped` with nothing sent.
+ */
+export async function ensureLakeDataset(
+  spec: LakeDatasetSpec,
+  opts: { confirm?: () => Promise<boolean> } = {},
+): Promise<LakeDatasetStep> {
+  const list = await capi('GET', datasetsPath)
+  const items = list.status === 200 ? (list.body as { items?: unknown })?.items : undefined
+  if (!Array.isArray(items)) {
+    return { id: spec.id, action: 'error', detail: `the Cribl Lake dataset list could not be read (HTTP ${list.status}), so nothing was created` }
   }
+  const live = items.find((d) => d && typeof d === 'object' && (d as { id?: unknown }).id === spec.id) as Record<string, unknown> | undefined
+  if (live) {
+    const differs: string[] = []
+    const want = spec.format ?? 'json'
+    if (typeof live.format === 'string' && live.format !== want) differs.push(`format ${live.format}, not ${want}`)
+    const has = partitionWords(live.acceleratedFields)
+    const wants = partitionWords(spec.acceleratedFields)
+    if (has !== wants) differs.push(`partitions ${has}, not ${wants}`)
+    return differs.length ? { id: spec.id, action: 'exists', differs } : { id: spec.id, action: 'exists' }
+  }
+  if (opts.confirm && !(await opts.confirm())) return { id: spec.id, action: 'skipped' }
   const r = await capi('POST', datasetsPath, spec)
-  return r.status >= 200 && r.status < 300
-    ? { key: 'dataset', action: 'created' }
-    : { key: 'dataset', action: 'error', detail: errText(r) }
+  return r.status >= 200 && r.status < 300 ? { id: spec.id, action: 'created' } : { id: spec.id, action: 'error', detail: errText(r) }
 }
 
 /**

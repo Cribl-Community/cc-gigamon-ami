@@ -29,7 +29,10 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider, TIME_RANGES, useDashboard, type TimeRange } from '../app/DashboardContext'
-import { accelEntry } from '../cribl/accel/manifest'
+import { accelEntry, accelSavedSearch, type AccelId } from '../cribl/accel/manifest'
+import type { AccelRow } from '../cribl/accel/provision'
+import { publishAccelServing } from '../cribl/accel/serving'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
 import { resetSelectedSnapshot, setSelectedSnapshot } from '../cribl/accel/selection'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import type { FieldSummary } from '../cribl/search'
@@ -208,7 +211,7 @@ describe('the “In feed” list, served by the schedule', () => {
     stub()
     await render()
 
-    expect(sourceNote(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(sourceNote(), 'the field list carries no time, so a dead schedule is invisible').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
     expect(note(), 'the note no longer says which sample this is').toContain('hourly sample')
     expect(note()).toContain('(5,000 rows)')
   })
@@ -285,7 +288,7 @@ describe('Run live', () => {
     await act(async () => { runLive().click() })
     await settle()
 
-    expect(sourceNote(), 'back on the stored sample, and the header stopped dating it').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(sourceNote(), 'back on the stored sample, and the header stopped dating it').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
     expect(note()).toContain('hourly sample')
     expect(sampleSubmits()).toHaveLength(2)
   })
@@ -504,3 +507,70 @@ describe('feedComputed', () => {
 //   * That Cribl returns the newest run for a `jobName=` selector, or that a
 //     scheduled run's correlationId is the saved search's id. Both are stubbed,
 //     and both are unverifiable until the first real Apply (constraint 8).
+
+// ── WHAT RE-RUNS THE TWO READS ──────────────────────────────────────────────
+// Verifier, 2026-09-24, defect 1. This tab does not hold its reads for the
+// saved-search verdict, so on a cold load the verdict routinely lands AFTER the
+// first read — as `scheduled`, which changes nothing either read does. Keyed on
+// the raw verdict, both effects re-ran on it.
+describe('a saved-search verdict that lands after the first read', () => {
+  async function heard(enabled: Partial<Record<AccelId, boolean>> = {}, bodyAt: Partial<Record<AccelId, number>> = {}): Promise<void> {
+    const rows = await Promise.all(([SAMPLE, PRESENCE] as AccelId[]).map(async (id): Promise<AccelRow> => {
+      const entry = accelEntry(id)
+      const intended = await accelSavedSearch(entry)
+      const on = enabled[id] ?? true
+      return {
+        id, entry, state: on ? 'enabled' : 'paused', enabled: on, differences: [], stamp: null, ours: true, recorded: true,
+        intended, stored: { ...intended, schedule: { ...intended.schedule, enabled: on } }, bodyAt: bodyAt[id] ?? null,
+      }
+    }))
+    await act(async () => { publishAccelServing({ rows, orphans: [], denied: false, error: null, truncated: false, readAt: NOW }) })
+    await settle()
+  }
+
+  it('re-runs neither view when it says `scheduled`', async () => {
+    stub()
+    await render()
+    const before = submits.length
+    await heard()
+    expect(submits.length, 'a verdict that changed nothing re-ran a read').toBe(before)
+  })
+
+  it('re-runs the sample exactly once, live, when it says the sample is paused', async () => {
+    stub()
+    await render()
+    const before = submits.length
+    await heard({ [SAMPLE]: false })
+    expect(submits.length - before).toBe(1)
+    expect(liveSampleSubmits()).toHaveLength(1)
+  })
+
+  it('re-runs nothing on a sample install, where both reads were already live', async () => {
+    // Verifier, 2026-09-24 (integration), defect 1. On sample data the mode
+    // reads Live and the sample branch refuses to turn a schedule on, so the
+    // verdict routinely lands as `paused` or `unscheduled` AFTER the first
+    // reads. It changes nothing either read does — they were live already —
+    // and keyed on it, both the 5,000-row sample and the presence count were
+    // submitted a second time. useSearch never asks for a verdict it will not
+    // serve from; this tab now does the same.
+    settleDatasetTarget(true)
+    stub()
+    await render()
+    const before = submits.length
+    expect(before, 'the sample install ran its two live reads').toBe(2)
+    expect(submits.every((s) => s.query.includes('gigamon_ami_sample'))).toBe(true)
+    await heard({ [SAMPLE]: false, [PRESENCE]: false })
+    expect(submits.length - before, 'a verdict about schedules this install does not read re-ran a live read').toBe(0)
+  })
+
+  it('re-runs the sample once, live, when its query was re-applied after the run on screen began', async () => {
+    // Verifier, 2026-09-24, defect 3. The stub's sample run began an hour ago.
+    stub()
+    await render()
+    expect(liveSampleSubmits()).toEqual([])
+    await heard({}, { [SAMPLE]: NOW })
+    expect(liveSampleSubmits()).toHaveLength(1)
+    await settle()
+    expect(liveSampleSubmits(), 'the sample kept re-running').toHaveLength(1)
+  })
+})

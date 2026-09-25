@@ -23,11 +23,15 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  AUTH_HEADER, ENDPOINT_LEAD, ENDPOINT_TIP, HTTP_RESTART_PRECAUTION, SETUP_FACTS, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING,
+  AUTH_HEADER, ENDPOINT_LEAD, ENDPOINT_TIP, HTTP_RESTART_PRECAUTION, PACK_SETUP_FACTS, SETUP_FACTS, setupFacts, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING,
   behindNote, behindTip, deployConsequences, legacyNote, LEGACY_TIP, leftAloneSentence, pendingSentence, removeConsequences,
   undeployedSentence,
 } from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
+import {
+  PACK_BREAKER_ID, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_PARQUET_DATASET_ID,
+  PACK_PIPELINE_ID,
+} from '../cribl/pack'
 import {
   commitScope, CLOUD_PORT_RANGE, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID,
   LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID, type CommitKey,
@@ -294,3 +298,31 @@ describe('the undeployed-commit note beside Deploy', () => {
 //     which these tests deliberately never reach. If it ever turned out to
 //     stage per-object, these sentences would be over-naming and the fix would
 //     move from copy to behaviour.
+
+// With the pack available, "What gets created" describes what the PACK creates
+// (design 2026-09-24, §2 item 5): its own ids, never the global stack's, and
+// the two datasets it writes, one of them the Parquet copy.
+describe('“What gets created” follows the onboarding path', () => {
+  it('is the global stack’s list while the pack cannot be installed', () => {
+    expect(setupFacts('global')).toBe(SETUP_FACTS)
+  })
+
+  it('names the pack’s objects, not the global ones, when the pack is the onboarding', () => {
+    expect(setupFacts('pack')).toBe(PACK_SETUP_FACTS)
+    const text = PACK_SETUP_FACTS.map((f) => `${f.label} ${f.tip}`).join(' ')
+    for (const id of [PACK_ID, PACK_HTTP_INPUT_ID, PACK_BREAKER_ID, PACK_PIPELINE_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_PARQUET_DATASET_ID]) {
+      expect(text, id).toContain(id)
+    }
+    for (const id of [HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_BREAKER_ID]) expect(text, id).not.toContain(id)
+    const range = `${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`
+    expect(PACK_SETUP_FACTS.some((f) => f.label.includes(range))).toBe(true)
+  })
+
+  it('keeps the page’s rules: short labels, the detail in the tip, no internal history', () => {
+    for (const fact of PACK_SETUP_FACTS) {
+      expect(fact.label.split(/\s+/).length, fact.label).toBeLessThanOrEqual(10)
+      expect(fact.tip.length, fact.label).toBeGreaterThan(40)
+      expect(`${fact.label} ${fact.tip}`).not.toMatch(/\b(spike|Phase \d|A-SP|I-D\d|P-S\d|slice|lab)\b|\b20\d\d-\d\d-\d\d\b|syslog/i)
+    }
+  })
+})

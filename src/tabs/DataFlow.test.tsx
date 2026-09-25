@@ -175,7 +175,7 @@ describe('the Cribl Lake card', () => {
 
     const dated = cardLabels().find((l) => l.includes('as of'))
     expect(dated, `the card showed a stored figure with no date on it: ${cardLabels().join(' | ')}`).toBeDefined()
-    expect(dated).toMatch(/events · 30d · as of \d{2}:\d{2}/)
+    expect(dated).toMatch(/events · 30d · as of (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
     expect(lakeLiveSubmits(), 'the 9,297.7 CPU-s query ran anyway').toEqual([])
     expect(lakeStoredSubmits()).toHaveLength(1)
   })
@@ -339,7 +339,7 @@ describe('lakeHeldLabel', () => {
   it('dates a figure that came from a run, on one line', () => {
     // One line only: the card's label band is 12px per line and the provenance
     // chip sits directly under it, so a second line lands on top of the chip.
-    expect(lakeHeldLabel(held, NOW)).toMatch(/^18\.2M events · 30d · as of \d{2}:\d{2}$/)
+    expect(lakeHeldLabel(held, NOW)).toMatch(/^18\.2M events · 30d · as of (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}$/)
   })
 
   it('says so when the retention has moved since the run it is showing', () => {

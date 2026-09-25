@@ -254,7 +254,7 @@ describe('the default route, drawn from two reads', () => {
     // half from 04:20 and half from now would look completely normal.
     stub()
     await render()
-    expect(container.querySelector('.snap-note')?.textContent ?? '').toMatch(/snapshot \d{2}:\d{2}/)
+    expect(container.querySelector('.snap-note')?.textContent ?? '').toMatch(/snapshot (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2}/)
   })
 })
 

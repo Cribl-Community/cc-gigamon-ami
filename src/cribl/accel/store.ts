@@ -112,6 +112,23 @@ export interface AccelCreation {
    *  the localhost dev page). An invented id would be evidence of something
    *  that never happened — see cribl/user.ts. */
   by: string | null
+  /**
+   * Epoch ms this install last wrote the QUERY OR WINDOW the saved search runs —
+   * a create, or a corrective write that changed either. Unlike `at`, a write
+   * that changed only the cron, zone, name or keepLastN does not move it.
+   *
+   * WHAT IT IS FOR (verifier, 2026-09-24, defect 3). After Re-apply rewrites a
+   * body, the saved search's newest run until the next fire, and every past run
+   * from before the write, answered the OLD query. accel/read.ts refuses a run
+   * that began before this time, so a number is never shown beside an ⓘ quoting
+   * a query it did not come from.
+   *
+   * Absent on a record written by an earlier release, and then nothing is
+   * bounded — the behaviour before it existed. The clock is the browser's that
+   * pressed Apply, compared with Cribl's run times: a run that fired within the
+   * two clocks' skew of the write is the one case it can misplace.
+   */
+  bodyAt?: number
 }
 
 /** The `accel/state` document. `version` so a later shape change is recognised
@@ -143,6 +160,7 @@ function asCreation(value: unknown): AccelCreation | null {
     bodySha: v.bodySha,
     displaySha: v.displaySha,
     by: typeof v.by === 'string' ? v.by : null,
+    ...(typeof v.bodyAt === 'number' && Number.isFinite(v.bodyAt) ? { bodyAt: v.bodyAt } : {}),
   }
 }
 
@@ -204,10 +222,14 @@ export async function recordAccelWrites(records: Readonly<Record<string, AccelCr
   if (!Object.keys(records).length) return true
   return serialise(async () => {
     const state = await loadAccelState()
-    return putDoc<AccelStateDoc>(ACCEL_STATE_KEY, {
-      version: 1,
-      created: { ...state.created, ...records },
-    })
+    const created = { ...state.created }
+    for (const [id, record] of Object.entries(records)) {
+      // A write that did not change the query keeps the time the query last
+      // changed — see `bodyAt`.
+      const kept = record.bodyAt === undefined ? created[id]?.bodyAt : record.bodyAt
+      created[id] = kept === undefined ? record : { ...record, bodyAt: kept }
+    }
+    return putDoc<AccelStateDoc>(ACCEL_STATE_KEY, { version: 1, created })
   })
 }
 
