@@ -105,14 +105,25 @@ export const TARGET_WORDS: Readonly<Record<QueryTarget, string>> = Object.freeze
 export const DEFAULT_TARGET: QueryTarget = 'lake-json'
 export const SAFE_WITHOUT_MEASUREMENT: readonly QueryTarget[] = Object.freeze(['lake-json'])
 
-/** Why a query cannot follow the install's chosen target. */
-export type PinReason = 'presence' | 'evidence'
+/**
+ * Why a query cannot follow the install's chosen target.
+ *
+ * `measurement` (Phase 8.1, 2026-09-25): a query that measures the JSON
+ * dataset ITSELF — how fast it lands (LANDING_LAG), whether it holds anything
+ * (REAL_DATA_PROBE), how much it keeps (LAKE_HELD), what its fields look like
+ * (PARTITION_CANDIDATES) and the parity audits. Answered from the Parquet copy
+ * it would describe the wrong dataset. Those callers also submit `asWritten`
+ * (cribl/search.ts), so no router sees them; the pin says why in the table.
+ */
+export type PinReason = 'presence' | 'evidence' | 'measurement'
 
 export const PIN_WORDS: Readonly<Record<PinReason, string>> = Object.freeze({
   presence:
     'This panel asks which fields the feed actually carries. A Parquet dataset with an automatic schema materialises every column, so every field would read back as present — the opposite of what this panel is for. It always reads the JSON archive.',
   evidence:
     'This opens the underlying records as they arrived. The Parquet copy reads a field a record never had back as an empty value, and may later drop `_raw`, so a drill-down there would not show the row that led to the number. It always reads the JSON archive.',
+  measurement:
+    'This measures the JSON archive itself — how fast records land in it, whether it holds any, how much it keeps, or how it compares with the Parquet copy. Answered from any other dataset it would describe the wrong one. It always reads the JSON archive.',
 })
 
 export interface Routing {

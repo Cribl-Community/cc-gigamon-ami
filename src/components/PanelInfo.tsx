@@ -3,7 +3,8 @@ import type { AccelSource } from '../cribl/accel/read'
 import { searchUiUrl } from '../cribl/config'
 import { useDashboard } from '../app/DashboardContext'
 import { useDatasetTarget } from '../cribl/datasetTarget'
-import { retargetQuery } from '../queries/datasets'
+import { REAL_DATASET, retargetQuery } from '../queries/datasets'
+import { PARQUET_DATASET, useRanOn } from '../cribl/routing/ranOn'
 
 /**
  * The clock a panel dates a stored result by: `14:07`, or `17 Sep 00:10` when
@@ -294,12 +295,20 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
   // below keep `query`: searchUiUrl makes the same move itself (cribl/config.ts),
   // and the display freeze counts those two calls as written.
   const target = useDatasetTarget()
-  const shown = query === undefined ? undefined : retargetQuery(query, target.dataset)
+  // …and a ROUTED query ran on the Parquet copy (cribl/routing/route.ts, Phase
+  // 8.1): the ⓘ names the dataset its last live job actually read. The sample
+  // seam comes first, as it does at submit. A figure served by a stored run
+  // read JSON whatever the live query did, because schedules never route (S1).
+  // With the shipped routing table nothing routes, so this is gigamon_ami.
+  const routed = useRanOn(query)
+  const storedRun = computed !== undefined && computed.source !== 'live'
+  const ranOnDataset = target.dataset !== REAL_DATASET ? target.dataset : storedRun ? REAL_DATASET : routed
+  const shown = query === undefined ? undefined : retargetQuery(query, ranOnDataset)
   // The prose follows for the same reason: a stage that says its panels query
   // `dataset="gigamon_ami"` (Data Flow's Search stage) is the same claim. Only
   // a dataset SELECTOR moves (queries/datasets.ts) — prose naming gigamon_ami
   // as where the Lake destination writes stays true and is left alone.
-  const aboutShown = about === undefined ? undefined : retargetQuery(about, target.dataset)
+  const aboutShown = about === undefined ? undefined : retargetQuery(about, ranOnDataset)
   const [open, setOpen] = useState(false)
   const [place, setPlace] = useState<Placement>({ top: 0, left: 0, side: 'below' })
   const [copied, setCopied] = useState(false)
@@ -492,6 +501,12 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
               >
                 <pre className="pinfo-code">{pretty(shown ?? query)}</pre>
               </a>
+              {ranOnDataset === PARQUET_DATASET && (
+                /* Said once, because "Open in Search" above keeps the query
+                   as written: a drill-down is evidence, and evidence reads the
+                   full archive (queryTarget.ts, the `evidence` pin). */
+                <p className="pinfo-about">{`This figure was read from ${PARQUET_DATASET}, the Parquet copy. “Open in Search” opens the same query on ${REAL_DATASET}, the full archive with every field and the original record.`}</p>
+              )}
             </div>
           )}
           {promql && (

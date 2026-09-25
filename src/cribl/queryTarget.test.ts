@@ -64,6 +64,17 @@ describe('the pins — queries that may never leave the archive', () => {
     }
   })
 
+  it('sends a measurement of the archive itself to JSON however the install is configured', () => {
+    // LANDING_LAG, REAL_DATA_PROBE, LAKE_HELD, PARTITION_CANDIDATES and the
+    // parity audits describe gigamon_ami; answered elsewhere they describe the
+    // wrong dataset (Phase 8.1).
+    for (const chosen of ALL_TARGETS) {
+      const r = routeQuery(chosen, 'measurement', ALL)
+      expect(r.target, `measurement escaped to ${chosen}`).toBe('lake-json')
+      expect(r.pinned).toBe('measurement')
+    }
+  })
+
   it('explains each pin in terms of what would go wrong, not that it is disallowed', () => {
     expect(PIN_WORDS.presence).toContain('every field would read back as present')
     expect(PIN_WORDS.evidence).toContain('_raw')
