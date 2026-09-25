@@ -344,7 +344,7 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/packUpgrade.ts#upgradePack',
     gates: ['onboarding_pack.upgrade'],
     surface: 'config',
-    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward. From the Upgrade confirmation, which lists what the new version adds and removes; the run reads the Raw HTTP source back afterwards and commits and deploys nothing when its port, token, TLS or state was reset.',
+    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward. From the Upgrade confirmation, which lists what the new version adds and what it no longer ships (a changed object it no longer ships survives the upgrade, and is not removed); the run reads the Raw HTTP source back afterwards and commits and deploys nothing when its port, token, TLS or state was reset.',
   },
   {
     at: 'cribl/packClient.ts#removePack',

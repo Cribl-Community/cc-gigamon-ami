@@ -4,7 +4,8 @@
 // Leader would receive, in order.
 //
 // What is held still (design §5 and §8 item 11, the Upgrade half):
-//   * the dialog lists the objects the new version adds and removes, by the
+//   * the dialog lists the objects the new version adds, and names (never as a
+//     delete) the ones it no longer ships, by the
 //     installed version's own ids (0.1.0's from PACK_0_1_0), the commit's scope
 //     and its consequences, and says plainly that settings made after install
 //     are NOT verified to survive an upgrade;
@@ -212,10 +213,10 @@ async function upgrade(o: { between?: () => void; published?: boolean } = {}) {
 // ── The confirmation ────────────────────────────────────────────────────────
 
 describe('the Upgrade confirmation', () => {
-  it('0.1.0 → this build: 0.1.0’s own objects are removed and every current one is added, by id', async () => {
+  it('0.1.0 → this build: 0.1.0’s own objects are dropped (not claimed removed) and every current one is added, by id', async () => {
     const { plan } = await load()
     const changes = plan.upgradeObjectChanges('0.1.0')
-    expect(changes.removed.map((c) => c.id).sort()).toEqual([
+    expect(changes.dropped.map((c) => c.id).sort()).toEqual([
       ...Object.values(PACK_0_1_0.inputs), ...Object.values(PACK_0_1_0.pipelines),
       ...Object.values(PACK_0_1_0.routes), ...Object.values(PACK_0_1_0.outputs),
     ].sort())
@@ -223,7 +224,7 @@ describe('the Upgrade confirmation', () => {
     expect(changes.kept).toEqual([])
   })
 
-  it('names the pack, each object added or removed, the deploy, the commit’s scope, and that settings are not verified to survive', async () => {
+  it('names the pack, each object added or no longer shipped, the deploy, the commit’s scope, and that settings are not verified to survive', async () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null })
     const { run, plan } = await load()
     const prepared = await run.prepareUpgrade(GROUP, { undeployed: null, undeployedChecking: false })
@@ -235,8 +236,13 @@ describe('the Upgrade confirmation', () => {
     expect(d.resources[0].detail).toContain(`0.1.0 → ${PACK_VERSION}`)
     expect(d.resources[0].detail).toContain('custom functions refused')
     const rows = (action: string) => d.resources.filter((r) => r.action === action).map((r) => r.id)
-    expect(rows('delete')).toContain('in_gno_syslog')
-    expect(rows('delete')).toContain('out_gno_lake')
+    // An object 0.1.0 shipped and this build does not is NOT a delete row: a
+    // copy the tenant changed after install survives the upgrade, as an orphan
+    // (measured on a Leader). It is named in a sentence that says so.
+    expect(rows('delete')).toEqual([])
+    for (const id of [...Object.values(PACK_0_1_0.inputs), ...Object.values(PACK_0_1_0.pipelines), ...Object.values(PACK_0_1_0.routes), ...Object.values(PACK_0_1_0.outputs)]) {
+      expect(d.resources.map((r) => r.id), id).not.toContain(id)
+    }
     expect(rows('create')).toContain(PACK_HTTP_INPUT_ID)
     expect(rows('create')).toContain('gigamon_ami_http_to_parquet')
     expect(rows('deploy')).toEqual([GROUP])
@@ -247,7 +253,12 @@ describe('the Upgrade confirmation', () => {
     expect(said).toContain('Deploying restarts this worker group’s Worker Processes.')
     // 0.1.0 has no Raw HTTP source: the new one arrives off, without a token.
     expect(said).toContain(`${PACK_HTTP_INPUT_ID} arrives switched off and without an auth token`)
-    expect(said).toContain('in_gno_syslog')
+    expect(said).toContain(`${PACK_VERSION} no longer ships in_gno_syslog, in_gno_sample, gno_syslog, gno_sample`)
+    expect(said).toContain('out_gno_lake')
+    expect(said).toContain('stays in the pack’s local settings, left over')
+    expect(said).toContain('This upgrade does not remove leftovers.')
+    // The sources it no longer ships: they stop listening only if unchanged.
+    expect(said).toContain('After the deploy, in_gno_syslog, in_gno_sample stop listening — unless one was changed after install')
     expect(d.undo).toMatch(/does not downgrade/)
     expect(writes()).toEqual([])
   })

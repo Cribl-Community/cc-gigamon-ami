@@ -18,7 +18,7 @@
 //  11. Remove pack names the three datasets it keeps, deletes none, and needs
 //      the group typed;
 //  11. Upgrade: offered for an owned copy that is behind, its dialog lists what
-//      the new version adds and removes and says settings are not verified to
+//      the new version adds and no longer ships, and says settings are not verified to
 //      survive, and a confirmed run upgrades, reads back, commits and deploys;
 //   the pack sources' own settings — Rotate token (the new token shown once),
 //   Move port, Start and Stop sample data (Start refused until its dataset
