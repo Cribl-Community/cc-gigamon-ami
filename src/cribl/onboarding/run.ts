@@ -57,7 +57,7 @@ import {
 } from '../pack'
 import {
   commitAndDeployPack, compareVersions, configureHttpInput, enableHttpInput, installPack, packCommitScope, portsOfOthers,
-  previewPackInput, readPackState, removePack, setHttpToken, setSampleEnabled, setSourcePort, thisPackRelease,
+  previewPackInput, readPackState, removePack, sampleInputIdOf, setHttpToken, setSampleEnabled, setSourcePort, thisPackRelease,
   type PackInputChange, type PackState, type PackStep,
 } from '../packClient'
 import { upgradePack } from '../packUpgrade'
@@ -600,7 +600,7 @@ export async function finishPackRemoval(group: string, io: Pick<RemovalIO, 'onSt
 // reset on the Workers, and the step says so, and who else could.
 
 /** What the read-back compares, off `readPackState`. Never a token. */
-const snapshotOf = (p: PackState): SourceSnapshot => ({ http: p.http, sample: p.sample })
+const snapshotOf = (p: PackState): SourceSnapshot => ({ http: p.http, sample: p.installedSample })
 
 /**
  * The pack's source list could not be read. `readPackState` then reports
@@ -690,7 +690,7 @@ export async function runPackUpgrade(ctx: UpgradeDialogContext, _dialog: Upgrade
     const why = upgradeRefusal(now, g, ctx.release.version)
     if (why) moved.push(why)
     else if (now.version !== ctx.from) moved.push(`${PACK_ID} is ${now.version ?? 'of an unknown version'} now, not ${ctx.from}`)
-    if (!sameValue(snapshotOf(now), ctx.before)) moved.push(`${PACK_HTTP_INPUT_ID} or ${PACK_SAMPLE_INPUT_ID} changed`)
+    if (!sameValue(snapshotOf(now), ctx.before)) moved.push(`${PACK_HTTP_INPUT_ID} or ${sampleInputIdOf(ctx.from)} changed`)
   }
   if (moved.length) {
     return finish(step({

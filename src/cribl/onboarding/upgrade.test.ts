@@ -4,7 +4,8 @@
 // Leader would receive, in order.
 //
 // What is held still (design §5 and §8 item 11, the Upgrade half):
-//   * the dialog lists the objects the new version adds and removes, by the
+//   * the dialog lists the objects the new version adds, and names (never as a
+//     delete) the ones it no longer ships, by the
 //     installed version's own ids (0.1.0's from PACK_0_1_0), the commit's scope
 //     and its consequences, and says plainly that settings made after install
 //     are NOT verified to survive an upgrade;
@@ -74,6 +75,9 @@ interface Opts {
   /** The pack list names this build's version from this read on (1-based):
    *  somebody else upgraded the copy while the run was in flight. */
   currentFrom?: number
+  /** With `http: null` (0.1.0): 0.1.0's own sample DataGen, `in_gno_sample`,
+   *  is in the pack, running (`true`) or stopped (`false`). */
+  sample010?: boolean
 }
 
 const shipped = (id: string) => ({ id, ...structuredClone(SHIPPED[id]) })
@@ -89,7 +93,10 @@ function leader(o: Opts): void {
   const w: World = {
     packs: [{ id: PACK_ID, ...o.copy }],
     inputs: o.http === null
-      ? { in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 } }
+      ? {
+        in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 },
+        ...(o.sample010 === undefined ? {} : { [PACK_0_1_0.inputs.sample]: { id: PACK_0_1_0.inputs.sample, type: 'datagen', disabled: !o.sample010 } }),
+      }
       : { [PACK_HTTP_INPUT_ID]: { ...shipped(PACK_HTTP_INPUT_ID), ...(o.http ?? CONFIGURED) }, [PACK_SAMPLE_INPUT_ID]: shipped(PACK_SAMPLE_INPUT_ID) },
     pending: [],
     committed: [],
@@ -162,8 +169,18 @@ type Plan = typeof import('./plan')
 
 async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; plan: Plan }> {
   vi.resetModules()
-  if (opts.published === false) vi.doUnmock('../pack')
-  else {
+  if (opts.published === false) {
+    // A build that pins a version before its release, as this one pinned
+    // 0.2.1 until 2026-09-25: the constants a release moves, moved back.
+    vi.doMock('../pack', async (orig) => {
+      const real = await orig<typeof import('../pack')>()
+      return {
+        ...real,
+        PACK_PUBLISHED: false, PACK_SHA256: null,
+        PACK_PUBLISHED_VERSIONS: Object.freeze(real.PACK_PUBLISHED_VERSIONS.filter((v) => v !== real.PACK_VERSION)),
+      }
+    })
+  } else {
     vi.doMock('../pack', async (orig) => ({
       ...(await orig<typeof import('../pack')>()),
       PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', MID, '0.2.0', PACK_VERSION, NEWER]),
@@ -196,10 +213,10 @@ async function upgrade(o: { between?: () => void; published?: boolean } = {}) {
 // ── The confirmation ────────────────────────────────────────────────────────
 
 describe('the Upgrade confirmation', () => {
-  it('0.1.0 → this build: 0.1.0’s own objects are removed and every current one is added, by id', async () => {
+  it('0.1.0 → this build: 0.1.0’s own objects are dropped (not claimed removed) and every current one is added, by id', async () => {
     const { plan } = await load()
     const changes = plan.upgradeObjectChanges('0.1.0')
-    expect(changes.removed.map((c) => c.id).sort()).toEqual([
+    expect(changes.dropped.map((c) => c.id).sort()).toEqual([
       ...Object.values(PACK_0_1_0.inputs), ...Object.values(PACK_0_1_0.pipelines),
       ...Object.values(PACK_0_1_0.routes), ...Object.values(PACK_0_1_0.outputs),
     ].sort())
@@ -207,7 +224,7 @@ describe('the Upgrade confirmation', () => {
     expect(changes.kept).toEqual([])
   })
 
-  it('names the pack, each object added or removed, the deploy, the commit’s scope, and that settings are not verified to survive', async () => {
+  it('names the pack, each object added or no longer shipped, the deploy, the commit’s scope, and that settings are not verified to survive', async () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null })
     const { run, plan } = await load()
     const prepared = await run.prepareUpgrade(GROUP, { undeployed: null, undeployedChecking: false })
@@ -219,8 +236,13 @@ describe('the Upgrade confirmation', () => {
     expect(d.resources[0].detail).toContain(`0.1.0 → ${PACK_VERSION}`)
     expect(d.resources[0].detail).toContain('custom functions refused')
     const rows = (action: string) => d.resources.filter((r) => r.action === action).map((r) => r.id)
-    expect(rows('delete')).toContain('in_gno_syslog')
-    expect(rows('delete')).toContain('out_gno_lake')
+    // An object 0.1.0 shipped and this build does not is NOT a delete row: a
+    // copy the tenant changed after install survives the upgrade, as an orphan
+    // (measured on a Leader). It is named in a sentence that says so.
+    expect(rows('delete')).toEqual([])
+    for (const id of [...Object.values(PACK_0_1_0.inputs), ...Object.values(PACK_0_1_0.pipelines), ...Object.values(PACK_0_1_0.routes), ...Object.values(PACK_0_1_0.outputs)]) {
+      expect(d.resources.map((r) => r.id), id).not.toContain(id)
+    }
     expect(rows('create')).toContain(PACK_HTTP_INPUT_ID)
     expect(rows('create')).toContain('gigamon_ami_http_to_parquet')
     expect(rows('deploy')).toEqual([GROUP])
@@ -231,7 +253,12 @@ describe('the Upgrade confirmation', () => {
     expect(said).toContain('Deploying restarts this worker group’s Worker Processes.')
     // 0.1.0 has no Raw HTTP source: the new one arrives off, without a token.
     expect(said).toContain(`${PACK_HTTP_INPUT_ID} arrives switched off and without an auth token`)
-    expect(said).toContain('in_gno_syslog')
+    expect(said).toContain(`${PACK_VERSION} no longer ships in_gno_syslog, in_gno_sample, gno_syslog, gno_sample`)
+    expect(said).toContain('out_gno_lake')
+    expect(said).toContain('stays in the pack’s local settings, left over')
+    expect(said).toContain('This upgrade does not remove leftovers.')
+    // The sources it no longer ships: they stop listening only if unchanged.
+    expect(said).toContain('After the deploy, in_gno_syslog, in_gno_sample stop listening — unless one was changed after install')
     expect(d.undo).toMatch(/does not downgrade/)
     expect(writes()).toEqual([])
   })
@@ -254,9 +281,44 @@ describe('the Upgrade confirmation', () => {
     const own = { ...on, tlsCert: '/opt/certs/gno.crt /opt/certs/gno.key' }
     expect(plan.upgradeReadBack({ http: own, sample: null }, { http: on, sample: null }).reset).toEqual(['its TLS certificate'])
     // A sample that was running and is now stopped is said, and does not block.
-    const s = plan.upgradeReadBack({ http: null, sample: { disabled: false } }, { http: null, sample: { disabled: true } })
+    const s = plan.upgradeReadBack({ http: null, sample: { id: PACK_SAMPLE_INPUT_ID, disabled: false } }, { http: null, sample: { id: PACK_SAMPLE_INPUT_ID, disabled: true } })
     expect(s.reset).toEqual([])
-    expect(s.notes.join(' ')).toContain(PACK_SAMPLE_INPUT_ID)
+    expect(s.notes.join(' ')).toContain(`${PACK_SAMPLE_INPUT_ID} was running and is not now`)
+    // …by the id each side had: 0.1.0's sample before, this build's after.
+    const moved = plan.upgradeReadBack(
+      { http: null, sample: { id: PACK_0_1_0.inputs.sample, disabled: false } },
+      { http: null, sample: { id: PACK_SAMPLE_INPUT_ID, disabled: true } },
+    )
+    expect(moved.notes.join(' ')).toContain(`${PACK_0_1_0.inputs.sample} was running before the upgrade, and ${PACK_SAMPLE_INPUT_ID}`)
+  })
+})
+
+// ── 0.1.0's own sample source ───────────────────────────────────────────────
+
+describe('a 0.1.0 copy whose sample DataGen was running', () => {
+  // 0.1.0's sample source is `in_gno_sample` (PACK_0_1_0), not this build's
+  // `in_gigamon_ami_sample`. The before-state has to be read by the INSTALLED
+  // version's id, or a running 0.1.0 sample reads as "no sample source" and
+  // the upgrade that stops it says nothing.
+  it('is read by 0.1.0’s own id before the upgrade, and the read-back says it is not running now', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, sample010: true })
+    const r = await upgrade()
+    expect(r.prepared.ok).toBe(true)
+    if (!r.prepared.ok) return
+    expect(r.prepared.ctx.before.sample).toEqual({ id: PACK_0_1_0.inputs.sample, disabled: false })
+    expect(r.out?.stopped).toBeNull()
+    const warned = r.steps!.filter((s) => s.key === 'readback' && (s as { warning?: boolean }).warning)
+    expect(warned.map((s) => s.detail).join(' ')).toContain(`${PACK_0_1_0.inputs.sample} was running`)
+    expect(warned.map((s) => s.detail).join(' ')).toContain(PACK_SAMPLE_INPUT_ID)
+    // Said, not blocking: the upgrade is committed and deployed.
+    expect(writeWords()).toEqual(['upgrade', 'commit', 'deploy'])
+  })
+
+  it('stopped before the upgrade: nothing to say', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, sample010: false })
+    const r = await upgrade()
+    expect(r.out?.stopped).toBeNull()
+    expect(r.steps!.some((s) => s.key === 'readback' && (s as { warning?: boolean }).warning)).toBe(false)
   })
 })
 
@@ -289,8 +351,24 @@ describe('refused before anything is sent', () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null })
     const { prepared } = await upgrade({ published: false })
     expect(prepared.ok).toBe(false)
-    if (!prepared.ok) expect(prepared.why).toBe(packRelease().refusal)
+    if (!prepared.ok) expect(prepared.why).toBe(packRelease({ published: false, sha256: null, version: PACK_VERSION }).refusal)
     expect(writes()).toEqual([])
+  })
+
+  it('from 0.2.0: an object both versions ship is the new shipped copy, under settings the tenant kept — never "replaced"', async () => {
+    leader({ copy: { version: '0.2.0', source: packReleaseUrl('0.2.0') } })
+    const { run, plan } = await load()
+    const prepared = await run.prepareUpgrade(GROUP, { undeployed: null, undeployedChecking: false })
+    if (!prepared.ok) throw new Error(prepared.why)
+    const d = plan.packUpgradeDialog(prepared.ctx)
+    // 0.2.0 and this build ship the same ids, so every object is a kept row.
+    const kept = d.resources.filter((r) => r.action === 'replace' && r.kind !== 'Pack')
+    expect(kept.map((r) => r.id)).toContain(PACK_HTTP_INPUT_ID)
+    for (const r of kept) {
+      // Measured: an in-place upgrade keeps the pack's local/ settings.
+      expect(r.detail, r.id).toBe(`${PACK_VERSION}’s shipped copy; settings changed after install are kept`)
+      expect(r.detail, r.id).not.toMatch(/replaced by/)
+    }
   })
 
   it('a run handed a dialog anyway, in a build with no release: step 0 re-reads the release, zero writes', async () => {

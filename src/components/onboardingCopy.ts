@@ -151,7 +151,7 @@ export function installedRefusal(p: { version: string | null; published: boolean
 /** Behind the ⓘ beside Upgrade. */
 export const UPGRADE_TIP =
   'Upgrades the pack in place from the GitHub release this app pins, with custom functions refused. The confirmation lists what ' +
-  'the new version adds and removes. The pack’s Raw HTTP source is read back after the upgrade, and nothing is committed or deployed ' +
+  'the new version adds, and what it no longer ships. The pack’s Raw HTTP source is read back after the upgrade, and nothing is committed or deployed ' +
   'if its port, auth token or state was reset.'
 
 /** The plain statement every Upgrade confirmation carries. */
@@ -163,9 +163,25 @@ export const UPGRADE_UNVERIFIED =
 export const upgradeNewSourceSentence = (): string =>
   `${PACK_HTTP_INPUT_ID} arrives switched off and without an auth token. Finish onboarding gives it a port and a token after the upgrade.`
 
-/** The sources the new version no longer has. */
-export const upgradeRemovedSourcesSentence = (ids: readonly string[]): string =>
-  `After the deploy, ${ids.join(', ')} ${ids.length === 1 ? 'stops' : 'stop'} listening. Anything sending to ${ids.length === 1 ? 'it' : 'them'} has to be pointed at ${PACK_HTTP_INPUT_ID}.`
+/**
+ * The objects the new version no longer ships. NOT "removed": an in-place
+ * upgrade replaces the pack's shipped settings but keeps its local ones, so an
+ * object the tenant changed after install stays behind, as an orphan no route
+ * of the new version reads (measured on a Leader: 0.1.0's syslog source,
+ * changed before upgrading, was still there after). This app cannot tell from
+ * what it reads which objects were changed, and removes none of them.
+ */
+export const upgradeDroppedSentence = (to: string, ids: readonly string[]): string =>
+  `${to} no longer ships ${ids.join(', ')}. The upgrade takes ${ids.length === 1 ? 'it' : 'them'} out of the pack’s shipped settings, ` +
+  `but ${ids.length === 1 ? 'if you changed it' : 'any of them you changed'} after install — a port, say, or switching it on — ` +
+  `${ids.length === 1 ? 'it stays' : 'stays'} in the pack’s local settings, left over and unused by ${to}’s routes. This upgrade does not remove leftovers.`
+
+/** The sources the new version no longer ships: where their senders must go. */
+export const upgradeDroppedSourcesSentence = (ids: readonly string[]): string => {
+  const one = ids.length === 1
+  return `After the deploy, ${ids.join(', ')} ${one ? 'stops' : 'stop'} listening — unless ${one ? 'it was' : 'one was'} changed after install, ` +
+    `when ${one ? 'it stays' : 'that one stays'} as a leftover whose events no route delivers. Anything sending to ${one ? 'it' : 'them'} has to be pointed at ${PACK_HTTP_INPUT_ID}.`
+}
 
 export const upgradeUndo = (group: string): string =>
   `This app does not downgrade. The version before is in ${group}’s Git history; Remove pack uninstalls the pack, and Onboard installs it again with a new auth token.`

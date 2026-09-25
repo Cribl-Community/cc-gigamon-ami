@@ -239,7 +239,7 @@ git push origin :refs/tags/v1.0.17
 
 ### Pack releases (the onboarding pack, not the app)
 
-Guided Setup will install a Cribl Stream pack, `cc-network-gigamon-ami`, whose source is text under
+Guided Setup installs a Cribl Stream pack, `cc-network-gigamon-ami`, whose source is text under
 [`packs/cc-network-gigamon-ami/`](./packs/cc-network-gigamon-ami/). Its version is in that
 directory's `package.json` and is independent of the app's. No `.crbl` is ever committed.
 
@@ -253,10 +253,13 @@ directory's `package.json` and is independent of the app's. No `.crbl` is ever c
   the Packs Dispensary.
 - **Never start a pack tag with `v`**: `release.yml` would publish it as the app.
 - A published pack asset is never replaced. A fix is a new pack version.
-- The app installs the version pinned by `PACK_VERSION` in `src/cribl/pack.ts`. Bumping that
-  constant, in a normal PR, is how the app ships a pack update. The same PR sets `PACK_SHA256` to
-  the hash the release run printed and `PACK_PUBLISHED` to `true`; the tests fail if one moves
-  without the other.
+- The app installs the version pinned by `PACK_VERSION` in `src/cribl/pack.ts` (today 0.2.1).
+  Bumping that constant, in a normal PR, is how the app ships a pack update. The same PR sets
+  `PACK_SHA256` to the hash the release run printed, `PACK_PUBLISHED` to `true`, and appends the
+  version to `PACK_PUBLISHED_VERSIONS`; the tests fail if one moves without the others.
+- CI (`ci.yml`) then downloads that pinned release on every push and pull request and fails when
+  it does not answer 200 or its sha256 is not `PACK_SHA256` (`npm run pack:release-check`; it needs
+  the network, and skips while `PACK_PUBLISHED` is false).
 
 ```bash
 npm run pack:samples   # regenerate the synthetic samples and default/samples.yml

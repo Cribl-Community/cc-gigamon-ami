@@ -40,7 +40,7 @@ import {
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
   FINISH_REMOVAL_UNDO, finishRemovalSentence, nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
   ROTATE_EXPORTER, ROTATE_UNDO, SAMPLE_START_UNDO, SAMPLE_STOP_KEEPS, SAMPLE_STOP_UNDO, UPGRADE_UNVERIFIED, movePortSentence, movePortUndo,
-  upgradeNewSourceSentence, upgradeRemovedSourcesSentence, upgradeUndo,
+  upgradeDroppedSentence, upgradeDroppedSourcesSentence, upgradeNewSourceSentence, upgradeUndo,
 } from '../../components/onboardingCopy'
 import { approvedWrites, type AccelState, type ApprovedWrites } from '../accel/provision'
 import { estimateScheduleSetCost } from '../accel/estimate'
@@ -687,30 +687,42 @@ export interface PackObjectRef {
 
 /**
  * What an in-place upgrade from `from` to this build's version does to the
- * pack's objects, by id: the ones only the installed version has (removed),
- * the ones only the new version has (added), and the ones both carry (replaced
- * by the new version's copy). The installed version's ids come from
+ * pack's objects, by id: the ones only the new version has (added), the ones
+ * both carry (the new version's shipped copy, under any settings the tenant
+ * changed after install, which the upgrade keeps — measured 2026-09-25), and the ones only the
+ * installed version has (dropped). The installed version's ids come from
  * `packObjectsOf` — 0.1.0's from its published record, never the current ids.
+ *
+ * DROPPED, NOT REMOVED. The upgrade takes a dropped object out of the pack's
+ * shipped (`default/`) settings but keeps the pack's `local/` ones, so one the
+ * tenant changed after install survives as an orphan (measured 2026-09-25 on a
+ * Leader, 0.1.0 → 0.2.0: 0.1.0's `in_gno_syslog`, overridden, stayed behind as
+ * a disabled input). Which objects carry an override is not in anything this
+ * app reads before the upgrade, so the dialog claims no removal, and nothing
+ * here deletes the leftovers. *(Corrected 2026-09-25, `feat/pack-flip-021`:
+ * this was `removed`, and the dialog listed each one as a delete.)*
  */
-export function upgradeObjectChanges(from: string | null): { added: PackObjectRef[]; removed: PackObjectRef[]; kept: PackObjectRef[] } {
+export function upgradeObjectChanges(from: string | null): { added: PackObjectRef[]; dropped: PackObjectRef[]; kept: PackObjectRef[] } {
   const before = packObjectsOf(from)
   const added: PackObjectRef[] = []
-  const removed: PackObjectRef[] = []
+  const dropped: PackObjectRef[] = []
   const kept: PackObjectRef[] = []
   for (const kind of Object.keys(PACK_OBJECTS) as PackObjectKind[]) {
     const was = new Set(before[kind])
     const now = new Set<string>(PACK_OBJECTS[kind])
-    for (const id of before[kind]) (now.has(id) ? kept : removed).push({ kind, id })
+    for (const id of before[kind]) (now.has(id) ? kept : dropped).push({ kind, id })
     for (const id of PACK_OBJECTS[kind]) if (!was.has(id)) added.push({ kind, id })
   }
-  return { added, removed, kept }
+  return { added, dropped, kept }
 }
 
 /** What the upgrade's read-back compares: the Raw HTTP source (never its
- *  token, only whether one is set) and whether the sample runs. */
+ *  token, only whether one is set) and whether the sample runs — the sample
+ *  by the id the version read has for it (packClient.ts `installedSample`:
+ *  0.1.0's `in_gno_sample` before an upgrade from 0.1.0, this build's after). */
 export interface SourceSnapshot {
   http: { port: number | null; tokenSet: boolean; disabled: boolean; tls: boolean; tlsCert: string | null } | null
-  sample: { disabled: boolean } | null
+  sample: { id: string; disabled: boolean } | null
 }
 
 /**
@@ -742,7 +754,10 @@ export function upgradeReadBack(before: SourceSnapshot, after: SourceSnapshot): 
     }
   }
   if (before.sample && !before.sample.disabled && (after.sample === null || after.sample.disabled)) {
-    notes.push(`${PACK_SAMPLE_INPUT_ID} was running and is not now; start it again with Start sample data if you want it.`)
+    const now = after.sample?.id ?? PACK_SAMPLE_INPUT_ID
+    notes.push(before.sample.id === now
+      ? `${now} was running and is not now; start it again with Start sample data if you want it.`
+      : `${before.sample.id} was running before the upgrade, and ${now}, the sample source that replaces it, is not running; start it with Start sample data if you want it.`)
   }
   return { reset, notes }
 }
@@ -769,24 +784,25 @@ export interface UpgradeDialog {
 
 /**
  * The Upgrade confirmation: the pack, replaced in place; each object the new
- * version adds, removes or replaces; the deploy; the commit's scope and every
+ * version adds or replaces; the deploy; the objects it no longer ships, named
+ * in a sentence rather than as delete rows, because a changed one survives the
+ * upgrade (`upgradeObjectChanges`); the commit's scope and every
  * consequence — and, always, the plain statement that settings made after
  * install are not verified to survive, with what the run does about it.
  */
 export function packUpgradeDialog(ctx: UpgradeDialogContext): UpgradeDialog {
   const { group, from } = ctx
   const to = ctx.release.version
-  const { added, removed, kept } = upgradeObjectChanges(from)
+  const { added, dropped, kept } = upgradeObjectChanges(from)
   const resources: ConfirmResource[] = [{
     action: 'replace', kind: 'Pack', id: PACK_ID, group,
     detail: `${from} → ${to} from ${ctx.release.url}, with custom functions refused`,
   }]
   for (const o of added) resources.push({ action: 'create', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `new in ${to}` })
-  for (const o of kept) resources.push({ action: 'replace', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `replaced by ${to}’s copy` })
-  for (const o of removed) resources.push({ action: 'delete', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `in ${from}, not in ${to}` })
+  for (const o of kept) resources.push({ action: 'replace', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `${to}’s shipped copy; settings changed after install are kept` })
   resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
 
-  const removedInputs = removed.filter((o) => o.kind === 'inputs').map((o) => o.id)
+  const droppedInputs = dropped.filter((o) => o.kind === 'inputs').map((o) => o.id)
   const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
   const undeployedLine = undeployedSentence(commitCtx)
   return {
@@ -795,7 +811,8 @@ export function packUpgradeDialog(ctx: UpgradeDialogContext): UpgradeDialog {
     consequences: [
       UPGRADE_UNVERIFIED,
       ...(ctx.before.http === null ? [upgradeNewSourceSentence()] : []),
-      ...(removedInputs.length ? [upgradeRemovedSourcesSentence(removedInputs)] : []),
+      ...(dropped.length ? [upgradeDroppedSentence(to, dropped.map((o) => o.id))] : []),
+      ...(droppedInputs.length ? [upgradeDroppedSourcesSentence(droppedInputs)] : []),
       carriesSentence(commitCtx, 'change'),
       pendingSentence(commitCtx),
       ...(undeployedLine ? [undeployedLine] : []),

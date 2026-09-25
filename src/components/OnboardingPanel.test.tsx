@@ -1,7 +1,12 @@
-// The onboarding panel, with a pack release recorded (pack.ts's release
-// constants moved as a release moves them). The unrecorded build — today's —
-// is OnboardingPanel.unpublished.test.tsx.
+// The onboarding panel in this build as it ships: 0.2.1 released, its sha256
+// recorded (pack.ts). Nothing here swaps a constant. *(Until 2026-09-25 this
+// file mocked a release in, because the build pinned 0.2.1 before its release;
+// the unreleased build is now OnboardingPanel.unpublished.test.tsx, with its
+// constants moved back explicitly.)*
 //
+//  10. the premise, pinned: this build installs, Onboard is offered (not
+//      aria-disabled) and opens a real dialog without a write, and an installed
+//      build shows the panel with no pack in the group;
 // What is asserted is requests and strings, against a fake Leader at `fetch`:
 //   3. nothing writes on mount, a group change, Re-check, opening either
 //      dialog, Cancel or Escape — and thirty minutes of timers later, still
@@ -13,7 +18,7 @@
 //  11. Remove pack names the three datasets it keeps, deletes none, and needs
 //      the group typed;
 //  11. Upgrade: offered for an owned copy that is behind, its dialog lists what
-//      the new version adds and removes and says settings are not verified to
+//      the new version adds and no longer ships, and says settings are not verified to
 //      survive, and a confirmed run upgrades, reads back, commits and deploys;
 //   the pack sources' own settings — Rotate token (the new token shown once),
 //   Move port, Start and Stop sample data (Start refused until its dataset
@@ -27,6 +32,7 @@ import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
 import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packReleaseUrl } from '../cribl/pack'
+import { thisPackRelease } from '../cribl/packClient'
 import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
 import { OnboardingPanel } from './OnboardingPanel'
 import { ProvisionPanel } from './ProvisionPanel'
@@ -38,16 +44,6 @@ vi.mock('./Toast', () => ({
   clearToastError: () => {},
   ToastProvider: () => null,
 }))
-vi.mock('../cribl/pack', async (orig) => {
-  // PACK_VERSION's release recorded, as a release records it: appended to
-  // the versions already published.
-  const real = await orig<typeof import('../cribl/pack')>()
-  return {
-    ...real,
-    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
-    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
-  }
-})
 
 const GROUPS = ['default', 'lab']
 const HASH = 'dddd000011112222dddd000011112222dddd0000'
@@ -117,7 +113,8 @@ function leader(o: {
   }
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
-    const path = String(url).replace(/^\/capi/, '').split('?')[0]
+    // `/capi` in dev preview; the absolute API base once installed.
+    const path = String(url).replace(/^\/capi/, '').replace(/^https:\/\/main-acme\.cribl\.cloud\/api\/v1/, '').split('?')[0]
     const raw = init.body == null ? undefined : String(init.body)
     let body: unknown = raw
     try { body = raw === undefined ? undefined : JSON.parse(raw) } catch { /* text */ }
@@ -282,6 +279,65 @@ async function removeThroughTheDialog() {
   await typeInDialog('default')
   await press(buttonNamed('Yes, remove from default'), 30)
 }
+
+// ── 10 ──────────────────────────────────────────────────────────────────────
+
+describe('10. this build, as it ships: 0.2.1 released', () => {
+  it('pins the premise: the pinned release is installable, with the digest hashed from its asset', () => {
+    expect(thisPackRelease()).toMatchObject({
+      version: '0.2.1', published: true, installable: true, refusal: null, url: PACK_URL,
+      sha256: '2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807',
+    })
+  })
+
+  it('Onboard is offered, not aria-disabled; it opens a real dialog naming the pack, and nothing is written until Yes', async () => {
+    leader()
+    await mount()
+    const onboard = buttonNamed('Onboard')!
+    expect(onboard.getAttribute('aria-disabled')).not.toBe('true')
+    expect(bodyText()).not.toContain('Onboard is not available')
+    await press(onboard)
+    expect(dialog(), 'the Onboard confirmation did not open').not.toBeNull()
+    expect(dialogText()).toContain(PACK_ID)
+    expect(dialogText()).toContain(PACK_VERSION)
+    expect(buttonNamed('Yes, onboard in default')).toBeTruthy()
+    await press(buttonNamed('Cancel'))
+    expect(dialog()).toBeNull()
+    expect(writes(), 'a write to Cribl before Yes').toEqual([])
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/m/default/packs')).toBe(false)
+  })
+
+  it('the pack panel holds the page’s one picker, and the Raw HTTP panel holds none', async () => {
+    leader({ globalHttp: true })
+    await mount(<><OnboardingPanel /><ProvisionPanel /></>)
+    expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
+    expect(document.body.querySelector('#gs-group-select')).toBeNull()
+    expect(buttonNamed('Deploy onboarding stack')).toBeUndefined()
+    expect(writes()).toEqual([])
+  })
+
+  it('installed in Cribl, with no pack in the group: the pack panel shows, to onboard', async () => {
+    ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
+    // A built bundle: Vite's DEV is false there (vitest's is true).
+    vi.stubEnv('DEV', false)
+    vi.resetModules()
+    try {
+      const { OnboardingPanel: Installed } = await import('./OnboardingPanel')
+      const { DashboardProvider: Provider } = await import('../app/DashboardContext')
+      leader()
+      await act(async () => { root.render(<Provider><Installed /></Provider>) })
+      await settle(12)
+      expect(bodyText()).toContain('Onboard Gigamon AMI with the pack')
+      const onboard = buttonNamed('Onboard')!
+      const why = document.getElementById(onboard.getAttribute('aria-describedby') ?? '')?.textContent
+      expect(onboard.getAttribute('aria-disabled'), why ?? '').not.toBe('true')
+      expect(writes()).toEqual([])
+    } finally {
+      delete (window as { CRIBL_API_URL?: string }).CRIBL_API_URL
+      vi.unstubAllEnvs()
+    }
+  })
+})
 
 // ── 3 ───────────────────────────────────────────────────────────────────────
 

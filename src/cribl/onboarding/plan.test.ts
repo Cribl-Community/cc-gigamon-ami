@@ -237,8 +237,10 @@ describe('onboardingPath — which onboarding the page offers', () => {
     }
   })
 
-  it('this build today: global', () => {
-    expect(onboardingPath(packRelease(), null).mode).toBe('global')
+  it('this build today: the pack (0.2.1 is released), the global panel remove-only while unread', () => {
+    // Global until 2026-09-25, while this build pinned 0.2.1 before its release.
+    expect(onboardingPath(packRelease(), null)).toEqual({ mode: 'pack', provision: 'remove-only' })
+    expect(onboardingPath(packRelease(), { http: false, legacySyslog: false })).toEqual({ mode: 'pack', provision: 'hidden' })
   })
 
   it('with the pack available, the global panel offers Remove only, and only while something is (or may be) there', () => {

@@ -78,7 +78,14 @@
 //     removed, so 0.1.0's `in_gno_syslog` stayed behind as an orphan. CLAUDE.md's
 //     onboarding section records what that means for the Upgrade dialog.)
 //   - that the Parquet destination's `onBackpressure: drop` keeps gigamon_ami
-//     flowing while gigamon_ami_pq does not exist or cannot be written.
+//     flowing while gigamon_ami_pq does not exist or cannot be written. The
+//     value is CONFIGURED [measured: packs/…/default/outputs.yml]; what it DOES
+//     is unmeasured. If it behaves as intended, gigamon_ami_pq can have holes
+//     by design, which is why the Phase 8 router checks completeness per window
+//     before any live panel reads it (src/cribl/routing/completeness.ts).
+//   - the HTTP input path end to end inside a pack (breaker, then the JSON and
+//     Parquet routes, then a Parquet destination writing from a pack): the
+//     2026-09-25 proof exercised only the sample DataGen path.
 
 /** The pack's id on the Leader. Never starts with `v` — see the tag note below. */
 export const PACK_ID = 'cc-network-gigamon-ami'
@@ -86,22 +93,28 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * A PLACEHOLDER UNTIL ITS RELEASE EXISTS. No `gigamon-pack-v0.2.1` release has
- * been published, so `PACK_URL` below is a 404 today. Bumping this constant is
- * how the app ships a pack update; `packs/cc-network-gigamon-ami/package.json`
- * may run ahead of it, never behind. *(0.2.0 until 2026-09-25: 0.2.0 was
- * released and delivers nothing, see 0.2.1 in the header, so this build pins
- * the fix.)*
+ * RELEASED: `gigamon-pack-v0.2.1` was published on 2026-09-25 (tag at
+ * a034641, not marked Latest), and a fresh URL install of it was proven on a
+ * Leader the same day: the sample source, once started, landed 1,372 rows in
+ * gigamon_ami_sample in 2.5 minutes, under the cribl_metrics labels
+ * src/queries/stackIds.ts counts by. Bumping this constant is how the app ships
+ * a pack update; `packs/cc-network-gigamon-ami/package.json` may run ahead of
+ * it, never behind. *(0.2.0 until 2026-09-25: 0.2.0 was released and delivers
+ * nothing, see 0.2.1 in the header, so this build pins the fix. Corrected
+ * 2026-09-25, `feat/pack-flip-021`: this said 0.2.1 was a placeholder whose
+ * URL was a 404.)*
  */
 export const PACK_VERSION = '0.2.1'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. False: no 0.2.1 release has
- * been published. Set it to true in the same change that sets `PACK_SHA256`;
- * pack.test.ts fails if one moves without the other, and fails while
- * `PACK_PENDING` below still holds anything.
+ * Whether `PACK_VERSION`'s release exists on GitHub. True since 2026-09-25:
+ * `gigamon-pack-v0.2.1` is published. It moved in the same change that set
+ * `PACK_SHA256` and appended 0.2.1 to `PACK_PUBLISHED_VERSIONS`; pack.test.ts
+ * fails if one moves without the others, and fails while `PACK_PENDING` below
+ * still holds anything. scripts/check-pack-release.mjs (CI) downloads
+ * `PACK_URL` and fails when its sha256 is not `PACK_SHA256`.
  */
-export const PACK_PUBLISHED: boolean = false
+export const PACK_PUBLISHED: boolean = true
 
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
@@ -109,10 +122,15 @@ export const PACK_PUBLISHED: boolean = false
  * `packRelease` below refuses while it is null, and so does packClient.ts's
  * `installRefusal`, which is that function bound to these constants. That is a record, not a check of the bytes: the Leader downloads
  * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
- * sees the asset to hash it. Null only while no release exists
- * (`PACK_PUBLISHED` false).
+ * sees the asset to hash it. CI does, instead: scripts/check-pack-release.mjs
+ * downloads `PACK_URL` on every push and fails when the bytes hash to anything
+ * else. Null only while no release exists (`PACK_PUBLISHED` false).
+ *
+ * 0.2.1's asset, `cc-network-gigamon-ami-0.2.1.crbl`, hashed from the release
+ * download on 2026-09-25; the local deterministic build and pack-release.yml's
+ * summary gave the same digest.
  */
-export const PACK_SHA256: string | null = null
+export const PACK_SHA256: string | null = '2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807'
 
 /**
  * Where a pack keeps its routes, relative to the pack root. Measured on a
@@ -234,6 +252,10 @@ export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze([
   // hold it and Remove and Upgrade must recognise it. Its objects are this
   // build's ids (`PACK_OBJECTS`): 0.2.1 renamed nothing.
   '0.2.0',
+  // gigamon-pack-v0.2.1, tag commit a034641, asset sha256
+  // 2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807 (the
+  // `PACK_SHA256` above). Released 2026-09-25; the version this build pins.
+  '0.2.1',
 ])
 
 // ── Objects inside the pack. Each is referenced by these ids in the pack's YAML.

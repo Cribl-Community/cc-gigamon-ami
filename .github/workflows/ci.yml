@@ -54,3 +54,13 @@ jobs:
       # No `if:` and no `continue-on-error` on this step — src/assetBudget.test.ts
       # reads this file as steps and fails if either appears.
       - run: npm run assets:budget
+      # NETWORK-DEPENDENT: downloads the pack release this build pins
+      # (src/cribl/pack.ts packReleaseUrl(PACK_VERSION)) from GitHub, following
+      # redirects, and fails unless it answers 200 with bytes whose sha256 is
+      # PACK_SHA256. Skips, and says so, while PACK_PUBLISHED is false. The script
+      # retries a network error, a 429 or a 5xx itself (three attempts in all);
+      # it never retries a digest mismatch or a 404. Last, so an outage at
+      # GitHub cannot hide whether the rest of this PR passes. It is not in
+      # pack-release.yml, which hashes the asset itself before publishing.
+      - name: Pinned pack release resolves and matches its sha256 (network — downloads from GitHub)
+        run: npm run pack:release-check

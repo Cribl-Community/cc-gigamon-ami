@@ -20,8 +20,14 @@
 // removal in no commit; "Finish removing the pack" commits and deploys it
 // (`finishRemovalDialog`, `finishPackRemoval`), from Git's own pending list.
 //
-// WHILE THE PACK CANNOT BE INSTALLED (no release recorded in this build — see
-// pack.ts `PACK_PUBLISHED`), the panel still mounts, so its controls are in the
+// THIS BUILD INSTALLS 0.2.1 (released 2026-09-25; pack.ts `PACK_PUBLISHED`),
+// so the panel always renders, holds the page's one worker-group picker, and
+// is THE onboarding (onboarding/plan.ts `onboardingPath`); the Raw HTTP
+// stack's panel below shows only while a global object of its stack is (or may
+// be) in the group, and then offers Remove alone.
+//
+// IN A BUILD WHOSE PACK CANNOT BE INSTALLED (one that pins a version before its
+// release, as this one pinned 0.2.1 until 2026-09-25), the panel still mounts, so its controls are in the
 // source the gate scans read, but it renders only where there is something to
 // show: in dev preview (the localhost page, and Cribl's Live Preview of the
 // dev server — `IS_DEV_SERVER`), where the pack is already installed in the

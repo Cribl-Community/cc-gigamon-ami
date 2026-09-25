@@ -669,8 +669,8 @@ describe('the pinned pack', () => {
   })
 
   it('has a sha256 pin exactly when its release is recorded as published', () => {
-    // No release of PACK_VERSION exists yet, so there are no bytes to pin. The
-    // two constants move together: a pin without a release, or a release
+    // A pin names bytes a release published; with no release there are none
+    // to pin. The two constants move together: a pin without a release, or a release
     // without a pin, fails here.
     expect(PACK_SHA256 === null).toBe(!PACK_PUBLISHED)
     if (PACK_SHA256 !== null) expect(PACK_SHA256).toMatch(/^[0-9a-f]{64}$/)
@@ -680,7 +680,7 @@ describe('the pinned pack', () => {
     // APPEND to EVER_RELEASED when a release is published; never remove from
     // it. A version missing from the list is "not published" to every tenant
     // running it: packClient.ts's Remove keeps it and its Upgrade refuses it.
-    const EVER_RELEASED = ['0.1.0', '0.2.0']
+    const EVER_RELEASED = ['0.1.0', '0.2.0', '0.2.1']
     for (const v of EVER_RELEASED) expect(PACK_PUBLISHED_VERSIONS, `${v} was released and has left the list`).toContain(v)
     expect(PACK_PUBLISHED_VERSIONS).toContain(PACK_0_1_0.version)
     expect(PACK_PUBLISHED_VERSIONS.includes(PACK_VERSION)).toBe(PACK_PUBLISHED)
@@ -760,10 +760,21 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
 // until its grants are declared). packClient.ts's `installRefusal` is this
 // function bound to the constants it imports, so the two cannot disagree.
 describe('packRelease — the pinned release, and why it cannot be installed', () => {
-  it('refuses today: 0.2.1 has no release', () => {
+  it('installs 0.2.1 in this build: published, with its release asset’s recorded digest', () => {
+    // gigamon-pack-v0.2.1 was published 2026-09-25, and this digest was hashed
+    // from the downloaded release asset (the local build agreed). CI's
+    // scripts/check-pack-release.mjs re-downloads PACK_URL and compares.
     const r = packRelease()
     expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
-    expect(r.refusal).toMatch(/has not been released/)
+    expect(PACK_VERSION).toBe('0.2.1')
+    expect(PACK_SHA256).toBe('2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807')
+    expect(r.refusal).toBeNull()
+    expect(r.installable).toBe(true)
+  })
+
+  it('refuses a version that has not been released, with the sentence a customer reads', () => {
+    const r = packRelease({ published: false, sha256: null, version: '9.9.9' })
+    expect(r.refusal).toBe('pack 9.9.9 has not been released, so there is nothing to install yet')
     expect(r.installable).toBe(false)
   })
 
@@ -782,7 +793,13 @@ describe('packRelease — the pinned release, and why it cannot be installed', (
   })
 
   it('never says how the gate is built — no internal names in the sentence a customer reads', () => {
-    for (const r of [packRelease(), packRelease({ published: true, sha256: null, version: '9.9.9' })]) {
+    const refusals = [
+      packRelease({ published: false, sha256: null, version: '9.9.9' }),
+      packRelease({ published: true, sha256: null, version: '9.9.9' }),
+      packRelease({ published: true, sha256: 'x', version: '9.9.9' }),
+    ]
+    for (const r of refusals) {
+      expect(r.refusal).not.toBeNull()
       expect(r.refusal).not.toMatch(/PACK_|sha256_shape|packClient|\bspike\b|Phase \d/)
     }
   })
