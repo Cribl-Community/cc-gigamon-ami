@@ -11,11 +11,16 @@
 //   gigamon_ami      JSON, keeps `_raw`, 30-day archive. Drill-downs, Field
 //                    Explorer and Copilot read it. Nothing about it changes.
 //   gigamon_ami_pq   Parquet. The analytics copy the dashboards are to
-//                    aggregate. TODAY IT IS NOT CURATED: the pack routes it
-//                    through the same gigamon_ami_normalize pipeline, which
-//                    keeps `_raw`, and its automatic schema keeps every field
-//                    (pack.ts `PACK_DECISIONS.parquet_schema_mode`). Dropping
-//                    `_raw` there is a future pipeline change.
+//                    aggregate. Pack 0.2.1 routes it through the same
+//                    gigamon_ami_normalize pipeline, which keeps `_raw`; from
+//                    pack 0.2.2 (built, not yet released) its route runs
+//                    gigamon_ami_normalize_parquet, which removes `_raw`, so
+//                    rows landed before the upgrade keep it and rows after do
+//                    not. Its automatic schema keeps every other field (pack.ts
+//                    `PACK_DECISIONS.parquet_schema_mode`). Nothing that needs
+//                    `_raw` may read it: those views are pinned below.
+//                    *(Corrected 2026-09-25, `feat/pack-022-parquet-pipeline`:
+//                    this said dropping `_raw` was a future pipeline change.)*
 //
 // `_raw` is on 100 % of events and is ≈40 % of the bytes Search reads (337 MB
 // of ~850 MB per 15 min), and NO dashboard query touches it.

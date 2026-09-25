@@ -75,7 +75,8 @@ const RECEIVED = `metric=="total.in_events" and namespace=="data_insights" and $
  *
  * Where a source's (pipeline, source) pair is on only one path, the pipeline's
  * own `pipe.out_events` for that pair is one per event. Where the pair is on
- * two — the pack's JSON and Parquet routes both run gigamon_ami_normalize — the
+ * two — the pack's JSON and Parquet routes both ran gigamon_ami_normalize up to
+ * 0.2.1 (0.2.2 gives the Parquet route a pipeline of its own) — the
  * pipeline counter is two per event and carries no dimension naming the route
  * (a routed path's `instance` is unmeasured), so that source is counted by what
  * the gigamon_ami destination received from it: `total.out_events` by

@@ -6,13 +6,23 @@
 # `npm run pack:check` refuses one.
 #
 # Three routes and no catch-all: only this pack's two sources feed it.
-#   http   -> gigamon_ami_normalize -> gigamon_ami_json_lake    (gigamon_ami, JSON)      NOT final
-#   http   -> gigamon_ami_normalize -> gigamon_ami_parquet_lake (gigamon_ami_pq, Parquet) final
-#   sample -> gigamon_ami_normalize -> gigamon_ami_sample_lake  (gigamon_ami_sample)     final
+#   http   -> gigamon_ami_normalize         -> gigamon_ami_json_lake    (gigamon_ami, JSON)      NOT final
+#   http   -> gigamon_ami_normalize_parquet -> gigamon_ami_parquet_lake (gigamon_ami_pq, Parquet) final
+#   sample -> gigamon_ami_normalize         -> gigamon_ami_sample_lake  (gigamon_ami_sample)     final
 #
 # THE DUAL WRITE IS THE ORDER. The JSON route is not final, so each HTTP event
 # goes down it and on to the Parquet route, which is final. Put the Parquet
 # route first and the dashboards' dataset gets nothing.
+#
+# _raw STAYS IN JSON, AND ONLY THERE (0.2.2 on). The Parquet route runs its own
+# pipeline, the same cast and derive plus an Eval that removes _raw; the JSON
+# and sample routes keep gigamon_ami_normalize, and _raw with it. `npm run
+# pack:check` refuses a route into a Parquet destination whose pipeline does not
+# remove _raw, and a route into a JSON one whose pipeline does. A non-final
+# route hands its pipeline a COPY of the event (Cribl's documented behaviour,
+# UNMEASURED in this project), so the removal cannot reach the JSON copy; the
+# 0.2.2 proof install checks it. (0.2.0 and 0.2.1 ran gigamon_ami_normalize on
+# all three routes.)
 #
 # NO OUTPUT EXPRESSIONS. A route's `output` is the only place its events go:
 # `enableOutputExpression: true` with an `outputExpression` would let the sample
@@ -49,7 +59,7 @@ routes:
     final: true
     disabled: false
     filter: __inputId=='http_raw:cc-network-gigamon-ami.in_gigamon_ami_http'
-    pipeline: gigamon_ami_normalize
+    pipeline: gigamon_ami_normalize_parquet
     output: gigamon_ami_parquet_lake
     description: Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami_pq, Parquet)
     clones: []

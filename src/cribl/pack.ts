@@ -15,6 +15,24 @@
 // LAKE_TOTAL_QUERY, built from these ids), src/cribl/packClient.ts (the pack
 // install/upgrade client) and src/cribl/paths.ts (the grants that client needs).
 //
+// ── 0.2.2: THE PARQUET COPY DROPS _raw ──────────────────────────────────────
+//
+// After the breaker every field of a record is its own field, and `_raw` is the
+// record's whole JSON text again: a 0.2.1 Parquet row carried the full `_raw`
+// beside 48 columns (measured 2026-09-25, a scratch HTTP test: 50 of 50 records
+// in both datasets). Owner decision 2026-09-25: the Parquet route gets its own
+// pipeline, `PACK_PARQUET_PIPELINE_ID` — `gigamon_ami_normalize`'s cast and
+// derive plus an Eval that removes `_raw` (provision.ts
+// `PARQUET_PIPELINE_SPEC`) — and the JSON and sample routes keep
+// `PACK_PIPELINE_ID` and `_raw`, which the evidence drills, Field Explorer's
+// presence view and the Copilot briefs read (all pinned to JSON,
+// queryTarget.ts `PIN_WORDS`). The gain is storage, not a claimed latency win.
+// A non-final route hands its pipeline a COPY of the event, so the removal
+// cannot reach the JSON copy: Cribl's documented behaviour, UNMEASURED here, and
+// the 0.2.2 proof install checks it. Nothing else changed from 0.2.1, whose
+// objects are `PACK_0_2_1_OBJECTS` below. *(Corrected 2026-09-25,
+// `feat/pack-022-parquet-pipeline`: one pipeline served all three routes.)*
+//
 // ── 0.2.1: THE ROUTE FILTERS NAME THE PACK ──────────────────────────────────
 //
 // Inside a pack an event's `__inputId` is `<type>:<packId>.<inputId>`, and
@@ -41,9 +59,10 @@
 // so 0.2.0 replaces 0.1.0's syslog input with an `http_raw` input and its event
 // breaker. That input fans out through two routes: one to the JSON dataset
 // every dashboard reads, one to a Parquet copy. The sample DataGen keeps its
-// own route to its own dataset. One cast/derive pipeline serves all three,
+// own route to its own dataset. One cast/derive pipeline served all three,
 // because after the breaker an HTTP record is an object exactly as a sample
-// event is.
+// event is (until 0.2.2, whose Parquet route runs its own copy that also
+// removes `_raw`: see 0.2.2 above).
 //
 // NAMES SAY WHAT THINGS DO. The `gno_` prefix is RESERVED for the acceleration
 // schedules (src/cribl/accel/manifest.ts); no pack object may carry it, and
@@ -83,9 +102,19 @@
 //     is unmeasured. If it behaves as intended, gigamon_ami_pq can have holes
 //     by design, which is why the Phase 8 router checks completeness per window
 //     before any live panel reads it (src/cribl/routing/completeness.ts).
-//   - the HTTP input path end to end inside a pack (breaker, then the JSON and
-//     Parquet routes, then a Parquet destination writing from a pack): the
-//     2026-09-25 proof exercised only the sample DataGen path.
+//   - (the HTTP input path end to end inside a pack was on this list until
+//     2026-09-25: a scratch test that day sent 50 records through the breaker
+//     and both 0.2.1 routes, and all 50 landed in gigamon_ami and in
+//     gigamon_ami_pq, the Parquet rows carrying the full _raw.)
+//   - that removing _raw on the Parquet route (0.2.2) leaves the JSON copy's
+//     _raw intact: a non-final route hands its pipeline a copy of the event
+//     (Cribl's documented behaviour), never measured here. The proof install
+//     must read a gigamon_ami row with _raw and a gigamon_ami_pq row without.
+//   - that an in-place upgrade from 0.2.1 puts the Parquet route on the new
+//     pipeline. The route table ships in default/; a tenant who edited the
+//     pack's routes has a local/ copy, which the upgrade keeps (measured for
+//     sources, 2026-09-25), so that tenant's Parquet route would still run
+//     gigamon_ami_normalize. This app never writes the pack's routes.
 
 /** The pack's id on the Leader. Never starts with `v` — see the tag note below. */
 export const PACK_ID = 'cc-network-gigamon-ami'
@@ -93,28 +122,33 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * RELEASED: `gigamon-pack-v0.2.1` was published on 2026-09-25 (tag at
- * a034641, not marked Latest), and a fresh URL install of it was proven on a
- * Leader the same day: the sample source, once started, landed 1,372 rows in
- * gigamon_ami_sample in 2.5 minutes, under the cribl_metrics labels
- * src/queries/stackIds.ts counts by. Bumping this constant is how the app ships
- * a pack update; `packs/cc-network-gigamon-ami/package.json` may run ahead of
- * it, never behind. *(0.2.0 until 2026-09-25: 0.2.0 was released and delivers
- * nothing, see 0.2.1 in the header, so this build pins the fix. Corrected
- * 2026-09-25, `feat/pack-flip-021`: this said 0.2.1 was a placeholder whose
- * URL was a 404.)*
+ * NOT RELEASED YET: 0.2.2 (the Parquet route's own pipeline, which removes
+ * `_raw`) is built here and has no `gigamon-pack-v0.2.2` release, so
+ * `PACK_PUBLISHED` is false and Onboard and Upgrade are refused with
+ * `packRelease`'s sentence until the flip — a separate commit after the tag,
+ * as for 0.2.1, that sets `PACK_PUBLISHED` and `PACK_SHA256` and appends 0.2.2
+ * to `PACK_PUBLISHED_VERSIONS`. An installed 0.2.1 (or 0.2.0, or 0.1.0) stays
+ * owned meanwhile: Remove works, and Upgrade to 0.2.2 is what the flip offers.
+ * Bumping this constant is how the app ships a pack update;
+ * `packs/cc-network-gigamon-ami/package.json` may run ahead of it, never
+ * behind. *(0.2.1 until 2026-09-25, `feat/pack-022-parquet-pipeline`: 0.2.1 was
+ * released that day, tag at a034641, and a fresh URL install of it landed
+ * 1,372 sample rows in 2.5 minutes. Before that 0.2.0, which delivers
+ * nothing.)*
  */
-export const PACK_VERSION = '0.2.1'
+export const PACK_VERSION = '0.2.2'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. True since 2026-09-25:
- * `gigamon-pack-v0.2.1` is published. It moved in the same change that set
- * `PACK_SHA256` and appended 0.2.1 to `PACK_PUBLISHED_VERSIONS`; pack.test.ts
- * fails if one moves without the others, and fails while `PACK_PENDING` below
- * still holds anything. scripts/check-pack-release.mjs (CI) downloads
- * `PACK_URL` and fails when its sha256 is not `PACK_SHA256`.
+ * Whether `PACK_VERSION`'s release exists on GitHub. FALSE: 0.2.2 is not
+ * released. (It was true for 0.2.1 from its release on 2026-09-25 until this
+ * build moved the pin to 0.2.2, the same day.) It moves back in the same change
+ * that sets `PACK_SHA256` and appends 0.2.2 to `PACK_PUBLISHED_VERSIONS`;
+ * pack.test.ts fails if one moves without the others, and fails while
+ * `PACK_PENDING` below still holds anything. While it is false
+ * scripts/check-pack-release.mjs (CI) skips and says why; once true it
+ * downloads `PACK_URL` and fails when its sha256 is not `PACK_SHA256`.
  */
-export const PACK_PUBLISHED: boolean = true
+export const PACK_PUBLISHED: boolean = false
 
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
@@ -124,13 +158,11 @@ export const PACK_PUBLISHED: boolean = true
  * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
  * sees the asset to hash it. CI does, instead: scripts/check-pack-release.mjs
  * downloads `PACK_URL` on every push and fails when the bytes hash to anything
- * else. Null only while no release exists (`PACK_PUBLISHED` false).
- *
- * 0.2.1's asset, `cc-network-gigamon-ami-0.2.1.crbl`, hashed from the release
- * download on 2026-09-25; the local deterministic build and pack-release.yml's
- * summary gave the same digest.
+ * else. Null only while no release exists (`PACK_PUBLISHED` false) — as now,
+ * since 0.2.2 is unreleased. (Until this build pinned 0.2.2 it held 0.2.1's
+ * digest, which is recorded beside 0.2.1 in `PACK_PUBLISHED_VERSIONS`.)
  */
-export const PACK_SHA256: string | null = '2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807'
+export const PACK_SHA256: string | null = null
 
 /**
  * Where a pack keeps its routes, relative to the pack root. Measured on a
@@ -254,7 +286,9 @@ export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze([
   '0.2.0',
   // gigamon-pack-v0.2.1, tag commit a034641, asset sha256
   // 2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807 (the
-  // `PACK_SHA256` above). Released 2026-09-25; the version this build pins.
+  // `PACK_SHA256` until this build pinned 0.2.2). Released 2026-09-25. An
+  // installed copy stays owned: Remove takes it, and Upgrade takes it to 0.2.2
+  // once 0.2.2 is released and appended here.
   '0.2.1',
 ])
 
@@ -271,8 +305,13 @@ export const PACK_HTTP_INPUT_ID = 'in_gigamon_ami_http'
 export const PACK_SAMPLE_INPUT_ID = 'in_gigamon_ami_sample'
 /** Splits a POSTed JSON array into one event per record, fields extracted. */
 export const PACK_BREAKER_ID = 'gigamon_ami_http_json_array'
-/** Cast + derive only, for all three routes: provision.ts's `PIPELINE_SPEC`. */
+/** Cast + derive only, for the JSON and sample routes, which keep `_raw`:
+ *  provision.ts's `PIPELINE_SPEC`. (All three routes ran it until 0.2.2.) */
 export const PACK_PIPELINE_ID = 'gigamon_ami_normalize'
+/** The Parquet route's pipeline (0.2.2 on): `PACK_PIPELINE_ID`'s cast and
+ *  derive, then an Eval that removes `_raw` — provision.ts's
+ *  `PARQUET_PIPELINE_SPEC`. */
+export const PACK_PARQUET_PIPELINE_ID = 'gigamon_ami_normalize_parquet'
 /** HTTP → the JSON dataset the dashboards read. NOT final: the event goes on
  *  to the Parquet route as well. */
 export const PACK_HTTP_JSON_ROUTE_ID = 'gigamon_ami_http_to_json'
@@ -323,12 +362,30 @@ export const PACK_DATASETS_NOT_CREATED: readonly string[] = Object.freeze([])
 export const PACK_OBJECTS = Object.freeze({
   inputs: Object.freeze([PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID]),
   breakers: Object.freeze([PACK_BREAKER_ID]),
-  pipelines: Object.freeze([PACK_PIPELINE_ID]),
+  pipelines: Object.freeze([PACK_PIPELINE_ID, PACK_PARQUET_PIPELINE_ID]),
   routes: Object.freeze([PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID]),
   outputs: Object.freeze([PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID]),
 })
 
 export type PackObjectKind = keyof typeof PACK_OBJECTS
+
+/**
+ * THE OBJECTS 0.2.0 AND 0.2.1 SHIPPED, as published: `PACK_OBJECTS` without
+ * `PACK_PARQUET_PIPELINE_ID`, which 0.2.2 added. Literals, like `PACK_0_1_0`,
+ * because they describe bytes already released: Remove names exactly these
+ * for an installed 0.2.0 or 0.2.1 (onboarding/plan.ts `packObjectsOf`), and an
+ * upgrade from either shows the new pipeline as added. pack.test.ts pins it.
+ * *(Added 2026-09-25, `feat/pack-022-parquet-pipeline`: `packObjectsOf`
+ * answered 0.2.x with `PACK_OBJECTS`, right while those versions shipped this
+ * build's ids.)*
+ */
+export const PACK_0_2_1_OBJECTS: Readonly<Record<PackObjectKind, readonly string[]>> = Object.freeze({
+  inputs: Object.freeze(['in_gigamon_ami_http', 'in_gigamon_ami_sample']),
+  breakers: Object.freeze(['gigamon_ami_http_json_array']),
+  pipelines: Object.freeze(['gigamon_ami_normalize']),
+  routes: Object.freeze(['gigamon_ami_http_to_json', 'gigamon_ami_http_to_parquet', 'gigamon_ami_sample']),
+  outputs: Object.freeze(['gigamon_ami_json_lake', 'gigamon_ami_parquet_lake', 'gigamon_ami_sample_lake']),
+})
 
 /** The ports a Cribl-managed (Cloud) worker group exposes for a source.
  *  pack.test.ts holds it equal to provision.ts's `CLOUD_PORT_RANGE`. */

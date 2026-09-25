@@ -10,9 +10,10 @@ Parquet copy in `gigamon_ami_pq`.
 | Source | `in_gigamon_ami_http` | Raw HTTP (`http_raw`). Gigamon AMX POSTs a JSON array of records. **Ships disabled, with no auth token.** |
 | Source | `in_gigamon_ami_sample` | DataGen of synthetic sample flows. **Ships disabled.** |
 | Event breaker | `gigamon_ami_http_json_array` | One event per record of the POSTed array, every field extracted. |
-| Pipeline | `gigamon_ami_normalize` | Casts numeric fields and derives helper fields. No parse step: the breaker has already extracted the fields. All three routes use it. |
-| Route | `gigamon_ami_http_to_json` | HTTP → `gigamon_ami_json_lake`. **Not final**, so each event goes on to the next route too. |
-| Route | `gigamon_ami_http_to_parquet` | HTTP → `gigamon_ami_parquet_lake`. |
+| Pipeline | `gigamon_ami_normalize` | Casts numeric fields and derives helper fields. No parse step: the breaker has already extracted the fields. The JSON and sample routes use it, and keep `_raw`. |
+| Pipeline | `gigamon_ami_normalize_parquet` | The same casts and derived fields, then removes `_raw`. Only the Parquet route uses it. |
+| Route | `gigamon_ami_http_to_json` | HTTP → `gigamon_ami_normalize` → `gigamon_ami_json_lake`. **Not final**, so each event goes on to the next route too. |
+| Route | `gigamon_ami_http_to_parquet` | HTTP → `gigamon_ami_normalize_parquet` → `gigamon_ami_parquet_lake`. |
 | Route | `gigamon_ami_sample` | Sample DataGen → `gigamon_ami_sample_lake`. |
 | Destination | `gigamon_ami_json_lake` | Cribl Lake → `gigamon_ami` (JSON) |
 | Destination | `gigamon_ami_parquet_lake` | Cribl Lake → `gigamon_ami_pq` (Parquet). Drops events rather than blocking under backpressure, so it can never stop the JSON copy. |
@@ -33,6 +34,18 @@ empty. Guided Setup refuses to start the sample source until `gigamon_ami_sample
 `__inputId` carries the pack id before the source id; this was measured on a Cribl.Cloud Leader on
 2026-09-25. A filter in the global form, `http_raw:in_gigamon_ami_http`, never matches inside a
 pack, and `npm run pack:check` refuses one.
+
+**`_raw` is kept in the JSON copy and dropped from the Parquet copy.** After the breaker, every
+field of a record is already its own field, and `_raw` holds the record's whole JSON text again. A
+0.2.1 Parquet row carried that full `_raw` beside its 48 columns (measured on 2026-09-25). So the
+Parquet route runs `gigamon_ami_normalize_parquet`, which removes `_raw` with an Eval after the same
+cast and derive steps. The JSON route and the sample route keep `_raw`, because the app's evidence
+drill-downs, its field presence view and its Copilot briefs read `_raw`, and they always read
+`gigamon_ami`. What this saves is storage: the Parquet copy no longer holds a second copy of each
+record. It is not a claim that Parquet queries run faster. A columnar read skips a column it does
+not read, so `_raw` never cost a query that did not ask for it. `npm run pack:check` refuses a route
+into a Parquet destination whose pipeline keeps `_raw`, and a route into a JSON destination whose
+pipeline removes it.
 
 Object names say what each object does. The `gno_` prefix is reserved for the app's acceleration
 schedules, and `npm run pack:check` refuses a pack object that carries it.
@@ -104,6 +117,11 @@ These are left for a later install on a real Leader:
   under backpressure rather than blocking. It shares its source with `gigamon_ami_json_lake`, and a
   blocked Parquet writer would otherwise stop the data every dashboard reads. The install has to show
   `gigamon_ami` still filling while `gigamon_ami_pq` is missing.
+- **That removing `_raw` on the Parquet route leaves the JSON copy whole.** Cribl documents that a
+  route that is not final hands its pipeline a copy of the event, so the Parquet pipeline cannot
+  change what the JSON route already wrote. This pack relies on that, and it has not been measured
+  here. The 0.2.2 install has to show `gigamon_ami` rows that still carry `_raw` and `gigamon_ami_pq`
+  rows that carry none.
 
 ## Releases
 
@@ -113,3 +131,10 @@ and is independent of the app's version. Version 0.1.0 received Syslog. From 0.2
 receives Raw HTTP only. **Versions 0.1.0 and 0.2.0 deliver nothing**: their route filters used the
 global form of `__inputId`, which never matches inside a pack, so each dropped every event from both
 its sources. Version 0.2.1 fixes the filters and changes nothing else; upgrade from either.
+
+- **0.2.2** adds the pipeline `gigamon_ami_normalize_parquet`, and the Parquet route
+  `gigamon_ami_http_to_parquet` now uses it, so rows written to `gigamon_ami_pq` no longer carry
+  `_raw`. Nothing else changed: the JSON and sample routes, the sources, the breaker and the
+  destinations are as they were in 0.2.1. Rows already in `gigamon_ami_pq` keep their `_raw`, since
+  Lake rewrites nothing. An in-place upgrade from 0.2.1 adds the new pipeline; it keeps the pack's
+  `local/` settings, as measured above for an upgrade from 0.1.0.

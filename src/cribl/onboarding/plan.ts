@@ -48,7 +48,7 @@ import type { AccelId } from '../accel/manifest'
 import { realDataConfirmed, type DatasetTarget } from '../datasetTarget'
 import { DEFAULT_PROFILE, DEPLOY_CONSEQUENCES, datasetSpec, type DiffRow } from '../landing'
 import {
-  PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
+  PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
   PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, type PackObjectKind, type PackRelease,
 } from '../pack'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, tlsFor, type CommitScope, type LakeDatasetSpec } from '../provision'
@@ -562,10 +562,14 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
 /**
  * The objects an installed copy of this pack holds, by the version it reports.
  * 0.1.0 is the published record (`PACK_0_1_0`), never the current ids: several
- * kept their names while their values moved. Any other version is named by
- * this build's own list, which is what a copy of `PACK_VERSION` holds.
+ * kept their names while their values moved. 0.2.0 and 0.2.1 are their
+ * published list (`PACK_0_2_1_OBJECTS`), which lacks 0.2.2's Parquet pipeline.
+ * Any other version is named by this build's own list, which is what a copy of
+ * `PACK_VERSION` holds. *(Corrected 2026-09-25,
+ * `feat/pack-022-parquet-pipeline`: 0.2.x answered `PACK_OBJECTS`.)*
  */
 export function packObjectsOf(version: string | null): Readonly<Record<PackObjectKind, readonly string[]>> {
+  if (version === '0.2.0' || version === '0.2.1') return PACK_0_2_1_OBJECTS
   if (version === PACK_0_1_0.version) {
     return {
       inputs: Object.values(PACK_0_1_0.inputs),
