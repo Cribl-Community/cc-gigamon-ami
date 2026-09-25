@@ -1090,10 +1090,66 @@ function commitsAfter(items: CommitRef[], deployed: string, head: string): strin
 async function undeployedRange(
   group: string,
 ): Promise<{ deployed: string; head: string; history: CommitRef[] } | null> {
+  const r = await readDeployRange(group)
+  return r.kind === 'behind' ? r : null
+}
+
+type DeployRange =
+  | { kind: 'unreadable'; detail: string }
+  | { kind: 'current'; head: string }
+  | { kind: 'behind'; deployed: string; head: string; history: CommitRef[] }
+
+/** `undeployedRange`'s reads, without collapsing "unreadable" into "current". */
+async function readDeployRange(group: string): Promise<DeployRange> {
   const [deployed, history] = await Promise.all([deployedVersion(group), commitHistory()])
   const head = history?.[headIndex(history)]?.hash
-  if (!deployed || !history || !head || deployed === head) return null
-  return { deployed, head, history }
+  if (!deployed) return { kind: 'unreadable', detail: `the commit ${group} is running (its group record’s configVersion) could not be read` }
+  if (!history || !head) return { kind: 'unreadable', detail: 'the Leader’s commit history could not be read' }
+  if (deployed === head) return { kind: 'current', head }
+  return { kind: 'behind', deployed, head, history }
+}
+
+/**
+ * Whether a group runs what the Leader holds, WITHOUT the null that
+ * `pendingDeploy` and `undeployedHead` share between "nothing pending" and
+ * "could not tell". For a caller that must refuse on doubt (the cutover
+ * preflight): `unreadable` — the group's commit or the history could not be
+ * read; `current` — the group runs HEAD; `behind` with `touches` — a commit
+ * after the group's own moved one of its files (proved, as `pendingDeploy`);
+ * `behind` with `clear` — every commit in between was read and none touches
+ * the group; `behind` with `unknown` — the range could not be bounded (past
+ * `HISTORY_PAGES`) or a `/version/files` read failed and nothing proved it.
+ * Read-only: the same GETs as `pendingDeploy`.
+ */
+export type DeployState =
+  | { state: 'unreadable'; detail: string }
+  | { state: 'current'; head: string }
+  | { state: 'behind'; head: string; deployed: string; proof: 'touches' | 'clear' | 'unknown'; detail: string | null }
+
+export async function deployState(group: string = DEFAULT_STREAM_GROUP): Promise<DeployState> {
+  const range = await readDeployRange(group)
+  if (range.kind === 'unreadable') return { state: 'unreadable', detail: range.detail }
+  if (range.kind === 'current') return { state: 'current', head: range.head }
+  const base = { state: 'behind' as const, head: range.head, deployed: range.deployed }
+  const history = await historyReaching(range.history, range.deployed)
+  const behind = history && commitsAfter(history, range.deployed, range.head)
+  if (!behind) {
+    return { ...base, proof: 'unknown', detail: `the commits between ${range.deployed} and ${range.head} could not be listed (not within ${HISTORY_PAGES * HISTORY_PAGE} commits, or a history page could not be read)` }
+  }
+  let proved = false
+  let unread = 0
+  let next = 0
+  const worker = async () => {
+    while (!proved && next < behind.length) {
+      const changed = await filesInCommit(behind[next++])
+      if (changed === null) unread++
+      else if (changed.some((p) => pathInGroup(p, group))) proved = true
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(FILES_READ_CONCURRENCY, behind.length) }, worker))
+  if (proved) return { ...base, proof: 'touches', detail: null }
+  if (unread) return { ...base, proof: 'unknown', detail: `the files of ${unread} of ${behind.length} commit(s) in between could not be read` }
+  return { ...base, proof: 'clear', detail: null }
 }
 
 /**

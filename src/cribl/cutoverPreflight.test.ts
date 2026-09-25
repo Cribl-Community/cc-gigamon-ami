@@ -127,6 +127,64 @@ describe('the real readers, over the runner’s guarded fetch', () => {
     expect(text).not.toContain('OLD-GLOBAL-TOKEN')
     expect(text).toContain('Ready to point AMX at default.main.acme.cribl.cloud:20005')
   })
+
+  // HEAD ahead of the group's commit, and the group record only on the
+  // deprecated /master path: the history, /master/groups/:gid and
+  // /version/files reads now go through the guard and the grant check too.
+  const behindBodies = (files: { status: number; body: unknown }) => {
+    const b = leaderBodies()
+    b['/products/stream/groups/default'] = { status: 404, body: { message: 'not found' } }
+    b['/master/groups/default'] = { status: 200, body: { items: [{ id: 'default', configVersion: 'aaa111' }] } }
+    b['/version'] = { status: 200, body: { items: [{ hash: 'bbb222', refs: 'HEAD -> main' }, { hash: 'aaa111', refs: '' }] } }
+    b['/version/files'] = files
+    return b
+  }
+
+  it.each<[string, { status: number; body: unknown }, RegExp]>([
+    ['a commit in between touches the group', { status: 200, body: { items: [{ count: 1, items: [{ name: `groups/default/default/${PACK_ID}/package.json` }] }] } }, /behind the Leader’s HEAD \(bbb222; it runs aaa111\), and a commit in between touches it/],
+    ['the commit’s files cannot be read', { status: 403, body: { message: 'forbidden' } }, /whether a commit in between touches it could not be told/],
+  ])('blocks, over the real readers, when HEAD is ahead and %s', async (_name, files, words) => {
+    const { seen, transport } = fakeTransport(behindBodies(files))
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    const verdict = preflightVerdict(facts)
+
+    const paths = seen.map((r) => new URL(r.url).pathname.replace(/^\/capi/, ''))
+    expect(paths).toContain('/master/groups/default')
+    expect(paths).toContain('/version/files')
+    for (const r of seen) {
+      expect(r.method).toBe('GET')
+      const path = new URL(r.url).pathname.replace(/^\/capi/, '')
+      expect(path, 'a Search path').not.toMatch(/(^|\/)search(\/|$)/)
+      expect(grantedGet(path), `${path} is not a GET config/policies.yml grants`).toBe(true)
+    }
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(words)
+    expect(preflightReport(facts, verdict).join('\n')).not.toContain('Ready to point AMX')
+  })
+
+  it('is ready, with a warning, over the real readers when every commit in between was read and none touches the group', async () => {
+    const { transport } = fakeTransport(behindBodies({ status: 200, body: { items: [{ count: 1, items: [{ name: 'groups/other/local/cribl/inputs.yml' }] }] } }))
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    expect(facts.git.deploy).toEqual({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'clear', detail: null })
+    const verdict = preflightVerdict(facts)
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(/none touches this group/)
+  })
+
+  it('blocks, over the real readers, when the group record cannot be read', async () => {
+    const b = leaderBodies()
+    b['/products/stream/groups/default'] = { status: 403, body: { message: 'forbidden' } }
+    const { transport } = fakeTransport(b)
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    const verdict = preflightVerdict(await gatherPreflight('default', LIVE_READERS))
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/could not be told: the commit default is running/)
+  })
 })
 
 describe('the guarded fetch', () => {
@@ -213,8 +271,7 @@ function readers(over: Partial<PreflightReaders> = {}): PreflightReaders {
     listStreamGroupsCurrent: async () => ({ outcome: 'ok', value: [{ id: 'default', name: 'default', configVersion: 'a', onPrem: false }], object: '/x', status: 200, detail: null }),
     portsOfOthers: async () => [20000],
     pendingConfigPaths: async () => [],
-    pendingDeploy: async () => null,
-    undeployedHead: async () => null,
+    deployState: async () => ({ state: 'current', head: 'aaa111' }),
     leaderHostname: () => 'main-acme.cribl.cloud',
     suggestedIngressHost: () => 'default.main.acme.cribl.cloud',
     ...over,
@@ -252,7 +309,11 @@ describe('the verdict', () => {
     ['a dataset being deleted', { listDatasets: async () => ({ outcome: 'ok', value: [dataset('gigamon_ami', { deletionStartedAt: 'x' }), dataset('gigamon_ami_pq')], object: '/x', status: 200, detail: null }) }, /gigamon_ami is being deleted/],
     ['an unreadable Lake listing', { listDatasets: async () => ({ outcome: 'not-readable', value: null, object: '/products/lake/lakes/default/datasets', status: 403, detail: 'no' }) }, /datasets are unknown: .*could not be read \(HTTP 403\)/],
     ['uncommitted pack files', { pendingConfigPaths: async () => [`groups/default/default/${PACK_ID}/local/inputs.yml`] }, /pack has uncommitted changes/],
-    ['a group behind a commit that touches it', { pendingDeploy: async () => 'bbb222' }, /behind commit bbb222/],
+    ['a group behind a commit that touches it', { deployState: async () => ({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'touches', detail: null }) }, /behind the Leader’s HEAD \(bbb222; it runs aaa111\), and a commit in between touches it/],
+    ['a HEAD not deployed, with nothing proved either way', { deployState: async () => ({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'unknown', detail: 'the files of 1 of 1 commit(s) in between could not be read' }) }, /not running the Leader’s HEAD \(bbb222; it runs aaa111\), and whether a commit in between touches it could not be told/],
+    ['a deploy state that cannot be read', { deployState: async () => ({ state: 'unreadable', detail: 'the Leader’s commit history could not be read' }) }, /could not be told: the Leader’s commit history could not be read/],
+    ['a version this app never published', { readPackState: async () => packState({ published: false, current: false }) }, /this app did not publish that version/],
+    ['a source port it cannot read', { readPackState: async () => packState({ http: { disabled: false, port: null, tokenSet: true, tls: true, tlsCert: 'c' } }) }, /no port this preflight can read/],
     ['an unreadable Git status', { pendingConfigPaths: async () => null }, /Git’s status could not be read/],
     ['a missing pack route', { readPackState: async () => { const s = packState(); s.objects.routes.gigamon_ami_http_to_parquet = 'absent'; return s } }, /route gigamon_ami_http_to_parquet is missing/],
   ]
@@ -273,6 +334,39 @@ describe('the verdict', () => {
     })
     expect(verdict.ready).toBe(true)
     expect(verdict.warnings.join('\n')).toMatch(/0\.2\.1 is installed; this build pins/)
+  })
+
+  it('warns, and does not block, when HEAD is ahead and every commit in between was read and none touches the group', async () => {
+    const { verdict } = await verdictWith({ deployState: async () => ({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'clear', detail: null }) })
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(/not running the Leader’s HEAD \(bbb222; it runs aaa111\); every commit in between was read and none touches/)
+  })
+
+  it.each<[string, Partial<PreflightReaders>, RegExp]>([
+    ['a managed group whose source has no TLS', { readPackState: async () => packState({ http: { disabled: false, port: 20005, tokenSet: true, tls: false, tlsCert: null } }) }, /does not terminate TLS/],
+    ['a running sample source', { readPackState: async () => packState({ sample: { disabled: false } }) }, /sample source is running/],
+    ['a group record not found', { listStreamGroupsCurrent: async () => ({ outcome: 'ok', value: [], object: '/x', status: 200, detail: null }) }, /group record for default was not found/],
+    ['an unreadable group record', { listStreamGroupsCurrent: async () => ({ outcome: 'not-readable', value: null, object: '/x', status: 403, detail: 'no' }) }, /group record for default was unreadable/],
+    ['hosting it cannot tell', { leaderHostname: () => null }, /Hosting could not be told/],
+  ])('warns, and does not block, on %s', async (_name, over, words) => {
+    const { verdict } = await verdictWith(over)
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(words)
+  })
+
+  it('says nothing of Remove refusing when no global object is present, whatever is uncommitted', async () => {
+    const { facts, verdict } = await verdictWith({ pendingConfigPaths: async () => ['groups/default/local/cribl/inputs.yml'] })
+    expect(facts.git.globalStackFiles).toEqual([])
+    expect(verdict.afterCutover.join('\n')).toMatch(/nothing for Remove to take/)
+    expect(verdict.afterCutover.join('\n')).not.toMatch(/Remove will refuse/)
+  })
+
+  it('does not name a Syslog pipeline file for a Remove that takes only the Raw HTTP stack', async () => {
+    const { facts } = await verdictWith({
+      checkStatus: async () => ({ breaker: 'absent', pipeline: 'present', source: 'absent', route: 'absent' }),
+      pendingConfigPaths: async () => ['groups/default/local/cribl/pipelines/gigamon_syslog/conf.yml'],
+    })
+    expect(facts.git.globalStackFiles).toEqual([])
   })
 
   it('says what Remove will meet afterwards: the global objects, and files it would refuse over', async () => {

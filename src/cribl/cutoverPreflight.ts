@@ -4,8 +4,9 @@
 //
 // READ-ONLY, AND BUILT FROM THE APP'S OWN READERS. Every fact below comes from a
 // function Guided Setup already calls — `readPackState` (packClient.ts),
-// `checkStatus`/`checkLegacyStatus`, `pendingConfigPaths`, `pendingDeploy`,
-// `undeployedHead` (provision.ts), `listDatasets`/`listStreamGroupsCurrent`
+// `checkStatus`/`checkLegacyStatus`, `pendingConfigPaths`, `deployState`
+// (provision.ts — the reads `pendingDeploy` makes, without its null that means
+// both "nothing pending" and "could not tell"), `listDatasets`/`listStreamGroupsCurrent`
 // (lake.ts), `portsOfOthers` (packClient.ts) — so the preflight cannot disagree
 // with the screen about what "owned", "present" or "behind" means, and every
 // path it reads is one config/policies.yml already grants the app. Each of those
@@ -35,26 +36,25 @@ import { packCommitScope, portsOfOthers, readPackState, thisPackRelease, type Pa
 import { packObjectsOf } from './onboarding/plan'
 import {
   HTTP_BREAKER_ID,
-  HTTP_KEYS,
   HTTP_PIPELINE_ID,
   HTTP_ROUTE_ID,
   HTTP_SOURCE_ID,
-  LEGACY_KEYS,
   LEGACY_SYSLOG_PIPELINE_ID,
   LEGACY_SYSLOG_ROUTE_ID,
   LEGACY_SYSLOG_SOURCE_ID,
   checkLegacyStatus,
   checkStatus,
   commitScope,
+  deployState,
   hostingOf,
   leaderHostname,
   pathInGroup,
   pendingConfigPaths,
-  pendingDeploy,
   portProblem,
   postUrl,
   suggestedIngressHost,
-  undeployedHead,
+  type CommitKey,
+  type DeployState,
   type LegacyStatus,
   type ResourceState,
   type SetupStatus,
@@ -69,8 +69,7 @@ export interface PreflightReaders {
   listStreamGroupsCurrent: () => Promise<ReadResult<StreamGroupInfo[]>>
   portsOfOthers: (group: string) => Promise<number[] | null>
   pendingConfigPaths: () => Promise<string[] | null>
-  pendingDeploy: (group: string) => Promise<string | null>
-  undeployedHead: (group: string) => Promise<string | null>
+  deployState: (group: string) => Promise<DeployState>
   /** Not a read: where this Leader answers (provision.ts, from `window`). */
   leaderHostname: () => string | null
   /** Not a read: the worker ingress host provision.ts would print. */
@@ -85,8 +84,7 @@ export const LIVE_READERS: PreflightReaders = Object.freeze({
   listStreamGroupsCurrent: () => listStreamGroupsCurrent(),
   portsOfOthers,
   pendingConfigPaths,
-  pendingDeploy: (group: string) => pendingDeploy(group),
-  undeployedHead: (group: string) => undeployedHead(group),
+  deployState: (group: string) => deployState(group),
   leaderHostname,
   suggestedIngressHost,
 })
@@ -147,15 +145,13 @@ export interface PreflightFacts {
     inGroup: string[] | null
     /** Those of the pack's own directory in this group. */
     packFiles: string[] | null
-    /** Those the global stacks' Remove would commit (inputs.yml, route.yml,
-     *  breakers.yml and the two pipelines' directories). */
+    /** Those the global stacks' Remove would commit and refuse over — scoped,
+     *  as `removeDirtyRefusal` scopes it, to the keys whose objects read
+     *  `present` (none present: none). */
     globalStackFiles: string[] | null
-    /** A commit this group has not deployed that provably touches it — or null,
-     *  which is ALSO "could not tell" (provision.ts `pendingDeploy`). */
-    pendingDeploy: string | null
-    /** The Leader's HEAD when this group is not running it, with no file
-     *  evidence — or null. */
-    undeployedHead: string | null
+    /** Whether the group's Workers run the Leader's HEAD, with "could not
+     *  tell" kept apart from "up to date" (provision.ts `deployState`). */
+    deploy: DeployState
   }
 }
 
@@ -171,6 +167,16 @@ function datasetFacts(r: ReadResult<LakeDataset[]>): DatasetFact[] {
     if (d.deletionStartedAt) return { id, state: 'deleting' }
     return { id, state: 'present', format: d.format, sizeBytes: d.metrics?.currentSizeBytes ?? null, metricsDate: d.metrics?.metricsDate ?? null }
   })
+}
+
+/** The commit keys whose objects read `present` — exactly the keys Remove
+ *  would delete and so commit (provision.ts `removeDirtyRefusal`). */
+function presentKeys(http: SetupStatus, legacy: LegacyStatus): CommitKey[] {
+  const all: [CommitKey, ResourceState][] = [
+    ['source', http.source], ['pipeline', http.pipeline], ['route', http.route], ['breaker', http.breaker],
+    ['legacy_source', legacy.legacy_source], ['legacy_pipeline', legacy.legacy_pipeline], ['legacy_route', legacy.legacy_route],
+  ]
+  return all.filter(([, st]) => st === 'present').map(([k]) => k)
 }
 
 function globalObjects(http: SetupStatus, legacy: LegacyStatus): GlobalObject[] {
@@ -202,7 +208,7 @@ function missingObjects(pack: PackState): PreflightFacts['packObjectsMissing'] {
 
 /** Read everything the verdict needs. GETs only — see the header. */
 export async function gatherPreflight(group: string, readers: PreflightReaders = LIVE_READERS): Promise<PreflightFacts> {
-  const [pack, http, legacy, datasets, groups, otherPorts, pending, behind, head] = await Promise.all([
+  const [pack, http, legacy, datasets, groups, otherPorts, pending, deploy] = await Promise.all([
     readers.readPackState(group),
     readers.checkStatus(group),
     readers.checkLegacyStatus(group),
@@ -210,9 +216,9 @@ export async function gatherPreflight(group: string, readers: PreflightReaders =
     readers.listStreamGroupsCurrent(),
     readers.portsOfOthers(group),
     readers.pendingConfigPaths(),
-    readers.pendingDeploy(group),
-    readers.undeployedHead(group),
+    readers.deployState(group),
   ])
+  const removeKeys = presentKeys(http, legacy)
   const rec = groups.outcome === 'ok' ? (groups.value ?? []).find((x) => x.id === group) ?? null : null
   const leaderHost = readers.leaderHostname()
   const hosting = rec ? hostingOf(rec.onPrem, leaderHost) : null
@@ -236,9 +242,8 @@ export async function gatherPreflight(group: string, readers: PreflightReaders =
       pending,
       inGroup: pending === null ? null : pending.filter((p) => pathInGroup(p, group)),
       packFiles: pending === null ? null : packCommitScope(group, pending).alreadyDirty,
-      globalStackFiles: pending === null ? null : commitScope(group, [...HTTP_KEYS, ...LEGACY_KEYS], pending).alreadyDirty,
-      pendingDeploy: behind,
-      undeployedHead: head,
+      globalStackFiles: pending === null ? null : removeKeys.length ? commitScope(group, removeKeys, pending).alreadyDirty : [],
+      deploy,
     },
   }
 }
@@ -330,13 +335,18 @@ export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
   } else if (f.git.packFiles && f.git.packFiles.length) {
     blockers.push(`The pack has uncommitted changes in ${f.group} (${list(f.git.packFiles)}); the Workers are not running them. Commit and deploy them first.`)
   }
-  if (f.git.pendingDeploy) {
-    blockers.push(`${f.group} is behind commit ${f.git.pendingDeploy}, which touches it: its Workers are not running what the Leader holds. Deploy the group first.`)
-  } else if (f.git.undeployedHead) {
-    warnings.push(
-      `${f.group} is not running the Leader’s HEAD (${f.git.undeployedHead}); no commit in between was shown to touch this group, ` +
-        'but that answer is also what "could not tell" looks like.',
-    )
+  // Fails closed: "could not tell" is a blocker, exactly as an unreadable Git
+  // status is above — a pack committed and never deployed has no Worker
+  // listening on its port, and that is the case this check exists for.
+  const d = f.git.deploy
+  if (d.state === 'unreadable') {
+    blockers.push(`Whether ${f.group}’s Workers run what the Leader holds could not be told: ${d.detail}. Check the group’s deploy state in Cribl Stream, then run this again.`)
+  } else if (d.state === 'behind' && d.proof === 'touches') {
+    blockers.push(`${f.group} is behind the Leader’s HEAD (${d.head}; it runs ${d.deployed}), and a commit in between touches it: its Workers are not running what the Leader holds. Deploy the group first.`)
+  } else if (d.state === 'behind' && d.proof === 'unknown') {
+    blockers.push(`${f.group} is not running the Leader’s HEAD (${d.head}; it runs ${d.deployed}), and whether a commit in between touches it could not be told: ${d.detail}. Deploy the group first, or check it in Cribl Stream.`)
+  } else if (d.state === 'behind') {
+    warnings.push(`${f.group} is not running the Leader’s HEAD (${d.head}; it runs ${d.deployed}); every commit in between was read and none touches this group.`)
   }
   if (f.git.inGroup && f.git.inGroup.length && !(f.git.packFiles ?? []).length) {
     warnings.push(`Uncommitted in ${f.group}: ${list(f.git.inGroup)}.`)
@@ -428,8 +438,13 @@ export function preflightReport(f: PreflightFacts, v: PreflightVerdict): string[
     out.push(`  uncommitted in ${f.group}: ${f.git.inGroup?.length ? list(f.git.inGroup) : 'none'}`)
     out.push(`  of which the pack’s: ${f.git.packFiles?.length ? list(f.git.packFiles) : 'none'}`)
   }
-  out.push(`  behind a commit that touches ${f.group}: ${f.git.pendingDeploy ?? 'not shown (none, or could not tell)'}`)
-  out.push(`  not running the Leader’s HEAD: ${f.git.undeployedHead ?? 'no (or could not tell)'}`)
+  const d = f.git.deploy
+  out.push(
+    d.state === 'unreadable' ? `  deployed: could not be told (${d.detail})`
+      : d.state === 'current' ? `  deployed: runs the Leader’s HEAD (${d.head})`
+        : `  deployed: runs ${d.deployed}, the Leader’s HEAD is ${d.head} — ` +
+          (d.proof === 'touches' ? `a commit in between touches ${f.group}` : d.proof === 'clear' ? `no commit in between touches ${f.group}` : `could not tell whether a commit in between touches ${f.group} (${d.detail})`),
+  )
   out.push('')
   out.push('Hosting')
   out.push(`  ${f.hosting.hosting ?? 'unknown'} (group record ${f.hosting.groupRecord}${f.hosting.onPrem === null ? '' : `, onPrem ${f.hosting.onPrem}`}; Leader host ${f.hosting.leaderHost ?? 'unknown'})`)
