@@ -17,8 +17,8 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 201,
-    "catalogs": 14,
+    "modules": 205,
+    "catalogs": 15,
     "states": 36,
     "passthrough": 3,
     "unbound": 22
@@ -157,6 +157,7 @@
     "src/data/amiFields.ts › AMI_CATALOG": "94 entries · sha256 c684215431cfbb7f",
     "src/data/amiFields.ts › AMI_FAMILIES": "7 entries · sha256 e5f2d01d4ff0566f",
     "src/data/amiFields.ts › AMI_USE_CASES": "11 entries · sha256 8c65985e5d5a08fb",
+    "src/data/fieldTypes.ts › FIELD_TYPES": "0 keys · sha256 44136fa355b3678a",
     "src/data/findings.ts › FINDINGS": "17 entries · sha256 0d59f3fc5cd62c84",
     "src/data/pqc.ts › PQC_GROUP_CODES": "4 entries · sha256 ab96d69df7799ad1",
     "src/data/pqc.ts › SENSITIVE": "4 entries · sha256 2c5a2cce0bd15f8c",
@@ -312,6 +313,12 @@
       "drillQuery(one server)": "dataset=\"gigamon_ami\" ssl_server_name=\"login.example.com\" | limit 200",
       "serverFilter(\"login.example.com\")": "ssl_server_name=\"login.example.com\""
     },
+    "src/queries/routing.ts": {
+      "COMPLETENESS_BUCKET_SECONDS": "number · sha256 983bd614bb5afece",
+      "COMPLETENESS_QUERY": "dataset=\"cribl_metrics\" | summarize json_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\", value, 0)), pq_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake\", value, 0)) by bin(_time, 5m) | sort by _time asc",
+      "PACK_JSON_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake",
+      "PACK_PARQUET_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake"
+    },
     "src/queries/security.ts": {
       "COUNTS": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
       "COUNT_AGGS": "c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
@@ -403,6 +410,416 @@
       "SERVER_P95_AGG": "p95=percentile(http_server_ms,95)",
       "SLOW": "dataset=\"gigamon_ami\" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10",
       "TREND": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc"
+    }
+  },
+  "routing": {
+    "capacity.appmix": {
+      "from": "capacityTopTalkers.ts › buildAppmixQuery(pivot, \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on app_name: how many rows carry it is not measured; type not measured: total_bytes, app_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.kpi": {
+      "from": "capacityTopTalkers.ts › buildKpiQuery(pivot, \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); type not measured: total_bytes, dst_bytes, src_bytes, total_packets, tcp_rtt, tcp_dup_ack",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.l4": {
+      "from": "capacityTopTalkers.ts › buildL4Query(pivot, \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on l4_proto: how many rows carry it is not measured; type not measured: total_bytes, l4_proto",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.talkers.app_name": {
+      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"app_name\", \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on app_name: how many rows carry it is not measured; class F on app_name: how many rows carry it is not measured; type not measured: app_name, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.talkers.dst_aws_flat_tags_name": {
+      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"dst_aws_flat_tags_name\", \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on dst_aws_flat_tags_name: how many rows carry it is not measured; class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: dst_aws_flat_tags_name, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.talkers.src_ip": {
+      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"src_ip\", \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_ip: how many rows carry it is not measured; class F on src_ip: how many rows carry it is not measured; type not measured: src_ip, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "dataFlow.lakeHeld": {
+      "from": "dataFlow.ts › LAKE_HELD_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "dataFlow.volume": {
+      "from": "dataFlow.ts › VOLUME_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: total_bytes, total_packets",
+      "evidence": null,
+      "queries": 1
+    },
+    "datasets.realDataProbe": {
+      "from": "datasets.ts › REAL_DATA_PROBE_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "dns.overall": {
+      "from": "dnsHealth.ts › OVERALL",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: app_name, dns_reply_code, dns_host",
+      "evidence": null,
+      "queries": 1
+    },
+    "dns.perResolver": {
+      "from": "dnsHealth.ts › PER_RESOLVER",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on dns_host: how many rows carry it is not measured; class E on dns_response_time is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class F on dns_host: how many rows carry it is not measured; type not measured: app_name, dns_host, dns_response_time, dns_reply_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "dns.resolverDrill": {
+      "from": "dnsHealth.ts › resolverDrillQuery(host)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "fieldExplorer.presence": {
+      "from": "fieldExplorer.ts › PRESENCE_QUERY, FEED_SAMPLE_QUERY, sectionQuery(fields)",
+      "target": "json",
+      "pin": "presence",
+      "eligible": "pinned to JSON (presence)",
+      "evidence": null,
+      "queries": 2
+    },
+    "findings.counts": {
+      "from": "findings.ts › FINDINGS_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class B on snmp_community counts every Parquet row (needs a portable rewrite, 8.2); class B on icmp_tunneling counts every Parquet row (needs a portable rewrite, 8.2); class B on sip_from counts every Parquet row (needs a portable rewrite, 8.2); class B on dcerpc_service counts every Parquet row (needs a portable rewrite, 8.2); class B on krb5_message_type counts every Parquet row (needs a portable rewrite, 8.2); class B on http_cookie counts every Parquet row (needs a portable rewrite, 8.2); class B on ftp_data_content counts every Parquet row (needs a portable rewrite, 8.2); class B on snmp_processing_anomaly_type counts every Parquet row (needs a portable rewrite, 8.2); type not measured: ssl_mitm_score, snmp_community, icmp_tunneling, sip_from, dcerpc_service, krb5_message_type, http_cookie, ftp_data_content, snmp_processing_anomaly_type, tcp_wrong_crc, tcp_reset, tcp_loss_count, http_code, dns_reply_code, udp_wrong_crc, ip_wrong_crc",
+      "evidence": null,
+      "queries": 1
+    },
+    "findings.flows": {
+      "from": "findings.ts › findingFlowsQuery(finding), and each Copilot brief",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "flowMap.domains": {
+      "from": "flowMap.ts › buildDomainsQuery(service), built per clicked service",
+      "target": "json",
+      "pin": null,
+      "eligible": "no text listed: built at run time, so it never routes",
+      "evidence": null,
+      "queries": 0
+    },
+    "flowMap.edges": {
+      "from": "flowMap.ts › edgesQuery, srcQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_aws_flat_tags_name: how many rows carry it is not measured; class D on dst_aws_flat_tags_name: how many rows carry it is not measured; class F on src_aws_flat_tags_name: how many rows carry it is not measured; class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: src_aws_flat_tags_name, dst_aws_flat_tags_name; type not measured: src_aws_flat_tags_name",
+      "evidence": null,
+      "queries": 2
+    },
+    "flowMap.nodes": {
+      "from": "flowMap.ts › nodesQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on dst_aws_flat_tags_name: how many rows carry it is not measured; class E on tcp_rtt_app is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on tcp_rtt_app counts every Parquet row (needs a portable rewrite, 8.2); class E on dns_response_time is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on dns_response_time counts every Parquet row (needs a portable rewrite, 8.2); class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: dst_aws_flat_tags_name, tcp_rtt_app, dns_response_time, tcp_reset",
+      "evidence": null,
+      "queries": 1
+    },
+    "flowMap.serviceEdges": {
+      "from": "snapshots.ts › SERVICE_EDGES_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_aws_flat_tags_name: how many rows carry it is not measured; class F on src_aws_flat_tags_name: how many rows carry it is not measured; type not measured: src_aws_flat_tags_name, dst_aws_flat_tags_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "flowMap.trend": {
+      "from": "flowMap.ts › buildTrendQuery(service), built per clicked service",
+      "target": "json",
+      "pin": null,
+      "eligible": "no text listed: built at run time, so it never routes",
+      "evidence": null,
+      "queries": 0
+    },
+    "lakeLanding.landingLag": {
+      "from": "lakeLanding.ts › LANDING_LAG_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "lakeLanding.parity": {
+      "from": "lakeLanding.ts › PARITY_COUNT_QUERY, PARITY_LATENCY_QUERY, PARITY_HOST_PRESENCE_QUERY, PARITY_CODE_PRESENCE_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 4
+    },
+    "lakeLanding.partitionCandidates": {
+      "from": "lakeLanding.ts › PARTITION_CANDIDATES_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "pqc.drill": {
+      "from": "pqcReadiness.ts › drillQuery(filter)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "pqc.groups": {
+      "from": "pqcReadiness.ts › GROUPS_Q",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on ssl_ext_ec_supported_groups_type: how many rows carry it is not measured; class F on ssl_ext_ec_supported_groups_type: how many rows carry it is not measured; type not measured: ssl_ext_ec_supported_groups_type, ssl_server_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "pqc.servers": {
+      "from": "pqcReadiness.ts › SERVERS_Q",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on ssl_server_name: how many rows carry it is not measured; class F on ssl_server_name: how many rows carry it is not measured; class F on ssl_issuer: how many rows carry it is not measured; type not measured: ssl_server_name, ssl_server_supported_version, ssl_ext_ec_supported_groups_type, ssl_issuer",
+      "evidence": null,
+      "queries": 1
+    },
+    "security.counts": {
+      "from": "security.ts › COUNTS",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class A on icmp_tunneling reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dcerpc_service reads true on every Parquet row (needs a portable rewrite, 8.2); class A on krb5_message_type reads true on every Parquet row (needs a portable rewrite, 8.2); class A on snmp_community reads true on every Parquet row (needs a portable rewrite, 8.2); type not measured: icmp_tunneling, dcerpc_service, app_name, dst_port, krb5_message_type, snmp_community",
+      "evidence": null,
+      "queries": 1
+    },
+    "security.drill": {
+      "from": "security.ts › drillQueryFor(technique)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "security.sources": {
+      "from": "security.ts › SOURCES",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on src_ip: how many rows carry it is not measured; type not measured: dst_port, dst_ip, src_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "shadowAi.aiOverall": {
+      "from": "shadowAi.ts › aiOverallQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: app_name, src_ip, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "shadowAi.aiUsers": {
+      "from": "shadowAi.ts › aiUsersQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on src_ip: how many rows carry it is not measured; type not measured: app_name, total_bytes, src_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "shadowAi.apps": {
+      "from": "shadowAi.ts › appsQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on app_name: how many rows carry it is not measured; type not measured: total_bytes, src_ip, app_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.appL4": {
+      "from": "snapshots.ts › APP_L4_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: app_name, l4_proto, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.appSrc": {
+      "from": "snapshots.ts › APP_SRC_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on app_name: how many rows carry it is not measured; class F on src_ip: how many rows carry it is not measured; type not measured: total_bytes, app_name, src_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.overview": {
+      "from": "snapshots.ts › OVERVIEW_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http_code counts every Parquet row (needs a portable rewrite, 8.2); class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http2_code counts every Parquet row (needs a portable rewrite, 8.2); class A on icmp_tunneling reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dcerpc_service reads true on every Parquet row (needs a portable rewrite, 8.2); class A on krb5_message_type reads true on every Parquet row (needs a portable rewrite, 8.2); class A on snmp_community reads true on every Parquet row (needs a portable rewrite, 8.2); class B on snmp_community counts every Parquet row (needs a portable rewrite, 8.2); class B on icmp_tunneling counts every Parquet row (needs a portable rewrite, 8.2); class B on sip_from counts every Parquet row (needs a portable rewrite, 8.2); class B on dcerpc_service counts every Parquet row (needs a portable rewrite, 8.2); class B on krb5_message_type counts every Parquet row (needs a portable rewrite, 8.2); class B on http_cookie counts every Parquet row (needs a portable rewrite, 8.2); class B on ftp_data_content counts every Parquet row (needs a portable rewrite, 8.2); class B on snmp_processing_anomaly_type counts every Parquet row (needs a portable rewrite, 8.2); type not measured: total_bytes, dst_bytes, src_bytes, total_packets, tcp_rtt, tcp_dup_ack, http_code, http_server_ms, http_host, http2_code, icmp_tunneling, dcerpc_service, app_name, dst_port, krb5_message_type, snmp_community, ssl_mitm_score, sip_from, http_cookie, ftp_data_content, snmp_processing_anomaly_type, tcp_wrong_crc, tcp_reset, tcp_loss_count, dns_reply_code, udp_wrong_crc, ip_wrong_crc",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.webHost": {
+      "from": "snapshots.ts › WEB_HOST_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_host: how many rows carry it is not measured; class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http_server_ms counts every Parquet row (needs a portable rewrite, 8.2); class F on http_host: how many rows carry it is not measured; type not measured: http_host, http_code, http_server_ms",
+      "evidence": null,
+      "queries": 1
+    },
+    "tcp.drill": {
+      "from": "tcpHealth.ts › buildDrillQuery(cell, mask)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "tcp.heat": {
+      "from": "tcpHealth.ts › buildHeatQuery(metric, mask)",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_subnet: how many rows carry it is not measured; class D on dst_subnet: how many rows carry it is not measured; class F on src_subnet: how many rows carry it is not measured; class F on dst_subnet: how many rows carry it is not measured; type not measured: protocol, src_subnet, dst_subnet, tcp_dup_ack; class D on src_subnet16: how many rows carry it is not measured; class D on dst_subnet16: how many rows carry it is not measured; class F on src_subnet16: how many rows carry it is not measured; class F on dst_subnet16: how many rows carry it is not measured; type not measured: protocol, src_subnet16, dst_subnet16, tcp_dup_ack; type not measured: protocol, src_subnet, dst_subnet, tcp_reset; type not measured: protocol, src_subnet16, dst_subnet16, tcp_reset; type not measured: protocol, src_subnet, dst_subnet, tcp_wrong_crc; type not measured: protocol, src_subnet16, dst_subnet16, tcp_wrong_crc; type not measured: protocol, src_subnet, dst_subnet, tcp_loss_count; type not measured: protocol, src_subnet16, dst_subnet16, tcp_loss_count",
+      "evidence": null,
+      "queries": 8
+    },
+    "tcp.latency": {
+      "from": "tcpHealth.ts › latencyQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class E on tcp_rtt_app is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); type not measured: tcp_rtt, tcp_rtt_app",
+      "evidence": null,
+      "queries": 1
+    },
+    "tcp.subnetSnapshot": {
+      "from": "snapshots.ts › TCP_SUBNET24_SNAPSHOT_QUERY, TCP_SUBNET16_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_subnet: how many rows carry it is not measured; class D on dst_subnet: how many rows carry it is not measured; class F on src_subnet: how many rows carry it is not measured; class F on dst_subnet: how many rows carry it is not measured; type not measured: protocol, src_subnet, dst_subnet, tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count; class D on src_subnet16: how many rows carry it is not measured; class D on dst_subnet16: how many rows carry it is not measured; class F on src_subnet16: how many rows carry it is not measured; class F on dst_subnet16: how many rows carry it is not measured; type not measured: protocol, src_subnet16, dst_subnet16, tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count",
+      "evidence": null,
+      "queries": 2
+    },
+    "tcp.trend": {
+      "from": "tcpHealth.ts › buildTrendQuery(metric)",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: protocol, tcp_dup_ack; type not measured: protocol, tcp_reset; type not measured: protocol, tcp_wrong_crc; type not measured: protocol, tcp_loss_count",
+      "evidence": null,
+      "queries": 4
+    },
+    "tls.pqcByServer": {
+      "from": "tlsPosture.ts › PQC_BY_SERVER",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on ssl_server_name: how many rows carry it is not measured; type not measured: ssl_ext_ec_supported_groups_type, ssl_server_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "tls.serverDrill": {
+      "from": "tlsPosture.ts › serverDrill(server)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "tls.servers": {
+      "from": "tlsPosture.ts › SERVERS",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on ssl_server_name: how many rows carry it is not measured; class F on ssl_server_name: how many rows carry it is not measured; type not measured: ssl_server_name, ssl_protocol_version, ssl_issuer, ssl_validity_not_after, ssl_common_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.codes": {
+      "from": "webApiHealth.ts › CODES",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_code: how many rows carry it is not measured; class F on http_code: how many rows carry it is not measured; type not measured: http_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.errorsDrill": {
+      "from": "webApiHealth.ts › ERRORS_DRILL",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.h2": {
+      "from": "webApiHealth.ts › H2",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http2_host: how many rows carry it is not measured; class F on http2_host: how many rows carry it is not measured; type not measured: http2_host",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.hosts": {
+      "from": "webApiHealth.ts › HOSTS",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_host: how many rows carry it is not measured; class F on http_host: how many rows carry it is not measured; type not measured: http_host, http_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.kpi": {
+      "from": "webApiHealth.ts › KPI",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class B on http_code counts every Parquet row (needs a portable rewrite, 8.2); class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http2_code counts every Parquet row (needs a portable rewrite, 8.2); type not measured: http_code, http_server_ms, http_host, http2_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.slow": {
+      "from": "webApiHealth.ts › SLOW",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_server_ms: how many rows carry it is not measured; class D on http_host: how many rows carry it is not measured; class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class F on http_host: how many rows carry it is not measured; type not measured: http_server_ms, http_host",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.trend": {
+      "from": "webApiHealth.ts › TREND",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_code: how many rows carry it is not measured; type not measured: http_code",
+      "evidence": null,
+      "queries": 1
     }
   },
   "files": {
