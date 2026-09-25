@@ -86,7 +86,7 @@ These are left for the proof install on a real Leader:
 - **Where a pack keeps event breakers.** This pack puts them in `default/breakers.yml`, the global
   file's path without `cribl/`, as for every other pack file. Another Cribl Community pack does the
   same, but no pack breaker has yet been read back from a Leader.
-- **Unknown (f): whether the samples replay with `_time` as now.** Every sample in
+- **Whether the samples replay with `_time` as now.** Every sample in
   `default/samples.yml` has `isTemplate: false`, while every live DataGen sample seen on a Leader has
   `isTemplate: true`. The value stays as it is until the install shows which one is right.
 - **What an upgrade from 0.1.0 leaves behind.** 0.1.0 shipped a Syslog source, `in_gno_syslog`. An
