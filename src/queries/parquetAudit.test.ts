@@ -7,7 +7,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { LAKE_DATASET } from '../cribl/config'
-import { PIPELINE_SPEC } from '../cribl/provision'
+import { PIPELINE_SPEC } from '../cribl/packSpecs'
 import { FINDINGS } from '../data/findings'
 import { TECHNIQUES } from '../data/techniques'
 import {

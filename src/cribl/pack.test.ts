@@ -2,9 +2,12 @@
 // The pack's YAML against the app's TypeScript specs, value for value.
 //
 // The pack under packs/cc-network-gigamon-ami/ is a second copy of objects the
-// app already describes in TypeScript: provision.ts's Raw HTTP stack
+// app already describes in TypeScript: packSpecs.ts's Raw HTTP stack
 // (SOURCE_SPEC via sourceCreateBody, HTTP_BREAKER_SPEC, PIPELINE_SPEC,
-// ROUTE_SPEC) and the Lake destinations landing.ts builds from a profile. This
+// ROUTE_SPEC) and the Lake destinations landing.ts builds from a profile.
+// *(Those specs were provision.ts's create bodies for the global stack until
+// 2026-09-25, when that create path was withdrawn; they moved, value for
+// value, so this comparison holds exactly what it held.)* This
 // file is what makes the second copy safe: change either side alone and it
 // fails.
 //
@@ -32,8 +35,10 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { describe, it, expect } from 'vitest'
 import {
-  PIPELINE_SPEC, PARQUET_PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody,
-  HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID, CLOUD_PORT_RANGE, tlsFor,
+  PIPELINE_SPEC, PARQUET_PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody, tlsFor,
+} from './packSpecs'
+import {
+  HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID, HTTP_BREAKER_DESCRIPTION, CLOUD_PORT_RANGE,
   LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
   DATASET_SPEC, PARQUET_DATASET_SPEC,
 } from './provision'
@@ -90,7 +95,7 @@ describe('the pack files are where Cribl reads them', () => {
   })
 })
 
-describe('the pack HTTP input is provision.ts\'s Cribl-managed source, with the documented differences only', () => {
+describe('the pack HTTP input is packSpecs.ts\'s Cribl-managed source, with the documented differences only', () => {
   const src = inputs[PACK_HTTP_INPUT_ID]
   const global = sourceCreateBody({ managed: true, port: PACK_HTTP_PLACEHOLDER_PORT }, 'not-a-token')
 
@@ -147,14 +152,15 @@ describe('the pack breaker is HTTP_BREAKER_SPEC under the pack\'s own names', ()
   })
 
   it('does not carry the description provision.ts reads as its ownership stamp', () => {
-    // stampedBreaker() treats HTTP_BREAKER_SPEC.description as "this app wrote
+    // stampedBreaker() treats HTTP_BREAKER_DESCRIPTION as "this app wrote
     // it". A pack ruleset listed beside the global one must never pass that test.
-    expect(pack.description).not.toBe(HTTP_BREAKER_SPEC.description)
+    expect(HTTP_BREAKER_SPEC.description).toBe(HTTP_BREAKER_DESCRIPTION)
+    expect(pack.description).not.toBe(HTTP_BREAKER_DESCRIPTION)
     expect(pack.description.trim()).not.toBe('')
   })
 })
 
-describe('the pack pipeline is provision.ts\'s PIPELINE_SPEC: cast and derive, no parse step', () => {
+describe('the pack pipeline is packSpecs.ts\'s PIPELINE_SPEC: cast and derive, no parse step', () => {
   it('carries the two functions, value for value', () => {
     expect(PIPELINE_SPEC.conf.functions.map((f) => f.description)).toEqual(['Cast numeric strings', 'Derive helper fields'])
     expect(pipeline(PACK_PIPELINE_ID).functions).toEqual(PIPELINE_SPEC.conf.functions)
@@ -169,7 +175,7 @@ describe('the pack pipeline is provision.ts\'s PIPELINE_SPEC: cast and derive, n
 
 // 0.2.2 (owner decision 2026-09-25): the Parquet copy drops _raw, the JSON copy
 // keeps it. The removal is an Eval `remove`, after the same two functions.
-describe('the Parquet pipeline is provision.ts\'s PARQUET_PIPELINE_SPEC: the same cast and derive, then _raw removed', () => {
+describe('the Parquet pipeline is packSpecs.ts\'s PARQUET_PIPELINE_SPEC: the same cast and derive, then _raw removed', () => {
   const parquet = pipeline(PACK_PARQUET_PIPELINE_ID) as Obj & { functions: Obj[] }
 
   it('carries the three functions, value for value', () => {
@@ -420,13 +426,16 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
     expect(bareReferences([{ p: 'x.ts', s: "  at: 'cribl/provision.ts#ensureLakeDataset',\nexport async function ensureLakeDataset(" }])).toEqual([])
   })
 
-  it('the one dataset POST in src is ensureLakeDataset, called by Guided Setup’s dataset step and the onboarding run only', () => {
-    // A third creator fails this until PACK_DATASETS_NOT_CREATED and the pack
+  it('the one dataset POST in src is ensureLakeDataset, called by the onboarding run only', () => {
+    // A second creator fails this until PACK_DATASETS_NOT_CREATED and the pack
     // text are changed with it. The onboarding run's one call takes each spec
     // onboarding/plan.ts `onboardingDatasets` returns — gigamon_ami, its
     // Parquet copy and, when ticked, the sample's — and nothing else.
     // *(Until 2026-09-24 the run did not exist, the only caller created
-    // gigamon_ami, and PACK_DATASETS_NOT_CREATED held the other two.)*
+    // gigamon_ami, and PACK_DATASETS_NOT_CREATED held the other two. Until
+    // 2026-09-25 Guided Setup's Raw HTTP deploy — provision.ts's private
+    // `ensureDataset` — was a second caller, for gigamon_ami; it went with that
+    // deploy.)*
     const posts = code.flatMap(({ p, s }) => [...s.matchAll(/capi\('POST', datasetsPath, (\w+)\)/g)].map((m) => ({ p, body: m[1] })))
     expect(posts).toHaveLength(1)
     expect(posts[0].p.endsWith(join('cribl', 'provision.ts'))).toBe(true)
@@ -434,7 +443,6 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
       [...s.matchAll(/(?<!function )\bensureLakeDataset\(([^\n,]*)/g)].map((m) => ({ p, arg: m[1].trim() })))
     expect(callers, 'ensureLakeDataset has a new caller: say what it creates in PACK_DATASETS_NOT_CREATED and the pack text').toEqual([
       { p: expect.stringMatching(/cribl[\\/]onboarding[\\/]run\.ts$/), arg: 'spec)' },
-      { p: expect.stringMatching(/cribl[\\/]provision\.ts$/), arg: 'datasetSpec(ctx.profile) as LakeDatasetSpec' },
     ])
     // The run's `spec` is each of onboardingDatasets' specs, and only those.
     const run = code.find(({ p }) => /cribl[\\/]onboarding[\\/]run\.ts$/.test(p))?.s ?? ''

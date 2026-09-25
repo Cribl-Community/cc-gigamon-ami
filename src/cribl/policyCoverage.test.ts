@@ -1013,14 +1013,39 @@ describe('paired teardown', () => {
     }
   })
 
-  it('pairs the routing table by resource rather than by method, because one call does both', () => {
-    // The route is added and taken away by the same PATCH of the group's one
-    // routing table (provision.ts ensureRoute / removeOnboardingStack). A teardown
-    // check keyed on "a POST needs a DELETE" would report this forever and miss
-    // the two that genuinely have no teardown.
-    const route = API_CALLS.find((c) => c.creates === 'route')
-    expect(route?.removes).toBe('route')
-    expect(route?.method).toBe('PATCH')
+  it('creates nothing of the global Raw HTTP stack any more, and can still remove all of it', () => {
+    // Until 2026-09-25 the route was added and taken away by the same PATCH of
+    // the group's one routing table (provision.ts ensureRoute /
+    // removeOnboardingStack), and the source, breaker ruleset, pipeline and
+    // destination each had a POST. The create path went with Guided Setup's
+    // Raw HTTP deploy; a tenant an earlier release provisioned must still be
+    // able to remove what it has.
+    for (const r of ['source', 'breaker', 'pipeline', 'route', 'destination'] as const) {
+      expect(API_CALLS.filter((c) => c.creates === r).map((c) => `${c.method} ${c.path}`), r).toEqual([])
+    }
+    for (const r of ['source', 'breaker', 'pipeline', 'route'] as const) {
+      expect(API_CALLS.some((c) => c.removes === r), r).toBe(true)
+    }
+    const route = API_CALLS.find((c) => c.removes === 'route')
+    expect(route).toMatchObject({ method: 'PATCH', path: '/m/:gid/routes/:tableId' })
+  })
+
+  it('excuses only what the app still creates', () => {
+    // A LEFT_BEHIND entry for something nothing creates is a stale excuse. The
+    // `destination` entry went on 2026-09-25 with the POST it excused.
+    const created = new Set(API_CALLS.map((c) => c.creates).filter(Boolean) as Provisioned[])
+    expect(LEFT_BEHIND.map((x) => x.resource).filter((r) => !created.has(r))).toEqual([])
+  })
+
+  it('grants no create or edit of the global Raw HTTP stack', () => {
+    const byObject = new Map(DECLARED.map((d) => [d.object, [...d.actions].sort()]))
+    expect(byObject.get('/m/:gid/system/inputs')).toEqual(['GET'])
+    expect(byObject.get('/m/:gid/system/inputs/in_gigamon_http')).toEqual(['DELETE', 'GET'])
+    expect(byObject.get('/m/:gid/lib/breakers/gigamon_ami_json_array')).toEqual(['DELETE', 'GET'])
+    expect(byObject.get('/m/:gid/pipelines/gigamon_http_normalize')).toEqual(['DELETE', 'GET'])
+    for (const gone of ['/m/:gid/lib/breakers', '/m/:gid/pipelines', '/m/:gid/system/outputs']) {
+      expect(byObject.has(gone), gone).toBe(false)
+    }
   })
 })
 

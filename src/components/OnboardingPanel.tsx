@@ -20,35 +20,29 @@
 // removal in no commit; "Finish removing the pack" commits and deploys it
 // (`finishRemovalDialog`, `finishPackRemoval`), from Git's own pending list.
 //
-// IN A BUILD WHOSE PINNED PACK IS RELEASED (pack.ts `PACK_PUBLISHED`), the
-// panel always renders, holds the page's one worker-group picker, and is THE
-// onboarding (onboarding/plan.ts `onboardingPath`); the Raw HTTP stack's panel
-// below shows only while a global object of its stack is (or may be) in the
-// group, and then offers Remove alone. That was this build with 0.2.1 pinned.
+// THE ONLY ONBOARDING (owner decision, 2026-09-25). The panel always renders,
+// holds the page's one worker-group picker, and is how this app onboards,
+// whatever the pinned release says. The Raw HTTP stack's panel below
+// (ProvisionPanel) shows only while an object an earlier release created is (or
+// may be) in the group, and then offers Remove alone.
 //
 // IN A BUILD WHOSE PACK CANNOT BE INSTALLED (one that pins a version before its
-// release — THIS build, which pins 0.2.2 before its tag, as it pinned 0.2.1
-// until 2026-09-25), the panel still mounts, so its controls are in the
-// source the gate scans read, but it renders only where there is something to
-// show: in dev preview (the localhost page, and Cribl's Live Preview of the
-// dev server — `IS_DEV_SERVER`), where the pack is already installed in the
-// group, or where its removal is waiting to be committed. A panel that renders nothing
-// reads nothing but the group's pack list and Git's pending files.
-// Onboard is then refused with the release's own sentence, visibly, and
-// nothing can send `POST /packs`: this control refuses, and packClient.ts
-// `installPack` refuses again inside. An installed build with nothing
-// installed shows no pack panel at all, and the Raw HTTP stack's panel below is
-// the onboarding, as it always was.
+// release), Onboard — and, for an owned copy that is behind, Upgrade — is
+// refused with the release's own sentence, visibly, and NOTHING FALLS BACK:
+// nothing can send `POST /packs` (this control refuses, and packClient.ts
+// `installPack` refuses again inside), and there is no other onboarding on the
+// page. *(Corrected 2026-09-25, `feat/collapse-old-onboarding`: such a build
+// rendered this panel only in dev preview, where the pack was installed or its
+// removal was uncommitted, and made the global Raw HTTP stack's panel the
+// onboarding, with its own Deploy, picker and endpoint card.)*
 //
 // THE TOKEN is held in this component's state and nowhere else: set only by the
 // onboarding run's or a rotation's `onToken`, shown once on the endpoint card, and dropped on a group
 // change, a Remove that took the source, a remount and a reload. It never
 // reaches a step, a toast, the diff, an error or the KV store.
 //
-// ONE PICKER PER PAGE. While the Raw HTTP stack is the onboarding (the pack is
-// unavailable), that panel holds the picker and this one names the group; once
-// the pack onboards, this panel holds it. Both read useSetupGroup(), so they
-// can never disagree.
+// ONE PICKER PER PAGE: this panel's. Every other Guided Setup panel reads the
+// same useSetupGroup(), so they can never disagree.
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -62,18 +56,18 @@ import {
   NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
   PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_START_REFUSAL, SAMPLE_TIP, SOURCE_SETTINGS_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR,
   TOKEN_UNDEPLOYED,
-  UPGRADE_TIP, accelStatusWords, datasetWords, finishRemovalNote, groupElsewhereNote, httpStatusWords, installedRefusal, onboardLabel,
+  UPGRADE_TIP, accelStatusWords, datasetWords, finishRemovalNote, httpStatusWords, installedRefusal, onboardLabel,
   onboardNote, packStatusWords, removeTypeLabel,
 } from './onboardingCopy'
 import { AUTH_HEADER, ENDPOINT_LEAD, TOKEN_ONCE, UNENCRYPTED_WARNING } from './provisionPanelCopy'
 import { MANIFEST } from '../cribl/accel/manifest'
 import { readAccelState, type AccelState } from '../cribl/accel/provision'
 import { useWriteGate } from '../cribl/authz'
-import { IS_DEV_SERVER, IS_INSTALLED } from '../cribl/config'
+import { IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
-  finishRemovalDialog, httpActionOf, onboardingDialog, onboardingPath, packRemovalDialog, packUpgradeDialog, sourceChangeDialog,
+  finishRemovalDialog, httpActionOf, onboardingDialog, packRemovalDialog, packUpgradeDialog, sourceChangeDialog,
   type FinishRemovalDialog, type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog, type SourceChange,
   type SourceChangeContext, type SourceChangeDialog, type UpgradeDialog, type UpgradeDialogContext,
 } from '../cribl/onboarding/plan'
@@ -133,12 +127,6 @@ function confirmLabel(change: SourceChange): string {
   return change.enabled ? 'Yes, start the sample data' : 'Yes, stop the sample data'
 }
 
-/** Whether the panel has anything to show (see the header): the pack can be
- *  installed, this is dev preview, the pack is in the group, or its removal is
- *  waiting to be committed. */
-const hasSomethingToShow = (installable: boolean, pack: PackState, stranded: readonly string[]): boolean =>
-  installable || !IS_INSTALLED || IS_DEV_SERVER || pack.installed || stranded.length > 0
-
 export function OnboardingPanel() {
   const { group, groups, groupReady, pickGroup } = useSetupGroup()
   const release = thisPackRelease()
@@ -177,10 +165,9 @@ export function OnboardingPanel() {
 
   // Reads only. Only the latest refresh may set anything.
   //
-  // In two rounds. The first — the pack list and Git's pending files — says
-  // whether the panel has anything to show; a panel that renders nothing reads
-  // nothing else (the Raw HTTP stack's and Acceleration's panels already read
-  // the group's ports, the datasets and the saved searches).
+  // In two rounds: the pack list and Git's pending files (whether a removal of
+  // the pack is waiting to be committed), then everything the status rows and
+  // the confirmations need.
   const refresh = useCallback(async () => {
     const mine = ++seq.current
     const current = () => mine === seq.current
@@ -191,10 +178,6 @@ export function OnboardingPanel() {
       const [pack, pending] = await Promise.all([readPackState(group), pendingConfigPaths().catch(() => null)])
       if (!current()) return
       const stranded = pack.installed || pack.error ? [] : packCommitScope(group, pending).alreadyDirty
-      if (!hasSomethingToShow(thisPackRelease().installable, pack, stranded)) {
-        setRead({ pack, datasets: null, hosting: null, usedPorts: null, accel: null, stranded })
-        return
-      }
       // Captured for the dialogs, never awaited by them (see ProvisionPanel).
       void pendingDeploy(group).catch(() => null).then((h) => {
         if (current()) pendingNow.current = { known: true, hash: h }
@@ -279,10 +262,6 @@ export function OnboardingPanel() {
   const sampleDatasetKnownAbsent = read !== null && read.datasets !== null &&
     !read.datasets.some((d) => d.id === PACK_SAMPLE_DATASET_ID && d.deletionStartedAt === null)
   const startRefusal = sampleNow?.disabled && sampleDatasetKnownAbsent ? SAMPLE_START_REFUSAL : null
-
-  // Rendered only where there is something to show — see the header.
-  const visible = release.installable || !IS_INSTALLED || IS_DEV_SERVER || installed || stranded.length > 0
-  const holdsPicker = onboardingPath(release, null).mode === 'pack'
 
   const openOnboard = async () => {
     if (onboardBlocked) return
@@ -542,8 +521,6 @@ export function OnboardingPanel() {
     }
   }
 
-  if (!visible) return null
-
   const steps = outcomes[group] ?? []
   const shownToken = token?.group === group ? token : null
   const http = pack?.http ?? null
@@ -595,26 +572,22 @@ export function OnboardingPanel() {
           <InfoTip text={ONBOARDING_LEAD_TIP} />
         </p>
 
-        {holdsPicker ? (
-          <div className="gs-group-picker">
-            <label htmlFor="gs-onb-group-select" className="gs-group-label">Worker group</label>
-            <InfoTip text={ONBOARDING_GROUP_TIP} />
-            <select
-              id="gs-onb-group-select"
-              className="gs-group-select"
-              value={group}
-              disabled={running !== null}
-              onChange={(e) => void pickGroup(e.target.value)}
-            >
-              {!groups.some((gr) => gr.id === group) && <option value={group}>{group}</option>}
-              {groups.map((gr) => (
-                <option key={gr.id} value={gr.id}>{gr.name === gr.id ? gr.id : `${gr.name} (${gr.id})`}</option>
-              ))}
-            </select>
-          </div>
-        ) : (
-          <p className="gs-note">{groupElsewhereNote(group)}</p>
-        )}
+        <div className="gs-group-picker">
+          <label htmlFor="gs-onb-group-select" className="gs-group-label">Worker group</label>
+          <InfoTip text={ONBOARDING_GROUP_TIP} />
+          <select
+            id="gs-onb-group-select"
+            className="gs-group-select"
+            value={group}
+            disabled={running !== null}
+            onChange={(e) => void pickGroup(e.target.value)}
+          >
+            {!groups.some((gr) => gr.id === group) && <option value={group}>{group}</option>}
+            {groups.map((gr) => (
+              <option key={gr.id} value={gr.id}>{gr.name === gr.id ? gr.id : `${gr.name} (${gr.id})`}</option>
+            ))}
+          </select>
+        </div>
 
         {needsPort && release.installable && (
           <div className="gs-port-picker">

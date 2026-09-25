@@ -34,16 +34,15 @@
 # `gigamon_ami` and read the results — that is most of the objects below. The
 # rest are the writes CLAUDE.md lists under "App-specific conventions":
 #
-#   1. Guided Setup provisioning — the Raw HTTP source, its event breaker
-#      ruleset, pipeline, route, Lake dataset, a Git commit on the Leader and a
-#      deploy that restarts that group's Worker Processes; and the removal of
-#      the Syslog stack an earlier release created. Behind a confirmation in
-#      components/ProvisionPanel.tsx that names each object. And the onboarding
-#      pack (2026-09-24): its install from the pinned GitHub release, its two
-#      sources, its removal, the Lake datasets it writes to (created, never
-#      edited or deleted) and the scheduled searches, behind the one Onboard
-#      confirmation and the Remove pack confirmation in
-#      components/OnboardingPanel.tsx.
+#   1. Guided Setup — the onboarding pack: its install from the pinned GitHub
+#      release, its two sources, its upgrade and removal, the Lake datasets it
+#      writes to (created, never edited or deleted), the scheduled searches, a
+#      Git commit on the Leader and a deploy that restarts that group's Worker
+#      Processes, behind the confirmations in components/OnboardingPanel.tsx.
+#      And the REMOVAL of the global Raw HTTP and Syslog stacks earlier releases
+#      created, behind a confirmation in components/ProvisionPanel.tsx that
+#      names each object. (Until 2026-09-25 Guided Setup could also CREATE the
+#      global Raw HTTP stack; those POST and PATCH grants went with it.)
 #   2. The scheduled saved searches (acceleration) — created,
 #      corrected, paused, resumed and deleted. Behind confirmations in
 #      components/AccelPanel.tsx that name the ids and state the recurring cost.
@@ -87,9 +86,9 @@
 #     create scheduled saved searches that RUN ON A CRON AND SPEND CREDITS until
 #     somebody stops them — and uninstalling the app does not stop them (I-D28);
 #   * any Member who can open it can reach Guided Setup's Remove and delete the
-#     Raw HTTP source, the pipeline and this app's route in the worker group they
-#     pick — the teardown, not the customer's own objects, but a teardown all the
-#     same;
+#     Raw HTTP source, the pipeline and the route earlier releases of this app
+#     created in the worker group they pick, or the onboarding pack — the
+#     teardown, not the customer's own objects, but a teardown all the same;
 #   * any Member who can open it can SHORTEN RETENTION on the `gigamon_ami` Lake
 #     dataset, which deletes everything older than the new window immediately and
 #     for everyone, with no commit to revert and no snapshot to restore. That is
@@ -240,14 +239,14 @@ policies:
   - object: '/ai/settings/dataset-intelligence/:dataset'
     actions: ['GET', 'POST']
 
-  # --- Guided Setup: the Gigamon AMI Raw HTTP onboarding stack ----------------
-  # cribl/provision.ts, reached only from the Guided Setup tab's confirmed
-  # Deploy / Remove buttons. Everything it creates is additive and scoped to the
-  # five objects named in that confirmation. It never edits the demo DataGen
-  # source or any other shared resource, and the route is prepended above the
-  # catch-all with a filter scoped to this app's own source.
+  # --- Guided Setup: worker groups, commits and deploys ------------------------
+  # cribl/provision.ts and cribl/packClient.ts, reached only from Guided Setup's
+  # confirmed buttons: the onboarding pack's (Onboard, Upgrade, Rotate token,
+  # Move port, Start/Stop sample data, Remove pack) and the Remove of the global
+  # stacks earlier releases created. Guided Setup no longer creates a global
+  # stack (2026-09-25): the pack is the only onboarding.
 
-  # The Stream worker group the stack is applied to. /products/stream/... is the
+  # The Stream worker group the pack is installed in. /products/stream/... is the
   # current path family and /master/groups the deprecated one; both are declared
   # because provision.ts falls back to the old path on a 404, which is how an
   # older Leader answers the new one.
@@ -264,7 +263,7 @@ policies:
   # Push the committed config to the group's running Workers. This is the step
   # that makes a deploy real, and it RESTARTS THAT GROUP'S WORKER PROCESSES — a
   # source configured to block on backpressure can lose seconds of data across
-  # the restart. Two confirmed surfaces reach it: Guided Setup's Deploy and
+  # the restart. Two confirmed surfaces reach it: Guided Setup's pack writes and
   # Remove, and (Phase 3) the Lake landing panel's destination edit, which is
   # useless uncommitted and undeployed and so carries all three in one dialog.
   # The deprecated path is tried only on a 404 — a 403 cannot be granted by a
@@ -274,12 +273,12 @@ policies:
   - object: '/master/groups/:gid/deploy'
     actions: ['PATCH']
 
-  # The Cribl Lake dataset the dashboards read. GET to see whether it exists,
-  # POST to create it when it does not. `default` is the lake itself, not a
-  # placeholder — the app never addresses another one. The onboarding run
-  # (Guided Setup's Onboard) also creates, through the same POST and only when
-  # absent, the pack's Parquet copy `gigamon_ami_pq` and — only when "Also send
-  # sample data" is ticked — `gigamon_ami_sample`. None is ever edited here.
+  # The Cribl Lake datasets. GET to see whether each exists, POST to create it
+  # when it does not — from the onboarding run (Guided Setup's Onboard) only:
+  # `gigamon_ami`, which the dashboards read, the pack's Parquet copy
+  # `gigamon_ami_pq` and — only when "Also send sample data" is ticked —
+  # `gigamon_ami_sample`. `default` is the lake itself, not a placeholder — the
+  # app never addresses another one. None is ever edited here.
   #
   # No DELETE, on purpose. The dataset holds the customer's ingested flow
   # records, so a DELETE grant would let this app destroy that data; the teardown
@@ -358,30 +357,24 @@ policies:
   - object: '/products/stream/groups'
     actions: ['GET']
 
-  # The four group-scoped config objects, under the /m/:gid prefix every
+  # The group-scoped config objects, under the /m/:gid prefix every
   # non-/system/ endpoint takes. The group is the one the user picks, so :gid has
   # to stay a placeholder — which means these writes are granted in EVERY worker
   # group on the Leader, not only the one the picker selects. The app cannot
   # narrow that; the README says so plainly under "What installing this app
   # grants".
 
-  # The Raw HTTP source Gigamon AMX POSTs its records to. POST creates it, with
-  # the port picked in Guided Setup, TLS on a Cribl-managed group and an auth
-  # token the app generates and shows once; GET answers "does it exist yet",
-  # drives the status pill and gives the endpoint card its port and TLS state;
-  # PATCH re-applies the spec to one that is already there, only when it
-  # differs, as the whole live object — and never changes its port, TLS or
-  # token; DELETE is the teardown, and only ever of this source.
-  #
-  # GET on the COLLECTION is shared by two panels. The landing panel lists the
-  # group's sources to work out what actually writes through the gigamon_lake
-  # destination — on the workspace this was measured against, a source reaches
-  # Cribl Lake through a QuickConnect binding on the source itself and appears
-  # in no route at all. Guided Setup reads the same list for the ports the
-  # group's sources already listen on, so the new source gets a free one. It
-  # reads every source in the group, including ones this app did not create.
+  # GET on the group's sources is shared by two panels. The landing panel lists
+  # them to work out what actually writes through the gigamon_lake destination
+  # — on the workspace this was measured against, a source reaches Cribl Lake
+  # through a QuickConnect binding on the source itself and appears in no route
+  # at all. Guided Setup reads the same list for the ports the group's sources
+  # already listen on, so the onboarding pack's source gets a free one, and —
+  # before Remove deletes the old breaker ruleset — for any source still naming
+  # it. It reads every source in the group, including ones this app did not
+  # create. No POST: nothing here creates a global source any more (2026-09-25).
   - object: '/m/:gid/system/inputs'
-    actions: ['GET', 'POST']
+    actions: ['GET']
   # The sources inside each pack installed in the group, read two ways and
   # never written. Their ports: a pack source listening in 20000–20010 — the
   # onboarding pack's own Raw HTTP source does — is as much a collision for
@@ -430,26 +423,28 @@ policies:
     actions: ['GET', 'PATCH']
   - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gigamon_ami_sample'
     actions: ['GET', 'PATCH']
+  # The global Raw HTTP source an earlier release of Guided Setup created for
+  # Gigamon AMX to POST to. GET so Guided Setup can show it and Remove can name
+  # it; DELETE is the teardown, and only ever of this source. Nothing creates or
+  # edits it any more (its POST and PATCH were withdrawn on 2026-09-25).
   - object: '/m/:gid/system/inputs/in_gigamon_http'
-    actions: ['GET', 'PATCH', 'DELETE']
+    actions: ['GET', 'DELETE']
   # The Syslog source an earlier release created. GET so Remove can name it,
   # DELETE so Remove can take it away. Nothing creates or edits it any more.
   - object: '/m/:gid/system/inputs/in_gigamon_syslog'
     actions: ['GET', 'DELETE']
 
-  # The event breaker ruleset the Raw HTTP source names: it splits each POSTed
-  # JSON array into one event per AMI record. A global object in the group's
-  # library, created only by this app under its own id. POST creates, GET
-  # checks, PATCH re-applies the rules as the whole live object when they
-  # differ, DELETE is the teardown — after the source that names it.
-  - object: '/m/:gid/lib/breakers'
-    actions: ['POST']
+  # The event breaker ruleset that Raw HTTP source names, a global object in
+  # the group's library that earlier releases created under this id. GET checks
+  # it, and reads it whole before Remove deletes it — only when it carries this
+  # app's description and no other source names it, after the source is gone.
   - object: '/m/:gid/lib/breakers/gigamon_ami_json_array'
-    actions: ['GET', 'PATCH', 'DELETE']
+    actions: ['GET', 'DELETE']
 
-  # The Cribl Lake destination. POST creates it only on a tenant that does not
-  # already have one. No DELETE — see LEFT_BEHIND in src/cribl/paths.ts for the
-  # decision and what an uninstall leaves behind.
+  # The global Cribl Lake destination. No DELETE, and no POST any more: earlier
+  # releases created it on a tenant that lacked one, and this one creates
+  # nothing here. Remove leaves it, because the app cannot prove it made a
+  # destination named after the dataset, and anything else may write through it.
   #
   # PATCH ARRIVED IN PHASE 3 AND IS A REAL WIDENING — the header of this file
   # used to say "the app never rewrites a destination it may not have made", and
@@ -469,28 +464,22 @@ policies:
   # reasoning that makes deleting it wrong — the app cannot prove it made it —
   # does not make editing it wrong, but it is why the confirmation says the only
   # way back is this same editor or the group's Git history.
-  - object: '/m/:gid/system/outputs'
-    actions: ['POST']
   - object: '/m/:gid/system/outputs/gigamon_lake'
     actions: ['GET', 'PATCH']
 
-  # The pipeline that normalizes Gigamon AMI fields — the same casts and derived
-  # fields the demo feed gets. POST creates, GET checks, PATCH re-applies the
-  # function list to an existing one — and, as with the source above, only when
-  # that list actually differs — DELETE is the teardown.
-  - object: '/m/:gid/pipelines'
-    actions: ['POST']
+  # The pipeline an earlier release created for the Raw HTTP source: read and
+  # removed only.
   - object: '/m/:gid/pipelines/gigamon_http_normalize'
-    actions: ['GET', 'PATCH', 'DELETE']
+    actions: ['GET', 'DELETE']
   # The Syslog pipeline an earlier release created: read and removed only.
   - object: '/m/:gid/pipelines/gigamon_syslog'
     actions: ['GET', 'DELETE']
 
   # A group has ONE routing table and PATCH replaces it wholesale, so this is the
-  # most consequential entry in the file. provision.ts edits the array it just
-  # read — one insert, one in-place update, or one removal — rather than
-  # composing a new table, so every other route keeps the index the customer gave
-  # it. The same PATCH both installs our route and uninstalls it.
+  # most consequential entry in the file. provision.ts's Remove edits the array
+  # it just read — the routes earlier releases added taken out — rather than
+  # composing a new table, so every other route keeps the index the customer
+  # gave it. Nothing adds a route any more.
   - object: '/m/:gid/routes'
     actions: ['GET']
   - object: '/m/:gid/routes/:tableId'

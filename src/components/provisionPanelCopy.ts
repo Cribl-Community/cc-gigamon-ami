@@ -41,10 +41,17 @@
 // TWO SENTENCES, NOT ONE. What this app writes and what the commit reaches are
 // different claims and the old copy collapsed them. The first stays — narrowed
 // to "writes" — because it is true and it is what somebody is actually asking.
+//
+// WHAT IS LEFT (2026-09-25). The Raw HTTP deploy and its dialog, picker, port
+// field and endpoint card were withdrawn when the onboarding collapsed into the
+// pack's, and their words went with them (`deployConsequences`, `deployNote`,
+// `PROVISION_LEAD`, `GROUP_TIP`, `PORT_TIP`, `ENDPOINT_TIP`,
+// `ENDPOINT_INCOMPLETE`, `TOKEN_ELSEWHERE`, `SETUP_FACTS`, `setupFacts`). What
+// stays is the teardown's copy, the reach sentences the onboarding plan reuses,
+// the pack's endpoint-card words and the page's "What gets created" list.
 
 import {
-  CLOUD_PORT_RANGE, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DATASET_ID,
-  LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID,
+  CLOUD_PORT_RANGE, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID,
   type CommitScope,
 } from '../cribl/provision'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
@@ -174,15 +181,6 @@ export function carriesSentence(ctx: ProvisionConfirmContext, verb: string): str
 }
 
 /**
- * Deploy: what this run writes, what its commit reaches, and what a deploy is.
- *
- * The first sentence is the narrowed survivor of the retired one. The second
- * and third are the halves it hid. Then DEPLOY_CONSEQUENCES verbatim, which
- * carries the Worker Process restart, the whole-file rule, the fact that a
- * deploy moves the group to a COMMIT rather than applying one change, and the
- * `onBackpressure: block` data loss — one constant, every deploy site.
- */
-/**
  * What a Raw HTTP source may do while the Worker Processes restart. Said here,
  * in Guided Setup's own two dialogs, and NOT in DEPLOY_CONSEQUENCES, which the
  * Lake landing panel shares and where no such source need exist. Worded as a
@@ -210,19 +208,6 @@ export function leftAloneSentence(group: string, objects: readonly string[]): st
 const withUndeployed = (ctx: ProvisionConfirmContext): string[] => {
   const line = undeployedSentence(ctx)
   return line ? [line] : []
-}
-
-export function deployConsequences(ctx: ProvisionConfirmContext): string[] {
-  const { group } = ctx
-  return [
-    `This app writes only its own objects in ${group}: event breaker ruleset ${HTTP_BREAKER_ID}, pipeline ${HTTP_PIPELINE_ID}, Raw HTTP ` +
-      `source ${HTTP_SOURCE_ID}, and the one ${HTTP_ROUTE_ID} entry in the routing table. It does not edit the demo DataGen source, and every other route keeps its place.`,
-    carriesSentence(ctx, 'change'),
-    pendingSentence(ctx),
-    ...withUndeployed(ctx),
-    ...DEPLOY_CONSEQUENCES,
-    HTTP_RESTART_PRECAUTION,
-  ]
 }
 
 /**
@@ -253,27 +238,6 @@ export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination
 // explains. None of these is a confirmation — the dialogs still say everything
 // a write needs said, and nothing here replaces them.
 
-/** The one line under the panel title. */
-export const PROVISION_LEAD =
-  `Creates a Raw HTTP source, pipeline and route in the worker group below, landing Gigamon AMX data in the Cribl Lake dataset ${LAKE_DATASET_ID}.`
-
-/** The rest of what the old intro said, behind the ⓘ at the end of the lead. */
-export const PROVISION_LEAD_TIP =
-  'Only this app’s own objects are written: whatever is missing is created, and its breaker ruleset, pipeline, source and route entry are overwritten where they differ from this release. The demo DataGen feed is never edited. ' +
-  'The commit that follows takes whole files — inputs.yml, breakers.yml, pipelines/route.yml and outputs.yml each hold every object of their kind in the group — and the confirmation names them and anything already uncommitted in them.'
-
-/** Beside the "Worker group" label; replaces the hint that sat after the picker. */
-export const GROUP_TIP =
-  `The source, pipeline, route and destination are created, committed and deployed in this group. The Lake dataset ${LAKE_DATASET_ID} is shared and belongs to no group. Your pick is remembered, so this tab opens on it next time.`
-
-/** Beside the port picker. */
-export const PORT_TIP =
-  `Set once, when the source is created. A Cribl-managed group only exposes ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max} and its source uses Cribl’s TLS certificate; ` +
-  'a hybrid group takes any free port and starts without TLS. Ports other sources in the group already use are refused.'
-
-/** Under the Deploy button. Short, because the confirmation says the rest. */
-export const deployNote = (group: string): string => `Commits and deploys to ${group}. You review every change first.`
-
 /** Beside the actions, when the group still has the Syslog stack an earlier release created. */
 export const legacyNote = (group: string): string =>
   `${group} still has the Syslog objects an earlier release created. Remove them on their own, or with the HTTP stack.`
@@ -281,6 +245,23 @@ export const legacyNote = (group: string): string =>
 export const LEGACY_TIP =
   `Syslog source ${LEGACY_SYSLOG_SOURCE_ID}, pipeline ${LEGACY_SYSLOG_PIPELINE_ID} and route ${LEGACY_SYSLOG_ROUTE_ID}. This release no longer creates or edits them; ` +
   'they keep running until they are removed, and the confirmation names each one before anything is deleted.'
+
+/** The lead when the group holds only the old Syslog stack (REMOVE_ONLY_LEAD,
+ *  in onboardingCopy.ts, is the Raw HTTP stack's). */
+export const LEGACY_ONLY_LEAD = 'This group still has the Syslog stack an earlier release of this app created.'
+
+export const LEGACY_ONLY_TIP =
+  `Syslog source ${LEGACY_SYSLOG_SOURCE_ID}, pipeline ${LEGACY_SYSLOG_PIPELINE_ID} and route ${LEGACY_SYSLOG_ROUTE_ID}. This app no longer creates or edits ` +
+  'them, and this panel only removes them: the pack panel above is how this app onboards now.'
+
+/**
+ * What puts the Raw HTTP stack back after Remove: nothing in this app. It used
+ * to say "Deploy onboarding stack, on this tab, rebuilds…", which was true
+ * until that control was withdrawn on 2026-09-25.
+ */
+export const REMOVE_UNDO =
+  'This app no longer creates the Raw HTTP stack, so nothing here rebuilds it: the onboarding pack above replaces it, with its own source, port and token. ' +
+  'The deleted configuration is recoverable only from the group’s Git history.'
 
 // ── The endpoint card ────────────────────────────────────────────────────────
 
@@ -295,20 +276,9 @@ export const ENDPOINT_LEAD = 'Configure Gigamon AMX to POST AMI records, as JSON
  */
 export const AUTH_HEADER = 'Authorization: <token>'
 
-export const ENDPOINT_TIP =
-  `Send the token as the whole header value — ${AUTH_HEADER}, with no "Bearer" prefix. The source splits each POSTed array into one event per record, and the pipeline gives them the same fields as the demo feed.`
-
-/** On the endpoint card when the token was just made but the stack is not whole. */
-export const ENDPOINT_INCOMPLETE =
-  'The source exists, but the run stopped before the rest of the stack was in place, so nothing it receives reaches Cribl Lake yet. Copy the token now, then deploy again.'
-
 /** Shown beside the token, the one time it is shown. */
 export const TOKEN_ONCE =
   'Shown once. Copy it now: this app keeps no copy, and reloading the page clears it. Cribl keeps it in the source’s authentication settings.'
-
-/** Where the token line is when it is not being shown. */
-export const TOKEN_ELSEWHERE =
-  'The token was shown once, when this app created the source. It is in the source’s authentication settings in Cribl.'
 
 /** On a hybrid group, whose source starts without TLS. Plain on purpose. */
 export const UNENCRYPTED_WARNING =
@@ -320,41 +290,12 @@ export interface SetupFact {
   tip: string
 }
 
-export const SETUP_FACTS: readonly SetupFact[] = Object.freeze([
-  {
-    label: `Breaker ${HTTP_BREAKER_ID} — one event per record`,
-    tip:
-      'Each POST body is a JSON array of AMI records. The ruleset splits it into one event per record and extracts every field, so no parse step is needed. ' +
-      'If your AMX exports CEF instead, this ruleset and pipeline will not read it.',
-  },
-  {
-    label: `Pipeline ${HTTP_PIPELINE_ID} — same fields as the demo feed`,
-    tip:
-      'Applies the same numeric casts and derived fields (http_server_ms, tcp_reset, subnets, l4_proto, byte and packet totals) as the demo gigamon_ami pipeline, so every dashboard reads the same fields.',
-  },
-  {
-    label: `Route ${HTTP_ROUTE_ID} — this source only`,
-    tip:
-      `Inserted above the catch-all default route, filtered to __inputId=='http_raw:${HTTP_SOURCE_ID}' and marked final, so it only touches this source’s data and no other route changes.`,
-  },
-  {
-    label: `Cribl-managed groups use ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`,
-    tip:
-      `Cribl.Cloud exposes only ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max} on a managed group, with TLS on Cribl’s certificate. A hybrid group takes any port, but its source starts without TLS until you add a certificate.`,
-  },
-  {
-    label: 'Idle until Gigamon sends to it',
-    tip:
-      'With nothing pointed at it, the source shows healthy at 0 events per second. The DataGen demo keeps the dashboards populated meanwhile.',
-  },
-])
-
 /**
- * "What gets created" when the onboarding pack is the onboarding: the pack's
- * own objects, never the global stack's. Shown only once the pack's release
- * can be installed (cribl/onboarding/plan.ts `onboardingPath`); until then the
- * page shows `SETUP_FACTS`, because the global stack is still what a deploy
- * creates.
+ * "What gets created & things to know": the onboarding pack's own objects,
+ * never the global stack's. Shown whatever the release says, because the pack
+ * is the only onboarding (2026-09-25). *(Until then a build whose pack could
+ * not be installed showed `SETUP_FACTS`, the global Raw HTTP stack's list,
+ * chosen by `setupFacts(onboardingPath(…).mode)`; both are gone.)*
  */
 export const PACK_SETUP_FACTS: readonly SetupFact[] = Object.freeze([
   {
@@ -388,7 +329,3 @@ export const PACK_SETUP_FACTS: readonly SetupFact[] = Object.freeze([
   },
 ])
 
-/** The "What gets created" list for the onboarding path the page offers. */
-export function setupFacts(mode: 'global' | 'pack'): readonly SetupFact[] {
-  return mode === 'pack' ? PACK_SETUP_FACTS : SETUP_FACTS
-}

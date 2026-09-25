@@ -10,13 +10,17 @@
 //   * Onboard is aria-disabled, with the release's own sentence as visible text
 //     it points at, and pressing it opens nothing and sends nothing;
 //   * `POST /packs` is never sent, by anything on the page;
-//   * the Raw HTTP stack's panel is the onboarding (`onboardingPath`), with its
-//     Deploy and its picker, exactly as before;
+//   * NOTHING FALLS BACK: the pack panel holds the page's picker, and the Raw
+//     HTTP stack's panel offers no Deploy (it renders only to remove an old
+//     stack). *(Until 2026-09-25 that panel became the onboarding here, with
+//     its Deploy and picker — `onboardingPath`'s 'global' mode.)*
 //   * a copy this app owns (the published 0.1.0, from its release) is still
 //     offered Remove, and Upgrade is aria-disabled with the release's refusal
 //     as the visible sentence it points at — pressing it sends nothing;
-//   * an installed build with no pack in the group shows no pack panel at all;
-//     Live Preview (installed, but served by the dev server) shows it, refused.
+//   * an installed build with no pack in the group shows the pack panel, with
+//     Onboard refused — it is the only onboarding on the page. *(Until
+//     2026-09-25 it showed no pack panel there at all.)* Live Preview shows it
+//     the same way.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -126,13 +130,19 @@ describe('10. while this build records no release', () => {
     expect(document.body.querySelector('#gs-onb-port')).toBeNull()
   })
 
-  it('the Raw HTTP stack’s panel is the onboarding, with its Deploy and the page’s picker', async () => {
+  it('nothing falls back to the Raw HTTP stack: the pack panel holds the page’s picker, and there is no Deploy', async () => {
+    // Until 2026-09-25 this asserted the opposite — the global stack's panel as
+    // the onboarding, with "Deploy onboarding stack" and the page's picker.
     leader()
     await mount(<><OnboardingPanel /><ProvisionPanel /></>)
-    expect(buttonNamed('Deploy onboarding stack')).toBeTruthy()
-    expect(document.body.querySelector('#gs-group-select')).not.toBeNull()
-    expect(document.body.querySelector('#gs-onb-group-select')).toBeNull()
-    expect(bodyText()).toContain(`Worker group ${GROUP}, picked in the panel below.`)
+    expect(buttonNamed('Deploy onboarding stack')).toBeUndefined()
+    expect(document.body.querySelector('#gs-group-select')).toBeNull()
+    expect(document.body.querySelector('#gs-port-input')).toBeNull()
+    expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
+    expect(bodyText()).not.toContain('picked in the panel below')
+    expect(bodyText()).not.toContain('Raw HTTP stack created outside the pack')
+    expect(bodyText()).toContain(`Onboard is not available: ${REFUSAL}.`)
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
   })
 
   it('a copy this app owns is offered Remove, and Upgrade is aria-disabled, pointing at the release’s refusal; pressing it sends nothing', async () => {
@@ -162,7 +172,11 @@ describe('10. while this build records no release', () => {
     expect(buttonNamed('Remove pack')).toBeUndefined()
   })
 
-  it('installed in Cribl, with no pack in the group: no pack panel at all', async () => {
+  it('installed in Cribl, with no pack in the group: the pack panel shows, Onboard refused, and nothing is written', async () => {
+    // Until 2026-09-25 an installed build showed no pack panel here at all,
+    // because the global Raw HTTP stack's panel was the onboarding. With that
+    // fallback gone, this panel is the only place the page says why nothing
+    // can be onboarded yet.
     ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
     // A built bundle: Vite's DEV is false there (vitest's is true).
     vi.stubEnv('DEV', false)
@@ -172,16 +186,11 @@ describe('10. while this build records no release', () => {
     leader()
     await act(async () => { root.render(<Provider><Installed /></Provider>) })
     await settle()
-    expect(bodyText()).not.toContain('Onboard Gigamon AMI with the pack')
-    // It still read, to know whether a pack is there.
-    expect(calls.some((c) => c.path === `/m/${GROUP}/packs`)).toBe(true)
+    expect(bodyText()).toContain('Onboard Gigamon AMI with the pack')
+    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(`Onboard is not available: ${REFUSAL}.`)
+    expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
     expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
-    // …and nothing else a hidden panel has no use for: the datasets, the
-    // scheduled searches, the group's ports, the Leader's history.
-    const read = new Set(calls.map((c) => c.path))
-    for (const p of ['/products/lake/lakes/default/datasets', '/m/default_search/search/saved', `/m/${GROUP}/system/inputs`, '/version', '/products/stream/groups']) {
-      expect(read.has(p), `a hidden panel read ${p}`).toBe(false)
-    }
   })
 
   it('installed in Cribl, with no pack in the group but its removal left uncommitted: the panel shows, to finish it', async () => {

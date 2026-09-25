@@ -7,7 +7,7 @@
 //     against what packClient.ts's own preview reads off a source built from
 //     it — so the dialog shown before the pack exists is the diff the run will
 //     be handed back as `approved`;
-//   * truth tables for `accelMode` and `onboardingPath`.
+//   * truth tables for `accelMode` and `provisionPanelMode`.
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,10 +15,11 @@ import { parse } from 'yaml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ONBOARDING_RETENTION_DAYS, SAMPLE_DATASET_SPEC, SAMPLE_FEED, SAMPLE_START_DIFF, SHIPPED_HTTP_INPUT,
-  accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingPath, onboardingSteps,
+  accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingSteps, provisionPanelMode,
   packObjectsOf, packRemovalDialog, packUpgradeDialog, parquetDatasetSpec, sampleVolume, sameWrites, sourceChangeDialog,
   type OnboardingDialogContext,
 } from './plan'
+import * as planModule from './plan'
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, lakeEntryNotCreatedSentence, sampleVolumeWords, storageCostWords,
@@ -30,7 +31,8 @@ import {
   PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_PARQUET_DATASET_ID, PACK_PARQUET_PIPELINE_ID,
   PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_VERSION, packRelease,
 } from '../pack'
-import { DATASET_SPEC, PARQUET_DATASET_SPEC, tlsFor } from '../provision'
+import { DATASET_SPEC, PARQUET_DATASET_SPEC } from '../provision'
+import { tlsFor } from '../packSpecs'
 import { DEFAULT_PROFILE, datasetSpec } from '../landing'
 import { SAVED_KIND } from '../../components/accelPanelCopy'
 
@@ -181,24 +183,16 @@ describe('the datasets the run creates', () => {
     expect(all[1].retentionPeriodInDays).toBe(60)
   })
 
-  it('gigamon_ami is created with the same body by both creators — DATASET_SPEC, never a saved profile', () => {
-    // Guided Setup's dataset step builds `datasetSpec(ctx.profile)`, and
-    // `ctx.profile` is `opts.profile ?? DEFAULT_PROFILE`. No caller passes one:
-    // if a caller starts to, the onboarding run's DATASET_SPEC must follow it,
-    // and this fails so that it does.
+  it('gigamon_ami is created with DEFAULT_PROFILE’s body — DATASET_SPEC, never a saved profile — and by nothing else', () => {
+    // Until 2026-09-25 Guided Setup's Raw HTTP deploy (`deployAll`) was a second
+    // creator, building `datasetSpec(ctx.profile)`, and this held the two
+    // bodies equal. That deploy was withdrawn; nothing may call it again.
     expect(onboardingDatasets({ sample: false, jsonRetentionDays: null })[0]).toEqual(datasetSpec(DEFAULT_PROFILE))
     const callers = srcFiles(join(ROOT, 'src')).flatMap((p) => {
       const s = readFileSync(p, 'utf8').replace(/\r\n/g, '\n')
-      return [...s.matchAll(/(?<!function )\bdeployAll\(/g)].map((m) => {
-        const end = s.indexOf('\n', s.indexOf('})', m.index ?? 0))
-        return { p, call: s.slice(m.index, end) }
-      })
+      return [...s.matchAll(/(?<!function )\bdeployAll\(/g)].map(() => p)
     })
-    expect(callers.map((c) => c.p)).toEqual([expect.stringMatching(/ProvisionPanel\.tsx$/)])
-    for (const c of callers) {
-      expect(c.call).toMatch(/onToken/)
-      expect(c.call, c.p).not.toMatch(/\bprofile\b/)
-    }
+    expect(callers).toEqual([])
   })
 })
 
@@ -224,34 +218,28 @@ describe('accelMode — installed running or paused', () => {
   })
 })
 
-describe('onboardingPath — which onboarding the page offers', () => {
-  const unpublished = packRelease({ published: false, sha256: null, version: '0.2.0' })
-  const noDigest = packRelease({ published: true, sha256: null, version: '0.2.0' })
-  const released = packRelease({ published: true, sha256: 'ab'.repeat(32), version: '0.2.0' })
-
-  it('the global stack is THE onboarding while the pack cannot be installed, whatever is present', () => {
-    for (const release of [unpublished, noDigest]) {
-      for (const presence of [null, { http: false, legacySyslog: false }, { http: true, legacySyslog: true }]) {
-        expect(onboardingPath(release, presence)).toEqual({ mode: 'global', provision: 'full', why: release.refusal })
-      }
-    }
+describe('provisionPanelMode — the global stacks’ panel, which only removes', () => {
+  // Until 2026-09-25 this was `onboardingPath(release, presence)`, and an
+  // uninstallable release made the global Raw HTTP stack THE onboarding again
+  // (`{ mode: 'global', provision: 'full' }`). The owner collapsed that: the
+  // pack is the only onboarding, so the release is not an input any more, and
+  // no answer offers anything but Remove.
+  it('offers Remove only while something is (or may be) there, and is hidden otherwise', () => {
+    expect(provisionPanelMode({ http: true, legacySyslog: false })).toBe('remove-only')
+    expect(provisionPanelMode({ http: false, legacySyslog: true })).toBe('remove-only')
+    expect(provisionPanelMode({ http: true, legacySyslog: true })).toBe('remove-only')
+    expect(provisionPanelMode(null), 'unread is never hidden').toBe('remove-only')
+    expect(provisionPanelMode({ http: false, legacySyslog: false })).toBe('hidden')
   })
 
-  it('this build today: the pack, because 0.2.2 is released', () => {
-    // 0.2.2 was released 2026-09-25 and this build records it, so the pack is the
-    // onboarding and the global Raw HTTP stack is remove-only while its objects
-    // may be present. The unreleased case stays pinned with explicit facts.
-    const today = packRelease()
-    expect(today.installable).toBe(true)
-    expect(onboardingPath(today, null)).toEqual({ mode: 'pack', provision: 'remove-only' })
-    expect(onboardingPath(packRelease({ published: false, sha256: null, version: '0.2.2' }), null)).toEqual({ mode: 'global', provision: 'full', why: 'pack 0.2.2 has not been released, so there is nothing to install yet' })
-  })
-
-  it('with the pack available, the global panel offers Remove only, and only while something is (or may be) there', () => {
-    expect(onboardingPath(released, { http: true, legacySyslog: false })).toEqual({ mode: 'pack', provision: 'remove-only' })
-    expect(onboardingPath(released, { http: false, legacySyslog: true })).toEqual({ mode: 'pack', provision: 'remove-only' })
-    expect(onboardingPath(released, null), 'unread is never hidden').toEqual({ mode: 'pack', provision: 'remove-only' })
-    expect(onboardingPath(released, { http: false, legacySyslog: false })).toEqual({ mode: 'pack', provision: 'hidden' })
+  it('takes no release: an uninstallable pack does not bring a global onboarding back', () => {
+    // One argument: the answer cannot depend on the release at all.
+    expect(provisionPanelMode.length).toBe(1)
+    const unpublished = packRelease({ published: false, sha256: null, version: '0.2.2' })
+    expect(unpublished.installable).toBe(false)
+    expect(unpublished.refusal).toBe('pack 0.2.2 has not been released, so there is nothing to install yet')
+    // …and the plan module no longer exports the fallback at all.
+    expect(Object.keys(planModule)).not.toContain('onboardingPath')
   })
 })
 

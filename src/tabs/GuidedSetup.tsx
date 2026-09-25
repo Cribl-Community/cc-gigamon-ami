@@ -24,16 +24,12 @@ import { Panel } from '../components/Panel'
 import { ProvisionPanel } from '../components/ProvisionPanel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
 import { InfoTip } from '../components/InfoTip'
-import { setupFacts } from '../components/provisionPanelCopy'
-import { onboardingPath } from '../cribl/onboarding/plan'
-import { packRelease } from '../cribl/pack'
+import { PACK_SETUP_FACTS } from '../components/provisionPanelCopy'
 
 export function GuidedSetup() {
-  // Which onboarding the page offers decides which objects "What gets created"
-  // names: the pack's once its release can be installed, the global Raw HTTP
-  // stack's until then. Pure: `packRelease()` reads this build's constants and
-  // no presence is needed to pick the list.
-  const facts = setupFacts(onboardingPath(packRelease(), null).mode)
+  // "What gets created" names the pack's objects: the pack is the only
+  // onboarding (2026-09-25), whatever the pinned release says.
+  const facts = PACK_SETUP_FACTS
   return (
     <div className="tab">
       {/* The page's heading, as every other tab has one. No sub-line: each
@@ -49,21 +45,18 @@ export function GuidedSetup() {
           a `.tab` flex column is one flex item wrapping one panel; it changes
           nothing about the layout. */}
       <div id={INGEST_ANCHOR_ID}>
-        {/* The pack's onboarding first, then the Raw HTTP stack's panel. Which
-            of the two IS the onboarding is onboarding/plan.ts
-            `onboardingPath`: the Raw HTTP stack's until this build's pack
-            release can be installed, and then the pack's, with the Raw HTTP
-            panel reduced to Remove while its stack is in the group. Both read
-            one worker group (useSetupGroup) and one run lock
-            (cribl/setupRunLock.ts), so they cannot name two groups or commit
-            over each other. */}
+        {/* The pack's onboarding — the only one — then the panel for the
+            global stacks earlier releases created, which offers Remove and
+            shows only while one of their objects is (or may be) in the group
+            (onboarding/plan.ts `provisionPanelMode`). Both read one worker
+            group (useSetupGroup) and one run lock (cribl/setupRunLock.ts), so
+            they cannot name two groups or commit over each other. */}
         <OnboardingPanel />
         <ProvisionPanel />
       </div>
 
       {/* Five short labels, each with its explanation behind an ⓘ. The words
-          are provisionPanelCopy.ts's, beside the rest of this stack's copy,
-          and which five follows the onboarding path above. */}
+          are provisionPanelCopy.ts's `PACK_SETUP_FACTS`. */}
       <Panel title="What gets created & things to know">
         <ul className="gs-facts">
           {facts.map((fact) => (
