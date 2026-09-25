@@ -174,7 +174,7 @@ import { allAccelStatus, forgetRunHistory, type AccelStatus } from '../cribl/acc
 import { publishAccelServing } from '../cribl/accel/serving'
 import { forgetLakeFacts } from '../cribl/lakeWindowRead'
 import { datasetTarget, realDataConfirmed, useDatasetTarget } from '../cribl/datasetTarget'
-import { ACCEL_UNVERIFIED_OFF, SAMPLE_ACCEL_OFF } from './sampleDataCopy'
+import { ACCEL_UNVERIFIED_OFF, REAL_DATA_ARRIVED_OFF, REAL_DATA_ARRIVED_TIP, SAMPLE_ACCEL_OFF, realDataArrivedOff } from './sampleDataCopy'
 import { estimateScheduleSetCost, estimateWorkspaceSaving, type ScheduleSetCost } from '../cribl/accel/estimate'
 import {
   ACCEL_TABS,
@@ -533,6 +533,12 @@ export function AccelPanel() {
           <InfoTip text={`${SWITCHES_LEAD} ${SWITCHES_LEAD_TIP}`} />
         </div>
         {sampleOnly && <p className="ac-note" role="status">{SAMPLE_ACCEL_OFF}</p>}
+        {realDataArrivedOff(target, master?.state ?? null) && (
+          <p className="ac-note" role="status">
+            {REAL_DATA_ARRIVED_OFF}
+            <InfoTip text={REAL_DATA_ARRIVED_TIP} />
+          </p>
+        )}
         {unverified && !loading && <p className="ac-note" role="status">{ACCEL_UNVERIFIED_OFF}</p>}
         <SwitchRow
           label="Every dashboard"
