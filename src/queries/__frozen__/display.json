@@ -17,8 +17,8 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 201,
-    "catalogs": 14,
+    "modules": 224,
+    "catalogs": 15,
     "states": 36,
     "passthrough": 3,
     "unbound": 22
@@ -157,6 +157,7 @@
     "src/data/amiFields.ts › AMI_CATALOG": "94 entries · sha256 c684215431cfbb7f",
     "src/data/amiFields.ts › AMI_FAMILIES": "7 entries · sha256 e5f2d01d4ff0566f",
     "src/data/amiFields.ts › AMI_USE_CASES": "11 entries · sha256 8c65985e5d5a08fb",
+    "src/data/fieldTypes.ts › FIELD_TYPES": "0 keys · sha256 44136fa355b3678a",
     "src/data/findings.ts › FINDINGS": "17 entries · sha256 0d59f3fc5cd62c84",
     "src/data/pqc.ts › PQC_GROUP_CODES": "4 entries · sha256 ab96d69df7799ad1",
     "src/data/pqc.ts › SENSITIVE": "4 entries · sha256 2c5a2cce0bd15f8c",
@@ -306,11 +307,38 @@
       "windowDays(\"-365d\")": "365",
       "windowDays(null)": "null"
     },
+    "src/queries/parquetAudit.ts": {
+      "AUDIT_DATASET": "gigamon_ami",
+      "AUDIT_PIN": "measurement",
+      "CAST_CHECK_FIELDS": "5 entries · sha256 b7171432cf5550bc",
+      "CENSUS_COLUMNS_FIELDS": "28 entries · sha256 45018480e8ef8724",
+      "CENSUS_CONTROLS": "2 keys · sha256 af09f1a099e0e7b9",
+      "CENSUS_FIELDS": "22 entries · sha256 099c9b55952a0343",
+      "DENSITY_CHECKS": "7 entries · sha256 f50230f76230cf8d",
+      "DENSITY_SCOPES": "4 keys · sha256 878d5278cc0a8f9f",
+      "MEASURED_TYPES": "1 keys · sha256 7162d3957506325c",
+      "PQC_IN_LIST": "(\"4587\", \"4588\", \"4589\", \"25497\")",
+      "SENTINEL_AUDIT_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_http2_code=count(http2_code), se_http2_code=countif(http2_code==\"\"), sz_http2_code=countif(http2_code==0), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sz_src_ip=countif(src_ip==0), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), se_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==\"\"), sz_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==0), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), se_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==\"\"), sz_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==0), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sz_http_host=countif(http_host==0), sn_http2_host=count(http2_host), se_http2_host=countif(http2_host==\"\"), sz_http2_host=countif(http2_host==0), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_l4_proto=count(l4_proto), se_l4_proto=countif(l4_proto==\"\"), sn_src_subnet=count(src_subnet), se_src_subnet=countif(src_subnet==\"\"), sn_dst_subnet=count(dst_subnet), se_dst_subnet=countif(dst_subnet==\"\"), sn_src_subnet16=count(src_subnet16), se_src_subnet16=countif(src_subnet16==\"\"), sn_dst_subnet16=count(dst_subnet16), se_dst_subnet16=countif(dst_subnet16==\"\"), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
+      "SENTINEL_EXTRA_FIELDS": "1 entries · sha256 e265a0532e15f688",
+      "SENTINEL_FIELDS": "29 entries · sha256 584f3b334e8c1eea",
+      "STATIC_FIELD_TYPES": "29 keys · sha256 eb32914fab87ed31",
+      "TYPED_BY_CODE": "11 keys · sha256 b71964f7bd65cc9f",
+      "TYPE_DENSITY_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), d_tcp=countif(protocol==6), d_web=countif(isnotnull(http_host)), d_icmp=countif(protocol==1), d_pqc=countif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\")), d_tcp_dst_subnet=countif(protocol==6 and isnotnull(dst_subnet)), d_tcp_src_subnet16=countif(protocol==6 and isnotnull(src_subnet16)), d_tcp_dst_subnet16=countif(protocol==6 and isnotnull(dst_subnet16)), d_dst_ip=count(dst_ip), d_web_http_server_ms=countif(isnotnull(http_host) and isnotnull(http_server_ms)), d_icmp_dst_port=countif(protocol==1 and isnotnull(dst_port)), d_pqc_ssl_server_name=countif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\") and isnotnull(ssl_server_name)), tn_http2_code=countif(isnotnull(http2_code)), ts_http2_code=countif(gettype(http2_code)==\"string\"), tlo_http2_code=min(iif(isnotnull(http2_code),gettype(http2_code),\"~\")), thi_http2_code=max(iif(isnotnull(http2_code),gettype(http2_code),\"\")), tn_krb5_message_type=countif(isnotnull(krb5_message_type)), ts_krb5_message_type=countif(gettype(krb5_message_type)==\"string\"), tlo_krb5_message_type=min(iif(isnotnull(krb5_message_type),gettype(krb5_message_type),\"~\")), thi_krb5_message_type=max(iif(isnotnull(krb5_message_type),gettype(krb5_message_type),\"\")), tn_snmp_community=countif(isnotnull(snmp_community)), ts_snmp_community=countif(gettype(snmp_community)==\"string\"), tlo_snmp_community=min(iif(isnotnull(snmp_community),gettype(snmp_community),\"~\")), thi_snmp_community=max(iif(isnotnull(snmp_community),gettype(snmp_community),\"\")), tn_icmp_tunneling=countif(isnotnull(icmp_tunneling)), ts_icmp_tunneling=countif(gettype(icmp_tunneling)==\"string\"), tlo_icmp_tunneling=min(iif(isnotnull(icmp_tunneling),gettype(icmp_tunneling),\"~\")), thi_icmp_tunneling=max(iif(isnotnull(icmp_tunneling),gettype(icmp_tunneling),\"\")), tn_dcerpc_service=countif(isnotnull(dcerpc_service)), ts_dcerpc_service=countif(gettype(dcerpc_service)==\"string\"), tlo_dcerpc_service=min(iif(isnotnull(dcerpc_service),gettype(dcerpc_service),\"~\")), thi_dcerpc_service=max(iif(isnotnull(dcerpc_service),gettype(dcerpc_service),\"\")), tn_sip_from=countif(isnotnull(sip_from)), ts_sip_from=countif(gettype(sip_from)==\"string\"), tlo_sip_from=min(iif(isnotnull(sip_from),gettype(sip_from),\"~\")), thi_sip_from=max(iif(isnotnull(sip_from),gettype(sip_from),\"\")), tn_http_cookie=countif(isnotnull(http_cookie)), ts_http_cookie=countif(gettype(http_cookie)==\"string\"), tlo_http_cookie=min(iif(isnotnull(http_cookie),gettype(http_cookie),\"~\")), thi_http_cookie=max(iif(isnotnull(http_cookie),gettype(http_cookie),\"\")), tn_ftp_data_content=countif(isnotnull(ftp_data_content)), ts_ftp_data_content=countif(gettype(ftp_data_content)==\"string\"), tlo_ftp_data_content=min(iif(isnotnull(ftp_data_content),gettype(ftp_data_content),\"~\")), thi_ftp_data_content=max(iif(isnotnull(ftp_data_content),gettype(ftp_data_content),\"\")), tn_snmp_processing_anomaly_type=countif(isnotnull(snmp_processing_anomaly_type)), ts_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"string\"), tlo_snmp_processing_anomaly_type=min(iif(isnotnull(snmp_processing_anomaly_type),gettype(snmp_processing_anomaly_type),\"~\")), thi_snmp_processing_anomaly_type=max(iif(isnotnull(snmp_processing_anomaly_type),gettype(snmp_processing_anomaly_type),\"\")), tn_http_code=countif(isnotnull(http_code)), ts_http_code=countif(gettype(http_code)==\"string\"), tlo_http_code=min(iif(isnotnull(http_code),gettype(http_code),\"~\")), thi_http_code=max(iif(isnotnull(http_code),gettype(http_code),\"\")), tn_dns_reply_code=countif(isnotnull(dns_reply_code)), ts_dns_reply_code=countif(gettype(dns_reply_code)==\"string\"), tlo_dns_reply_code=min(iif(isnotnull(dns_reply_code),gettype(dns_reply_code),\"~\")), thi_dns_reply_code=max(iif(isnotnull(dns_reply_code),gettype(dns_reply_code),\"\")), tn_udp_wrong_crc=countif(isnotnull(udp_wrong_crc)), ts_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"string\"), tlo_udp_wrong_crc=min(iif(isnotnull(udp_wrong_crc),gettype(udp_wrong_crc),\"~\")), thi_udp_wrong_crc=max(iif(isnotnull(udp_wrong_crc),gettype(udp_wrong_crc),\"\")), tn_ip_wrong_crc=countif(isnotnull(ip_wrong_crc)), ts_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"string\"), tlo_ip_wrong_crc=min(iif(isnotnull(ip_wrong_crc),gettype(ip_wrong_crc),\"~\")), thi_ip_wrong_crc=max(iif(isnotnull(ip_wrong_crc),gettype(ip_wrong_crc),\"\")), tn_app_name=countif(isnotnull(app_name)), ts_app_name=countif(gettype(app_name)==\"string\"), tlo_app_name=min(iif(isnotnull(app_name),gettype(app_name),\"~\")), thi_app_name=max(iif(isnotnull(app_name),gettype(app_name),\"\")), tn_src_ip=countif(isnotnull(src_ip)), ts_src_ip=countif(gettype(src_ip)==\"string\"), tlo_src_ip=min(iif(isnotnull(src_ip),gettype(src_ip),\"~\")), thi_src_ip=max(iif(isnotnull(src_ip),gettype(src_ip),\"\")), tn_dst_aws_flat_tags_name=countif(isnotnull(dst_aws_flat_tags_name)), ts_dst_aws_flat_tags_name=countif(gettype(dst_aws_flat_tags_name)==\"string\"), tlo_dst_aws_flat_tags_name=min(iif(isnotnull(dst_aws_flat_tags_name),gettype(dst_aws_flat_tags_name),\"~\")), thi_dst_aws_flat_tags_name=max(iif(isnotnull(dst_aws_flat_tags_name),gettype(dst_aws_flat_tags_name),\"\")), tn_src_aws_flat_tags_name=countif(isnotnull(src_aws_flat_tags_name)), ts_src_aws_flat_tags_name=countif(gettype(src_aws_flat_tags_name)==\"string\"), tlo_src_aws_flat_tags_name=min(iif(isnotnull(src_aws_flat_tags_name),gettype(src_aws_flat_tags_name),\"~\")), thi_src_aws_flat_tags_name=max(iif(isnotnull(src_aws_flat_tags_name),gettype(src_aws_flat_tags_name),\"\")), tn_dns_host=countif(isnotnull(dns_host)), ts_dns_host=countif(gettype(dns_host)==\"string\"), tlo_dns_host=min(iif(isnotnull(dns_host),gettype(dns_host),\"~\")), thi_dns_host=max(iif(isnotnull(dns_host),gettype(dns_host),\"\")), tn_http_host=countif(isnotnull(http_host)), ts_http_host=countif(gettype(http_host)==\"string\"), tlo_http_host=min(iif(isnotnull(http_host),gettype(http_host),\"~\")), thi_http_host=max(iif(isnotnull(http_host),gettype(http_host),\"\")), tn_http2_host=countif(isnotnull(http2_host)), ts_http2_host=countif(gettype(http2_host)==\"string\"), tlo_http2_host=min(iif(isnotnull(http2_host),gettype(http2_host),\"~\")), thi_http2_host=max(iif(isnotnull(http2_host),gettype(http2_host),\"\")), tn_ssl_server_name=countif(isnotnull(ssl_server_name)), ts_ssl_server_name=countif(gettype(ssl_server_name)==\"string\"), tlo_ssl_server_name=min(iif(isnotnull(ssl_server_name),gettype(ssl_server_name),\"~\")), thi_ssl_server_name=max(iif(isnotnull(ssl_server_name),gettype(ssl_server_name),\"\")), tn_ssl_ext_ec_supported_groups_type=countif(isnotnull(ssl_ext_ec_supported_groups_type)), ts_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"string\"), tlo_ssl_ext_ec_supported_groups_type=min(iif(isnotnull(ssl_ext_ec_supported_groups_type),gettype(ssl_ext_ec_supported_groups_type),\"~\")), thi_ssl_ext_ec_supported_groups_type=max(iif(isnotnull(ssl_ext_ec_supported_groups_type),gettype(ssl_ext_ec_supported_groups_type),\"\")), tn_tcp_rtt=countif(isnotnull(tcp_rtt)), ts_tcp_rtt=countif(gettype(tcp_rtt)==\"string\"), tlo_tcp_rtt=min(iif(isnotnull(tcp_rtt),gettype(tcp_rtt),\"~\")), thi_tcp_rtt=max(iif(isnotnull(tcp_rtt),gettype(tcp_rtt),\"\")), tn_tcp_rtt_app=countif(isnotnull(tcp_rtt_app)), ts_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"string\"), tlo_tcp_rtt_app=min(iif(isnotnull(tcp_rtt_app),gettype(tcp_rtt_app),\"~\")), thi_tcp_rtt_app=max(iif(isnotnull(tcp_rtt_app),gettype(tcp_rtt_app),\"\")), tn_http_server_ms=countif(isnotnull(http_server_ms)), ts_http_server_ms=countif(gettype(http_server_ms)==\"string\"), tlo_http_server_ms=min(iif(isnotnull(http_server_ms),gettype(http_server_ms),\"~\")), thi_http_server_ms=max(iif(isnotnull(http_server_ms),gettype(http_server_ms),\"\")), tn_dns_response_time=countif(isnotnull(dns_response_time)), ts_dns_response_time=countif(gettype(dns_response_time)==\"string\"), tlo_dns_response_time=min(iif(isnotnull(dns_response_time),gettype(dns_response_time),\"~\")), thi_dns_response_time=max(iif(isnotnull(dns_response_time),gettype(dns_response_time),\"\")), tn_dst_port=countif(isnotnull(dst_port)), ts_dst_port=countif(gettype(dst_port)==\"string\"), tlo_dst_port=min(iif(isnotnull(dst_port),gettype(dst_port),\"~\")), thi_dst_port=max(iif(isnotnull(dst_port),gettype(dst_port),\"\")), tn_protocol=countif(isnotnull(protocol)), ts_protocol=countif(gettype(protocol)==\"string\"), tlo_protocol=min(iif(isnotnull(protocol),gettype(protocol),\"~\")), thi_protocol=max(iif(isnotnull(protocol),gettype(protocol),\"\"))",
+      "sentinelAuditQuery(before the census)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_http2_code=count(http2_code), se_http2_code=countif(http2_code==\"\"), sz_http2_code=countif(http2_code==0), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sz_src_ip=countif(src_ip==0), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), se_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==\"\"), sz_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==0), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), se_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==\"\"), sz_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==0), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sz_http_host=countif(http_host==0), sn_http2_host=count(http2_host), se_http2_host=countif(http2_host==\"\"), sz_http2_host=countif(http2_host==0), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_l4_proto=count(l4_proto), se_l4_proto=countif(l4_proto==\"\"), sn_src_subnet=count(src_subnet), se_src_subnet=countif(src_subnet==\"\"), sn_dst_subnet=count(dst_subnet), se_dst_subnet=countif(dst_subnet==\"\"), sn_src_subnet16=count(src_subnet16), se_src_subnet16=countif(src_subnet16==\"\"), sn_dst_subnet16=count(dst_subnet16), se_dst_subnet16=countif(dst_subnet16==\"\"), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
+      "sentinelAuditQuery(every unknown a number)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_http2_code=count(http2_code), sz_http2_code=countif(http2_code==0), sn_krb5_message_type=count(krb5_message_type), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), sz_src_ip=countif(src_ip==0), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), sz_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==0), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), sz_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==0), sn_dns_host=count(dns_host), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), sz_http_host=countif(http_host==0), sn_http2_host=count(http2_host), sz_http2_host=countif(http2_host==0), sn_ssl_server_name=count(ssl_server_name), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_l4_proto=count(l4_proto), se_l4_proto=countif(l4_proto==\"\"), sn_src_subnet=count(src_subnet), se_src_subnet=countif(src_subnet==\"\"), sn_dst_subnet=count(dst_subnet), se_dst_subnet=countif(dst_subnet==\"\"), sn_src_subnet16=count(src_subnet16), se_src_subnet16=countif(src_subnet16==\"\"), sn_dst_subnet16=count(dst_subnet16), se_dst_subnet16=countif(dst_subnet16==\"\"), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
+      "sentinelAuditQuery(every unknown a string)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_http2_code=count(http2_code), se_http2_code=countif(http2_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), se_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==\"\"), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), se_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==\"\"), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sn_http2_host=count(http2_host), se_http2_host=countif(http2_host==\"\"), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sn_l4_proto=count(l4_proto), se_l4_proto=countif(l4_proto==\"\"), sn_src_subnet=count(src_subnet), se_src_subnet=countif(src_subnet==\"\"), sn_dst_subnet=count(dst_subnet), se_dst_subnet=countif(dst_subnet==\"\"), sn_src_subnet16=count(src_subnet16), se_src_subnet16=countif(src_subnet16==\"\"), sn_dst_subnet16=count(dst_subnet16), se_dst_subnet16=countif(dst_subnet16==\"\"), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)"
+    },
     "src/queries/pqcReadiness.ts": {
       "GROUPS_Q": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type=* | summarize sessions=count(), servers=dcount(ssl_server_name) by ssl_ext_ec_supported_groups_type | sort by sessions desc | limit 40",
       "SERVERS_Q": "dataset=\"gigamon_ami\" ssl_server_name=* | summarize sessions=count(), tls13=sum(iif(ssl_server_supported_version==\"772\",1,0)), pqc=sum(iif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\"),1,0)) by ssl_server_name, ssl_issuer | sort by sessions desc | limit 300",
       "drillQuery(one server)": "dataset=\"gigamon_ami\" ssl_server_name=\"login.example.com\" | limit 200",
       "serverFilter(\"login.example.com\")": "ssl_server_name=\"login.example.com\""
+    },
+    "src/queries/routing.ts": {
+      "COMPLETENESS_BUCKET_SECONDS": "number · sha256 983bd614bb5afece",
+      "COMPLETENESS_QUERY": "dataset=\"cribl_metrics\" | summarize json_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\", value, 0)), pq_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake\", value, 0)) by bin(_time, 5m) | sort by _time asc",
+      "PACK_JSON_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake",
+      "PACK_PARQUET_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake"
     },
     "src/queries/security.ts": {
       "COUNTS": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",
@@ -403,6 +431,416 @@
       "SERVER_P95_AGG": "p95=percentile(http_server_ms,95)",
       "SLOW": "dataset=\"gigamon_ami\" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10",
       "TREND": "dataset=\"gigamon_ami\" http_code=* | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc"
+    }
+  },
+  "routing": {
+    "capacity.appmix": {
+      "from": "capacityTopTalkers.ts › buildAppmixQuery(pivot, \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on app_name: how many rows carry it is not measured; type not measured: total_bytes, app_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.kpi": {
+      "from": "capacityTopTalkers.ts › buildKpiQuery(pivot, \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); type not measured: total_bytes, dst_bytes, src_bytes, total_packets, tcp_rtt, tcp_dup_ack",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.l4": {
+      "from": "capacityTopTalkers.ts › buildL4Query(pivot, \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on l4_proto: how many rows carry it is not measured; type not measured: total_bytes, l4_proto",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.talkers.app_name": {
+      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"app_name\", \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on app_name: how many rows carry it is not measured; class F on app_name: how many rows carry it is not measured; type not measured: app_name, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.talkers.dst_aws_flat_tags_name": {
+      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"dst_aws_flat_tags_name\", \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on dst_aws_flat_tags_name: how many rows carry it is not measured; class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: dst_aws_flat_tags_name, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "capacity.talkers.src_ip": {
+      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"src_ip\", \"\")",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_ip: how many rows carry it is not measured; class F on src_ip: how many rows carry it is not measured; type not measured: src_ip, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "dataFlow.lakeHeld": {
+      "from": "dataFlow.ts › LAKE_HELD_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "dataFlow.volume": {
+      "from": "dataFlow.ts › VOLUME_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: total_bytes, total_packets",
+      "evidence": null,
+      "queries": 1
+    },
+    "datasets.realDataProbe": {
+      "from": "datasets.ts › REAL_DATA_PROBE_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "dns.overall": {
+      "from": "dnsHealth.ts › OVERALL",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: app_name, dns_reply_code, dns_host",
+      "evidence": null,
+      "queries": 1
+    },
+    "dns.perResolver": {
+      "from": "dnsHealth.ts › PER_RESOLVER",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on dns_host: how many rows carry it is not measured; class E on dns_response_time is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class F on dns_host: how many rows carry it is not measured; type not measured: app_name, dns_host, dns_response_time, dns_reply_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "dns.resolverDrill": {
+      "from": "dnsHealth.ts › resolverDrillQuery(host)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "fieldExplorer.presence": {
+      "from": "fieldExplorer.ts › PRESENCE_QUERY, FEED_SAMPLE_QUERY, sectionQuery(fields)",
+      "target": "json",
+      "pin": "presence",
+      "eligible": "pinned to JSON (presence)",
+      "evidence": null,
+      "queries": 2
+    },
+    "findings.counts": {
+      "from": "findings.ts › FINDINGS_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class B on snmp_community counts every Parquet row (needs a portable rewrite, 8.2); class B on icmp_tunneling counts every Parquet row (needs a portable rewrite, 8.2); class B on sip_from counts every Parquet row (needs a portable rewrite, 8.2); class B on dcerpc_service counts every Parquet row (needs a portable rewrite, 8.2); class B on krb5_message_type counts every Parquet row (needs a portable rewrite, 8.2); class B on http_cookie counts every Parquet row (needs a portable rewrite, 8.2); class B on ftp_data_content counts every Parquet row (needs a portable rewrite, 8.2); class B on snmp_processing_anomaly_type counts every Parquet row (needs a portable rewrite, 8.2); type not measured: ssl_mitm_score, snmp_community, icmp_tunneling, sip_from, dcerpc_service, krb5_message_type, http_cookie, ftp_data_content, snmp_processing_anomaly_type, tcp_wrong_crc, tcp_reset, tcp_loss_count, http_code, dns_reply_code, udp_wrong_crc, ip_wrong_crc",
+      "evidence": null,
+      "queries": 1
+    },
+    "findings.flows": {
+      "from": "findings.ts › findingFlowsQuery(finding), and each Copilot brief",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "flowMap.domains": {
+      "from": "flowMap.ts › buildDomainsQuery(service), built per clicked service",
+      "target": "json",
+      "pin": null,
+      "eligible": "no text listed: built at run time, so it never routes",
+      "evidence": null,
+      "queries": 0
+    },
+    "flowMap.edges": {
+      "from": "flowMap.ts › edgesQuery, srcQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_aws_flat_tags_name: how many rows carry it is not measured; class D on dst_aws_flat_tags_name: how many rows carry it is not measured; class F on src_aws_flat_tags_name: how many rows carry it is not measured; class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: src_aws_flat_tags_name, dst_aws_flat_tags_name; type not measured: src_aws_flat_tags_name",
+      "evidence": null,
+      "queries": 2
+    },
+    "flowMap.nodes": {
+      "from": "flowMap.ts › nodesQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on dst_aws_flat_tags_name: how many rows carry it is not measured; class E on tcp_rtt_app is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on tcp_rtt_app counts every Parquet row (needs a portable rewrite, 8.2); class E on dns_response_time is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on dns_response_time counts every Parquet row (needs a portable rewrite, 8.2); class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: dst_aws_flat_tags_name, tcp_rtt_app, dns_response_time, tcp_reset",
+      "evidence": null,
+      "queries": 1
+    },
+    "flowMap.serviceEdges": {
+      "from": "snapshots.ts › SERVICE_EDGES_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_aws_flat_tags_name: how many rows carry it is not measured; class F on src_aws_flat_tags_name: how many rows carry it is not measured; type not measured: src_aws_flat_tags_name, dst_aws_flat_tags_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "flowMap.trend": {
+      "from": "flowMap.ts › buildTrendQuery(service), built per clicked service",
+      "target": "json",
+      "pin": null,
+      "eligible": "no text listed: built at run time, so it never routes",
+      "evidence": null,
+      "queries": 0
+    },
+    "lakeLanding.landingLag": {
+      "from": "lakeLanding.ts › LANDING_LAG_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "lakeLanding.parity": {
+      "from": "lakeLanding.ts › PARITY_COUNT_QUERY, PARITY_LATENCY_QUERY, PARITY_HOST_PRESENCE_QUERY, PARITY_CODE_PRESENCE_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 4
+    },
+    "lakeLanding.partitionCandidates": {
+      "from": "lakeLanding.ts › PARTITION_CANDIDATES_QUERY",
+      "target": "json",
+      "pin": "measurement",
+      "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "pqc.drill": {
+      "from": "pqcReadiness.ts › drillQuery(filter)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "pqc.groups": {
+      "from": "pqcReadiness.ts › GROUPS_Q",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on ssl_ext_ec_supported_groups_type: how many rows carry it is not measured; class F on ssl_ext_ec_supported_groups_type: how many rows carry it is not measured; type not measured: ssl_ext_ec_supported_groups_type, ssl_server_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "pqc.servers": {
+      "from": "pqcReadiness.ts › SERVERS_Q",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on ssl_server_name: how many rows carry it is not measured; class F on ssl_server_name: how many rows carry it is not measured; class F on ssl_issuer: how many rows carry it is not measured; type not measured: ssl_server_name, ssl_server_supported_version, ssl_ext_ec_supported_groups_type, ssl_issuer",
+      "evidence": null,
+      "queries": 1
+    },
+    "security.counts": {
+      "from": "security.ts › COUNTS",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class A on icmp_tunneling reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dcerpc_service reads true on every Parquet row (needs a portable rewrite, 8.2); class A on krb5_message_type reads true on every Parquet row (needs a portable rewrite, 8.2); class A on snmp_community reads true on every Parquet row (needs a portable rewrite, 8.2); type not measured: icmp_tunneling, dcerpc_service, app_name, dst_port, krb5_message_type, snmp_community",
+      "evidence": null,
+      "queries": 1
+    },
+    "security.drill": {
+      "from": "security.ts › drillQueryFor(technique)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "security.sources": {
+      "from": "security.ts › SOURCES",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on src_ip: how many rows carry it is not measured; type not measured: dst_port, dst_ip, src_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "shadowAi.aiOverall": {
+      "from": "shadowAi.ts › aiOverallQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: app_name, src_ip, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "shadowAi.aiUsers": {
+      "from": "shadowAi.ts › aiUsersQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on src_ip: how many rows carry it is not measured; type not measured: app_name, total_bytes, src_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "shadowAi.apps": {
+      "from": "shadowAi.ts › appsQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on app_name: how many rows carry it is not measured; type not measured: total_bytes, src_ip, app_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.appL4": {
+      "from": "snapshots.ts › APP_L4_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: app_name, l4_proto, total_bytes",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.appSrc": {
+      "from": "snapshots.ts › APP_SRC_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on app_name: how many rows carry it is not measured; class F on src_ip: how many rows carry it is not measured; type not measured: total_bytes, app_name, src_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.overview": {
+      "from": "snapshots.ts › OVERVIEW_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http_code counts every Parquet row (needs a portable rewrite, 8.2); class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http2_code counts every Parquet row (needs a portable rewrite, 8.2); class A on icmp_tunneling reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dcerpc_service reads true on every Parquet row (needs a portable rewrite, 8.2); class A on krb5_message_type reads true on every Parquet row (needs a portable rewrite, 8.2); class A on snmp_community reads true on every Parquet row (needs a portable rewrite, 8.2); class B on snmp_community counts every Parquet row (needs a portable rewrite, 8.2); class B on icmp_tunneling counts every Parquet row (needs a portable rewrite, 8.2); class B on sip_from counts every Parquet row (needs a portable rewrite, 8.2); class B on dcerpc_service counts every Parquet row (needs a portable rewrite, 8.2); class B on krb5_message_type counts every Parquet row (needs a portable rewrite, 8.2); class B on http_cookie counts every Parquet row (needs a portable rewrite, 8.2); class B on ftp_data_content counts every Parquet row (needs a portable rewrite, 8.2); class B on snmp_processing_anomaly_type counts every Parquet row (needs a portable rewrite, 8.2); type not measured: total_bytes, dst_bytes, src_bytes, total_packets, tcp_rtt, tcp_dup_ack, http_code, http_server_ms, http_host, http2_code, icmp_tunneling, dcerpc_service, app_name, dst_port, krb5_message_type, snmp_community, ssl_mitm_score, sip_from, http_cookie, ftp_data_content, snmp_processing_anomaly_type, tcp_wrong_crc, tcp_reset, tcp_loss_count, dns_reply_code, udp_wrong_crc, ip_wrong_crc",
+      "evidence": null,
+      "queries": 1
+    },
+    "snapshots.webHost": {
+      "from": "snapshots.ts › WEB_HOST_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_host: how many rows carry it is not measured; class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http_server_ms counts every Parquet row (needs a portable rewrite, 8.2); class F on http_host: how many rows carry it is not measured; type not measured: http_host, http_code, http_server_ms",
+      "evidence": null,
+      "queries": 1
+    },
+    "tcp.drill": {
+      "from": "tcpHealth.ts › buildDrillQuery(cell, mask)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "tcp.heat": {
+      "from": "tcpHealth.ts › buildHeatQuery(metric, mask)",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_subnet: how many rows carry it is not measured; class D on dst_subnet: how many rows carry it is not measured; class F on src_subnet: how many rows carry it is not measured; class F on dst_subnet: how many rows carry it is not measured; type not measured: protocol, src_subnet, dst_subnet, tcp_dup_ack; class D on src_subnet16: how many rows carry it is not measured; class D on dst_subnet16: how many rows carry it is not measured; class F on src_subnet16: how many rows carry it is not measured; class F on dst_subnet16: how many rows carry it is not measured; type not measured: protocol, src_subnet16, dst_subnet16, tcp_dup_ack; type not measured: protocol, src_subnet, dst_subnet, tcp_reset; type not measured: protocol, src_subnet16, dst_subnet16, tcp_reset; type not measured: protocol, src_subnet, dst_subnet, tcp_wrong_crc; type not measured: protocol, src_subnet16, dst_subnet16, tcp_wrong_crc; type not measured: protocol, src_subnet, dst_subnet, tcp_loss_count; type not measured: protocol, src_subnet16, dst_subnet16, tcp_loss_count",
+      "evidence": null,
+      "queries": 8
+    },
+    "tcp.latency": {
+      "from": "tcpHealth.ts › latencyQuery",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class E on tcp_rtt_app is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); type not measured: tcp_rtt, tcp_rtt_app",
+      "evidence": null,
+      "queries": 1
+    },
+    "tcp.subnetSnapshot": {
+      "from": "snapshots.ts › TCP_SUBNET24_SNAPSHOT_QUERY, TCP_SUBNET16_SNAPSHOT_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on src_subnet: how many rows carry it is not measured; class D on dst_subnet: how many rows carry it is not measured; class F on src_subnet: how many rows carry it is not measured; class F on dst_subnet: how many rows carry it is not measured; type not measured: protocol, src_subnet, dst_subnet, tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count; class D on src_subnet16: how many rows carry it is not measured; class D on dst_subnet16: how many rows carry it is not measured; class F on src_subnet16: how many rows carry it is not measured; class F on dst_subnet16: how many rows carry it is not measured; type not measured: protocol, src_subnet16, dst_subnet16, tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count",
+      "evidence": null,
+      "queries": 2
+    },
+    "tcp.trend": {
+      "from": "tcpHealth.ts › buildTrendQuery(metric)",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — type not measured: protocol, tcp_dup_ack; type not measured: protocol, tcp_reset; type not measured: protocol, tcp_wrong_crc; type not measured: protocol, tcp_loss_count",
+      "evidence": null,
+      "queries": 4
+    },
+    "tls.pqcByServer": {
+      "from": "tlsPosture.ts › PQC_BY_SERVER",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class F on ssl_server_name: how many rows carry it is not measured; type not measured: ssl_ext_ec_supported_groups_type, ssl_server_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "tls.serverDrill": {
+      "from": "tlsPosture.ts › serverDrill(server)",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 0
+    },
+    "tls.servers": {
+      "from": "tlsPosture.ts › SERVERS",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on ssl_server_name: how many rows carry it is not measured; class F on ssl_server_name: how many rows carry it is not measured; type not measured: ssl_server_name, ssl_protocol_version, ssl_issuer, ssl_validity_not_after, ssl_common_name",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.codes": {
+      "from": "webApiHealth.ts › CODES",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_code: how many rows carry it is not measured; class F on http_code: how many rows carry it is not measured; type not measured: http_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.errorsDrill": {
+      "from": "webApiHealth.ts › ERRORS_DRILL",
+      "target": "json",
+      "pin": "evidence",
+      "eligible": "pinned to JSON (evidence)",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.h2": {
+      "from": "webApiHealth.ts › H2",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http2_host: how many rows carry it is not measured; class F on http2_host: how many rows carry it is not measured; type not measured: http2_host",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.hosts": {
+      "from": "webApiHealth.ts › HOSTS",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_host: how many rows carry it is not measured; class F on http_host: how many rows carry it is not measured; type not measured: http_host, http_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.kpi": {
+      "from": "webApiHealth.ts › KPI",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class B on http_code counts every Parquet row (needs a portable rewrite, 8.2); class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on http2_code counts every Parquet row (needs a portable rewrite, 8.2); type not measured: http_code, http_server_ms, http_host, http2_code",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.slow": {
+      "from": "webApiHealth.ts › SLOW",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_server_ms: how many rows carry it is not measured; class D on http_host: how many rows carry it is not measured; class E on http_server_ms is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class F on http_host: how many rows carry it is not measured; type not measured: http_server_ms, http_host",
+      "evidence": null,
+      "queries": 1
+    },
+    "web.trend": {
+      "from": "webApiHealth.ts › TREND",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class D on http_code: how many rows carry it is not measured; type not measured: http_code",
+      "evidence": null,
+      "queries": 1
     }
   },
   "files": {

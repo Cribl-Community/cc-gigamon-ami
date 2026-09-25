@@ -29,6 +29,13 @@
 // query runs on first paint) and `passthrough` (components that forward their
 // caller's query rather than naming one).
 //
+// And `routing` (Phase 8.1): the query router's table, one line of facts per
+// entry — which dataset answers it, why it may or may not move, and on what
+// evidence (src/cribl/routing/table.ts `routingSnapshot`). Which dataset
+// answers is part of what an ⓘ claims, so moving a query to the Parquet copy
+// shows here, beside the query it moves. The type table it reads is a src/data
+// catalog (fieldTypes.ts), frozen above.
+//
 // Each surface stores the reference as written in the JSX, the resolved string,
 // the search results that JSX element actually READS, its `value=` / `unit=` /
 // `badge=` expressions, and its `info=` / `sub=` prose. References alone would not
@@ -1172,6 +1179,10 @@ export async function extract() {
 
   const { modules, count: moduleCount } = await enumerateModules(VARIANTS)
 
+  // The router's table, as the router itself reads it — never a transcription.
+  const { routingSnapshot } = await loadModule(join(SRC_DIR, 'cribl', 'routing', 'table'))
+  const routing = routingSnapshot()
+
   const counts = { surfaces: 0, searches: 0, links: 0, briefs: 0, prose: 0 }
   for (const t of Object.values(out)) for (const k of Object.keys(counts)) counts[k] += Object.keys(t[k]).length
   counts.modules = moduleCount
@@ -1191,6 +1202,7 @@ export async function extract() {
     passthrough: sorted(passthrough),
     catalogs,
     modules,
+    routing,
     files: out,
   }
 }

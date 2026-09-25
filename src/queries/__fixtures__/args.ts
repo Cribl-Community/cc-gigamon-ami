@@ -210,6 +210,19 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     windowDays: { over: ["['-30d', '-365d', '-18m', null]"] },
   },
 
+  'src/queries/parquetAudit.ts': {
+    // The Phase 8.0c sentinel audit takes a type table. Every branch of it: the
+    // static table it runs with before any census (both forms wherever a type
+    // is unknown), and each unresolved field resolved either way, which is what
+    // a re-run with a recorded census (`--types-from`) sends.
+    sentinelAuditQuery: {
+      cases:
+        "[{ label: 'before the census', args: [STATIC_FIELD_TYPES] }," +
+        " { label: 'every unknown a string', args: [Object.fromEntries(Object.entries(STATIC_FIELD_TYPES).map(([f, t]) => [f, t === 'unknown' ? 'string' : t]))] }," +
+        " { label: 'every unknown a number', args: [Object.fromEntries(Object.entries(STATIC_FIELD_TYPES).map(([f, t]) => [f, t === 'unknown' ? 'number' : t]))] }]",
+    },
+  },
+
   'src/queries/pqcReadiness.ts': {
     serverFilter: { over: ["['login.example.com']"] },
     drillQuery: { cases: "[{ label: 'one server', args: [serverFilter('login.example.com')] }]" },

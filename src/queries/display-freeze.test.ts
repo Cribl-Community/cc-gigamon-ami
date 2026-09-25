@@ -123,6 +123,8 @@ interface Snapshot {
   passthrough: Record<string, number>
   catalogs: Record<string, string>
   modules: Record<string, Record<string, string>>
+  /** The query router's table (src/cribl/routing/table.ts), one entry per query family. */
+  routing: Record<string, Record<string, unknown>>
   files: Record<string, Record<Bucket, Record<string, Entry>> & {
     briefs: Record<string, Brief>
     /** An ⓘ with words but no query — the words are all there is to freeze. */
@@ -405,5 +407,17 @@ ${RERUN}`).toEqual(prose(frozen))
     // none themselves. A NEW forwarder — or a component that stops forwarding
     // and starts naming its own query — has to be visible here.
     expect(fresh().passthrough, `A component changed how it forwards a query.\n${RERUN}`).toEqual(frozen.passthrough)
+  })
+
+  it('freezes which dataset answers each query, and on what evidence', () => {
+    // An ⓘ's query names its dataset, so moving a query from gigamon_ami to the
+    // Parquet copy is a change to what the ⓘ claims, even with every query
+    // string unchanged. The router's table (src/cribl/routing/table.ts) is
+    // frozen whole: target, pin, eligibility and evidence per entry.
+    expect(fresh().routing, `The query routing table changed — a query may now be answered from a different dataset.\n${RERUN}`).toEqual(frozen.routing)
+    // Today nothing moves: every entry is on JSON. The day one is not, this
+    // line changes in the same commit, beside the evidence that moved it.
+    const moved = Object.entries(frozen.routing).filter(([, e]) => e.target !== 'json').map(([id]) => id)
+    expect(moved, 'An entry in the frozen routing table is not on JSON.').toEqual([])
   })
 })
