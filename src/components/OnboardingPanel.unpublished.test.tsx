@@ -9,7 +9,8 @@
 //   * a copy this app owns (the published 0.1.0, from its release) is still
 //     offered Remove, and Upgrade is aria-disabled with the release's refusal
 //     as the visible sentence it points at — pressing it sends nothing;
-//   * an installed build with no pack in the group shows no pack panel at all.
+//   * an installed build with no pack in the group shows no pack panel at all;
+//     Live Preview (installed, but served by the dev server) shows it, refused.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -69,6 +70,7 @@ afterEach(() => {
   container.remove()
   document.body.innerHTML = ''
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   vi.restoreAllMocks()
   vi.resetModules()
 })
@@ -145,6 +147,8 @@ describe('10. while this build records no release', () => {
 
   it('installed in Cribl, with no pack in the group: no pack panel at all', async () => {
     ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
+    // A built bundle: Vite's DEV is false there (vitest's is true).
+    vi.stubEnv('DEV', false)
     vi.resetModules()
     const { OnboardingPanel: Installed } = await import('./OnboardingPanel')
     const { DashboardProvider: Provider } = await import('../app/DashboardContext')
@@ -165,6 +169,7 @@ describe('10. while this build records no release', () => {
 
   it('installed in Cribl, with no pack in the group but its removal left uncommitted: the panel shows, to finish it', async () => {
     ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
+    vi.stubEnv('DEV', false)
     vi.resetModules()
     const { OnboardingPanel: Installed } = await import('./OnboardingPanel')
     const { DashboardProvider: Provider } = await import('../app/DashboardContext')
@@ -176,6 +181,23 @@ describe('10. while this build records no release', () => {
     expect(buttonNamed('Remove pack')).toBeUndefined()
     // A panel that shows reads what its status rows say.
     expect(calls.some((c) => c.path === '/products/lake/lakes/default/datasets')).toBe(true)
+  })
+})
+
+describe('Live Preview: installed in Cribl, served by the dev server', () => {
+  it('shows the pack panel with Onboard refused, and writes nothing', async () => {
+    ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
+    vi.stubEnv('DEV', true)
+    vi.resetModules()
+    const { OnboardingPanel: Preview } = await import('./OnboardingPanel')
+    const { DashboardProvider: Provider } = await import('../app/DashboardContext')
+    leader()
+    await act(async () => { root.render(<Provider><Preview /></Provider>) })
+    await settle()
+    expect(bodyText()).toContain('Onboard Gigamon AMI with the pack')
+    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(`Onboard is not available: ${REFUSAL}.`)
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
   })
 })
 

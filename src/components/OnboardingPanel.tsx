@@ -23,8 +23,9 @@
 // WHILE THE PACK CANNOT BE INSTALLED (no release recorded in this build — see
 // pack.ts `PACK_PUBLISHED`), the panel still mounts, so its controls are in the
 // source the gate scans read, but it renders only where there is something to
-// show: in dev preview, where the pack is already installed in the group, or
-// where its removal is waiting to be committed. A panel that renders nothing
+// show: in dev preview (the localhost page, and Cribl's Live Preview of the
+// dev server — `IS_DEV_SERVER`), where the pack is already installed in the
+// group, or where its removal is waiting to be committed. A panel that renders nothing
 // reads nothing but the group's pack list and Git's pending files.
 // Onboard is then refused with the release's own sentence, visibly, and
 // nothing can send `POST /packs`: this control refuses, and packClient.ts
@@ -61,7 +62,7 @@ import { AUTH_HEADER, ENDPOINT_LEAD, TOKEN_ONCE, UNENCRYPTED_WARNING } from './p
 import { MANIFEST } from '../cribl/accel/manifest'
 import { readAccelState, type AccelState } from '../cribl/accel/provision'
 import { useWriteGate } from '../cribl/authz'
-import { IS_INSTALLED } from '../cribl/config'
+import { IS_DEV_SERVER, IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
@@ -129,7 +130,7 @@ function confirmLabel(change: SourceChange): string {
  *  installed, this is dev preview, the pack is in the group, or its removal is
  *  waiting to be committed. */
 const hasSomethingToShow = (installable: boolean, pack: PackState, stranded: readonly string[]): boolean =>
-  installable || !IS_INSTALLED || pack.installed || stranded.length > 0
+  installable || !IS_INSTALLED || IS_DEV_SERVER || pack.installed || stranded.length > 0
 
 export function OnboardingPanel() {
   const { group, groups, groupReady, pickGroup } = useSetupGroup()
@@ -273,7 +274,7 @@ export function OnboardingPanel() {
   const startRefusal = sampleNow?.disabled && sampleDatasetKnownAbsent ? SAMPLE_START_REFUSAL : null
 
   // Rendered only where there is something to show — see the header.
-  const visible = release.installable || !IS_INSTALLED || installed || stranded.length > 0
+  const visible = release.installable || !IS_INSTALLED || IS_DEV_SERVER || installed || stranded.length > 0
   const holdsPicker = onboardingPath(release, null).mode === 'pack'
 
   const openOnboard = async () => {
