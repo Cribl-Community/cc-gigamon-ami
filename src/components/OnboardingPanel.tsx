@@ -53,6 +53,7 @@ import { useSetupGroup } from './useSetupGroup'
 import {
   NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
   PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_START_REFUSAL, SAMPLE_TIP, SOURCE_SETTINGS_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR,
+  TOKEN_UNDEPLOYED,
   UPGRADE_TIP, accelStatusWords, datasetWords, finishRemovalNote, groupElsewhereNote, httpStatusWords, installedRefusal, onboardLabel,
   onboardNote, packStatusWords, removeTypeLabel,
 } from './onboardingCopy'
@@ -161,7 +162,7 @@ export function OnboardingPanel() {
   const [opening, setOpening] = useState(false)
   const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, RunStep[]>>({})
-  const [token, setToken] = useState<{ group: string; value: string; afterError: boolean } | null>(null)
+  const [token, setToken] = useState<{ group: string; value: string; afterError: boolean; undeployed?: boolean } | null>(null)
   const [copied, setCopied] = useState<'url' | 'token' | null>(null)
   const seq = useRef(0)
   const pendingNow = useRef<UndeployedAtOpen>(NOT_KNOWN)
@@ -518,7 +519,7 @@ export function OnboardingPanel() {
     try {
       const out = await runSourceChange(shown.ctx, shown.dialog, {
         onStep: (s) => appendStep(gid, s),
-        onToken: (value) => setToken({ group: gid, value, afterError: false }),
+        onToken: (value, undeployed) => setToken({ group: gid, value, afterError: false, undeployed }),
         record: record(gid),
       })
       pushToast(out.stopped
@@ -911,6 +912,7 @@ export function OnboardingPanel() {
               </div>
             ) : null}
             {shownToken?.afterError && <p className="gs-action-note gs-action-warn">{TOKEN_AFTER_ERROR}</p>}
+            {shownToken?.undeployed && <p className="gs-action-note gs-action-warn">{TOKEN_UNDEPLOYED}</p>}
             <p className="gs-note">{shownToken ? TOKEN_ONCE : PACK_TOKEN_ELSEWHERE}</p>
             <div className="gs-endpoint-meta">
               <span><strong>Method</strong> POST</span>

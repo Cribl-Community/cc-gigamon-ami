@@ -16,7 +16,12 @@
 //     step says another admin's commit and deploy would push the reset;
 //   * otherwise the pack's own files, and only those, are committed and
 //     deployed;
-//   * something that moved between the dialog and the run writes nothing.
+//   * something that moved between the dialog and the run writes nothing;
+//   * a pack source list that cannot be read is never "no source": refused
+//     before the dialog, at the run, and after the PATCH (nothing committed);
+//   * a group's own TLS certificate put back to the pack's is a reset;
+//   * a copy that became current before the PATCH, and a PATCH whose version
+//     did not move, commit nothing (the second says so in a held step).
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -57,9 +62,18 @@ interface Opts {
   copy: { version: string; source: string }
   /** The copy's Raw HTTP source, over the shipped one (null: none, as in 0.1.0). */
   http?: Record<string, unknown> | null
-  /** What the upgrade does to local settings on the Raw HTTP source. */
-  upgrade?: 'keeps' | 'resets' | 'fails'
+  /** What the upgrade does to local settings on the Raw HTTP source.
+   *  `resetsTls`: everything kept but the TLS block, which goes back to the
+   *  pack's shipped one. `unverified`: the PATCH answers 200 and the pack list
+   *  still names the old version, so the install check fails. */
+  upgrade?: 'keeps' | 'resets' | 'resetsTls' | 'fails' | 'unverified'
   failCommit?: boolean
+  /** The pack's source list answers 503 from this read on (1-based): 1 is
+   *  prepare's, 2 the run's re-read, 3 the read-back after the PATCH. */
+  inputsFailFrom?: number
+  /** The pack list names this build's version from this read on (1-based):
+   *  somebody else upgraded the copy while the run was in flight. */
+  currentFrom?: number
 }
 
 const shipped = (id: string) => ({ id, ...structuredClone(SHIPPED[id]) })
@@ -81,6 +95,8 @@ function leader(o: Opts): void {
     committed: [],
   }
   world = w
+  let inputReads = 0
+  let packReads = 0
   window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -96,19 +112,30 @@ function leader(o: Opts): void {
     if (at('GET', '/products/stream/groups')) return reply(200, { items: [{ id: GROUP, name: GROUP, onPrem: false, configVersion: 'aaaa1111' }] })
     if (at('GET', `/products/stream/groups/${GROUP}`)) return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
     if (at('GET', '/version')) return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
-    if (at('GET', `/m/${GROUP}/packs`)) return reply(200, { items: w.packs })
+    if (at('GET', `/m/${GROUP}/packs`)) {
+      packReads++
+      if (o.currentFrom !== undefined && packReads >= o.currentFrom) w.packs = [{ id: PACK_ID, version: PACK_VERSION, source: PACK_URL }]
+      return reply(200, { items: w.packs })
+    }
     if (at('PATCH', PACK_ITEM)) {
       if (o.upgrade === 'fails') return reply(500, { message: 'the Leader could not fetch the release' })
+      if (o.upgrade === 'unverified') return reply(200, { items: [{ id: PACK_ID }] })
       const http = w.inputs[PACK_HTTP_INPUT_ID]
       w.packs = [{ id: PACK_ID, version: PACK_VERSION, source: (body as { source: string }).source }]
       w.inputs = {
-        [PACK_HTTP_INPUT_ID]: o.upgrade === 'keeps' && http ? http : shipped(PACK_HTTP_INPUT_ID),
+        [PACK_HTTP_INPUT_ID]: o.upgrade === 'keeps' && http ? http
+          : o.upgrade === 'resetsTls' && http ? { ...http, tls: (shipped(PACK_HTTP_INPUT_ID) as Record<string, unknown>).tls }
+            : shipped(PACK_HTTP_INPUT_ID),
         [PACK_SAMPLE_INPUT_ID]: shipped(PACK_SAMPLE_INPUT_ID),
       }
       w.pending.push(`groups/${GROUP}/default/${PACK_ID}/package.json`)
       return reply(200, { items: [{ id: PACK_ID }] })
     }
-    if (at('GET', `${P}/system/inputs`)) return reply(200, { items: Object.values(w.inputs) })
+    if (at('GET', `${P}/system/inputs`)) {
+      inputReads++
+      if (o.inputsFailFrom !== undefined && inputReads >= o.inputsFailFrom) return reply(503, { message: 'unavailable' })
+      return reply(200, { items: Object.values(w.inputs) })
+    }
     for (const id of [PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID]) {
       if (at('GET', `${P}/system/inputs/${id}`)) return w.inputs[id] ? reply(200, { items: [w.inputs[id]] }) : reply(404, {})
     }
@@ -161,8 +188,9 @@ async function upgrade(o: { between?: () => void; published?: boolean } = {}) {
   const dialog = plan.packUpgradeDialog(prepared.ctx)
   o.between?.()
   const records: string[] = []
-  const out = await run.runPackUpgrade(prepared.ctx, dialog, { onStep: () => {}, record: async (h) => { records.push(h) } })
-  return { prepared, out, dialog, records }
+  const steps: Array<{ key: string; action: string; detail?: string }> = []
+  const out = await run.runPackUpgrade(prepared.ctx, dialog, { onStep: (s) => { steps.push(s) }, record: async (h) => { records.push(h) } })
+  return { prepared, out, dialog, records, steps }
 }
 
 // ── The confirmation ────────────────────────────────────────────────────────
@@ -210,7 +238,7 @@ describe('the Upgrade confirmation', () => {
 
   it('upgradeReadBack: a lost token, port, on state or TLS is a reset; a source that was not there has nothing to lose', async () => {
     const { plan } = await load()
-    const on = { port: 20007, tokenSet: true, disabled: false, tls: true }
+    const on = { port: 20007, tokenSet: true, disabled: false, tls: true, tlsCert: '$CRIBL_CLOUD_CRT $CRIBL_CLOUD_KEY' }
     expect(plan.upgradeReadBack({ http: on, sample: null }, { http: on, sample: null }).reset).toEqual([])
     expect(plan.upgradeReadBack({ http: on, sample: null }, { http: { ...on, tokenSet: false }, sample: null }).reset).toEqual(['its auth token'])
     expect(plan.upgradeReadBack({ http: on, sample: null }, { http: { ...on, port: 20005 }, sample: null }).reset).toEqual(['its port (20007, now 20005)'])
@@ -221,7 +249,10 @@ describe('the Upgrade confirmation', () => {
     const off = { ...on, disabled: true }
     expect(plan.upgradeReadBack({ http: off, sample: null }, { http: off, sample: null }).reset).toEqual([])
     // 0.1.0 had no Raw HTTP source: nothing to lose, whatever arrives.
-    expect(plan.upgradeReadBack({ http: null, sample: null }, { http: { port: 20005, tokenSet: false, disabled: true, tls: true }, sample: null }).reset).toEqual([])
+    expect(plan.upgradeReadBack({ http: null, sample: null }, { http: { ...on, port: 20005, tokenSet: false, disabled: true }, sample: null }).reset).toEqual([])
+    // TLS on both sides, but the group's own certificate replaced by the pack's.
+    const own = { ...on, tlsCert: '/opt/certs/gno.crt /opt/certs/gno.key' }
+    expect(plan.upgradeReadBack({ http: own, sample: null }, { http: on, sample: null }).reset).toEqual(['its TLS certificate'])
     // A sample that was running and is now stopped is said, and does not block.
     const s = plan.upgradeReadBack({ http: null, sample: { disabled: false } }, { http: null, sample: { disabled: true } })
     expect(s.reset).toEqual([])
@@ -329,6 +360,53 @@ describe('the run', () => {
     const r = await upgrade({ between: () => { world.packs = [{ id: PACK_ID, version: '0.1.0', source: 'https://elsewhere.example.com/x.crbl' }] } })
     expect(r.out?.stopped?.key).toBe('precheck')
     expect(writes()).toEqual([])
+  })
+
+  it('the source list cannot be read: refused before a dialog opens, because "no source" is not known', async () => {
+    leader({ copy: { version: MID, source: packReleaseUrl(MID) }, upgrade: 'resets', inputsFailFrom: 1 })
+    const r = await upgrade()
+    expect(r.prepared.ok).toBe(false)
+    if (!r.prepared.ok) expect(r.prepared.why).toMatch(/could not be read/)
+    expect(writes()).toEqual([])
+  })
+
+  it('the source list cannot be read again at the run: zero writes', async () => {
+    leader({ copy: { version: MID, source: packReleaseUrl(MID) }, upgrade: 'resets', inputsFailFrom: 2 })
+    const r = await upgrade()
+    expect(r.out?.stopped?.key).toBe('precheck')
+    expect(writes()).toEqual([])
+  })
+
+  it('from 0.1.0, the source list cannot be read back after the upgrade: nothing committed or deployed', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, inputsFailFrom: 3 })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('readback')
+    expect(r.out?.stopped?.detail).toContain('Nothing was committed or deployed')
+  })
+
+  it('a hybrid group’s own certificate put back to the pack’s shipped one: NO commit and NO deploy', async () => {
+    const own = { disabled: false, minVersion: 'TLSv1.2', certPath: '/opt/certs/gno.crt', privKeyPath: '/opt/certs/gno.key' }
+    leader({ copy: { version: MID, source: packReleaseUrl(MID) }, http: { ...CONFIGURED, tls: own }, upgrade: 'resetsTls' })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.detail).toContain('its TLS certificate')
+  })
+
+  it('the copy became current before the upgrade was sent: nothing sent, nothing committed', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, currentFrom: 3 })
+    const r = await upgrade()
+    expect(r.out?.stopped?.key).toBe('pack')
+    expect(writes()).toEqual([])
+  })
+
+  it('the PATCH answered but the version did not move: the held step says nothing was committed, and nothing is', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, upgrade: 'unverified' })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    const held = r.steps?.find((s) => s.key === 'readback' && s.action === 'error')
+    expect(held?.detail).toContain('Nothing was committed or deployed')
+    expect(held?.detail).toContain('the upgrade could not be checked')
   })
 
   it('the Raw HTTP source changed after the dialog: zero writes, because the read-back would compare against the wrong "before"', async () => {

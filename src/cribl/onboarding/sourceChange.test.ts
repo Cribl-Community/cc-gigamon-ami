@@ -16,7 +16,13 @@
 //     not;
 //   * a change that landed is committed (the pack's files only) and deployed;
 //     one that failed is not;
-//   * preparing a dialog sends nothing but GETs.
+//   * preparing a dialog sends nothing but GETs;
+//   * while the pack's own package.json is uncommitted (an upgrade the run held
+//     because it reset the source), or Git's status cannot be read, no change
+//     opens or runs — its commit would deploy that upgrade;
+//   * a copy replaced by a foreign one after the dialog opened is not written;
+//   * a rotation whose commit or deploy failed still hands its token over,
+//     marked not deployed.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -51,6 +57,12 @@ interface Call { method: string; path: string; body: unknown }
 let calls: Call[] = []
 let inputs: Record<string, Record<string, unknown>> = {}
 let committed: string[][] = []
+/** The group's pack list, as the fake answers it; a test may replace it. */
+let packs: Array<Record<string, unknown>> = []
+/** Git's uncommitted files, as the fake answers them; a test may add to it. */
+let pending: string[] = []
+/** The HELD UPGRADE's own file: the pack's manifest, uncommitted. */
+const HELD_MANIFEST = `groups/${GROUP}/default/${PACK_ID}/package.json`
 
 function reply(status: number, value?: unknown) {
   const text = value === undefined ? '' : typeof value === 'string' ? value : JSON.stringify(value)
@@ -61,11 +73,19 @@ const CONFIGURED = {
   disabled: false, port: 20007, authTokensExt: [{ token: OLD_TOKEN, authType: 'manual' }], criblSourceProvenance: { by: 'server' },
 }
 
-function leader(o: { sampleDataset?: boolean; sampleOn?: boolean; failPatch?: boolean; takenPort?: number } = {}): void {
+function leader(o: {
+  sampleDataset?: boolean; sampleOn?: boolean; failPatch?: boolean; takenPort?: number
+  /** Uncommitted in the group before anything here runs. */
+  pendingAtStart?: string[]
+  /** Git's status read fails. */
+  statusFails?: boolean
+  failCommit?: boolean
+} = {}): void {
   calls = []
   committed = []
   minted = []
-  const pending: string[] = []
+  pending = [...(o.pendingAtStart ?? [])]
+  packs = [{ id: PACK_ID, version: PACK_VERSION, source: PACK_URL }]
   inputs = {
     [PACK_HTTP_INPUT_ID]: { id: PACK_HTTP_INPUT_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED },
     [PACK_SAMPLE_INPUT_ID]: { id: PACK_SAMPLE_INPUT_ID, ...structuredClone(SHIPPED[PACK_SAMPLE_INPUT_ID]), disabled: !o.sampleOn },
@@ -87,7 +107,7 @@ function leader(o: { sampleDataset?: boolean; sampleOn?: boolean; failPatch?: bo
     if (at('GET', '/version')) return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
     if (at('GET', DATASETS)) return reply(200, { items: o.sampleDataset ? [{ id: PACK_SAMPLE_DATASET_ID, format: 'json' }] : [] })
     if (at('GET', `/m/${GROUP}/system/inputs`)) return reply(200, { items: o.takenPort ? [{ id: 'in_other', type: 'http', port: o.takenPort }] : [] })
-    if (at('GET', `/m/${GROUP}/packs`)) return reply(200, { items: [{ id: PACK_ID, version: PACK_VERSION, source: PACK_URL }] })
+    if (at('GET', `/m/${GROUP}/packs`)) return reply(200, { items: packs })
     if (at('GET', `${P}/system/inputs`)) return reply(200, { items: Object.values(inputs) })
     for (const [id, item] of [[PACK_HTTP_INPUT_ID, HTTP_INPUT], [PACK_SAMPLE_INPUT_ID, SAMPLE_INPUT]] as const) {
       if (at('GET', item)) return reply(200, { items: [inputs[id]] })
@@ -99,8 +119,11 @@ function leader(o: { sampleDataset?: boolean; sampleOn?: boolean; failPatch?: bo
       }
     }
     if (method === 'GET' && path.startsWith(`${P}/`)) return reply(200, { items: [] })
-    if (at('GET', '/version/status')) return reply(200, { items: [{ files: pending.map((f) => ({ path: f })) }] })
+    if (at('GET', '/version/status')) {
+      return o.statusFails ? reply(500, { message: 'git unavailable' }) : reply(200, { items: [{ files: pending.map((f) => ({ path: f })) }] })
+    }
     if (at('POST', '/version/commit')) {
+      if (o.failCommit) return reply(500, { message: 'commit refused' })
       const files = (body as { files: string[] }).files
       committed.push(files)
       pending.splice(0, pending.length, ...pending.filter((f) => !files.includes(f)))
@@ -145,13 +168,14 @@ async function change(c: Change, between?: () => void) {
   const afterPrepare = writes().length
   between?.()
   const tokens: string[] = []
+  const undeployed: boolean[] = []
   const steps: string[] = []
   const out = await run.runSourceChange(prepared.ctx, dialog, {
     onStep: (s) => steps.push(JSON.stringify(s)),
-    onToken: (t) => tokens.push(t),
+    onToken: (t, notDeployed) => { tokens.push(t); undeployed.push(notDeployed) },
     record: async () => {},
   })
-  return { prepared, dialog, out, tokens, steps, afterPrepare }
+  return { prepared, dialog, out, tokens, undeployed, steps, afterPrepare }
 }
 
 describe('Rotate token', () => {
@@ -183,6 +207,7 @@ describe('Rotate token', () => {
     const { criblSourceProvenance: _owned, ...rest } = { id: PACK_HTTP_INPUT_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED }
     expect(sent).toEqual({ ...rest, authTokensExt: [{ token: minted[1], authType: 'manual' }] })
     expect(r.tokens).toEqual([minted[1]])
+    expect(r.undeployed).toEqual([false])
     for (const t of minted) {
       expect(r.steps.join(' ')).not.toContain(t)
       for (const p of kvPuts()) expect(String(p.body)).not.toContain(t)
@@ -197,6 +222,63 @@ describe('Rotate token', () => {
     expect(writes().map((c) => c.path)).toEqual([HTTP_INPUT])
     expect(r.out?.stopped?.detail).toMatch(/Rotate again/)
     for (const t of minted) expect(r.steps.join(' ')).not.toContain(t)
+  })
+})
+
+describe('a rotation whose commit failed', () => {
+  it('the new token is still handed over once, marked as not deployed', async () => {
+    leader({ failCommit: true })
+    const r = await change({ kind: 'token' })
+    expect(r.out?.stopped?.key).toBe('commit')
+    expect(r.tokens).toEqual([minted[1]])
+    expect(r.undeployed).toEqual([true])
+    expect(writes().map((c) => c.path)).toEqual([HTTP_INPUT, '/version/commit'])
+  })
+})
+
+describe('the pack’s own files uncommitted — an upgrade this app held, say', () => {
+  const each: Change[] = [{ kind: 'token' }, { kind: 'port', port: 20008 }, { kind: 'sample', enabled: false }]
+
+  it('no source change opens: it would commit and deploy the held upgrade with its own', async () => {
+    for (const c of each) {
+      leader({ sampleOn: true, pendingAtStart: [HELD_MANIFEST] })
+      const r = await change(c)
+      expect(r.prepared.ok, c.kind).toBe(false)
+      if (!r.prepared.ok) expect(r.prepared.why).toContain('package.json')
+      expect(writes()).toEqual([])
+    }
+  })
+
+  it('held after the dialog opened: the run writes nothing', async () => {
+    leader({ sampleOn: true })
+    const r = await change({ kind: 'sample', enabled: false }, () => { pending.push(HELD_MANIFEST) })
+    expect(r.out?.stopped?.key).toBe('precheck')
+    expect(writes()).toEqual([])
+  })
+
+  it('Git’s status cannot be read: refused, because the held upgrade cannot be ruled out', async () => {
+    leader({ sampleOn: true, statusFails: true })
+    const r = await change({ kind: 'sample', enabled: false })
+    expect(r.prepared.ok).toBe(false)
+    expect(writes()).toEqual([])
+  })
+
+  it('another source change of its own left uncommitted is not refused', async () => {
+    leader({ sampleOn: true, pendingAtStart: [`groups/${GROUP}/local/${PACK_ID}/inputs.yml`] })
+    const r = await change({ kind: 'sample', enabled: false })
+    expect(r.prepared.ok).toBe(true)
+    expect(r.out?.stopped).toBeNull()
+  })
+})
+
+describe('the copy replaced after the dialog opened', () => {
+  it('by a foreign one: the run writes nothing', async () => {
+    leader({ sampleOn: true })
+    const r = await change({ kind: 'sample', enabled: false }, () => {
+      packs = [{ id: PACK_ID, version: PACK_VERSION, source: 'https://elsewhere.example.com/fork.crbl' }]
+    })
+    expect(r.out?.stopped?.key).toBe('precheck')
+    expect(writes()).toEqual([])
   })
 })
 

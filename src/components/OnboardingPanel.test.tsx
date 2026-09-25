@@ -30,7 +30,7 @@ import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET
 import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
 import { OnboardingPanel } from './OnboardingPanel'
 import { ProvisionPanel } from './ProvisionPanel'
-import { REMOVE_ONLY_LEAD, SAMPLE_LABEL, SAMPLE_START_REFUSAL } from './onboardingCopy'
+import { REMOVE_ONLY_LEAD, SAMPLE_LABEL, SAMPLE_START_REFUSAL, TOKEN_UNDEPLOYED } from './onboardingCopy'
 
 const toasts = vi.hoisted(() => [] as Array<{ kind: string; text: string }>)
 vi.mock('./Toast', () => ({
@@ -50,6 +50,8 @@ const SAVED = '/m/default_search/search/saved'
 
 interface Call { method: string; path: string; body: unknown }
 let calls: Call[] = []
+/** The fake Leader's uncommitted files — a test may add to them. */
+let heldManifest: string[] = []
 let fake: { packs: Record<string, Array<Record<string, unknown>>>; inputs: Record<string, Record<string, Record<string, unknown>>>; failHttp: boolean; globalHttp: boolean }
 
 const shippedHttp = () => ({
@@ -84,6 +86,7 @@ function leader(o: {
   let failCommit = o.failCommitOnce ?? false
   calls = []
   const pending: string[] = []
+  heldManifest = pending
   const saved = new Map<string, unknown>()
   const datasets = new Map<string, Record<string, unknown>>([[PACK_LAKE_DATASET_ID, {
     id: PACK_LAKE_DATASET_ID, format: 'json', retentionPeriodInDays: 30, metrics: { currentSizeBytes: 5e6, metricsDate: '2026-09-24' },
@@ -509,6 +512,36 @@ describe('11. Upgrade', () => {
     expect(toasts.at(-1)?.kind).toBe('done')
   })
 
+  it('the lock taken by another panel while its dialog is open: Yes writes nothing', async () => {
+    leader({ v010: true })
+    await mount()
+    await press(buttonNamed(`Upgrade to ${PACK_VERSION}`))
+    expect(dialog()).not.toBeNull()
+    // Taken and pressed in one turn, before a render could mark the button.
+    let release: (() => void) | null = null
+    await act(async () => {
+      release = acquireSetupRun('lake_landing')
+      buttonNamed('Yes, upgrade in default')!.click()
+    })
+    await settle(30)
+    expect(writes()).toEqual([])
+    expect(bodyText()).toContain('Nothing was written: Another run is already in progress.')
+    ;(release as (() => void) | null)?.()
+  })
+
+  it('held because it reset the source: none of the source controls opens a dialog that would deploy it', async () => {
+    leader({ installed: true, configured: true, sampleOn: true })
+    await mount()
+    // The upgrade this app held: the pack's manifest uncommitted in the group.
+    heldManifest.push(`groups/default/default/${PACK_ID}/package.json`)
+    for (const label of ['Rotate token', 'Stop sample data']) {
+      await press(buttonNamed(label))
+      expect(dialog(), label).toBeNull()
+    }
+    expect(bodyText()).toContain('package.json in default is uncommitted')
+    expect(writes()).toEqual([])
+  })
+
   it('is not offered for the current copy', async () => {
     leader({ installed: true })
     await mount()
@@ -592,6 +625,47 @@ describe('the pack sources’ own settings', () => {
     await press(buttonNamed('Yes, stop the sample data'), 40)
     const patch = writes().find((c) => c.method === 'PATCH' && c.path.endsWith(`/system/inputs/${PACK_SAMPLE_INPUT_ID}`))
     expect((patch!.body as { disabled: boolean }).disabled).toBe(true)
+  })
+
+  it('a rotation whose commit failed: the token is shown once, and said not to be deployed', async () => {
+    leader({ installed: true, configured: true, failCommitOnce: true })
+    await mount()
+    await press(buttonNamed('Rotate token'))
+    await press(buttonNamed('Yes, rotate the token'), 40)
+    const token = sentToken()
+    expect(shownToken()).toBe(token)
+    expect(bodyText()).toContain(TOKEN_UNDEPLOYED)
+    expect(writes().map((c) => c.path).at(-1)).toBe('/version/commit')
+  })
+
+  it('a rotation that deployed carries no such warning', async () => {
+    leader({ installed: true, configured: true })
+    await mount()
+    await press(buttonNamed('Rotate token'))
+    await press(buttonNamed('Yes, rotate the token'), 40)
+    expect(shownToken()).toBe(sentToken())
+    expect(bodyText()).not.toContain(TOKEN_UNDEPLOYED)
+  })
+
+  it('the lock taken by another panel while a dialog is open: its Yes writes nothing', async () => {
+    for (const [label, yes] of [['Stop sample data', 'Yes, stop the sample data'], ['Rotate token', 'Yes, rotate the token']] as const) {
+      leader({ installed: true, configured: true, sampleOn: true })
+      await mount()
+      await press(buttonNamed(label))
+      expect(dialog(), label).not.toBeNull()
+      // Taken and pressed in one turn, before a render could mark the button.
+      let release: (() => void) | null = null
+      await act(async () => {
+        release = acquireSetupRun('lake_landing')
+        buttonNamed(yes)!.click()
+      })
+      await settle(30)
+      expect(writes(), label).toEqual([])
+      expect(bodyText()).toContain('Nothing was written: Another run is already in progress.')
+      ;(release as (() => void) | null)?.()
+      act(() => root.unmount())
+      root = createRoot(container)
+    }
   })
 
   it('while another Guided Setup run holds the lock, none of them opens', async () => {

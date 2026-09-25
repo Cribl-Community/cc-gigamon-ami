@@ -194,6 +194,23 @@ export const ROTATE_EXPORTER =
 export const ROTATE_UNDO = 'The old token cannot be put back: this app never reads a token. Rotate again for another new one.'
 
 /** Added to a failed rotation's step. */
+/** Why a source change is refused while the pack's own version change is
+ *  uncommitted — an upgrade held because it reset the source, or one nobody
+ *  committed: the change's commit and deploy would carry it too. */
+export const packManifestPendingSentence = (group: string, path: string): string =>
+  `the pack’s own ${path.split('/').pop()} in ${group} is uncommitted — an upgrade or install nobody has committed — and this ` +
+  `change would commit and deploy it too. Check the pack in Cribl, and commit and deploy ${group} there once it is right`
+
+/** The same refusal when Git's status cannot be read, so the case above
+ *  cannot be ruled out. */
+export const packPendingUnknownSentence = (group: string): string =>
+  `Cribl did not report what is uncommitted in ${group}, so this app cannot tell whether an uncommitted pack upgrade would be ` +
+  'committed and deployed with this change'
+
+/** Beside a rotated token whose commit or deploy failed. */
+export const TOKEN_UNDEPLOYED =
+  'This token is set in Cribl but not deployed: the Workers keep the old token, and refuse this one, until the group is committed and deployed.'
+
 export const ROTATE_FAILED =
   'If Cribl applied the change anyway, the source holds a token nobody was shown, and nothing was committed or deployed. Rotate again.'
 

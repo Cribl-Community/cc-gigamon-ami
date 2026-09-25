@@ -25,7 +25,18 @@
 // Generated here, for step 3 only, and handed to the caller through
 // `io.onToken` — only when the PATCH that set it answered `updated`, or when
 // it answered an error AND a re-read shows the source now has a token (then
-// with a warning). It is in no step, no log entry and no error text.
+// with a warning). It is in no step, no log entry and no error text. A
+// rotation's (`runSourceChange`) is handed over once its commit and deploy have
+// ended, marked `undeployed` when either failed: the source holds the new token,
+// and the Workers still hold the old one.
+//
+// ── A HELD UPGRADE STAYS HELD ───────────────────────────────────────────────
+// `runPackUpgrade` commits nothing when the upgrade reset the Raw HTTP source.
+// Every source change commits all of the pack's pending files, so while the
+// pack's manifest is uncommitted, none of them opens or runs
+// (`manifestPendingRefusal`) — otherwise this app's own Stop sample data would
+// deploy the reset the upgrade held back. An unreadable source list is never
+// read as "this version has no Raw HTTP source" (`sourcesUnreadable`).
 //
 // ── NOTHING HERE RUNS ON ITS OWN ────────────────────────────────────────────
 // `runOnboarding`, `runPackRemoval`, `finishPackRemoval`, `runPackUpgrade` and
@@ -54,7 +65,9 @@ import {
   HTTP_SOURCE_ID, LEGACY_SYSLOG_SOURCE_ID, ensureLakeDataset, generateToken, groupInputs, hostingOf, leaderHostname,
   pendingConfigPaths, portProblem, sameValue, type LakeDatasetStep, type StepResult,
 } from '../provision'
-import { ROTATE_FAILED, installedRefusal, upgradeHeldSentence, upgradeResetSentence } from '../../components/onboardingCopy'
+import {
+  ROTATE_FAILED, installedRefusal, packManifestPendingSentence, packPendingUnknownSentence, upgradeHeldSentence, upgradeResetSentence,
+} from '../../components/onboardingCopy'
 import {
   SAMPLE_START_DIFF, accelMode, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites, upgradeReadBack, type HttpAction,
   type OnboardingDialog, type OnboardingDialogContext, type SourceChange, type SourceChangeContext, type SourceChangeDialog,
@@ -589,10 +602,21 @@ export async function finishPackRemoval(group: string, io: Pick<RemovalIO, 'onSt
 /** What the read-back compares, off `readPackState`. Never a token. */
 const snapshotOf = (p: PackState): SourceSnapshot => ({ http: p.http, sample: p.sample })
 
+/**
+ * The pack's source list could not be read. `readPackState` then reports
+ * `http: null` — the same as "this version has no Raw HTTP source" — and the
+ * read-back would compare null with null and find nothing to lose, so an
+ * unreadable list is a refusal, never an absent source.
+ */
+const sourcesUnreadable = (p: PackState): boolean => p.objects.inputs[PACK_HTTP_INPUT_ID] === 'unreadable'
+
 /** Why this copy is not one this app will upgrade to `to`, or null. */
 function upgradeRefusal(pack: PackState, group: string, to: string): string | null {
   if (pack.error) return pack.error
   if (!pack.installed) return `${PACK_ID} is not installed in ${group}`
+  if (sourcesUnreadable(pack)) {
+    return `the pack’s sources in ${group} could not be read, so this app cannot tell what an upgrade would reset on ${PACK_HTTP_INPUT_ID}`
+  }
   if (!pack.published || !pack.fromRelease || pack.version === null) {
     return installedRefusal({ version: pack.version, published: pack.published, fromRelease: pack.fromRelease, group })
   }
@@ -691,7 +715,7 @@ export async function runPackUpgrade(ctx: UpgradeDialogContext, _dialog: Upgrade
 
   // 2. What was set after install, read back.
   const after = await readPackState(g)
-  if (after.error || !after.installed) {
+  if (after.error || !after.installed || sourcesUnreadable(after)) {
     return finish(step({
       key: 'readback', label: labelOf('readback'), action: 'error',
       detail: upgradeHeldSentence(g, `${PACK_HTTP_INPUT_ID} could not be read back after it`),
@@ -722,8 +746,10 @@ export async function runPackUpgrade(ctx: UpgradeDialogContext, _dialog: Upgrade
 export interface SourceChangeIO {
   onStep: (s: RunStep) => void
   /** A rotation's new token, handed over once, after the PATCH that set it
-   *  answered `updated`. Kept nowhere else. */
-  onToken: (token: string) => void
+   *  answered `updated` and the commit and deploy that followed ended —
+   *  `undeployed` when either failed, so the Workers still hold the old token.
+   *  Kept nowhere else. */
+  onToken: (token: string, undeployed: boolean) => void
   record: (hash: string, message: string) => Promise<unknown>
 }
 
@@ -739,6 +765,20 @@ function packChange(change: SourceChange, hosting: 'managed' | 'hybrid' | null, 
 }
 
 const ownedCopy = (p: PackState): boolean => !p.error && p.installed && p.published && p.fromRelease
+
+/**
+ * Why a source change may not commit now, or null. A source change commits
+ * every pending file of the pack's, so while the pack's own manifest is
+ * uncommitted — above all an upgrade `runPackUpgrade` held because it reset
+ * the Raw HTTP source — its commit and deploy would push that upgrade, reset
+ * and all, which is exactly what holding it was for. Git's status unread is
+ * refused too: the held upgrade cannot be ruled out.
+ */
+function manifestPendingRefusal(group: string, pending: readonly string[] | null): string | null {
+  if (pending === null) return packPendingUnknownSentence(group)
+  const held = pending.find((f) => f.includes(`groups/${group}/`) && f.endsWith(`/${PACK_ID}/package.json`))
+  return held ? packManifestPendingSentence(group, held) : null
+}
 
 /**
  * The reads a source change's confirmation is built from — GETs only:
@@ -760,6 +800,8 @@ export async function prepareSourceChange(
   ])
   if (pack.error) return { ok: false, why: pack.error }
   if (!ownedCopy(pack)) return { ok: false, why: `the pack in ${group} is not one this app installed from its own release` }
+  const held = manifestPendingRefusal(group, pending)
+  if (held) return { ok: false, why: held }
   let hosting: 'managed' | 'hybrid' | null = null
   if (groups) {
     const rec = groups.outcome === 'ok' ? groups.value?.find((x) => x.id === group) : undefined
@@ -818,6 +860,8 @@ export async function runSourceChange(ctx: SourceChangeContext, dialog: SourceCh
       detail: `Nothing was written: ${now.error ?? `the pack in ${g} is no longer one this app installed from its own release`}.`,
     }))
   }
+  const held = manifestPendingRefusal(g, await pendingConfigPaths())
+  if (held) return finish(step({ key: 'precheck', label: labelOf('precheck'), action: 'error', detail: `Nothing was written: ${held}.` }))
 
   const change = ctx.change
   const token = change.kind === 'token' ? generateToken() : null
@@ -833,9 +877,17 @@ export async function runSourceChange(ctx: SourceChangeContext, dialog: SourceCh
   }
   if (r.action !== 'updated') return finish(step(fromPack(r, token !== null && r.sent ? `. ${ROTATE_FAILED}` : '')))
   step(fromPack(r))
-  if (token !== null) io.onToken(token)
 
-  const committed = await commitAndDeployPack(g, changeMessage(g, change), { wrote: true, record: io.record }, (c) => { step(fromCommit(c)) })
-  const broken = committed.find((c) => c.action === 'error')
+  // A rotation's token is handed over after the commit and deploy, whatever
+  // they did — the source holds it now — and says whether it reached the Workers.
+  let broken: StepResult | undefined
+  let ended = false
+  try {
+    const committed = await commitAndDeployPack(g, changeMessage(g, change), { wrote: true, record: io.record }, (c) => { step(fromCommit(c)) })
+    broken = committed.find((c) => c.action === 'error')
+    ended = true
+  } finally {
+    if (token !== null) io.onToken(token, !ended || broken !== undefined)
+  }
   return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
 }

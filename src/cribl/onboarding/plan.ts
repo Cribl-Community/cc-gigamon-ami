@@ -709,7 +709,7 @@ export function upgradeObjectChanges(from: string | null): { added: PackObjectRe
 /** What the upgrade's read-back compares: the Raw HTTP source (never its
  *  token, only whether one is set) and whether the sample runs. */
 export interface SourceSnapshot {
-  http: { port: number | null; tokenSet: boolean; disabled: boolean; tls: boolean } | null
+  http: { port: number | null; tokenSet: boolean; disabled: boolean; tls: boolean; tlsCert: string | null } | null
   sample: { disabled: boolean } | null
 }
 
@@ -719,7 +719,10 @@ export interface SourceSnapshot {
  * its on state or its TLS, or is gone. TLS is stricter than the design's list
  * (token, port, on state) on purpose: a TLS block put back to the pack's own
  * names a certificate a hybrid group does not have, so the source would never
- * start — its on state lost by another route. A source the installed version
+ * start — its on state lost by another route. So TLS counts as reset when it
+ * went on or off, AND when it stayed on with another certificate (`tlsCert`):
+ * a hybrid group's own certificate put back to the pack's `$CRIBL_CLOUD_CRT`
+ * is still "TLS on". A source the installed version
  * did not have (0.1.0) had nothing to lose. `notes` are said and do not stop
  * it: a sample that was running and is now stopped.
  */
@@ -735,6 +738,7 @@ export function upgradeReadBack(before: SourceSnapshot, after: SourceSnapshot): 
       if (b.port !== null && a.port !== b.port) reset.push(`its port (${b.port}, now ${a.port ?? 'unknown'})`)
       if (!b.disabled && a.disabled) reset.push('its on state')
       if (b.tls !== a.tls) reset.push('its TLS')
+      else if (b.tls && b.tlsCert !== a.tlsCert) reset.push('its TLS certificate')
     }
   }
   if (before.sample && !before.sample.disabled && (after.sample === null || after.sample.disabled)) {

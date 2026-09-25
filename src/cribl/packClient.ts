@@ -250,6 +250,19 @@ export interface HttpInputState {
   port: number | null
   tokenSet: boolean
   tls: boolean
+  /**
+   * Which certificate TLS uses, while it is on: the block's certificate name
+   * and its cert, key and CA paths, joined — never its passphrase. Null when
+   * TLS is off. An upgrade that puts a group's own certificate back to the
+   * pack's shipped one leaves `tls` true, and only this shows the change.
+   */
+  tlsCert: string | null
+}
+
+/** The TLS block's certificate, as `HttpInputState.tlsCert` names it. */
+function tlsCertOf(tls: Record<string, unknown>): string {
+  const text = (v: unknown) => (typeof v === 'string' ? v : '')
+  return [tls.certificateName, tls.certPath, tls.privKeyPath, tls.caPath].map(text).join(' ').trim()
 }
 
 export interface PackState {
@@ -354,12 +367,14 @@ export async function readPackState(group: string): Promise<PackState> {
     list.find((x) => x && typeof x === 'object' && (x as { id?: unknown }).id === id) as Record<string, unknown> | undefined
   const http = byId(PACK_HTTP_INPUT_ID)
   if (http) {
-    const tls = http.tls && typeof http.tls === 'object' ? (http.tls as { disabled?: unknown }) : null
+    const tls = http.tls && typeof http.tls === 'object' ? (http.tls as Record<string, unknown>) : null
+    const tlsOn = tls !== null && tls.disabled === false
     state.http = {
       disabled: http.disabled === true,
       port: numberOr(http.port),
       tokenSet: tokensOf(http).length > 0,
-      tls: tls !== null && tls.disabled === false,
+      tls: tlsOn,
+      tlsCert: tlsOn && tls ? tlsCertOf(tls) : null,
     }
   }
   const sample = byId(PACK_SAMPLE_INPUT_ID)

@@ -37,6 +37,7 @@ function everything(): string[] {
         upgradeResetSentence: [['g1', ['its auth token']], ['g1', ['its auth token', 'its port (20007, now 20005)']]],
         upgradeHeldSentence: [['g1', 'the upgrade could not be checked']],
         upgradeNewSourceSentence: [[]],
+        packManifestPendingSentence: [['g1', 'groups/g1/default/cc-network-gigamon-ami/package.json']],
         movePortSentence: [[20007, 20008], [null, 20008]],
         movePortUndo: [[20007], [null]],
       }[name] ?? [['g1']]
