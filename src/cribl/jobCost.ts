@@ -137,7 +137,12 @@ async function readBillableCpuSeconds(jobId: string): Promise<number | null> {
 export async function recordJobCost(slot: CostSlot, key: string, jobId: string): Promise<void> {
   if (slot.key === key && slot.cpuSeconds !== null) return
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 3000))
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 3000))
+      // The panel went while the meter caught up: nothing is left to show the
+      // figure to, so the second read would be a request made for no one.
+      if (!slots.has(slot.id)) return
+    }
     const cpuSeconds = await readBillableCpuSeconds(jobId)
     if (cpuSeconds !== null) {
       slot.key = key

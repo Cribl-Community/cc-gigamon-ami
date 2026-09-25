@@ -58,6 +58,20 @@ assert the *mechanism* instead (the dialog portals outside `#root`; `#root` carr
 each carries a list at the bottom of what it could not assert and why. Read that list before
 claiming an outcome from a passing suite.
 
+**A green run with an error on stderr is not a green run either.** React catches a throw from an
+event handler, prints it and carries on, so the assertions after the click still pass. Where
+happy-dom differs from a browser in a way a component relies on, `src/vitest.setup.ts` makes it
+behave like the browser and `src/harness.test.tsx` holds each such fix — today, the HTML
+"click in progress" flag, without which Capra's `RadioTile` recursed until the stack ran out.
+The same setup refuses a `fetch` no test stubbed, in every DOM test file: happy-dom's own would open
+a real socket, and one left in flight printed a `DOMException [AbortError]` at teardown. The test
+it happened in fails. Only `LakeLandingPanel.test.tsx` also fails on a `console.error`; elsewhere
+a logged error still has to be read off stderr.
+*Added 2026-09-24 (branch `fix/lake-landing-stderr`): that file had passed while nine of its tests
+printed `RangeError: Maximum call stack size exceeded`. The fetch refusal was added 2026-09-25,
+after a panel's cost re-read, three seconds after its test had ended, was found reaching the
+network.*
+
 *Corrected in PR #4 (2026-09-16), PR #6 (2026-09-16) and PR #7 (2026-09-16). This section used to
 say: "There is **no test suite**. `npm run lint` and `npm run build` (type-check) are the
 verification gates."*
