@@ -4,7 +4,9 @@
 # DEFAULT_PROFILE, exactly as destinationSpec() builds them; only the id, the
 # dataset and (for the Parquet copy) the format and onBackpressure differ.
 # src/cribl/pack.test.ts fails if they drift. No dataset is in the pack: Cribl has no pack-scoped
-# dataset, so the app creates them, and removing the pack never deletes one.
+# dataset, and removing the pack never deletes one. Guided Setup creates
+# gigamon_ami; nothing creates gigamon_ami_pq or gigamon_ami_sample yet
+# (pack.ts PACK_DATASETS_NOT_CREATED).
 #
 #   gigamon_ami_json_lake    -> gigamon_ami         JSON. Every dashboard reads it.
 #   gigamon_ami_parquet_lake -> gigamon_ami_pq      Parquet. The same records.
@@ -14,7 +16,7 @@
 # keeps `automaticSchema: true`, because an explicit parquetSchema had no
 # observable effect (absent fields got the same "" fill, a field it did not
 # list was still kept, strings were stored in a column it declared INT64).
-# Partitions: gigamon_ami_pq, which the app creates, has none, because a
+# Partitions: gigamon_ami_pq is to be created with none, because a
 # protocol partition on Search v2 pruned nothing (protocol=6 read the same
 # 63,249 events and 2.69 MB on the partitioned and the flat twin) and cost 172%
 # of the flat twin unfiltered and 197% under other filters. See PACK_DECISIONS

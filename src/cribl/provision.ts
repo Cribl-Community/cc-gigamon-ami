@@ -406,11 +406,17 @@ export const DATASET_SPEC = datasetSpec(DEFAULT_PROFILE)
  * The Cribl Lake dataset the onboarding pack's Parquet destination writes to
  * (pack.ts `PACK_PARQUET_DATASET_ID`), as its create body.
  *
- * NOTHING CREATES IT YET. A pack cannot hold a dataset, so the app must, and the
- * place is the onboarding run: beside `ensureDataset`, created when absent and
- * never edited, before the pack's routes are enabled. Until then the pack's
- * Parquet destination drops (`onBackpressure: drop`) and gigamon_ami keeps
- * flowing.
+ * NOTHING CREATES IT YET (pack.ts `PACK_DATASETS_NOT_CREATED`). A pack cannot
+ * hold a dataset, so the app must, and the place is the onboarding run: beside
+ * `ensureDataset`, created when absent and never edited. THE GATE IS THE HTTP
+ * SOURCE'S `enable` (packClient.ts), not the routes: the pack's routes ship
+ * enabled (default/pipelines/route.yml), so the first event after the source
+ * starts is routed to this dataset. When the create step is built, `enable`
+ * should refuse while this dataset is absent, as `sample` does for its own.
+ * Until then the Parquet destination drops (`onBackpressure: drop`) every copy
+ * with no signal, and gigamon_ami keeps flowing. That refusal is not added
+ * before the create step: with nothing to create the dataset, it would refuse
+ * every start, and stop gigamon_ami too, which the drop exists to protect.
  *
  * NO PARTITIONS, AND THE KEY IS ABSENT rather than `[]`: `acceleratedFields` is
  * honoured only when a dataset is created, so this body is the whole of that

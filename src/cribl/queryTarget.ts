@@ -3,13 +3,19 @@
 // Pure. No network, no React. The routing rule is data so the exceptions are
 // structural rather than remembered, and so a test can read them.
 //
-// ── THE SHAPE, decided 2026-09-22 ───────────────────────────────────────────
-// Guided Setup provisions TWO Lake datasets rather than one:
+// ── THE SHAPE, decided 2026-09-22; PLANNED, NOT BUILT ────────────────────────
+// Two Lake datasets rather than one. Only the first exists today: Guided
+// Setup's `ensureDataset` creates gigamon_ami, and nothing creates
+// gigamon_ami_pq yet (pack.ts `PACK_DATASETS_NOT_CREATED`).
 //
 //   gigamon_ami      JSON, keeps `_raw`, 30-day archive. Drill-downs, Field
 //                    Explorer and Copilot read it. Nothing about it changes.
-//   gigamon_ami_pq   Parquet, CURATED — `_raw` dropped, ~60 columns instead of
-//                    ~319. The analytics copy the dashboards aggregate.
+//   gigamon_ami_pq   Parquet. The analytics copy the dashboards are to
+//                    aggregate. TODAY IT IS NOT CURATED: the pack routes it
+//                    through the same gigamon_ami_normalize pipeline, which
+//                    keeps `_raw`, and its automatic schema keeps every field
+//                    (pack.ts `PACK_DECISIONS.parquet_schema_mode`). Dropping
+//                    `_raw` there is a future pipeline change.
 //
 // `_raw` is on 100 % of events and is ≈40 % of the bytes Search reads (337 MB
 // of ~850 MB per 15 min), and NO dashboard query touches it. Dropping it from
@@ -92,7 +98,7 @@ export interface Routing {
 export interface TargetDatasets {
   /** The JSON archive. Always present — it is what Guided Setup creates first. */
   json: string
-  /** The curated Parquet copy, when one has been provisioned. */
+  /** The Parquet copy (not curated yet: see the header), when one exists. */
   parquet?: string
   /** The engine dataset, when one is configured. */
   lakehouse?: string

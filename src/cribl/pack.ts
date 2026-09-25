@@ -184,7 +184,8 @@ export const PACK_PARQUET_OUTPUT_ID = 'gigamon_ami_parquet_lake'
 export const PACK_SAMPLE_OUTPUT_ID = 'gigamon_ami_sample_lake'
 
 /** The customer's dataset, which every dashboard reads. Outside the pack:
- *  Cribl has no pack-scoped dataset, so the app creates each dataset. */
+ *  Cribl has no pack-scoped dataset. Guided Setup's `ensureDataset` creates
+ *  this one; see `PACK_DATASETS_NOT_CREATED` for the other two. */
 export const PACK_LAKE_DATASET_ID = 'gigamon_ami'
 /** The Parquet copy of the same records. Dashboards do not read it (yet). */
 export const PACK_PARQUET_DATASET_ID = 'gigamon_ami_pq'
@@ -194,6 +195,20 @@ export const PACK_PARQUET_DATASET_ID = 'gigamon_ami_pq'
  * dataset could not be taken back out before retention expired.
  */
 export const PACK_SAMPLE_DATASET_ID = 'gigamon_ami_sample'
+
+/**
+ * The datasets the pack writes to that NO RELEASE OF THIS APP CREATES YET. Only
+ * `gigamon_ami` has a creator (provision.ts `ensureDataset`). Until one exists:
+ *   - gigamon_ami_pq: the pack's Parquet route ships enabled, so once the HTTP
+ *     source is started every Parquet copy is dropped (`onBackpressure: drop`)
+ *     with no signal, while gigamon_ami keeps flowing. provision.ts
+ *     `PARQUET_DATASET_SPEC` is the body to create it with.
+ *   - gigamon_ami_sample: packClient.ts refuses to start the sample source.
+ * The pack README ships inside the .crbl and says the same; pack.test.ts fails
+ * when a dataset POST is added to src and this list and the README are not
+ * changed with it.
+ */
+export const PACK_DATASETS_NOT_CREATED: readonly string[] = Object.freeze([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID])
 
 /** The ports a Cribl-managed (Cloud) worker group exposes for a source.
  *  pack.test.ts holds it equal to provision.ts's `CLOUD_PORT_RANGE`. */
@@ -215,7 +230,7 @@ export const SAMPLE_ORIGIN_VALUE = 'sample'
 
 /**
  * DECISIONS NOT TAKEN YET, and shipped as a placeholder. Each key is a setting
- * the pack (or the dataset the app creates for it) carries today only so the
+ * the pack (or a dataset it writes to) carries today only so the
  * pack is complete; each value says what it is waiting for. EMPTY since
  * 2026-09-24: both of 0.2.0's entries were decided, and moved to
  * `PACK_DECISIONS` below with their evidence.
@@ -242,7 +257,7 @@ export const PACK_DECISIONS: Readonly<Record<string, string>> = Object.freeze({
   parquet_schema_mode:
     `${PACK_PARQUET_OUTPUT_ID} keeps automaticSchema: true, because on 2026-09-24 an explicit parquetSchema had no observable effect: absent fields got the same "" fill, a field it did not list was still kept, and strings were stored in a column it declared INT64.`,
   parquet_partitions:
-    `${PACK_PARQUET_DATASET_ID} is created with no partition fields, because on 2026-09-24 a protocol partition on Search v2 pruned nothing (a protocol=6 search read the same 63,249 events and 2.69 MB from the partitioned and the flat twin) while costing 172% of the flat twin unfiltered and 197% under other filters.`,
+    `${PACK_PARQUET_DATASET_ID} is to be created with no partition fields (nothing creates it yet: PACK_DATASETS_NOT_CREATED), because on 2026-09-24 a protocol partition on Search v2 pruned nothing (a protocol=6 search read the same 63,249 events and 2.69 MB from the partitioned and the flat twin) while costing 172% of the flat twin unfiltered and 197% under other filters.`,
 })
 
 /** One path an event takes through a pack: the shape Data Flow's stack list uses. */

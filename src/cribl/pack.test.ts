@@ -47,6 +47,7 @@ import {
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
   PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_DECISIONS, PACK_0_1_0,
+  PACK_DATASETS_NOT_CREATED,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -273,7 +274,7 @@ describe('the pack routes', () => {
   })
 })
 
-describe('the Parquet dataset the onboarding run creates', () => {
+describe('the Parquet dataset the onboarding run is to create', () => {
   it('is the dataset the Parquet destination writes to', () => {
     expect(PARQUET_DATASET_SPEC.id).toBe(PACK_PARQUET_DATASET_ID)
     expect(outputs[PACK_PARQUET_OUTPUT_ID].destPath).toBe(PARQUET_DATASET_SPEC.id)
@@ -316,6 +317,74 @@ describe('the 0.2.0 decisions are taken', () => {
       expect(why).not.toMatch(/PENDING/)
     }
   })
+})
+
+describe('the pack says which datasets the app creates, and the code agrees', () => {
+  // The README ships inside the .crbl, so a sentence in it is frozen into every
+  // tenant that installs the release. "The app creates them" was written while
+  // only gigamon_ami had a creator.
+  const SRC = join(ROOT, 'src')
+  const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) return sources(p)
+    return /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [p] : []
+  })
+  // Comment lines dropped: pack.ts names the spec in prose, which creates nothing.
+  const uncommented = (s: string) => s.split('\n').filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join('\n')
+  const code = sources(SRC).map((p) => ({ p, s: uncommented(readFileSync(p, 'utf8')) }))
+
+  it('the one dataset POST in src is ensureDataset, and its body is gigamon_ami\'s', () => {
+    // A second creator (the onboarding run gaining gigamon_ami_pq) fails this
+    // until PACK_DATASETS_NOT_CREATED and the pack text are changed with it.
+    const posts = code.flatMap(({ p, s }) => [...s.matchAll(/capi\('POST', datasetsPath, (\w+)\)/g)].map((m) => ({ p, body: m[1] })))
+    expect(posts).toHaveLength(1)
+    expect(posts[0].p.endsWith(join('cribl', 'provision.ts'))).toBe(true)
+    expect(DATASET_SPEC.id).toBe(PACK_LAKE_DATASET_ID)
+    const uses = code.reduce((n, { s }) => n + (s.match(/\bPARQUET_DATASET_SPEC\b/g)?.length ?? 0), 0)
+    expect(uses, 'PARQUET_DATASET_SPEC is used now: take gigamon_ami_pq out of PACK_DATASETS_NOT_CREATED').toBe(1)
+    expect([...PACK_DATASETS_NOT_CREATED].sort()).toEqual([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID].sort())
+  })
+
+  it('no pack file says the app creates a dataset it does not', () => {
+    for (const f of ['README.md', 'default/outputs.yml']) {
+      expect(text(f)).not.toMatch(/the app creates (them|this one|each)|which the app creates/i)
+    }
+  })
+
+  it('the README names each dataset nothing creates yet, and what happens until something does', () => {
+    const para = text('README.md').split(/\r?\n\r?\n/).find((b) => /No release of the app creates/.test(b)) ?? ''
+    // The sentence itself, not the paragraph: a later clause may name an id too.
+    const which = /No release of the app creates ([^.]*) yet\./.exec(para)?.[1] ?? ''
+    for (const id of PACK_DATASETS_NOT_CREATED) expect(which).toContain(`\`${id}\``)
+    expect(which).not.toContain(`\`${PACK_LAKE_DATASET_ID}\``)
+    expect(para).toMatch(/drops/)
+    expect(para).toMatch(/refuses to start the sample source/)
+    const yml = text('default/outputs.yml')
+    for (const id of PACK_DATASETS_NOT_CREATED) expect(yml).toMatch(new RegExp(`nothing creates[^.]*${id}[^.]*yet`, 's'))
+  })
+})
+
+describe('the decisions say the same thing in pack.ts, the README and default/outputs.yml', () => {
+  // The evidence is written three times. Edit one figure in one place and every
+  // other test stays green; this is what makes the three copies one.
+  const FIGURES: Readonly<Record<keyof typeof PACK_DECISIONS & string, readonly string[]>> = {
+    parquet_schema_mode: ['2026-09-24', 'automaticSchema: true', '""', 'INT64'],
+    parquet_partitions: ['2026-09-24', 'protocol=6', '63,249', '2.69 MB', '172%', '197%'],
+  }
+
+  it('covers every decision', () => {
+    expect(Object.keys(FIGURES).sort()).toEqual(Object.keys(PACK_DECISIONS).sort())
+  })
+
+  for (const [key, figures] of Object.entries(FIGURES)) {
+    it(`${key}: every figure is in all three`, () => {
+      for (const fig of figures) {
+        expect(PACK_DECISIONS[key], `PACK_DECISIONS.${key}`).toContain(fig)
+        expect(text('README.md'), 'README.md').toContain(fig)
+        expect(text('default/outputs.yml'), 'default/outputs.yml').toContain(fig)
+      }
+    })
+  }
 })
 
 describe('the PENDING decisions cannot ship in a release', () => {
