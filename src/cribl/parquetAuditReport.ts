@@ -477,7 +477,12 @@ export function renderAuditMarkdown(r: AuditReport): string {
     out.push(`| ${j.purpose} | ${j.window.label} | ${j.submittedAt ?? '—'} | ${j.jobId ?? '—'} | ${j.status}${j.error ? `: ${j.error.replace(/\|/g, '/')}` : ''} | ${j.cancel ? j.cancel.replace(/\|/g, '/') : '—'} | ${cost} | ${j.elapsedMs === null ? '—' : `${(j.elapsedMs / 1000).toFixed(1)} s`} |`)
   }
   const b = billedTotal(r.jobs)
-  const floor = `against an estimated floor of ≈${n(Math.round(r.estimate.total))}`
+  // The estimate is a floor only for the measured (wide) shape; for the numeric-only
+  // shape its own estimate block says "neither a floor nor a bound", and this line
+  // said "floor" there until the first numeric run's report contradicted itself.
+  const floor = r.censusMode === 'numeric'
+    ? `against an estimate of ≈${n(Math.round(r.estimate.total))} for an unmeasured shape (neither a floor nor a bound)`
+    : `against an estimated floor of ≈${n(Math.round(r.estimate.total))}`
   const jobsWord = (k: number) => `${k} job${k === 1 ? '' : 's'}`
   out.push('', b.complete
     ? `Billed in total: ${n(Math.round(b.known))} CPU-s, ${floor}.`

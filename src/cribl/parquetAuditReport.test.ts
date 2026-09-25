@@ -314,6 +314,13 @@ describe('the Markdown report', () => {
     expect(md).toContain('Not read: the numeric-only census submits no sentinel job')
     expect(md).toContain('| `protocol` (check) | 10 | int 10 | number | number | yes |')
   })
+
+  it('never calls a numeric-only estimate a floor in the total — its own estimate block says it is neither', () => {
+    const census = readTypeCensus(censusRow({}, NUMERIC_CENSUS_FIELDS), NUMERIC_CENSUS_FIELDS)
+    const md = renderAuditMarkdown({ ...reportWith([job({ billableCPUSeconds: 954 })]), censusMode: 'numeric', census, controls: censusControls(census) })
+    expect(md).toMatch(/Billed in total: 954 CPU-s, against an estimate of ≈[\d,]+ for an unmeasured shape \(neither a floor nor a bound\)\./)
+    expect(md).not.toContain('estimated floor')
+  })
 })
 
 describe('where the report is written', () => {

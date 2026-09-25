@@ -91,7 +91,8 @@ describe('the rule: Parquet only with evidence and eligibility', () => {
   })
 
   it('fails an entry whose text is not eligible under the type table, whatever the evidence', () => {
-    expect(tableProblems([parquetEntry()], FIELD_TYPES)[0]).toContain('not eligible — type not measured: protocol, tcp_dup_ack')
+    // protocol is measured (the 2026-09-25 numeric census); tcp_dup_ack is not.
+    expect(tableProblems([parquetEntry()], FIELD_TYPES)[0]).toContain('not eligible — type not measured: tcp_dup_ack')
     const kpi = parquetEntry({ id: 'capacity.kpi', queries: [capacity.buildKpiQuery('src_ip', '')] })
     const allNumbers = new Proxy({}, { get: () => 'number' }) as Record<string, FieldType>
     expect(tableProblems([kpi], allNumbers)[0]).toContain('class E on tcp_rtt')
