@@ -778,3 +778,297 @@ export function compareParity(
 
   return { window, datasets, control, drift, comparable, verdict, classes, unaffected, sentence }
 }
+
+// ── Reading a whole query: grouped, piped, and classes F and T ──────────────
+//
+// `classify` reads ONE aggregate under one head, which is all a scalar parity
+// check needs. The Phase 8 router (cribl/routing/*) needs the same judgement
+// about any dashboard query: grouped, with `extend`/`where` stages, a `by`
+// clause and a sort. `classifyQuery` walks such a query and calls `classify`
+// on every aggregate, so there is still one definition of A–E. It adds:
+//
+//   F  `by f` on a raw field. JSON emits ONE group with the key omitted where
+//      rows lack `f` (measured 2026-09-23); Parquet emits a group keyed "" or
+//      0. Harmless only on a key present on every row.
+//   T  any read of a field whose type differs between Parquet files. A file
+//      holding a string makes that column STRING (measured 2026-09-24), and
+//      `dcount` then splits 10 from "10". Known only from a type table.
+//
+// C is reported and is NEUTRAL (Phase 8 design §2.3): JSON already counts the
+// absent value as one distinct value on a sparse field (F-19), and Parquet's
+// fill is one distinct value too. The router does not refuse on it.
+//
+// The normalised key `iif(isnotnull(x), x, "")` (APP_L4) is recognised and is
+// neither A nor F: it reads "" for an absent `x` on both datasets.
+//
+// WHAT THIS CANNOT SEE. It reads the text, not the semantics: a column made in
+// a way it does not recognise (`parse`, `mv-expand`, a `project` rename) is read
+// as a raw field, never skipped, so every error it makes is towards "not
+// eligible" — the direction that keeps a query on JSON.
+
+/** The null classes plus the two that only a whole query shows. */
+export type QueryClass = NullClass | 'F' | 'T'
+
+/** What the type census (Phase 8 §8.0b) says a field holds. `mixed`: some Parquet files hold a string. */
+export type FieldType = 'string' | 'number' | 'mixed'
+
+export interface ClassHit {
+  cls: QueryClass
+  field: string
+}
+
+export interface QueryReading {
+  /** Every class hit, in the order the query meets them. C is included, and is neutral. */
+  hits: ClassHit[]
+  /** Every raw field the query reads — its head, every expression and every key. */
+  fields: string[]
+}
+
+/** Split on `sep` where it is outside parentheses and quotes. */
+function splitOutside(s: string, sep: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let quote: string | null = null
+  let start = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") quote = ch
+    else if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (depth === 0 && s.startsWith(sep, i)) {
+      out.push(s.slice(start, i))
+      start = i + sep.length
+      i += sep.length - 1
+    }
+  }
+  out.push(s.slice(start))
+  return out.map((x) => x.trim())
+}
+
+const KEYWORDS = new Set(['and', 'or', 'not', 'in', 'by', 'asc', 'desc', 'true', 'false', 'null'])
+const NORMALISED_RE = /^iif\(\s*isnotnull\(\s*([\w.]+)\s*\)\s*,\s*\1\s*,\s*""\s*\)$/
+const ISNOTNULL_RE = /\bisnotnull\(\s*([\w.]+)\s*\)/g
+
+/** The identifiers an expression reads: not a function name, keyword, literal, `_time` or a column the query made. */
+function identifiersOf(expr: string, defined: ReadonlySet<string>): string[] {
+  const bare = expr.replace(/"[^"]*"|'[^']*'/g, '""')
+  const out: string[] = []
+  for (const m of bare.matchAll(/(?<![\w.])[A-Za-z_][\w.]*/g)) {
+    const name = m[0]
+    if (bare.slice(m.index + name.length).trimStart().startsWith('(')) continue
+    if (KEYWORDS.has(name.toLowerCase()) || name === '_time' || defined.has(name)) continue
+    out.push(name)
+  }
+  return out
+}
+
+/** `name=expr` → [name, expr]; a bare `expr` has no name. `==` is a comparison, not a name. */
+function named(part: string): [string | null, string] {
+  const m = /^([A-Za-z_][\w.]*)\s*=(?!=)\s*/.exec(part)
+  return m ? [m[1], part.slice(m[0].length).trim()] : [null, part.trim()]
+}
+
+/**
+ * Every class a query's text carries, and every raw field it reads.
+ *
+ * `types` is the type table; a field typed `mixed` there is class T. A field
+ * with NO type is not class T — "unknown" is its own reason, and the router
+ * refuses on it (cribl/routing/eligibility.ts).
+ */
+export function classifyQuery(query: string, types: Readonly<Record<string, FieldType>> = {}): QueryReading {
+  const stages = splitOutside(query.replace(/^dataset="[^"]*"/, ''), '|')
+  const head = stages.shift() ?? ''
+  const hits: ClassHit[] = []
+  const fields: string[] = []
+  const defined = new Set<string>()
+  const hit = (cls: QueryClass, field: string) => {
+    if (!hits.some((h) => h.cls === cls && h.field === field)) hits.push({ cls, field })
+  }
+  const read = (expr: string) => {
+    for (const f of identifiersOf(expr, defined)) if (!fields.includes(f)) fields.push(f)
+  }
+  /** Classes A, B, C and E of one expression, by `classify`, attributed to their field. */
+  const classes = (expr: string) => {
+    for (const m of expr.matchAll(ISNOTNULL_RE)) hit('A', m[1])
+    for (const cls of classify(expr, '')) {
+      if (cls === 'A') continue
+      const arg = /^\w+\(\s*([\w.]+)/.exec(expr)?.[1]
+      if (arg) hit(cls, arg)
+    }
+  }
+
+  for (const m of head.matchAll(/(?:^|\s)([\w.]+)=\*(?=\s|$)/g)) hit('D', m[1])
+  read(head.replace(/=\*/g, ''))
+
+  for (const stage of stages) {
+    const verb = /^(\w+)/.exec(stage)?.[1] ?? ''
+    const body = stage.slice(verb.length).trim()
+    if (verb === 'extend') {
+      for (const part of splitTopLevel(body)) {
+        const [name, expr] = named(part)
+        const norm = NORMALISED_RE.exec(expr)
+        if (norm) read(norm[1])
+        else {
+          classes(expr)
+          read(expr)
+        }
+        if (name) defined.add(name)
+      }
+    } else if (verb === 'where') {
+      classes(body)
+      read(body)
+    } else if (verb === 'summarize') {
+      const [aggs, keys = ''] = splitOutside(body, ' by ')
+      const made: string[] = []
+      for (const part of splitTopLevel(aggs)) {
+        const [name, expr] = named(part)
+        classes(expr)
+        read(expr)
+        if (name) made.push(name)
+      }
+      for (const key of splitTopLevel(keys)) {
+        const [name, expr] = named(key)
+        if (/^[A-Za-z_][\w.]*$/.test(expr) && !defined.has(expr)) hit('F', expr)
+        read(expr)
+        made.push(name ?? expr)
+      }
+      for (const n of made) defined.add(n)
+    }
+    // sort, limit, top and the rest only name columns the query already made.
+  }
+  for (const f of fields) if (types[f] === 'mixed') hit('T', f)
+  return { hits, fields }
+}
+
+// ── Grouped parity ──────────────────────────────────────────────────────────
+//
+// `compareParity` compares one scalar row per side. A grouped panel (a top-N
+// list, a heatmap) answers many rows, and "whichever group came first" is not
+// a comparison. The rule (Phase 8 design §4, 8.1):
+//
+//   1. Take the top-N keys on each side, by the panel's own rank column.
+//   2. Drop every key tied with the N-th across the cut, on BOTH sides: which of
+//      two tied rows makes it is not reproducible (measured 2026-09-23), so it
+//      shows nothing either way.
+//   3. The rest must be the SAME SET. A key on one side only fails — that is
+//      exactly class F (a "" group taking slot 1) and class D (a filter
+//      admitting rows the other side never had).
+//   4. Every compared figure of every shared key must agree within `TOLERANCE`,
+//      counts widened by the control's own drift, as `allowedDifference` does
+//      for a scalar figure.
+//
+// An absent key and an empty-string key are DIFFERENT keys here, on purpose:
+// JSON omits a key column that Parquet fills with "", and calling the two equal
+// would hide class F.
+
+export interface GroupedSpec {
+  /** The key columns, in order. */
+  keys: readonly string[]
+  /** The column the panel ranks by, descending. */
+  rank: string
+  /** How many rows the panel shows. */
+  n: number
+  /** The figures compared per key, and what kind of aggregate each is. */
+  columns: Readonly<Record<string, 'count' | 'distribution'>>
+}
+
+export interface GroupedDifference {
+  key: string
+  column: string
+  json: number | null
+  parquet: number | null
+  /** The difference allowed; null when one side had no value at all. */
+  allowed: number | null
+}
+
+export interface GroupedReport {
+  /** `unexercised`: once ties were dropped, no key was left to compare. */
+  verdict: 'pass' | 'fail' | 'unexercised'
+  compared: string[]
+  /** Keys dropped for a tie at the top-N boundary, on either side. */
+  tied: string[]
+  onlyJson: string[]
+  onlyParquet: string[]
+  differs: GroupedDifference[]
+  sentence: string
+}
+
+/** One row's key as text. An absent value and "" stay different keys. */
+function keyOf(row: Row, keys: readonly string[]): string {
+  return keys.map((k) => (row[k] === undefined || row[k] === null ? '(absent)' : JSON.stringify(row[k]))).join(' · ')
+}
+
+/** One side's top-N keys, and every key tied with the N-th across the cut. */
+function topN(rows: readonly Row[], spec: GroupedSpec): { top: Map<string, Row>; tied: Set<string> } {
+  const rankOf = (r: Row) => numberOf(r[spec.rank]) ?? -Infinity
+  const ranked = [...rows].sort((a, b) => rankOf(b) - rankOf(a))
+  const top = new Map<string, Row>()
+  for (const r of ranked.slice(0, spec.n)) top.set(keyOf(r, spec.keys), r)
+  const tied = new Set<string>()
+  if (ranked.length > spec.n && rankOf(ranked[spec.n - 1]) === rankOf(ranked[spec.n])) {
+    const boundary = rankOf(ranked[spec.n - 1])
+    for (const r of ranked) if (rankOf(r) === boundary) tied.add(keyOf(r, spec.keys))
+  }
+  return { top, tied }
+}
+
+/**
+ * Compare a grouped panel's rows, JSON against Parquet, over one window.
+ * `drift` is the scalar control's relative disagreement over that window (0
+ * when it agreed exactly): run this only beside a comparable control, as
+ * `compareParity` judges nothing without one.
+ */
+export function compareGrouped(jsonRows: readonly Row[], parquetRows: readonly Row[], spec: GroupedSpec, drift = 0): GroupedReport {
+  if (!(spec.n > 0)) throw new Error('parity: a grouped check needs n > 0')
+  const j = topN(jsonRows, spec)
+  const p = topN(parquetRows, spec)
+  const tied = new Set([...j.tied, ...p.tied])
+  const jKeys = [...j.top.keys()].filter((k) => !tied.has(k))
+  const pKeys = [...p.top.keys()].filter((k) => !tied.has(k))
+  const onlyJson = jKeys.filter((k) => !pKeys.includes(k))
+  const onlyParquet = pKeys.filter((k) => !jKeys.includes(k))
+  const compared = jKeys.filter((k) => pKeys.includes(k))
+
+  const differs: GroupedDifference[] = []
+  for (const key of compared) {
+    for (const [column, kind] of Object.entries(spec.columns)) {
+      const a = numberOf(j.top.get(key)![column])
+      const b = numberOf(p.top.get(key)![column])
+      if (a === null || b === null) {
+        // For a count, absent and 0 are one statement (see compareColumn); for a
+        // distribution "no value" against a number is class E's failure.
+        const same = a === b || (kind === 'count' && (a ?? 0) === 0 && (b ?? 0) === 0)
+        if (!same) differs.push({ key, column, json: a, parquet: b, allowed: null })
+        continue
+      }
+      const allowed = allowedDifference({ kind, tolerance: TOLERANCE[kind] }, a, drift)
+      if (Math.abs(b - a) > allowed) differs.push({ key, column, json: a, parquet: b, allowed })
+    }
+  }
+
+  const failed = onlyJson.length > 0 || onlyParquet.length > 0 || differs.length > 0
+  const verdict: GroupedReport['verdict'] = failed ? 'fail' : compared.length ? 'pass' : 'unexercised'
+  const cut = `The top ${spec.n} by ${spec.rank}`
+  const tiedWords = tied.size ? ` ${tied.size} key${tied.size === 1 ? ' was' : 's were'} tied at the top-${spec.n} boundary and not compared.` : ''
+  let sentence: string
+  if (verdict === 'pass') {
+    sentence = `${cut} held: the same ${compared.length} key${compared.length === 1 ? '' : 's'} on both sides, every figure within the difference it was allowed.${tiedWords}`
+  } else if (verdict === 'unexercised') {
+    sentence = `${cut} was not exercised: no key was left to compare.${tiedWords}`
+  } else {
+    const bits = [
+      onlyJson.length ? `on JSON only: ${onlyJson.join(', ')}` : '',
+      onlyParquet.length ? `on Parquet only: ${onlyParquet.join(', ')}` : '',
+      differs.length
+        ? `${differs.length} figure${differs.length === 1 ? '' : 's'} outside the difference allowed: ` +
+          differs.map((d) => `${d.key} ${d.column} ${fmtValue(d.json)} → ${fmtValue(d.parquet)}`).join('; ')
+        : '',
+    ].filter(Boolean)
+    sentence = `${cut} FAILED — ${bits.join('; ')}.${tiedWords}`
+  }
+  return { verdict, compared, tied: [...tied], onlyJson, onlyParquet, differs, sentence }
+}
