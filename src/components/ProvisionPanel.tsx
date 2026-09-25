@@ -48,8 +48,10 @@
 // The next honest seam is not a component at all but two hooks, neither of
 // which touches the other: `useSetupGroup` (the picker, its KV memory and the
 // `groupReady` gate) and `useGroupOutcomes` (the per-group step log, the fatal
-// error and the commit ref mirror). Both are a follow-up, and neither is
-// something to smuggle into a move.
+// error and the commit ref mirror). The first is done (2026-09-24,
+// ./useSetupGroup.ts), because the onboarding panel needs the same group and
+// one page must not offer two pickers that can disagree; the second is still a
+// follow-up.
 //
 // NOTHING BELOW CHANGED BEHAVIOUR. Every line is the line that was in
 // GuidedSetup.tsx, comments included. The three the tab carried about per-group
@@ -67,9 +69,9 @@ import { IS_INSTALLED } from '../cribl/config'
 import { listStreamGroupsCurrent } from '../cribl/lake'
 import {
   checkStatus, checkLegacyStatus, deployAll, removeOnboardingStack, suggestedIngressHost, postUrl, pendingDeploy,
-  listStreamGroups, readHttpEndpoint, portProblem, portsInUse, suggestPort, DEFAULT_STREAM_GROUP, STEP_LABELS,
+  readHttpEndpoint, portProblem, portsInUse, suggestPort, STEP_LABELS,
   commitScope, pendingConfigPaths, groupInputs, hostingOf, leaderHostname, legacyOnly, HTTP_KEYS, LEGACY_KEYS,
-  type SetupStatus, type LegacyStatus, type HttpEndpoint, type StepResult, type ResourceKey, type CommitKey, type StreamGroup,
+  type SetupStatus, type LegacyStatus, type HttpEndpoint, type StepResult, type ResourceKey, type CommitKey,
   type RemovalPresence,
   HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID,
   LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
@@ -81,9 +83,8 @@ import {
   removeConsequences,
 } from './provisionPanelCopy'
 import { InfoTip } from './InfoTip'
-import {
-  loadCommitMemory, saveCommitMemory, loadSetupGroup, saveSetupGroup, type CommitMemory,
-} from '../cribl/setupMemory'
+import { useSetupGroup } from './useSetupGroup'
+import { loadCommitMemory, saveCommitMemory, type CommitMemory } from '../cribl/setupMemory'
 
 interface ResourceMeta { key: ResourceKey; label: string; detail: string }
 const RESOURCES: ResourceMeta[] = [
@@ -172,12 +173,12 @@ export function ProvisionPanel() {
   // the group and coming back does not show it a second time. Keyed by group
   // too, so it is never shown under a group whose source it does not open.
   const [token, setToken] = useState<{ group: string; value: string } | null>(null)
-  const [group, setGroup] = useState<string>(DEFAULT_STREAM_GROUP)
-  const [groups, setGroups] = useState<StreamGroup[]>([{ id: DEFAULT_STREAM_GROUP, name: DEFAULT_STREAM_GROUP }])
-  // Whether the viewer's remembered group has been read yet. The first status
-  // check waits on it, so the page checks the group the user actually works in
-  // instead of checking `default` and then checking again.
-  const [groupReady, setGroupReady] = useState(false)
+  // The page's one worker group, shared with every other Guided Setup panel
+  // that writes to a group (./useSetupGroup.ts): the picker's list, the
+  // viewer's remembered pick, and `groupReady` — whether that pick has been
+  // read yet. The first status check waits on it, so the page checks the group
+  // the user actually works in instead of checking `default` and then again.
+  const { group, groups, groupReady, pickGroup } = useSetupGroup()
   // Both writes on this screen are two-stage: an outer button that opens a
   // confirmation, and a "Yes, …" inside it that actually writes. `<GatedControl>`
   // owns the inner one. These read the same gate so the OUTER button closes too
@@ -246,45 +247,6 @@ export function ProvisionPanel() {
     for (const k of keys) delete forGroup[k]
     return applyCommits({ ...commitsRef.current, [gid]: forGroup })
   }, [applyCommits])
-
-  // Load the selectable worker groups once. Best-effort: on failure we keep the
-  // default group so the page still works.
-  useEffect(() => {
-    let alive = true
-    void listStreamGroups()
-      .then((gs) => { if (alive && gs.length) setGroups(gs) })
-      .catch(() => { /* keep the default-only list */ })
-    return () => { alive = false }
-  }, [])
-
-  // Read the group this viewer last picked, once, on mount. A READ only —
-  // nothing here writes on load, render or a timer (AGENTS.md). Whatever comes
-  // back, `groupReady` flips: a slow or absent KV store leaving the screen stuck
-  // on "Checking…" would be a worse bug than a forgotten picker.
-  useEffect(() => {
-    let alive = true
-    const apply = (saved: string | null) => {
-      if (!alive) return
-      if (saved) setGroup(saved)
-      setGroupReady(true)
-    }
-    void loadSetupGroup().then(apply, () => apply(null))
-    return () => { alive = false }
-  }, [])
-
-  // Picking a group is a deliberate user action, which is what makes it the
-  // place this screen is allowed to write from. It stores one field of this
-  // viewer's own preferences — no customer configuration is touched — and a
-  // refused write is reported rather than swallowed, because the symptom
-  // otherwise arrives a reload later with no explanation.
-  const pickGroup = useCallback(async (gid: string) => {
-    setGroup(gid)
-    if (await saveSetupGroup(gid)) return
-    pushToast({
-      kind: 'error',
-      text: `Could not remember ${gid} as your worker group — this tab will open on ${DEFAULT_STREAM_GROUP} next time.`,
-    })
-  }, [])
 
   // Re-check the live resource status for the current group. A successful
   // re-check leaves any lingering deploy/remove outcome for this group untouched
