@@ -1,0 +1,1 @@
+import{y as e}from"./selection-8lUG-I9Z.js";import{m as t}from"./index-DYp3fD9-.js";var n=e();function r({state:e}){let r=t(e);return r?(0,n.jsx)(`span`,{className:`snap-note snap-note-${r.tone}`,title:r.title,children:r.text}):null}export{r as t};
