@@ -19,8 +19,9 @@ import {
 } from '../cribl/pack'
 import {
   HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DESTINATION_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
-  LEGACY_SYSLOG_SOURCE_ID, ROUTE_SPEC,
+  LEGACY_SYSLOG_SOURCE_ID,
 } from '../cribl/provision'
+import { ROUTE_SPEC } from '../cribl/packSpecs'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY } from './dataFlow'
 import {
   COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
@@ -218,9 +219,20 @@ describe('the stack list', () => {
     })
   })
 
-  it('names the Raw HTTP stack Guided Setup actually writes, type prefix from its own route filter', () => {
+  it('calls the old Raw HTTP stack retired, and still counts and names it, because tenants may still run it', () => {
+    // No release creates it since 2026-09-25 — Guided Setup's onboarding
+    // collapsed into the pack's, and this release only offers to remove it — so
+    // "offered" became wrong, exactly as it did for the Syslog stack.
     const http = STACKS.find((s) => s.key === 'global-http')!
-    expect(http.status).toBe('offered')
+    expect(http.status).toBe('retired')
+    expect(STACKS.filter((s) => s.status === 'offered').map((s) => s.key), 'a global stack is offered again').toEqual([])
+    for (const p of http.paths) expect(COUNTED_PATHS).toContain(p)
+    expect(SHOWN_INPUTS).toContain(HTTP_SOURCE_ID)
+    expect(SHOWN_PIPELINES).toContain(HTTP_PIPELINE_ID)
+  })
+
+  it('names the Raw HTTP stack earlier releases of Guided Setup wrote, type prefix from its route filter', () => {
+    const http = STACKS.find((s) => s.key === 'global-http')!
     expect(http.paths).toEqual([{
       route: HTTP_ROUTE_ID,
       input: `http_raw:${HTTP_SOURCE_ID}`,
@@ -228,7 +240,7 @@ describe('the stack list', () => {
       output: `cribl_lake:${LAKE_DESTINATION_ID}`,
       dataset: LAKE_DATASET,
     }])
-    // The route provision.ts writes selects exactly this `input` value.
+    // The route earlier releases wrote (packSpecs.ts ROUTE_SPEC) selects exactly this `input` value.
     expect(ROUTE_SPEC.filter).toBe(`__inputId=='${http.paths[0].input}'`)
     expect(ROUTE_SPEC.pipeline).toBe(http.paths[0].pipeline)
     expect(ROUTE_SPEC.output).toBe(LAKE_DESTINATION_ID)

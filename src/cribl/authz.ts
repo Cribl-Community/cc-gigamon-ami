@@ -91,7 +91,6 @@ export type WriteSurface =
 /** Every control in this app that performs a write. One id per control, because
  *  the id is what a `<GatedControl>` carries and what a denial is latched to. */
 export type WriteId =
-  | 'onboarding_stack.apply'
   | 'onboarding_stack.remove'
   | 'search_caps.save'
   | 'dataset_intel.generate'
@@ -128,13 +127,13 @@ export interface GatedWrite {
 
 /** The controls, and what each one is. */
 export const GATED_WRITES: Record<WriteId, GatedWrite> = {
-  'onboarding_stack.apply': {
-    surface: 'config',
-    does: 'applying the Gigamon AMI onboarding stack',
-  },
+  // Guided Setup's global stacks, from earlier releases: Remove only. Its
+  // sibling `onboarding_stack.apply` — Deploy / Re-apply of the global Raw HTTP
+  // stack — was withdrawn with that control on 2026-09-25, when the onboarding
+  // collapsed into the pack's.
   'onboarding_stack.remove': {
     surface: 'config',
-    does: 'removing the Gigamon AMI onboarding stack',
+    does: 'removing the Gigamon AMI objects an earlier release created',
   },
   'search_caps.save': {
     surface: 'app',
@@ -290,53 +289,27 @@ export interface WriteSite {
 
 export const WRITE_SITES: readonly WriteSite[] = [
   // --- Guided Setup: the only customer configuration this app writes --------
+  // The global Raw HTTP stack's create path (`ensureDestination`,
+  // `ensureBreaker`, `ensurePipeline`, `ensureSource`, `ensureRoute`, all
+  // gated by `onboarding_stack.apply`) was removed on 2026-09-25 with the
+  // Deploy control that reached it.
   {
     at: 'cribl/provision.ts#ensureLakeDataset',
-    gates: ['onboarding_stack.apply', 'onboarding_pack.install'],
+    gates: ['onboarding_pack.install'],
     surface: 'config',
-    why: 'POST creates a Cribl Lake dataset when the tenant has none by that id, and never edits one that exists. Two confirmed runs reach it: Guided Setup’s Raw HTTP deploy, creating the gigamon_ami dataset the dashboards read, and the onboarding run, which creates gigamon_ami, the pack’s Parquet copy gigamon_ami_pq and — only when sample data is ticked — gigamon_ami_sample.',
-  },
-  {
-    at: 'cribl/provision.ts#ensureDestination',
-    gates: ['onboarding_stack.apply'],
-    surface: 'config',
-    why: 'POST creates the Cribl Lake destination on a tenant that lacks it.',
-  },
-  {
-    at: 'cribl/provision.ts#ensureBreaker',
-    gates: ['onboarding_stack.apply'],
-    surface: 'config',
-    why: 'POST creates the event breaker ruleset the Raw HTTP source names, in the group library; PATCH overwrites its rules on a re-apply, only when the live ruleset differs, and as a read-modify-write of the whole object because the endpoint deletes any field a PATCH omits.',
-  },
-  {
-    at: 'cribl/provision.ts#ensurePipeline',
-    gates: ['onboarding_stack.apply'],
-    surface: 'config',
-    why: 'POST creates the parse/normalize pipeline; PATCH overwrites its function list on a re-apply — but only when the live list does not already say what the spec says. Until Phase 3 it PATCHed whenever the object existed, so a re-apply of a settled stack wrote twice, dirtied the group\'s Git status and carried the run on into a deploy that restarts Worker Processes.',
-  },
-  {
-    at: 'cribl/provision.ts#ensureSource',
-    gates: ['onboarding_stack.apply'],
-    surface: 'config',
-    why: 'POST creates the Raw HTTP source, with the port, TLS mode and app-generated auth token chosen at creation; PATCH overwrites its other settings on a re-apply, only when the live source differs, and never its port, TLS or token. Both writes are behind the same confirmation as the rest of the stack, and additionally behind the per-object `confirm` this function takes, which is where a caller can be shown what is about to change rather than only which object.',
-  },
-  {
-    at: 'cribl/provision.ts#ensureRoute',
-    gates: ['onboarding_stack.apply'],
-    surface: 'config',
-    why: 'PATCH replaces the group routing table wholesale — the most consequential write in the app.',
+    why: 'POST creates a Cribl Lake dataset when the tenant has none by that id, and never edits one that exists. One confirmed run reaches it: the onboarding run, which creates gigamon_ami, the pack’s Parquet copy gigamon_ami_pq and — only when sample data is ticked — gigamon_ami_sample.',
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
+    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
     surface: 'config',
-    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both Guided Setup controls end here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
+    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Guided Setup’s Remove of the global stacks ends here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
+    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
     surface: 'config',
-    why: 'POST /version/commit writes a Git commit on the Leader. Both Guided Setup controls end here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
+    why: 'POST /version/commit writes a Git commit on the Leader. Guided Setup’s Remove of the global stacks ends here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
   {
     at: 'cribl/provision.ts#removeOnboardingStack',
@@ -661,7 +634,7 @@ function subscribe(l: () => void): () => void {
  * Read one control's gate.
  *
  * `<GatedControl>` uses this to disable itself; a screen that has a second,
- * outer trigger for the same write — Guided Setup's "Deploy onboarding stack"
+ * outer trigger for the same write — Guided Setup's "Remove Raw HTTP stack"
  * button, which only opens a confirmation — uses it to disable that trigger too,
  * so nobody is walked into a confirmation they cannot complete.
  */

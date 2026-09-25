@@ -7,7 +7,7 @@
 // nothing in the repo records yet:
 //
 //   TYPE      whether the field holds strings or numbers on JSON. The pipeline
-//             casts some fields and derives others (src/cribl/provision.ts
+//             casts some fields and derives others (src/cribl/packSpecs.ts
 //             `PIPELINE_SPEC`); everything else keeps whatever type the raw
 //             record carried, and "not cast" does not mean "string". The R form
 //             for a string is `isnotnull(f) and f!=""`, for a number `f>0`, and
@@ -70,7 +70,7 @@ const head = `dataset="${AUDIT_DATASET}" | summarize rows=count(), `
  *
  * `cast` fields go through `f==null?f:Number(f)`, `computed` ones are derived
  * by `gigamon_ami_normalize`'s second Eval. parquetAudit.test.ts holds both
- * lists against `PIPELINE_SPEC` in src/cribl/provision.ts, so a field the
+ * lists against `PIPELINE_SPEC` in src/cribl/packSpecs.ts, so a field the
  * pipeline stops casting cannot keep its "number" here.
  *
  * `protocol` is here as the census's numeric CONTROL (see `CENSUS_CONTROLS`),

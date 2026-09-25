@@ -51,7 +51,8 @@ import {
   PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
   PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, type PackObjectKind, type PackRelease,
 } from '../pack'
-import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, tlsFor, type CommitScope, type LakeDatasetSpec } from '../provision'
+import { tlsFor } from '../packSpecs'
+import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, type CommitScope, type LakeDatasetSpec } from '../provision'
 
 // ── Datasets ────────────────────────────────────────────────────────────────
 
@@ -273,34 +274,33 @@ export function accelMode(sampleTicked: boolean, target: DatasetTarget): AccelMo
 export const realDataSeen = (target: DatasetTarget): boolean =>
   target.known && (target.reason === 'has-data' || target.reason === 'probe-found')
 
-// ── Which onboarding the page offers ────────────────────────────────────────
+// ── The global stacks' panel ────────────────────────────────────────────────
 
-/** Whether the group holds Guided Setup's global objects: the Raw HTTP stack,
- *  or the Syslog stack an earlier release created. */
+/** Whether the group holds the global objects earlier releases of Guided Setup
+ *  created: the Raw HTTP stack, or the Syslog stack before it. */
 export interface GlobalStackPresence {
   http: boolean
   legacySyslog: boolean
 }
 
-export type OnboardingPath =
-  /** The pack cannot be installed: the global Raw HTTP stack is THE onboarding,
-   *  exactly as it is today. */
-  | { mode: 'global'; provision: 'full'; why: string }
-  /** The pack can be installed. The global stack's panel shows only while a
-   *  global object is present (or could not be read), and then offers Remove
-   *  only. */
-  | { mode: 'pack'; provision: 'remove-only' | 'hidden' }
-
 /**
- * Which onboarding path the page offers. The pack is offered only when its
- * release may be installed (`packRelease().installable`: published, with a
- * recorded sha256). A presence nobody could read is treated as present, so a
- * stack that exists is never hidden by a failed read.
+ * Whether Guided Setup shows the global stacks' panel (components/
+ * ProvisionPanel.tsx), which offers Remove and nothing else. It shows while a
+ * global object is in the group, or may be: a presence nobody could read yet,
+ * or whose read was refused, counts as present, so a stack that exists is never
+ * hidden by a failed read.
+ *
+ * THE PACK IS THE ONLY ONBOARDING (owner decision, 2026-09-25), WHATEVER THE
+ * RELEASE SAYS. This used to be `onboardingPath(release, presence)`, and while
+ * `release.installable` was false it answered `{ mode: 'global', provision:
+ * 'full' }`: the global Raw HTTP stack became the onboarding again, with its
+ * Deploy, port picker and endpoint card. Now nothing falls back — an
+ * uninstallable pack refuses Onboard with the release's own sentence in the
+ * pack panel — so the release is not an input here at all.
  */
-export function onboardingPath(release: PackRelease, presence: GlobalStackPresence | null): OnboardingPath {
-  if (!release.installable) return { mode: 'global', provision: 'full', why: release.refusal ?? '' }
-  if (presence === null || presence.http || presence.legacySyslog) return { mode: 'pack', provision: 'remove-only' }
-  return { mode: 'pack', provision: 'hidden' }
+export function provisionPanelMode(presence: GlobalStackPresence | null): 'remove-only' | 'hidden' {
+  if (presence === null || presence.http || presence.legacySyslog) return 'remove-only'
+  return 'hidden'
 }
 
 // ── The steps ───────────────────────────────────────────────────────────────

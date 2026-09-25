@@ -87,19 +87,19 @@ export type Scope =
   | 'app'
 
 /**
- * A resource this app can bring into existence in a customer's Cribl. The six
- * provisioned objects share provision.ts's own vocabulary so the two cannot
- * drift apart; `commit` is the sixth thing a deploy leaves behind, and
- * `accel_saved_search` the seventh.
+ * A resource this app can bring into existence in a customer's Cribl — or, for
+ * the global Raw HTTP stack's four objects, one an earlier release did and this
+ * one can still remove. The Stream objects share provision.ts's own
+ * vocabulary (`ResourceKey`) so the two cannot drift apart; `commit` is what a
+ * deploy leaves behind, `accel_saved_search` and `pack` the other two things
+ * the app creates.
  *
- * WIDENED HERE RATHER THAN IN `ResourceKey`, deliberately. `ResourceKey` is the
- * five Stream objects Guided Setup provisions, and several surfaces render a
- * `Record<ResourceKey, …>` — a status pill per row, a commit-memory entry per
- * row, a label per row. Adding a sixth member there would push a phantom row
- * into every one of them, for an object Guided Setup does not create and cannot
- * deploy. Phase 2's scheduled saved searches are a different lifecycle in a
- * different group with a different teardown; what they share with the five is
- * only this: the app creates them, so it has to be able to remove them.
+ * WIDENED HERE RATHER THAN IN `ResourceKey`, deliberately: several surfaces
+ * render a record keyed by provision.ts's keys, and the scheduled searches and
+ * the pack are different lifecycles with different teardowns. What they share
+ * is only this: what the app creates, it has to be able to remove.
+ * *(Corrected 2026-09-25: since the Raw HTTP deploy was withdrawn, only the
+ * dataset, the pack, the commit and the scheduled searches are created.)*
  */
 export type Provisioned = ResourceKey | 'commit' | 'accel_saved_search' | 'pack'
 
@@ -333,7 +333,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/products/stream/groups/:gid/deploy',
     scope: 'product',
     site: 'provision.ts deployGroup (also lakeLanding.ts deployGroupConfig)',
-    why: 'Push the committed config to the group’s running Workers. This is the step that makes a deploy real, and it RESTARTS THAT GROUP’S WORKER PROCESSES — a source set to block on backpressure can lose seconds of data across the restart. Two confirmed buttons reach it: Guided Setup’s Deploy and Remove, and the Lake landing panel’s destination edit, which says the restart is coming before the press rather than in a toast afterwards.',
+    why: 'Push the committed config to the group’s running Workers. This is the step that makes a deploy real, and it RESTARTS THAT GROUP’S WORKER PROCESSES — a source set to block on backpressure can lose seconds of data across the restart. Confirmed buttons reach it: Guided Setup’s onboarding-pack writes and its Remove of the global stacks, and the Lake landing panel’s destination edit, which says the restart is coming before the press rather than in a toast afterwards.',
   },
   {
     method: 'PATCH',
@@ -351,14 +351,14 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/products/lake/lakes/default/datasets',
     scope: 'product',
     site: 'provision.ts ensureLakeDataset (also lake.ts listDatasets)',
-    why: `See whether the ${LAKE_DATASET_ID} dataset exists yet. Also the first thing the status check reads, so the tab can say what is already there, and what the Lake landing panel reads to tell "this tenant has no such dataset" from "this tenant has no Cribl Lake".`,
+    why: `See whether the ${LAKE_DATASET_ID} dataset and the onboarding pack's other two exist yet, before the onboarding run creates what is missing. Also what the Lake landing panel and the onboarding panel read to tell "this tenant has no such dataset" from "this tenant has no Cribl Lake".`,
   },
   {
     method: 'POST',
     path: '/products/lake/lakes/default/datasets',
     scope: 'product',
     site: 'provision.ts ensureLakeDataset',
-    why: `Create a Cribl Lake dataset when it is absent: ${LAKE_DATASET_ID}, from Guided Setup's Raw HTTP deploy or its onboarding run, and — from the onboarding run only — the pack's Parquet copy ${PACK_PARQUET_DATASET_ID} and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}. Additive: an existing dataset is left exactly as it is.`,
+    why: `Create a Cribl Lake dataset when it is absent, from Guided Setup's confirmed onboarding run: ${LAKE_DATASET_ID}, the pack's Parquet copy ${PACK_PARQUET_DATASET_ID} and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}. Additive: an existing dataset is left exactly as it is.`,
     creates: 'dataset',
   },
 
@@ -417,7 +417,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/m/:gid/system/inputs',
     scope: 'product',
     site: 'lake.ts listInputs',
-    why: `List the group's sources, to work out what actually writes through the '${LAKE_DESTINATION_ID}' destination. The routing table is not the whole answer: on the workspace this was measured against, a source reaches Cribl Lake through a QuickConnect binding on the source itself and appears in no route at all — so a confirmation built on routes alone would under-report the feeds a destination change affects. Guided Setup reads the same list for the ports the group's sources already listen on, so it offers a free port for the Raw HTTP source and checks it again just before creating it.`,
+    why: `List the group's sources, to work out what actually writes through the '${LAKE_DESTINATION_ID}' destination. The routing table is not the whole answer: on the workspace this was measured against, a source reaches Cribl Lake through a QuickConnect binding on the source itself and appears in no route at all — so a confirmation built on routes alone would under-report the feeds a destination change affects. Guided Setup reads the same list for the ports the group's sources already listen on, so it offers a free port for the onboarding pack's Raw HTTP source and checks it again just before setting it, and — before Remove deletes the old breaker ruleset — for any other source that still names it.`,
   },
   {
     method: 'GET',
@@ -462,7 +462,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/m/:gid/p/:pack/system/inputs',
     scope: 'product',
     site: 'lake.ts listPackInputs',
-    why: 'Read the sources inside each installed pack: their ports, so the new Raw HTTP source is not given one a pack source already listens on, and the event breaker rulesets they name, so Remove never deletes this app’s ruleset while a pack source still uses it. Read only; `:pack` is any installed pack’s id, because the port check has to see all of them.',
+    why: 'Read the sources inside each installed pack: their ports, so the onboarding pack’s Raw HTTP source is not given one another pack source already listens on, and the event breaker rulesets they name, so Remove never deletes this app’s ruleset while a pack source still uses it. Read only; `:pack` is any installed pack’s id, because the port check has to see all of them.',
   },
   // ── The onboarding pack (src/cribl/packClient.ts) ─────────────────────────
   // Reached from Guided Setup's onboarding panel (components/OnboardingPanel
@@ -558,34 +558,25 @@ export const API_CALLS: readonly ApiCall[] = [
     site: 'packClient.ts patchPackInput',
     why: `Start or stop the pack’s sample DataGen, an opt-in: it writes synthetic flows to ${PACK_SAMPLE_DATASET_ID}, never to the customer’s dataset. Only its \`disabled\` flag changes.`,
   },
-  {
-    method: 'POST',
-    path: '/m/:gid/system/inputs',
-    scope: 'product',
-    site: 'provision.ts ensureSource',
-    why: `Create the Gigamon Raw HTTP source '${HTTP_SOURCE_ID}' that AMX POSTs its records to, with the port picked in Guided Setup, TLS on a Cribl-managed group, and an auth token this app generates and shows once.`,
-    creates: 'source',
-  },
+  // ── Guided Setup: the global stacks earlier releases created ─────────────
+  // Read, and removed from the confirmed Remove. Nothing creates or edits them
+  // any more: the POST and PATCH grants on the Raw HTTP source, its breaker
+  // ruleset and pipeline, the POST of a destination and the route insert went
+  // with the Deploy control on 2026-09-25, when Guided Setup's onboarding
+  // collapsed into the pack's.
   {
     method: 'GET',
     path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
     scope: 'product',
-    site: 'provision.ts ensureSource (also checkStatus, readHttpEndpoint)',
-    why: 'Ask whether that source exists yet — the answer decides create versus re-apply and drives the status pill — and read the port and TLS state the endpoint card prints.',
-  },
-  {
-    method: 'PATCH',
-    path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
-    scope: 'product',
-    site: 'provision.ts ensureSource',
-    why: 'Re-apply the spec to a source that already exists, only when the live source does not already say what the spec says. The body is the whole live source with the spec asserted on it, because this endpoint deletes any field a PATCH omits; its port, TLS and auth token are never changed by it.',
+    site: 'provision.ts checkStatus',
+    why: 'Ask whether the Raw HTTP source an earlier release of this app created is still in the group, so Guided Setup can show it and Remove can name it.',
   },
   {
     method: 'DELETE',
     path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
     scope: 'product',
     site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that source again, from the confirmed Remove button. Without it a customer can install the stack and not uninstall it.',
+    why: 'Remove that source, from the confirmed Remove button that names it. Without it a customer who installed the stack with an earlier release could not uninstall it.',
     removes: 'source',
   },
   // The Syslog source an earlier release created. Read so the teardown can name
@@ -606,78 +597,40 @@ export const API_CALLS: readonly ApiCall[] = [
     why: 'Remove that old Syslog source, from the confirmed Remove button that names it.',
   },
   {
-    method: 'POST',
-    path: '/m/:gid/lib/breakers',
-    scope: 'product',
-    site: 'provision.ts ensureBreaker',
-    why: `Create the event breaker ruleset '${HTTP_BREAKER_ID}' the Raw HTTP source names, which splits each POSTed JSON array into one event per AMI record.`,
-    creates: 'breaker',
-  },
-  {
     method: 'GET',
     path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
     scope: 'product',
-    site: 'provision.ts ensureBreaker (also checkStatus)',
-    why: 'Ask whether that ruleset exists yet — create versus re-apply, and the status pill.',
-  },
-  {
-    method: 'PATCH',
-    path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
-    scope: 'product',
-    site: 'provision.ts ensureBreaker',
-    why: 'Re-apply the rules to a ruleset that already exists, only when they differ — as the whole live object with the spec asserted on it, because this endpoint deletes any field a PATCH omits.',
+    site: 'provision.ts checkStatus (also removeBreaker)',
+    why: 'Ask whether the event breaker ruleset an earlier release created is still there, and — before Remove deletes it — read it whole to check it carries this app’s own description.',
   },
   {
     method: 'DELETE',
     path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
     scope: 'product',
     site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that ruleset again, from the confirmed Remove button, after the source that names it.',
+    why: 'Remove that ruleset, from the confirmed Remove button, after the source that names it — only when it carries this app’s description and no other source, in the group or a pack, names it.',
     removes: 'breaker',
-  },
-  {
-    method: 'POST',
-    path: '/m/:gid/system/outputs',
-    scope: 'product',
-    site: 'provision.ts ensureDestination',
-    why: `Create the Cribl Lake destination '${LAKE_DESTINATION_ID}' on a tenant that does not already have one. Where it exists it is left untouched.`,
-    creates: 'destination',
   },
   {
     method: 'GET',
     path: `/m/:gid/system/outputs/${LAKE_DESTINATION_ID}`,
     scope: 'product',
-    site: 'provision.ts ensureDestination (also lake.ts getDestination)',
-    why: 'Ask whether that destination exists, which is what stops the app creating a second one.',
-  },
-  {
-    method: 'POST',
-    path: '/m/:gid/pipelines',
-    scope: 'product',
-    site: 'provision.ts ensurePipeline',
-    why: `Create the '${HTTP_PIPELINE_ID}' pipeline that normalizes Gigamon AMI fields — the same casts and derived fields the demo feed gets.`,
-    creates: 'pipeline',
+    site: 'lake.ts getDestination',
+    why: `Read the '${LAKE_DESTINATION_ID}' Cribl Lake destination whole, for the Lake landing panel: how it writes objects, its health, and — because a destination PATCH replaces the object — the body an edit is built from.`,
   },
   {
     method: 'GET',
     path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
     scope: 'product',
-    site: 'provision.ts ensurePipeline (also checkStatus)',
-    why: 'Ask whether that pipeline exists yet — create versus re-apply, and the status pill.',
-  },
-  {
-    method: 'PATCH',
-    path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
-    scope: 'product',
-    site: 'provision.ts ensurePipeline',
-    why: 'Re-apply the function list to a pipeline that already exists. Overwrites that one pipeline’s definition, which is why it is behind the confirmation — and, since Phase 3, is sent only when the live function list differs, so a re-apply of a settled stack writes nothing and cannot reach the deploy that restarts Worker Processes.',
+    site: 'provision.ts checkStatus',
+    why: 'Ask whether the pipeline an earlier release created is still in the group, so Remove can name it.',
   },
   {
     method: 'DELETE',
     path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
     scope: 'product',
     site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that pipeline again, from the confirmed Remove button.',
+    why: 'Remove that pipeline, from the confirmed Remove button that names it.',
     removes: 'pipeline',
   },
   {
@@ -699,15 +652,14 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/m/:gid/routes',
     scope: 'product',
     site: 'provision.ts readRoutes (also lake.ts listRoutes)',
-    why: `Read the group’s routing table. Every change to it below is an edit of the array this returns, never a table composed from scratch. The Lake landing panel reads the same table for a second purpose: to name every route writing into the '${LAKE_DESTINATION_ID}' destination before a confirmation offers to change it.`,
+    why: `Read the group’s routing table: whether the routes earlier releases added are still in it, and the array Remove edits. The Lake landing panel reads the same table for a second purpose: to name every route writing into the '${LAKE_DESTINATION_ID}' destination before a confirmation offers to change it.`,
   },
   {
     method: 'PATCH',
     path: '/m/:gid/routes/:tableId',
     scope: 'product',
-    site: 'provision.ts ensureRoute (also removeOnboardingStack)',
-    why: 'Add our route above the catch-all, or take it out again — along with the Syslog route an earlier release added. A group has one routing table and this replaces it wholesale, so it is the most consequential grant in the file — and the reason both halves of it are one entry: the same call installs the route and uninstalls it.',
-    creates: 'route',
+    site: 'provision.ts removeOnboardingStack',
+    why: 'Take the routes earlier releases added — the Raw HTTP one, the Syslog one, or both — out of the group’s routing table, from the confirmed Remove button. A group has one routing table and this replaces it wholesale, so it is the most consequential grant in the file: the body is the table just read with only those entries dropped, and every other route keeps its index.',
     removes: 'route',
   },
 
@@ -797,13 +749,11 @@ export const LEFT_BEHIND: readonly LeftBehind[] = [
     reason:
       `The ${LAKE_DATASET_ID} Lake dataset holds the customer's ingested flow records. A DELETE grant here would let this app destroy that data, and an uninstall that silently took the data with it is far worse than one that leaves a dataset behind. Removing it is a Cribl Lake operation the customer performs deliberately, in Cribl Lake, on a dataset they can see the size of. The onboarding run also creates ${PACK_PARQUET_DATASET_ID} (the Parquet copy of the same records) and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}; both are left behind for the same reason — Lake has no version control, and a pack cannot own a dataset — and Remove pack names all three as kept. For ${PACK_SAMPLE_DATASET_ID} its confirmation says to delete it in Cribl Lake to be rid of the sample flows.`,
   },
-  {
-    resource: 'destination',
-    reason:
-      `DECIDED, NOT DEFERRED. The app creates the '${LAKE_DESTINATION_ID}' destination only on a tenant that lacks one, so on those tenants an uninstall leaves one unreferenced Cribl Lake destination behind — say so rather than pretend otherwise. It stays because the app cannot prove it made it: the destination is named after the dataset, not after this app, it already exists on many tenants, and anything else in the customer's config may route to it. Teardown runs from a confirmation that names five objects; deleting a shared delivery point that predates the app, and breaking whatever else writes through it, is not one of the five. An unreferenced destination costs nothing, holds no data and breaks nothing, and the customer removes it in Stream in one click. If this ever matters, the fix is not a DELETE grant on its own — it is recording at create time that this app created it, and offering the teardown step only then.
-
-PHASE 3 NOW EDITS THIS OBJECT, and this entry is deliberately NOT widened by that. "The app cannot prove it made it" is a reason not to DELETE it; it is not a reason not to change a setting on it, and the two do not have the same worst case — a deleted destination stops delivery for everything wired to it, a changed one keeps delivering differently. What it does oblige is the confirmation: components/LakeLandingPanel.tsx names it as a replace on an object this app probably did not create, lists every feed writing through it, and says the only way back is that same editor or the group's Git history. It stays out of the teardown.`,
-  },
+  // The `gigamon_lake` destination left this list on 2026-09-25: earlier
+  // releases created it where a tenant lacked one, and nothing in this release
+  // creates it. Remove still leaves it, for the reason that entry gave — the app
+  // cannot prove it made a destination named after the dataset, and anything
+  // else may write through it — and the Lake landing panel still edits it.
   {
     resource: 'commit',
     reason:

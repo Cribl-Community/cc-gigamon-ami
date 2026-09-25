@@ -14,7 +14,7 @@
 //   * a listing it could not read → no write. The old function read a refused
 //     listing as an empty one and POSTed.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DATASET_SPEC, PARQUET_DATASET_SPEC, deployAll, ensureLakeDataset } from './provision'
+import { DATASET_SPEC, PARQUET_DATASET_SPEC, ensureLakeDataset } from './provision'
 
 interface Call { method: string; path: string; body?: unknown }
 
@@ -94,30 +94,9 @@ describe('ensureLakeDataset', () => {
   })
 })
 
-describe('Guided Setup’s dataset step goes through it', () => {
-  it('a refused listing stops the stack at the dataset, with no dataset POST', async () => {
-    listStatus = 403
-    const steps = await deployAll(() => {}, 'default')
-    expect(steps[0]).toMatchObject({ key: 'dataset', action: 'error' })
-    expect(writes().filter((c) => c.path === DATASETS)).toEqual([])
-  })
-
-  it('an existing gigamon_ami whose shape differs says so in the step, and is still left alone', async () => {
-    listed = [{ id: 'gigamon_ami', format: 'parquet', acceleratedFields: ['protocol'] }]
-    const steps = await deployAll(() => {}, 'default')
-    expect(steps[0]).toMatchObject({ key: 'dataset', action: 'exists' })
-    expect(steps[0].detail).toContain('format parquet, not json')
-    expect(steps[0].detail).toContain('partitions protocol, not none')
-    expect(steps[0].detail).toMatch(/fixed at creation/)
-    expect(writes().filter((c) => c.path === DATASETS)).toEqual([])
-  })
-
-  it('an existing gigamon_ami of the right shape is a plain "exists"', async () => {
-    listed = [{ id: 'gigamon_ami', format: 'json' }]
-    const steps = await deployAll(() => {}, 'default')
-    expect(steps[0]).toEqual({ key: 'dataset', action: 'exists' })
-  })
-})
+// Guided Setup’s own dataset step (`deployAll`) went through it too until
+// 2026-09-25, when the global Raw HTTP deploy was withdrawn; the onboarding
+// run is its only caller now (pack.test.ts holds that).
 
 // What this file could not assert: that Cribl Lake answers a POST for an id
 // whose deletion has started with an error rather than a success; the listing

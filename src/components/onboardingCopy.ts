@@ -107,9 +107,6 @@ export const ONBOARDING_LEAD_TIP =
   'Cribl Lake datasets, installs the pack, gives its Raw HTTP source a port, a new auth token and TLS for the group, commits ' +
   'and deploys, and installs the scheduled searches that make the dashboards fast.'
 
-/** While the Raw HTTP stack's panel holds the page's picker. */
-export const groupElsewhereNote = (group: string): string => `Worker group ${group}, picked in the panel below.`
-
 /** Beside "Worker group" when this panel holds the picker. */
 export const ONBOARDING_GROUP_TIP =
   'The pack is installed, committed and deployed in this group. The Cribl Lake datasets belong to no group. Your pick is remembered, so this tab opens on it next time.'

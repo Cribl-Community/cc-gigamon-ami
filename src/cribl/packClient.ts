@@ -135,7 +135,6 @@ import {
   portsInUse,
   sameValue,
   scrubbedErrText,
-  tlsFor,
   tokensOf,
   type CommitScope,
   type OnPhase,
@@ -143,6 +142,7 @@ import {
   type StepAction,
   type StepResult,
 } from './provision'
+import { tlsFor } from './packSpecs'
 
 /**
  * A path inside this pack, in a worker group: `/m/<group>/p/<PACK_ID><tail>`.

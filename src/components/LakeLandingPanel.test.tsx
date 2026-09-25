@@ -79,8 +79,7 @@ import {
   sizeSentence,
 } from './lakeLandingCopy'
 import { GuidedSetup } from '../tabs/GuidedSetup'
-import { PACK_SETUP_FACTS, SETUP_FACTS } from './provisionPanelCopy'
-import { packRelease } from '../cribl/pack'
+import { PACK_SETUP_FACTS } from './provisionPanelCopy'
 
 const BASE = '/capi'
 const LAKE = '/products/lake/lakes/default'
@@ -1356,25 +1355,18 @@ describe('it is actually on the page', () => {
     expect(anchor?.querySelector('.panel')).toBeTruthy()
   })
 
-  it('the page has its heading, and its facts describe whichever onboarding the pinned release allows', async () => {
+  it('the page has its heading, and its facts are the pack’s, the only onboarding', async () => {
     stubWorkspace()
     await mount(<GuidedSetup />)
     const h2 = [...document.querySelectorAll('h2')].map((h) => h.textContent)
     expect(h2).toContain('Guided setup')
-    // Released pin: the pack is the onboarding and the facts are the pack's.
-    // Unreleased pin — this build, 0.2.2 before its tag — the global Raw HTTP
-    // stack's. *(Corrected 2026-09-25, `feat/pack-022-parquet-pipeline`: this
-    // pinned the pack's facts, true only while 0.2.1 was the released pin.
-    // Before `feat/pack-flip-021` it pinned the global stack's.)*
-    const installable = packRelease().installable
-    // This build records 0.2.2 as released (2026-09-25), so the pack's facts show.
-    expect(installable).toBe(true)
-    const [shown, other] = installable ? [PACK_SETUP_FACTS, SETUP_FACTS] : [SETUP_FACTS, PACK_SETUP_FACTS]
+    // The pack is the only onboarding (2026-09-25), so the facts are its own
+    // whatever the pinned release says. *(Corrected 2026-09-25,
+    // `feat/collapse-old-onboarding`: an unreleased pin showed the global Raw
+    // HTTP stack's `SETUP_FACTS`, which are gone.)*
     const facts = [...document.querySelectorAll('.gs-facts li')].map((li) => li.textContent ?? '')
-    expect(facts).toHaveLength(shown.length)
-    shown.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
-    // …and not the other list: each one's first fact names an object the
-    // other onboarding does not create.
-    expect(facts.some((f) => f.startsWith(other[0].label))).toBe(false)
+    expect(facts).toHaveLength(PACK_SETUP_FACTS.length)
+    PACK_SETUP_FACTS.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
+    expect(facts.join(' ')).not.toMatch(/in_gigamon_http|gigamon_http_normalize|gigamon_ami_json_array/)
   })
 })

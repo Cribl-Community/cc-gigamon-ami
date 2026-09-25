@@ -540,7 +540,7 @@ describe('one run at a time, and one onboarding path', () => {
     expect(bodyText()).toContain(REMOVE_ONLY_LEAD)
     expect(bodyText()).not.toContain('Deploy onboarding stack')
     expect(bodyText()).not.toContain('Re-apply onboarding stack')
-    expect(buttonNamed('Remove partial stack') ?? buttonNamed('Remove onboarding stack')).toBeTruthy()
+    expect(buttonNamed('Remove Raw HTTP stack')).toBeTruthy()
     // The page's one picker is the pack panel's now.
     expect(document.body.querySelector('#gs-group-select')).toBeNull()
   })

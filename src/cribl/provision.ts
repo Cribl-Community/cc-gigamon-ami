@@ -1,116 +1,81 @@
-// Guided-setup provisioning client.
+// Guided Setup's worker-group client: the reads, the teardown of the global
+// stacks earlier releases created, and the commit-and-deploy machinery every
+// Guided Setup write shares.
 //
-// Deploys the *real-world* Gigamon AMI onboarding path into a Cribl Stream
-// worker group — a Raw HTTP source with a JSON-array event breaker, a normalize
-// pipeline, a route, and the Cribl Lake dataset — so a user can point their
-// Gigamon Application Metadata Exporter (AMX) at Cribl and have flows land in
-// the same `gigamon_ami` dataset these dashboards already read.
+// ── WHAT THIS FILE NO LONGER DOES (owner decision, 2026-09-25) ──────────────
 //
-// ── RAW HTTP, NOT SYSLOG (owner decision, 2026-09-24) ────────────────────────
+// It used to CREATE the global Raw HTTP onboarding stack — an `http_raw`
+// source `in_gigamon_http` with an app-generated token, the breaker ruleset
+// `gigamon_ami_json_array`, the pipeline `gigamon_http_normalize`, the route
+// `gigamon_ami_http` and, where missing, the `gigamon_lake` destination — and
+// commit and deploy it (`deployAll` and its `ensure*` steps), and it was THE
+// onboarding whenever the pinned pack release could not be installed. The
+// owner collapsed that onboarding into the pack-based one: the onboarding
+// pack (cribl/packClient.ts, cribl/onboarding/run.ts) is now the only way this
+// app onboards, and when its release cannot be installed Onboard is refused
+// with the release's own sentence and nothing falls back to this stack.
 //
-// Real AMX deployments POST JSON arrays of AMI records over HTTP; the model is
-// the live `http_raw` input a Gigamon lab runs. So this release creates an
-// `http_raw` source with an app-generated auth token, TLS on Cribl's own
-// certificate on a Cribl-managed group (off on a hybrid one, and the endpoint
-// card says so), and a breaker ruleset that splits each POSTed array into one
-// event per record. The pipeline no longer parses a syslog message: the breaker
-// already extracted the fields, so only the cast and derive functions remain —
-// the same two the pack's sample pipeline carries, so HTTP rows and DataGen rows
-// have the same shape.
+// So what is left of the global stack here is what a tenant who ran an
+// earlier release still needs: its status (`checkStatus`, and
+// `checkLegacyStatus` for the Syslog stack before it) and its confirmed
+// teardown (`removeOnboardingStack`), which deletes only the fixed ids below,
+// only what the status check found present, and never the dataset or the
+// destination. The specs it was created from moved to cribl/packSpecs.ts,
+// where pack.test.ts holds the pack's YAML equal to them.
 //
-// The Syslog stack earlier releases created (`LEGACY_SYSLOG_*` below) is no
-// longer created or edited. It is only READ, so the screen can say it is there,
-// and REMOVED by the same confirmed teardown that removes the HTTP stack.
+// ── WHAT IT STILL DOES FOR EVERYONE ─────────────────────────────────────────
 //
-// Every operation is idempotent and ADDITIVE: it never edits the demo DataGen
-// source, the existing `gigamon_ami` pipeline, or the `gigamon_lake`
-// destination. The route is prepended above the catch-all `default` route with
-// a filter scoped to this source, so unrelated data is unaffected.
+//   * `ensureLakeDataset` — the one Lake dataset POST in the app: created when
+//     absent, never edited. Its only caller is the onboarding run.
+//   * `commitMatchingAndDeploy` / `commitAndDeploy` — commit exactly the files
+//     a run touched, re-read Git to refuse a commit that left one behind, and
+//     deploy; with the stranded-commit repair that deploys only a hash this app
+//     recorded. The pack client and the teardown both end here.
+//   * `pendingDeploy`, `undeployedHead`, `pendingConfigPaths`, `commitScope` —
+//     reads that let every confirmation say what its commit carries.
+//   * `portProblem`, `suggestPort`, `hostingOf`, `groupInputs`, `generateToken`,
+//     `scrubbedErrText` — used by the pack's source settings.
 //
-// Additive is not the same as harmless, though, and this is the only file in the
-// app that writes customer configuration. Three of the calls below overwrite
-// something that already exists — a PATCH of the pipeline, a PATCH of the source,
-// and the PATCH of the routing table, which replaces the whole array — and the
-// deploy pushes the result to running workers. AGENTS.md ("Confirming Destructive
-// Operations") requires an explicit confirmation naming exactly those objects
-// before any of it runs, and forbids reaching it from load, render or a timer.
-// Nothing here enforces that, because nothing here can tell a deliberate click
-// from an accidental one: the confirmation lives in components/ProvisionPanel.tsx
-// (it moved out of tabs/GuidedSetup.tsx with the rest of the provisioning half),
-// in front of `deployAll` and `removeOnboardingStack`, which are the only two entry
-// points that write anything. Every other export is a GET.
+// Every write here is behind a confirmation in a component: the teardown in
+// components/ProvisionPanel.tsx, the pack's writes in
+// components/OnboardingPanel.tsx. Nothing here runs on load, render or a timer.
 //
 // Calls go through cribl/capi.ts, which is where the auth story lives: the
 // platform proxy (installed) and the Vite `/capi` proxy (`npm run dev`) both
 // inject it, so nothing here handles a token.
-//
-// ── CHANGED IN PHASE 3 (2026-09-17), AND WHY IT IS TWO CHANGES ──────────────
-//
-// FIRST, A DEFECT. `ensurePipeline` and `ensureSource` used to PATCH
-// unconditionally whenever their GET answered 200 — so pressing Re-apply on a
-// stack that was already exactly right issued two writes, reported both as
-// `updated`, put both into `touchedKeys`, and carried the run on into
-// `commitAndDeploy`. `ensureRoute` never did that: it compares field by field
-// and returns `exists` with no PATCH at all, "so the group's Git status stays
-// clean". Whether the zero-change re-apply actually reached the deploy depends
-// on whether Cribl dirties a config file for an identical-body PATCH, which this
-// repo cannot settle and a live Leader can (see filesToCommit's fallback at
-// `/version/status`) — but a deploy restarts that group's Worker Processes, so
-// the answer only decides how bad it was. Both functions now get the
-// `ensureRoute` treatment, through one shared comparison (`covered`) used by all
-// four objects.
-//
-// SECOND, A SEAM. Every ensure* takes a `confirm` and writes nothing before it
-// answers true. That is NOT because nothing confirmed before — components/
-// ProvisionPanel.tsx has opened a <ConfirmDialog> in front of `deployAll` since
-// slice 1.7. It is because that dialog can only name the objects; it cannot say
-// what is about to change about them, since the only code holding both the live
-// object and the spec is down here. `confirm` is where a caller can be handed
-// that diff at the moment it is known. It is optional, and the default is named
-// `preConfirmed` rather than left implicit, so "no confirm was passed" is a claim
-// somebody wrote down instead of an absence — see that constant.
-//
-// The corollary is the reason the no-op fix and the seam arrived together: a
-// confirmation that fires for a change that is not happening teaches people to
-// click through confirmations.
-//
-// ── AND A THIRD CHANGE (2026-09-17): THE PATCHES WERE NOT MERGES ────────────
-//
-// The pipeline and source PATCHes sent the SPEC, and both endpoints are full
-// replacements — "Cribl removes any omitted fields", in openapi.json's own
-// words. A Re-apply that found one spec field drifted therefore deleted every
-// field the spec does not name, and `covered` guaranteed the confirmation could
-// not mention them. That is a SHIPPED defect: Phase 1 wrote it, 1.0.20 has it,
-// Phase 3 only narrowed the window. Both now merge onto the object they just
-// read, the way `ensureRoute` always did — see the long comment above
-// `mergeSpec`.
 
 import { isDenial } from './authz'
 import { capi, errText, groupPath, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
 import { appendLog } from './kv'
-import {
-  DEFAULT_PROFILE, datasetSpec, destinationSpec, pathFilterRows, sameDiff,
-  type DiffRow, type LandingProfile,
-} from './landing'
+import { DEFAULT_PROFILE, datasetSpec, pathFilterRows } from './landing'
 import { listInputs, listPackInputs, type StreamInput } from './lake'
-import { PACK_PARQUET_DATASET_ID, PACK_PARQUET_PIPELINE_ID } from './pack'
+import { PACK_PARQUET_DATASET_ID } from './pack'
 import { loadCommitMemory } from './setupMemory'
 
-/** The Raw HTTP source Gigamon AMX POSTs to. Global (not pack) ids, and each is
- *  distinct from every id in the onboarding pack (src/cribl/pack.ts), so the
- *  pack can be installed beside this stack and migrated to side by side. */
+/** The Raw HTTP source earlier releases created for Gigamon AMX to POST to.
+ *  Global (not pack) ids, each distinct from every id in the onboarding pack
+ *  (src/cribl/pack.ts), so the pack installs beside this stack. Read and
+ *  removed; never created or edited any more. */
 export const HTTP_SOURCE_ID = 'in_gigamon_http'
-/** Cast + derive only: the breaker below has already extracted the fields. */
+/** Its cast + derive pipeline. */
 export const HTTP_PIPELINE_ID = 'gigamon_http_normalize'
 export const HTTP_ROUTE_ID = 'gigamon_ami_http'
 /**
  * The event breaker ruleset the source names. A GLOBAL object in the group's
- * library, created by this app — and named for what it does rather than after
- * the lab ruleset it is modelled on (`gigamon_json_http`), so a group that
- * already has that one is never edited or deleted by this app.
+ * library, created by earlier releases of this app — and named for what it
+ * does rather than after the lab ruleset it is modelled on
+ * (`gigamon_json_http`), so a group that already has that one is never deleted
+ * by this app.
  */
 export const HTTP_BREAKER_ID = 'gigamon_ami_json_array'
+/**
+ * The description earlier releases wrote on that ruleset — this app's
+ * ownership stamp. The teardown deletes a ruleset of that id only when it
+ * carries exactly this; packSpecs.ts's `HTTP_BREAKER_SPEC` carries it too, and
+ * pack.test.ts holds the pack's own ruleset to a different one.
+ */
+export const HTTP_BREAKER_DESCRIPTION = 'Gigamon AMI: one event per record of a POSTed JSON array'
 export const LAKE_DESTINATION_ID = 'gigamon_lake'
 export const LAKE_DATASET_ID = 'gigamon_ami'
 
@@ -133,161 +98,6 @@ export const CLOUD_PORT_RANGE = Object.freeze({ min: 20000, max: 20010 })
 export const HYBRID_DEFAULT_PORT = 10080
 const LAKE_ID = 'default'
 
-// --- Resource specs (exported so the UI can show exactly what gets created) ---
-
-/** The two Evals below are copied verbatim from the existing `gigamon_ami`
- *  pipeline so HTTP-delivered flows get identical field derivations. */
-const NUMERIC_FIELDS = [
-  'src_bytes', 'dst_bytes', 'src_packets', 'dst_packets', 'src_port', 'dst_port',
-  'protocol', 'app_id', 'ip_version', 'tcp_rtt', 'tcp_rtt_app', 'tcp_dup_ack',
-  'tcp_loss_count', 'tcp_wrong_crc', 'tcp_unseq', 'dns_response_time', 'dns_ttl',
-  'ssl_mitm_score', 'ssl_request_size', 'snmp_version', 'end_reason', 'seq_num',
-  'http_request_ts', 'http_response_ts', 'tcp_flags',
-]
-
-const CAST_FN = {
-  id: 'eval', filter: 'true', disabled: false, description: 'Cast numeric strings',
-  conf: { add: NUMERIC_FIELDS.map((n) => ({ name: n, value: `${n}==null?${n}:Number(${n})` })) },
-}
-
-const DERIVE_FN = {
-  id: 'eval', filter: 'true', disabled: false, description: 'Derive helper fields',
-  conf: {
-    add: [
-      { name: 'src_subnet', value: "typeof src_ip==='string'?src_ip.split('.').slice(0,3).join('.'):undefined" },
-      { name: 'dst_subnet', value: "typeof dst_ip==='string'?dst_ip.split('.').slice(0,3).join('.'):undefined" },
-      { name: 'total_bytes', value: '(src_bytes||0)+(dst_bytes||0)' },
-      { name: 'total_packets', value: '(src_packets||0)+(dst_packets||0)' },
-      { name: 'l4_proto', value: "({'6':'TCP','17':'UDP','1':'ICMP'})[String(protocol)]||String(protocol)" },
-      { name: 'http_server_ms', value: '(http_request_ts!=null&&http_response_ts!=null)?(http_response_ts-http_request_ts)*1000:undefined' },
-      { name: 'tcp_reset', value: 'tcp_flags==null?undefined:((tcp_flags&4)?1:0)' },
-      { name: 'src_subnet16', value: "typeof src_ip==='string'?src_ip.split('.').slice(0,2).join('.'):undefined" },
-      { name: 'dst_subnet16', value: "typeof dst_ip==='string'?dst_ip.split('.').slice(0,2).join('.'):undefined" },
-    ],
-  },
-}
-
-/**
- * NO PARSE STEP. The Syslog pipeline began with a fallback-to-_raw Eval and a
- * JSON `serde` of the syslog message. Over HTTP there is no message to take
- * apart: `HTTP_BREAKER_SPEC` below splits the POSTed array and extracts every
- * record's fields (`jsonExtractAll`) before the pipeline runs, just as the
- * DataGen's events arrive already as objects. So this is the pack's sample
- * pipeline — cast and derive — and the two feeds produce rows of one shape.
- */
-export const PIPELINE_SPEC = {
-  id: HTTP_PIPELINE_ID,
-  conf: { functions: [CAST_FN, DERIVE_FN] },
-}
-
-/**
- * Removes `_raw` from every event. An Eval `remove`, Cribl's documented way to
- * take a top-level field off an event (the Drop function drops the whole
- * event). Last, and a function of its own, so the two before it stay
- * `PIPELINE_SPEC`'s value for value.
- */
-const DROP_RAW_FN = {
-  id: 'eval', filter: 'true', disabled: false, description: 'Remove _raw from the Parquet copy',
-  conf: { remove: ['_raw'] },
-}
-
-/**
- * The onboarding pack's Parquet pipeline (pack 0.2.2 on; `PACK_PARQUET_PIPELINE_ID`):
- * `PIPELINE_SPEC`'s cast and derive, then `DROP_RAW_FN`. The pack's route into
- * `gigamon_ami_pq` runs it; the JSON and sample routes run `PIPELINE_SPEC`'s
- * functions and keep `_raw`, which the app's evidence drills, Field Explorer
- * and Copilot briefs read from `gigamon_ami`. After the breaker every field
- * of a record is its own field, so in the Parquet copy `_raw` is only a second
- * copy of the record (owner decision 2026-09-25).
- *
- * PACK-ONLY. Nothing in this file writes it: Guided Setup's global stack has no
- * Parquet path. It lives here, beside `PIPELINE_SPEC`, so the two cannot drift
- * apart; pack.test.ts holds the pack's
- * `default/pipelines/gigamon_ami_normalize_parquet/conf.yml` equal to it, and
- * its first functions to `PIPELINE_SPEC`'s.
- */
-export const PARQUET_PIPELINE_SPEC = {
-  id: PACK_PARQUET_PIPELINE_ID,
-  conf: { functions: [CAST_FN, DERIVE_FN, DROP_RAW_FN] },
-}
-
-/**
- * The breaker ruleset, from the lab model (`gigamon_json_http`): one
- * `json_array` rule over the whole body, every record's fields extracted, a
- * 51,200-byte cap per event, and the timestamp found automatically in the first
- * 150 characters. `minRawLength` 256 is the model's.
- */
-export const HTTP_BREAKER_SPEC = {
-  id: HTTP_BREAKER_ID,
-  lib: 'custom',
-  description: 'Gigamon AMI: one event per record of a POSTed JSON array',
-  minRawLength: 256,
-  rules: [
-    {
-      name: 'gigamon_ami_json_array',
-      condition: 'true',
-      type: 'json_array',
-      jsonExtractAll: true,
-      maxEventBytes: 51200,
-      timestampAnchorRegex: '/^/',
-      timestamp: { type: 'auto', length: 150 },
-      disabled: false,
-    },
-  ],
-}
-
-/**
- * What a re-apply asserts on the source. DELIBERATELY NOT THE WHOLE SOURCE:
- * the port, TLS and the auth token are set once, at creation, and never
- * re-asserted — see `sourceCreateBody`. A re-apply that reset them would move
- * the exporter's port, strip a certificate a hybrid customer added, or (for the
- * token) need a copy of a secret this app deliberately does not keep.
- */
-export const SOURCE_SPEC = {
-  id: HTTP_SOURCE_ID,
-  type: 'http_raw',
-  disabled: false,
-  host: '0.0.0.0',
-  sendToRoutes: true,
-  breakerRulesets: [HTTP_BREAKER_ID],
-  autoParse: false,
-  streamtags: ['gigamon', 'ami'],
-}
-
-export const ROUTE_SPEC = {
-  id: HTTP_ROUTE_ID,
-  name: HTTP_ROUTE_ID,
-  final: true,
-  disabled: false,
-  filter: `__inputId=='http_raw:${HTTP_SOURCE_ID}'`,
-  pipeline: HTTP_PIPELINE_ID,
-  output: LAKE_DESTINATION_ID,
-  description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami)',
-  clones: [],
-  enableOutputExpression: false,
-}
-
-// --- How the source listens: port, TLS and its auth token -----------------
-
-/**
- * Where the new source listens and how. `managed` is the worker group's
- * `onPrem === false` (cribl/lake.ts `listStreamGroupsCurrent`): Cribl runs the
- * workers, exposes only `CLOUD_PORT_RANGE`, and provides a certificate through
- * `$CRIBL_CLOUD_CRT` / `$CRIBL_CLOUD_KEY`. A hybrid group's workers are the
- * customer's, have no such certificate, and take any port.
- */
-export interface HttpIngress {
-  managed: boolean
-  port: number
-}
-
-/** TLS for a new source: Cribl's certificate on a managed group, none on a
- *  hybrid one — where the endpoint card says the traffic is unencrypted. */
-export function tlsFor(managed: boolean): Record<string, unknown> {
-  return managed
-    ? { disabled: false, minVersion: 'TLSv1.2', certPath: '$CRIBL_CLOUD_CRT', privKeyPath: '$CRIBL_CLOUD_KEY' }
-    : { disabled: true }
-}
 
 /**
  * A fresh auth token for the source: 32 random bytes from the platform CSPRNG
@@ -367,16 +177,6 @@ export function tokensOf(source: Record<string, unknown> | null | undefined): st
   ].filter((t): t is string => typeof t === 'string' && t.length > 0)
 }
 
-/** The POST that creates the source: the re-apply spec plus the three things
- *  set only at creation. */
-export function sourceCreateBody(ingress: HttpIngress, token: string): Record<string, unknown> {
-  return {
-    ...SOURCE_SPEC,
-    port: ingress.port,
-    tls: tlsFor(ingress.managed),
-    authTokensExt: [{ token, authType: 'manual' }],
-  }
-}
 
 /**
  * Why a port cannot be used for the new source, or null when it can.
@@ -410,26 +210,14 @@ export function suggestPort(managed: boolean, used: readonly number[] | null): n
   return null
 }
 
-// --- The two Cribl Lake specs, from a profile rather than from literals ------
-//
-// §2.4 asks for `datasetSpec(profile)` and `destinationSpec(profile)`. Both are
-// in cribl/landing.ts, not here, and the direction is forced rather than chosen:
-// landing.ts is the pure module — no `capi`, no `kv`, testable under plain Node —
-// so it cannot import this file, and this file can import it. What that buys is
-// ONE copy of the numbers. Before it, the flush settings existed twice: once
-// below and once in landing.ts's `nearLive` preset, and landing.test.ts could
-// only assert them by naming this file's line number in a comment, because there
-// was nothing exported to compare against. Two copies of a number with a comment
-// between them is the shape of a drift that has already happened elsewhere.
-//
-// The cost, stated because it is real: this module now reaches the query layer
-// transitively (landing.ts → queries/lakeLanding.ts → cribl/search.ts) for three
-// values. That is weight on a provisioning client, and it was accepted over a
-// second hand-written copy of the same two bodies.
+// --- The Lake datasets the onboarding run creates ---------------------------
 
 /**
- * The Cribl Lake dataset Guided Setup creates. `datasetSpec` already carries
- * `id`, so for this object the spec IS the create body.
+ * The `gigamon_ami` Cribl Lake dataset, as its create body. Built from
+ * landing.ts's `datasetSpec(DEFAULT_PROFILE)`, the pure module, so the numbers
+ * exist once. `datasetSpec` already carries `id`, so for this object the spec
+ * IS the create body. The onboarding run (onboarding/plan.ts
+ * `onboardingDatasets`) creates it through `ensureLakeDataset`.
  */
 export const DATASET_SPEC = datasetSpec(DEFAULT_PROFILE)
 
@@ -465,32 +253,6 @@ export const PARQUET_DATASET_SPEC = Object.freeze({
     pathFilters: Object.freeze(pathFilterRows(['parquet']).map((r) => Object.freeze(r))),
   }),
 })
-
-/**
- * The Cribl Lake destination body for a profile.
- *
- * `destinationSpec` answers an EDIT — `{ set, remove }` — because its other
- * caller is patching an object that already exists and needs to say which keys
- * to take away. A create has nothing to take away and needs two keys the edit
- * has no business carrying: `id`, which is the object's name, and `type`, which
- * is what kind of destination to make. Neither is a setting, which is why they
- * are added here rather than pushed into the shared spec.
- */
-export function destinationSpecFor(profile: LandingProfile): Record<string, unknown> {
-  return { id: LAKE_DESTINATION_ID, type: 'cribl_lake', ...destinationSpec(profile).set }
-}
-
-/**
- * The destination this release provisions. EXPORTED IN PHASE 3, where
- * `DATASET_SPEC` always was: an unexported spec is one nothing outside this file
- * can check, and the Lake landing panel's whole job is to report what a live
- * destination says against what this app would have written.
- *
- * `DEFAULT_PROFILE` is JSON / 30 days / 5 MB · 60 s · 15 s — byte for byte what
- * this file held as a literal before Phase 3. Phase 3 changes no landing; it
- * makes the landing nameable.
- */
-export const DESTINATION_SPEC = destinationSpecFor(DEFAULT_PROFILE)
 
 // --- Addressing -----------------------------------------------------------
 
@@ -557,18 +319,28 @@ export async function listStreamGroups(): Promise<StreamGroup[]> {
 
 // --- Status ---------------------------------------------------------------
 
-export type ResourceKey = 'dataset' | 'destination' | 'breaker' | 'pipeline' | 'source' | 'route'
+/**
+ * The resources a Cribl worker group can hold for this app's onboarding, by
+ * key. `dataset` is created by the onboarding run (group-independent, in Cribl
+ * Lake); `destination` is `gigamon_lake`, which earlier releases created where
+ * it was missing and nothing creates now. The other four are the global Raw
+ * HTTP stack (`HttpKey`). cribl/paths.ts names what the app creates and removes
+ * in this vocabulary.
+ */
+export type ResourceKey = 'dataset' | 'destination' | HttpKey
+
+/** The global Raw HTTP stack earlier releases created: read and removed only. */
+export type HttpKey = 'breaker' | 'pipeline' | 'source' | 'route'
 
 /**
  * The three objects of the Syslog stack earlier releases created. A separate
- * key set rather than more `ResourceKey`s: every `Record<ResourceKey, …>` on the
- * screen is a row this release creates, and these are rows it only removes.
+ * key set from `HttpKey`, so "Remove old Syslog objects" can take them alone.
  */
 export type LegacyKey = 'legacy_source' | 'legacy_pipeline' | 'legacy_route'
 export const LEGACY_KEYS: readonly LegacyKey[] = Object.freeze(['legacy_source', 'legacy_pipeline', 'legacy_route'])
 
-/** Anything a Guided Setup commit can carry a file for. */
-export type CommitKey = ResourceKey | LegacyKey
+/** Anything a Guided Setup teardown commit can carry a file for. */
+export type CommitKey = HttpKey | LegacyKey
 
 /**
  * What a status check can honestly say about one resource.
@@ -577,13 +349,14 @@ export type CommitKey = ResourceKey | LegacyKey
  * customers. Every check below is a GET, and a GET the platform refuses answers
  * neither "there" nor "not there" — but a boolean has nowhere to put that, so a
  * refused read became `false`, the row rendered "— absent", and the screen
- * positively told somebody who could not SEE the stack that it did not exist and
- * offered to deploy it. A gate downstream reading that boolean would be reading
- * laundered data, which is worse than no gate at all.
+ * positively told somebody who could not SEE the stack that it did not exist.
+ * A gate downstream reading that boolean would be reading laundered data, which
+ * is worse than no gate at all.
  */
 export type ResourceState = 'present' | 'absent' | 'unreadable'
 
-export type SetupStatus = Record<ResourceKey, ResourceState>
+/** The global Raw HTTP stack's four objects, as the status check read them. */
+export type SetupStatus = Record<HttpKey, ResourceState>
 export type LegacyStatus = Record<LegacyKey, ResourceState>
 
 /** What one status GET really told us. `present` is the caller's own reading of
@@ -599,19 +372,21 @@ const routeRows = (r: ApiResp): RouteRow[] =>
   ((r.body as { items?: Array<{ routes?: RouteRow[] }> })?.items?.[0]?.routes) || []
 const hasRoute = (rows: RouteRow[], id: string) => rows.some((x) => x.id === id || x.name === id)
 
+/**
+ * Whether the global Raw HTTP stack an earlier release created is still in this
+ * group. Read-only, and read so the teardown can name what it will delete and
+ * so Guided Setup shows its panel only while one of these is (or may be) there.
+ * *(Until 2026-09-25 it also read the Lake dataset and the `gigamon_lake`
+ * destination, for a Deploy that could create them.)*
+ */
 export async function checkStatus(group: string = DEFAULT_STREAM_GROUP): Promise<SetupStatus> {
-  const [ds, dest, brk, pipe, src, routes] = await Promise.all([
-    capi('GET', datasetsPath),
-    capi('GET', g(group, `/system/outputs/${LAKE_DESTINATION_ID}`)),
+  const [brk, pipe, src, routes] = await Promise.all([
     capi('GET', g(group, `/lib/breakers/${HTTP_BREAKER_ID}`)),
     capi('GET', g(group, `/pipelines/${HTTP_PIPELINE_ID}`)),
     capi('GET', g(group, `/system/inputs/${HTTP_SOURCE_ID}`)),
     capi('GET', g(group, '/routes')),
   ])
-  const dsItems = (ds.body as { items?: Array<{ id?: string }> })?.items || []
   return {
-    dataset: stateOf(ds, dsItems.some((d) => d.id === LAKE_DATASET_ID)),
-    destination: stateOf(dest, dest.status === 200),
     breaker: stateOf(brk, brk.status === 200),
     pipeline: stateOf(pipe, pipe.status === 200),
     source: stateOf(src, src.status === 200),
@@ -621,8 +396,7 @@ export async function checkStatus(group: string = DEFAULT_STREAM_GROUP): Promise
 
 /**
  * Whether the Syslog stack an earlier release created is still in this group.
- * Read-only, and read so the teardown can name what it will delete — never so
- * anything can be offered for re-apply.
+ * Read-only, and read so the teardown can name what it will delete.
  */
 export async function checkLegacyStatus(group: string = DEFAULT_STREAM_GROUP): Promise<LegacyStatus> {
   const [src, pipe, routes] = await Promise.all([
@@ -637,33 +411,7 @@ export async function checkLegacyStatus(group: string = DEFAULT_STREAM_GROUP): P
   }
 }
 
-/** Where the live HTTP source listens — what the endpoint card prints. */
-export interface HttpEndpoint {
-  port: number | null
-  /** True when the source terminates TLS. False is the hybrid default, and the
-   *  card then says the traffic is unencrypted. */
-  tls: boolean
-}
-
-/**
- * Read the port and TLS state off the live source, rather than off whatever the
- * picker was set to: the source may have been created by an earlier run, or
- * edited in Cribl since. Null when it cannot be read. The auth token is in the
- * same body and is deliberately not taken out of it.
- */
-export async function readHttpEndpoint(group: string = DEFAULT_STREAM_GROUP): Promise<HttpEndpoint | null> {
-  const r = await capi('GET', g(group, `/system/inputs/${HTTP_SOURCE_ID}`))
-  if (r.status !== 200) return null
-  const live = firstItem(r)
-  if (!live) return null
-  const tls = live.tls as { disabled?: unknown } | undefined
-  return {
-    port: typeof live.port === 'number' ? live.port : null,
-    tls: !!tls && typeof tls === 'object' && tls.disabled === false,
-  }
-}
-
-// --- Ensure (idempotent create/update) -----------------------------------
+// --- What a step reports ---------------------------------------------------
 
 export type StepAction = 'created' | 'updated' | 'exists' | 'error' | 'skipped'
 export type StepKey = CommitKey | 'commit' | 'deploy'
@@ -688,70 +436,8 @@ export type Phase =
 export type OnPhase = (p: Phase) => void
 const noopPhase: OnPhase = () => {}
 
-// --- What a caller is asked before anything is written --------------------
-
-/** One object about to be written, described in the terms a confirmation needs. */
-export interface PendingChange {
-  key: ResourceKey
-  /** `create` when Cribl does not have this object; `overwrite` when it does and
-   *  it does not already say what the spec says. There is no third case — an
-   *  object that already matches is never offered, because a confirmation for a
-   *  change that is not happening is how people learn to click through them. */
-  action: 'create' | 'overwrite'
-  /** The Cribl object, phrased the way the commit message and the dialog phrase
-   *  it, so one sentence describes it everywhere. */
-  object: string
-  /**
-   * On an `overwrite`, the spec keys the live object does not already satisfy —
-   * `before` is what Cribl holds, `after` is what this app will send. Empty on a
-   * `create`, where there is no before.
-   *
-   * This is the thing the existing confirmation could not say. It is `DiffRow`,
-   * the same shape components/DiffTable.tsx renders for the Lake landing panel,
-   * so a caller that wants to show it does not need a second renderer.
-   */
-  diff: readonly DiffRow[]
-}
-
-/** Ask before writing. Anything but `true` — `false`, a rejection, a dialog that
- *  unmounted — is a no. */
-export type ConfirmChange = (change: PendingChange) => boolean | Promise<boolean>
-
-/**
- * The answer when a caller passes no `confirm`, named rather than inlined so
- * that what it stands for is written down.
- *
- * It stands for the <ConfirmDialog> in components/ProvisionPanel.tsx, which is in
- * front of every path that reaches `deployAll` and names all five objects with
- * `action: 'replace'`. That dialog is coarser than this seam — it cannot show a
- * diff, because at the moment it opens nothing has read the live objects — but it
- * is a real confirmation, and §1.5 rule 7 is explicit that one intent gets one
- * confirmation. Threading five dialogs through a single Deploy press would make
- * the fifth one furniture.
- *
- * So the default is "already asked", not "do not ask". If `deployAll` ever
- * acquires a caller that has NOT asked, this is the line that is wrong, and it
- * says so here rather than in a review comment.
- */
-const preConfirmed: ConfirmChange = () => true
-
-/** What an ensure* answers when the confirmation said no. The only way any of
- *  them returns `skipped`, which is what lets `deployAll` tell a refusal from a
- *  failure without a sixth `StepAction`. */
-const NOT_CONFIRMED = 'not applied — this change was not confirmed'
-
-async function agreed(confirm: ConfirmChange, change: PendingChange): Promise<boolean> {
-  try {
-    return (await confirm(change)) === true
-  } catch {
-    return false
-  }
-}
-
 /** Human labels for each resource, used in step logs and phase pop-ups. */
 export const STEP_LABELS: Record<StepKey, string> = {
-  dataset: 'Lake dataset',
-  destination: 'Lake destination',
   breaker: 'Event breaker',
   pipeline: 'Pipeline',
   source: 'Raw HTTP source',
@@ -764,36 +450,15 @@ export const STEP_LABELS: Record<StepKey, string> = {
 }
 
 // Rich, human-readable description of each resource — names the concrete Cribl
-// object and what it does, so the Git commit history explains itself.
+// object, so the Git commit history explains itself.
 const RESOURCE_PHRASE: Record<CommitKey, string> = {
-  dataset: `Cribl Lake dataset '${LAKE_DATASET_ID}'`,
-  destination: `Cribl Lake destination '${LAKE_DESTINATION_ID}' → dataset '${LAKE_DATASET_ID}'`,
-  breaker: `event breaker ruleset '${HTTP_BREAKER_ID}' (one event per record of a JSON array)`,
-  pipeline: `pipeline '${HTTP_PIPELINE_ID}' (normalize Gigamon AMI fields)`,
-  source: `Raw HTTP source '${HTTP_SOURCE_ID}'`,
-  route: `route '${HTTP_ROUTE_ID}' → Cribl Lake '${LAKE_DATASET_ID}'`,
+  breaker: `event breaker ruleset '${HTTP_BREAKER_ID}' (from an earlier release)`,
+  pipeline: `pipeline '${HTTP_PIPELINE_ID}' (from an earlier release)`,
+  source: `Raw HTTP source '${HTTP_SOURCE_ID}' (from an earlier release)`,
+  route: `route '${HTTP_ROUTE_ID}' (from an earlier release)`,
   legacy_source: `Syslog source '${LEGACY_SYSLOG_SOURCE_ID}' (from an earlier release)`,
   legacy_pipeline: `pipeline '${LEGACY_SYSLOG_PIPELINE_ID}' (from an earlier release)`,
   legacy_route: `route '${LEGACY_SYSLOG_ROUTE_ID}' (from an earlier release)`,
-}
-
-/**
- * Compose a self-describing commit message from the resources actually
- * committed — grouped by created vs. updated — so the Git history says what the
- * Gigamon Network Observability app did and why, not just "guided setup".
- */
-function deployCommitMessage(group: string, steps: StepResult[]): string {
-  const committed = steps.filter((s) => groupFile(group, s.key as CommitKey))
-  const created = committed.filter((s) => s.action === 'created').map((s) => RESOURCE_PHRASE[s.key as CommitKey])
-  const updated = committed.filter((s) => s.action === 'updated').map((s) => RESOURCE_PHRASE[s.key as CommitKey])
-  const clauses: string[] = []
-  if (created.length) clauses.push(`added ${created.join(', ')}`)
-  if (updated.length) clauses.push(`updated ${updated.join(', ')}`)
-  const what = clauses.length ? `: ${clauses.join('; ')}` : ''
-  return (
-    `Gigamon Network Observability — onboard Gigamon AMI over Raw HTTP into worker group '${group}'${what}. ` +
-    `Real AMX exports land in Cribl Lake dataset '${LAKE_DATASET_ID}', feeding the Gigamon Network Observability dashboards.`
-  )
 }
 
 /** Commit message for teardown, naming exactly what was removed. */
@@ -808,13 +473,11 @@ function removeCommitMessage(group: string, keys: CommitKey[]): string {
 /**
  * Git file path for a resource inside a Stream group's local config. Scoping the
  * commit to exactly these files is what keeps us from committing unrelated
- * pending changes elsewhere in the group. Returns null for resources that are
- * not part of the group's Git config (the Lake dataset lives in Cribl Lake).
+ * pending changes elsewhere in the group.
  */
 function groupFile(group: string, key: CommitKey): string | null {
   const root = `groups/${group}/local/cribl`
   switch (key) {
-    case 'destination': return `${root}/outputs.yml`
     case 'source': case 'legacy_source': return `${root}/inputs.yml`
     case 'route': case 'legacy_route': return `${root}/pipelines/route.yml`
     // Where a group keeps its custom event breaker rulesets. MEASURED
@@ -825,7 +488,6 @@ function groupFile(group: string, key: CommitKey): string | null {
     case 'breaker': return `${root}/breakers.yml`
     case 'pipeline': return `${root}/pipelines/${HTTP_PIPELINE_ID}/conf.yml`
     case 'legacy_pipeline': return `${root}/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}/conf.yml`
-    case 'dataset': return null // Cribl Lake — not a Stream group Git file
     default: return null
   }
 }
@@ -869,18 +531,16 @@ async function pendingFiles(): Promise<string[] | null> {
  */
 function fileMarker(key: CommitKey): string | null {
   switch (key) {
-    case 'destination': return 'local/cribl/outputs.yml'
     case 'source': case 'legacy_source': return 'local/cribl/inputs.yml'
     case 'route': case 'legacy_route': return 'local/cribl/pipelines/route.yml'
     case 'breaker': return 'local/cribl/breakers.yml'
     case 'pipeline': return `local/cribl/pipelines/${HTTP_PIPELINE_ID}/`
     case 'legacy_pipeline': return `local/cribl/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}/`
-    case 'dataset': return null // Cribl Lake — not a Stream group Git file
     default: return null
   }
 }
 
-/** Every file marker for these keys, the Lake dataset (no Git file) left out. */
+/** Every file marker for these keys. */
 const markersFor = (keys: readonly CommitKey[]): string[] =>
   keys.map(fileMarker).filter((m): m is string => m !== null)
 
@@ -942,9 +602,9 @@ async function filesToCommitFor(group: string, markers: readonly string[], const
  * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
  * `pendingFiles()` has been in this module since Phase 1 and the Guided Setup
  * dialog never surfaced it. So that dialog said "Nothing else in ${group} is
- * touched, including the demo DataGen source" — true of what this app WRITES
- * (`ensureSource` PATCHes one object, `ensureRoute` splices one entry) and
- * false of what the commit CARRIES. `POST /version/commit` takes FILE PATHS
+ * touched, including the demo DataGen source" — true of what this app WROTE
+ * (the retired Raw HTTP deploy PATCHed one source and spliced one route entry)
+ * and false of what the commit CARRIED. `POST /version/commit` takes FILE PATHS
  * (openapi.json, GitCommitBody.files: "Array of file paths to include in the
  * commit"), and `inputs.yml` holds every source in the group INCLUDING the demo
  * DataGen one. Those are different sentences and the copy collapsed them into
@@ -1019,42 +679,6 @@ export function commitScopeFor(
   return { carries: [...carries], alreadyDirty: [...mine], elsewhere: pending.filter((p) => !mine.has(p)), unknown: false }
 }
 
-// --- What the write actually sends, and what it changes -------------------
-//
-// ── A SHIPPED DEFECT, FOUND 2026-09-17 ─────────────────────────────────────
-//
-// `PATCH /m/<group>/pipelines/<id>` and `PATCH /m/<group>/system/inputs/<id>`
-// are FULL REPLACEMENTS. The 4.19.0 spec vendored in this repo (openapi.json)
-// says so in as many words:
-//
-//   /pipelines/{id}       "Provide a complete representation of the Pipeline
-//                          that you want to update in the request body. This
-//                          endpoint does not support partial updates. Cribl
-//                          removes any omitted fields when updating the
-//                          Pipeline."
-//
-//   /system/inputs/{id}   "Provide a complete representation of the Source that
-//                          you want to update in the request body. This endpoint
-//                          does not support partial updates. Cribl removes any
-//                          omitted fields when updating the Source."
-//
-// Until now both sites sent THE SPEC — two keys for the pipeline, eight for the
-// source — so a Re-apply that found anything at all to change deleted every
-// field nobody here had named: a customer's `tls` block, their `pq` /
-// `pqEnabled` persistent queue, `maxActiveCxn`, `ipWhitelistRegex`, their
-// QuickConnect `connections`, the source's and the pipeline's `description`, the
-// pipeline's UI function `groups`. `ensureRoute` had this right from its first
-// line — it PATCHes `{ ...obj, routes }`, an edit of the table it has just
-// read, with a comment saying why — and these two did not. It shipped in
-// Phase 1, it is in the installed app at 1.0.20, and Phase 3's no-op check only
-// narrowed the window: the loss needs one spec field to differ AND the customer
-// to have customised the object.
-//
-// So the write is now the live object with the spec asserted onto it, and the
-// diff a confirmation shows is computed FROM THE BODY THAT WILL BE SENT rather
-// than from the spec — because a dialog that names the spec's keys is describing
-// a different request from the one that goes out.
-
 /** A JSON object as opposed to an array or `null` — the only shape worth merging
  *  INTO rather than replacing. */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -1078,58 +702,14 @@ export function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * `live` with `want` asserted onto it — the app's claims applied, everything
- * else carried forward.
- *
- * WHY IT RECURSES, i.e. why one level is not enough. `PIPELINE_SPEC.conf` is
- * `{ functions: [...] }`, but a live pipeline's `conf` also holds
- * `asyncFuncTimeout`, `output`, `streamtags`, `description` and the UI's
- * function `groups` (openapi.json, `Pipeline.conf`). A shallow `{ ...live,
- * ...spec }` replaces `conf` wholesale and deletes all five — the same shape
- * A-SP23 measured on a sibling endpoint, where a `schedule` sub-object was
- * replaced rather than merged and `tz` and `keepLastN` disappeared with no
- * error. The nesting is not special-cased to `conf`, because the next spec to
- * grow a sub-object would need the same treatment and would not get it.
- *
- * WHY EQUAL-LENGTH ARRAYS MERGE ELEMENT-WISE instead of being replaced. It keeps
- * this function exactly as strict as the subset test it replaces (`covered`,
- * Phase 3): `sameValue(live, mergeSpec(live, spec))` is true precisely when that
- * test said the spec was already satisfied, so the no-op Re-apply Phase 3 bought
- * is preserved to the letter. Replacing the array instead would count a key
- * Cribl normalised onto one of our functions as a difference and PATCH on every
- * Re-apply again. A LENGTH CHANGE still replaces: a function list with a fifth
- * function somebody added is a real change, and one this app is asserting away.
- *
- * KNOWN LIMIT, stated because nothing here can detect it: if somebody REORDERS
- * our functions, the positional merge overlays each spec function onto whichever
- * live function now sits at its index. Our four functions carry the same key
- * set, so the result is our function plus whatever extra keys the live entry at
- * that index had (`groupId`, say) — cosmetically wrong, not destructive, and it
- * shows up as a `conf` row in the diff the user approves.
- */
-function mergeSpec(live: unknown, want: unknown): unknown {
-  if (Array.isArray(want)) {
-    if (!Array.isArray(live) || live.length !== want.length) return want
-    return want.map((v, i) => mergeSpec(live[i], v))
-  }
-  if (isPlainObject(want)) {
-    if (!isPlainObject(live)) return want
-    const out: Record<string, unknown> = { ...live }
-    for (const [k, v] of Object.entries(want)) out[k] = mergeSpec(live[k], v)
-    return out
-  }
-  return want
-}
-
-/**
  * Keys read off a live object that must not be sent back.
  *
  * Reasoned the way cribl/landing.ts's `DATASET_READONLY_KEYS` comment reasons,
  * and the reasoning is the whole reason the list is this short: UNDER
  * FULL-REPLACEMENT SEMANTICS A STRIPPED KEY IS A DELETED KEY. So the only thing
  * that may go on this list is a key the spec states the server owns — never
- * "anything we don't recognise", which is how the defect above was written in
- * the first place.
+ * "anything we don't recognise": a whole-body PATCH that drops a key deletes
+ * it. Used by the pack client's source writes (cribl/packClient.ts).
  *
  * `criblSourceProvenance` is the single key openapi.json names outright, on
  * PATCH /system/inputs/{id}: "Cribl preserves `criblSourceProvenance` when you
@@ -1143,72 +723,11 @@ function mergeSpec(live: unknown, want: unknown): unknown {
  *     leader does attach one, it will ride back out — noisy, and harmless,
  *     because a field the server computes it also recomputes.
  *   * `pq`, `connections`, `metadata`, `tls`. Customer configuration every one
- *     of them, and exactly what this change exists to carry forward.
+ *     of them, and exactly what a whole-body PATCH has to carry forward.
  *   * The `__template_*` keys. They bind a field to a variable, so they are
  *     configuration, not derived state, and dropping one would unbind it.
- * The pipeline list is empty: `Pipeline` declares `id` and `conf` and nothing
- * the server owns.
  */
 export const SOURCE_SERVER_OWNED: readonly string[] = ['criblSourceProvenance']
-const PIPELINE_SERVER_OWNED: readonly string[] = []
-// `EventBreakerRuleset` declares nothing the server owns either.
-const BREAKER_SERVER_OWNED: readonly string[] = []
-
-/** The complete representation a full-replacement PATCH has to carry: what Cribl
- *  just returned, minus the keys the server owns, with the spec asserted on. */
-function patchBody(
-  live: Record<string, unknown>,
-  spec: Record<string, unknown>,
-  serverOwned: readonly string[],
-): Record<string, unknown> {
-  const base: Record<string, unknown> = { ...live }
-  for (const k of serverOwned) delete base[k]
-  return mergeSpec(base, spec) as Record<string, unknown>
-}
-
-/**
- * What the body about to be sent changes about the live object — the diff a
- * confirmation shows, and, when it is empty, the evidence that there is nothing
- * to write.
- *
- * COMPUTED FROM THE BODY, NOT FROM THE SPEC, which is the fix to the second half
- * of the defect above. The old version walked the spec's own keys and said so in
- * its doc comment, which meant the dialog was structurally incapable of
- * mentioning a customer's TLS block while the write deleted it. Now the two
- * cannot disagree: every key the request carries is compared against what Cribl
- * holds, so a row here is a change the request makes and a change the request
- * makes is a row here.
- *
- * Top-level keys only, still: `conf` reads as one row rather than as a walk of
- * every function's every field, and the object either side of the arrow is what
- * says which one. That is a presentation choice, not an omission — the `after`
- * side IS the sub-object being sent.
- *
- * THE ONE THING WRITTEN THAT DOES NOT APPEAR HERE: a key in `serverOwned` leaves
- * the body, and this walks the body, so it produces no row. That is deliberate
- * and it is honest — the spec says Cribl preserves `criblSourceProvenance` when
- * it is omitted, so nothing about the object changes and there is nothing to
- * show. If a key is ever added to those lists whose omission DOES change the
- * object, it belongs in the diff as a `removed` row and this function needs the
- * other half of the walk.
- */
-function bodyDiff(live: Record<string, unknown>, body: Record<string, unknown>): DiffRow[] {
-  const rows: DiffRow[] = []
-  for (const [key, after] of Object.entries(body)) {
-    if (!Object.hasOwn(live, key)) rows.push({ key, kind: 'added', before: undefined, after })
-    else if (!sameValue(live[key], after)) rows.push({ key, kind: 'changed', before: live[key], after })
-  }
-  return rows
-}
-
-/** Why an update did not happen: Cribl answered 200 and this app could not find
- *  the object in the body. Under full-replacement semantics that is the one
- *  state in which writing is worse than not writing — a PATCH composed without
- *  the live object deletes everything it does not mention. Before Phase 3 this
- *  case sent the bare spec, which is the maximal version of the defect. */
-const unreadable = (what: string) =>
-  `not applied — Cribl answered 200 but this app could not read the live ${what}, ` +
-  'and this endpoint replaces the whole object'
 
 /** The one object a Cribl GET of a named resource answers with, or null when the
  *  body is not the `{ items: [ … ] }` this app knows how to read. */
@@ -1216,125 +735,6 @@ export function firstItem(r: ApiResp): Record<string, unknown> | null {
   const items = (r.body as { items?: unknown[] })?.items
   const first = Array.isArray(items) ? items[0] : undefined
   return first !== null && typeof first === 'object' ? (first as Record<string, unknown>) : null
-}
-
-/** What every ensure* below shares: the group, the landing to apply, and the
- *  question to ask before writing. */
-interface EnsureCtx {
-  group: string
-  profile: LandingProfile
-  confirm: ConfirmChange
-  /** How a NEW source listens. Unused when the source already exists. */
-  ingress: HttpIngress | null
-  /** Handed the new source's token once, after Cribl accepted the create. */
-  onToken: (token: string) => void
-}
-
-const refused = (key: ResourceKey): StepResult => ({ key, action: 'skipped', detail: NOT_CONFIRMED })
-
-// ── THE READ THAT COMPOSES A PATCH MUST BE TAKEN AFTER THE ANSWER ───────────
-//
-// READ THIS BEFORE WIRING `confirm` TO ANYTHING. Every ensure* below reads the
-// live object, computes a body from it, asks `agreed(ctx.confirm, …)`, and then
-// PATCHes. Until 2026-09-17 the body it sent was the one composed from the FIRST
-// read — so the merge source was as old as the dialog had been on screen, and
-// these endpoints are full replacements. A stale merge does not lose the race,
-// it REVERTS whatever the other writer did; for `ensureRoute` that is the
-// group's entire routing table.
-//
-// It was not exploitable, and the reason it was not is the hazard: the only
-// caller (components/ProvisionPanel.tsx) passes no `confirm`, so `agreed` runs
-// `preConfirmed`, which returns `true` synchronously with no await boundary a
-// racer can use. The seam exists precisely so that a caller CAN pass a real
-// dialog (see the header, and `preConfirmed`), and the first one to do it would
-// have made this live — which is the stale-merge defect cribl/lakeLanding.ts
-// spent two commits closing on the Lake writers.
-//
-// So it is closed by construction here instead: each ensure* re-reads after the
-// answer and sends a body built on the SECOND read, refusing when the read fails
-// and refusing when the change has moved. `preConfirmed` costs one extra GET per
-// written object per run, which is the price of the seam being safe to wire.
-
-/** Why nothing was sent when the read after the confirmation failed. There is
- *  NO fallback to the first read — that fallback IS the stale merge, arriving
- *  as a convenience on the workspace least able to tolerate it (the reasoning
- *  is written out at lakeLanding.ts's `destinationMergeSourceAfterConfirm`). */
-const reReadFailed = (what: string) =>
-  `not applied — ${what} could not be read again after that confirmation, and this endpoint replaces the whole object, ` +
-  'so a write composed from the older read would delete whatever changed in between'
-
-/** Why nothing was sent when the object moved under an open confirmation. A
- *  confirmation describes one before → after; if that is no longer the change,
- *  this one is void rather than stale, and nothing re-asks from a dialog the
- *  user has already dismissed. */
-const diffMovedNote = (what: string, approved: readonly DiffRow[], now: readonly DiffRow[]) => {
-  const say = (rows: readonly DiffRow[]) =>
-    rows.length === 0 ? 'nothing' : rows.map((d) => `${d.key} (${JSON.stringify(d.before) ?? 'absent'} → ${JSON.stringify(d.after) ?? 'absent'})`).join(', ')
-  return (
-    `not applied — ${what} changed while that confirmation was open, and the change you approved is not the change that would now be ` +
-    `applied. Approved: ${say(approved)}. Would now apply: ${say(now)}. Look at the object in Cribl and re-apply.`
-  )
-}
-
-/**
- * The body to PATCH, composed from a read taken AFTER the answer — or the
- * reason nothing may be sent.
- *
- * The counterpart of lakeLanding.ts's `destinationMergeSourceAfterConfirm`, and
- * it refuses on the same three conditions for the same reasons: an unreadable
- * second read sends nothing, an empty second diff is a no-op rather than a
- * conflict (somebody applied exactly this while the dialog was open), and a diff
- * that moved voids the confirmation.
- *
- * ONLY THE DIFF IS COMPARED, not the body. A key this app has never heard of
- * that moved in between is carried forward rather than reverted, because the
- * body sent is built from the body that holds it — and nothing here has to guess
- * a list of server-derived keys whose movement is not a conflict.
- *
- * IT TAKES THE RESPONSE, NOT THE PATH. The second GET stays at each call site,
- * spelled exactly as the first one is, because cribl/policyCoverage.test.ts
- * resolves every `capi(...)` path statically and a path threaded through a
- * parameter is one it cannot read — an endpoint this app calls that no test can
- * check against config/policies.yml is how a 403 reaches a non-admin.
- */
-function mergeSourceAfterConfirm(
-  key: ResourceKey,
-  again: ApiResp,
-  what: string,
-  spec: Record<string, unknown>,
-  serverOwned: readonly string[],
-  approved: readonly DiffRow[],
-): { body: Record<string, unknown>; diff: DiffRow[] } | { stop: StepResult } {
-  const live = again.status === 200 ? firstItem(again) : null
-  if (!live) return { stop: { key, action: 'error', detail: reReadFailed(what) } }
-  const body = patchBody(live, spec, serverOwned)
-  const now = bodyDiff(live, body)
-  if (now.length === 0) return { stop: { key, action: 'exists', detail: 'nothing left to change — it was applied while that confirmation was open' } }
-  if (!sameDiff(approved, now)) return { stop: { key, action: 'error', detail: diffMovedNote(what, approved, now) } }
-  return { body, diff: now }
-}
-
-/**
- * The Lake dataset: created when absent, and never edited from here.
- *
- * NOT PARAMETERISED INTO A PATCH, deliberately. Retention and description on a
- * live dataset are the Lake landing panel's to change (cribl/lakeLanding.ts), one
- * field at a time, each behind a confirmation that can state what a retention
- * DECREASE deletes. A provisioning re-apply that quietly reset retention to this
- * spec's 30 days would be that irreversible write with no dialog in front of it.
- */
-async function ensureDataset(ctx: EnsureCtx): Promise<StepResult> {
-  const r = await ensureLakeDataset(datasetSpec(ctx.profile) as LakeDatasetSpec, {
-    confirm: () => agreed(ctx.confirm, { key: 'dataset', action: 'create', object: RESOURCE_PHRASE.dataset, diff: [] }),
-  })
-  if (r.action === 'skipped') return refused('dataset')
-  // A dataset that exists with another format or partitions is left as it is —
-  // both are fixed at creation — and the step says so, rather than a bare
-  // "exists" over a dataset the saved landing does not describe.
-  const detail = r.differs?.length
-    ? `left as it is: ${r.differs.join('; ')} (format and partitions are fixed at creation)`
-    : r.detail
-  return detail === undefined ? { key: 'dataset', action: r.action } : { key: 'dataset', action: r.action, detail }
 }
 
 /** A Lake dataset's create body: `id` plus whatever else Cribl Lake takes. */
@@ -1363,9 +763,10 @@ const partitionWords = (v: unknown): string =>
   Array.isArray(v) && v.length > 0 ? v.map(String).join(', ') : 'none'
 
 /**
- * A Cribl Lake dataset: CREATED WHEN ABSENT, AND NEVER EDITED. Guided Setup's
- * dataset step is this with `gigamon_ami`'s spec; the onboarding run is to call
- * it with the Parquet copy's and the sample dataset's.
+ * A Cribl Lake dataset: CREATED WHEN ABSENT, AND NEVER EDITED. The onboarding
+ * run calls it with `gigamon_ami`'s spec, the Parquet copy's and — when sample
+ * data is ticked — the sample dataset's. *(Until 2026-09-25 Guided Setup's Raw
+ * HTTP deploy was a second caller, for `gigamon_ami`.)*
  *
  * NO PATCH, ON PURPOSE. Retention and description on a live dataset are the
  * Lake landing panel's to change (cribl/lakeLanding.ts), each behind a
@@ -1405,124 +806,10 @@ export async function ensureLakeDataset(
   return r.status >= 200 && r.status < 300 ? { id: spec.id, action: 'created' } : { id: spec.id, action: 'error', detail: errText(r) }
 }
 
-/**
- * The Lake destination: created when absent, and never edited from here either,
- * for a second reason on top of the dataset's.
- *
- * LEFT_BEHIND in cribl/paths.ts records that this app cannot prove it made this
- * object — it is named after the dataset rather than after this app, it already
- * exists on many tenants, and anything else in the customer's config may route
- * through it. Phase 3 does edit it, from the Lake landing panel, as a
- * read-modify-write behind a confirmation that shows the exact before→after,
- * names every feed writing through it and commits the result. A provisioning
- * re-apply cannot do any of that, so it does not write here at all.
- */
-async function ensureDestination(ctx: EnsureCtx): Promise<StepResult> {
-  const cur = await capi('GET', g(ctx.group, `/system/outputs/${LAKE_DESTINATION_ID}`))
-  if (cur.status === 200) return { key: 'destination', action: 'exists' }
-
-  const spec = destinationSpecFor(ctx.profile)
-  if (!(await agreed(ctx.confirm, { key: 'destination', action: 'create', object: RESOURCE_PHRASE.destination, diff: [] }))) {
-    return refused('destination')
-  }
-  const r = await capi('POST', g(ctx.group, '/system/outputs'), spec)
-  return r.status >= 200 && r.status < 300
-    ? { key: 'destination', action: 'created' }
-    : { key: 'destination', action: 'error', detail: errText(r) }
-}
-
-async function ensurePipeline(ctx: EnsureCtx): Promise<StepResult> {
-  const cur = await capi('GET', g(ctx.group, `/pipelines/${HTTP_PIPELINE_ID}`))
-  if (cur.status === 200) {
-    // openapi.json, PATCH /pipelines/{id} (Cribl 4.19.0, read 2026-09-17):
-    // "Provide a complete representation of the Pipeline that you want to update
-    //  in the request body. This endpoint does not support partial updates.
-    //  Cribl removes any omitted fields when updating the Pipeline."
-    // So this PATCHes the object it just read with PIPELINE_SPEC asserted onto
-    // it, the way ensureRoute has always edited the table it just read. Sending
-    // PIPELINE_SPEC itself — `{ id, conf }` — deleted the pipeline's
-    // `description` and its UI function `groups`, and replaced the whole `conf`.
-    const live = firstItem(cur)
-    // No live body, no merge, no write. See `unreadable`.
-    if (!live) return { key: 'pipeline', action: 'error', detail: unreadable('pipeline') }
-    const body = patchBody(live, PIPELINE_SPEC, PIPELINE_SERVER_OWNED)
-    // Present and already correct is a no-op — not even a PATCH, so the group's
-    // Git status stays clean and a re-apply of a settled stack cannot reach the
-    // deploy that restarts its Worker Processes.
-    const diff = bodyDiff(live, body)
-    if (diff.length === 0) return { key: 'pipeline', action: 'exists' }
-    if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'overwrite', object: RESOURCE_PHRASE.pipeline, diff }))) {
-      return refused('pipeline')
-    }
-    // `body` above filled the dialog and is NOT what is sent — see
-    // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
-    const merge = mergeSourceAfterConfirm(
-      'pipeline', await capi('GET', g(ctx.group, `/pipelines/${HTTP_PIPELINE_ID}`)), `pipeline ${HTTP_PIPELINE_ID}`,
-      PIPELINE_SPEC, PIPELINE_SERVER_OWNED, diff,
-    )
-    if ('stop' in merge) return merge.stop
-    const r = await capi('PATCH', g(ctx.group, `/pipelines/${HTTP_PIPELINE_ID}`), merge.body)
-    return r.status === 200
-      ? { key: 'pipeline', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
-      : { key: 'pipeline', action: 'error', detail: errText(r) }
-  }
-  if (!(await agreed(ctx.confirm, { key: 'pipeline', action: 'create', object: RESOURCE_PHRASE.pipeline, diff: [] }))) {
-    return refused('pipeline')
-  }
-  const r = await capi('POST', g(ctx.group, '/pipelines'), PIPELINE_SPEC)
-  return r.status >= 200 && r.status < 300
-    ? { key: 'pipeline', action: 'created' }
-    : { key: 'pipeline', action: 'error', detail: errText(r) }
-}
-
-/** This app's ownership stamp on its ruleset: the description it writes. */
-const stampedBreaker = (live: Record<string, unknown>) => live.description === HTTP_BREAKER_SPEC.description
+/** This app's ownership stamp on its ruleset: the description it wrote. */
+const stampedBreaker = (live: Record<string, unknown>) => live.description === HTTP_BREAKER_DESCRIPTION
 const NOT_OUR_BREAKER =
-  `a ruleset named ${HTTP_BREAKER_ID} exists without the description this app writes, so it may not be this app's, and this app leaves it alone`
-
-/**
- * The event breaker ruleset the source names. Before the source, because a
- * source naming a ruleset the group does not have breaks nothing into events.
- *
- * The same read → merge → confirm → re-read → PATCH shape as the pipeline, for
- * the same reason: openapi.json, PATCH /lib/breakers/{id} — "This endpoint does
- * not support partial updates. Cribl removes any omitted fields when updating
- * the Event Breaker Ruleset." A ruleset somebody added a second rule to keeps
- * it only if the body sent carries it, and `mergeSpec` replaces a `rules` array
- * whose length changed — which the diff then shows as a `rules` row.
- */
-async function ensureBreaker(ctx: EnsureCtx): Promise<StepResult> {
-  const cur = await capi('GET', g(ctx.group, `/lib/breakers/${HTTP_BREAKER_ID}`))
-  if (cur.status === 200) {
-    const live = firstItem(cur)
-    if (!live) return { key: 'breaker', action: 'error', detail: unreadable('event breaker ruleset') }
-    // The fixed id is not proof this app made it. A ruleset that does not carry
-    // this app's description is somebody else's, and is left as it is.
-    if (!stampedBreaker(live)) return { key: 'breaker', action: 'error', detail: `not applied — ${NOT_OUR_BREAKER}` }
-    const body = patchBody(live, HTTP_BREAKER_SPEC, BREAKER_SERVER_OWNED)
-    const diff = bodyDiff(live, body)
-    if (diff.length === 0) return { key: 'breaker', action: 'exists' }
-    if (!(await agreed(ctx.confirm, { key: 'breaker', action: 'overwrite', object: RESOURCE_PHRASE.breaker, diff }))) {
-      return refused('breaker')
-    }
-    const merge = mergeSourceAfterConfirm(
-      'breaker', await capi('GET', g(ctx.group, `/lib/breakers/${HTTP_BREAKER_ID}`)), `event breaker ruleset ${HTTP_BREAKER_ID}`,
-      HTTP_BREAKER_SPEC, BREAKER_SERVER_OWNED, diff,
-    )
-    if ('stop' in merge) return merge.stop
-    const r = await capi('PATCH', g(ctx.group, `/lib/breakers/${HTTP_BREAKER_ID}`), merge.body)
-    return r.status === 200
-      ? { key: 'breaker', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
-      : { key: 'breaker', action: 'error', detail: errText(r) }
-  }
-  if (!(await agreed(ctx.confirm, { key: 'breaker', action: 'create', object: RESOURCE_PHRASE.breaker, diff: [] }))) {
-    return refused('breaker')
-  }
-  const r = await capi('POST', g(ctx.group, '/lib/breakers'), HTTP_BREAKER_SPEC)
-  return r.status >= 200 && r.status < 300
-    ? { key: 'breaker', action: 'created' }
-    : { key: 'breaker', action: 'error', detail: errText(r) }
-}
+  `a ruleset named ${HTTP_BREAKER_ID} exists without the description this app wrote, so it may not be this app's, and this app leaves it alone`
 
 /** Every port the group's sources already listen on, or null when one of them
  *  has a port this app cannot read — "cannot tell", which is never "free". */
@@ -1585,78 +872,13 @@ export function hostingOf(onPrem: boolean | null | undefined, host: string | nul
   return null
 }
 
-async function ensureSource(ctx: EnsureCtx): Promise<StepResult> {
-  const cur = await capi('GET', g(ctx.group, `/system/inputs/${HTTP_SOURCE_ID}`))
-  if (cur.status === 200) {
-    // openapi.json, PATCH /system/inputs/{id} (Cribl 4.19.0, read 2026-09-17):
-    // "Provide a complete representation of the Source that you want to update
-    //  in the request body. This endpoint does not support partial updates.
-    //  Cribl removes any omitted fields when updating the Source."
-    // SOURCE_SPEC names a handful of keys and a live Raw HTTP source has thirty
-    // (openapi.json `InputHttpRaw`) — among them its port, its TLS block and its
-    // auth tokens, none of which a re-apply asserts. Sending the spec would
-    // delete all three. Merge onto what we just read, exactly as ensureRoute does.
-    const live = firstItem(cur)
-    if (!live) return { key: 'source', action: 'error', detail: unreadable('Raw HTTP source') }
-    const body = patchBody(live, SOURCE_SPEC, SOURCE_SERVER_OWNED)
-    const diff = bodyDiff(live, body)
-    if (diff.length === 0) return { key: 'source', action: 'exists' }
-    if (!(await agreed(ctx.confirm, { key: 'source', action: 'overwrite', object: RESOURCE_PHRASE.source, diff }))) {
-      return refused('source')
-    }
-    // `body` above filled the dialog and is NOT what is sent — see
-    // `mergeSourceAfterConfirm`, and read its header before wiring `confirm`.
-    const merge = mergeSourceAfterConfirm(
-      'source', await capi('GET', g(ctx.group, `/system/inputs/${HTTP_SOURCE_ID}`)), `Raw HTTP source ${HTTP_SOURCE_ID}`,
-      SOURCE_SPEC, SOURCE_SERVER_OWNED, diff,
-    )
-    if ('stop' in merge) return merge.stop
-    const r = await capi('PATCH', g(ctx.group, `/system/inputs/${HTTP_SOURCE_ID}`), merge.body)
-    // The body carried the source's existing auth tokens, and a refusal can
-    // quote the body it refused.
-    return r.status === 200
-      ? { key: 'source', action: 'updated', detail: merge.diff.map((d) => d.key).join(', ') }
-      : { key: 'source', action: 'error', detail: scrubbedErrText(r, tokensOf(merge.body)) }
-  }
-
-  // A NEW SOURCE needs three things a re-apply never sends: a port, TLS, and a
-  // token. Without a chosen port there is nothing honest to create.
-  const ingress = ctx.ingress
-  if (!ingress) {
-    return { key: 'source', action: 'error', detail: 'not applied — no port was chosen for the new Raw HTTP source' }
-  }
-  // The port is checked again HERE, against the group as it is now, rather than
-  // trusted from the picker: the picker read the group when the page loaded, and
-  // two sources on one port fail to bind on every worker in the group.
-  const inputs = await groupInputs(ctx.group)
-  const problem = portProblem(ingress.port, ingress.managed, inputs ? portsInUse(inputs) : null)
-  if (problem) return { key: 'source', action: 'error', detail: `not applied — port ${ingress.port}: ${problem}` }
-
-  if (!(await agreed(ctx.confirm, { key: 'source', action: 'create', object: RESOURCE_PHRASE.source, diff: [] }))) {
-    return refused('source')
-  }
-  // Generated here, after the answer, so a refused run never made one. It goes
-  // into the POST and to `onToken`, and nowhere else: not into the step result,
-  // the phase text, the commit message or the audit trail.
-  const token = generateToken()
-  const r = await capi('POST', g(ctx.group, '/system/inputs'), sourceCreateBody(ingress, token))
-  if (r.status >= 200 && r.status < 300) {
-    ctx.onToken(token)
-    return { key: 'source', action: 'created', detail: `port ${ingress.port}` }
-  }
-  // Scrubbed, because this string reaches the step log on screen and nothing
-  // guarantees Cribl's error message never quotes the body it refused — and
-  // scrubbed from the body, before `errText` shortens it (see `scrubbedErrText`).
-  return { key: 'source', action: 'error', detail: scrubbedErrText(r, [token]) }
-}
-
 // --- The routing table ----------------------------------------------------
 //
 // A group has ONE routing table, and `PATCH /m/<group>/routes/<id>` replaces it
 // wholesale — the array in the request body becomes the customer's routing
-// order. That makes these the most dangerous few lines in the app, so they are
-// written as an edit of the table that was just read, never as a table composed
-// from our spec plus "everything else".
+// order. So the teardown writes it as an edit of the table it just read — the
+// entries being removed taken out, every other route at its index — never as a
+// table composed from scratch.
 
 /** The routing table as the leader returns it. `comments` and `groups` (Route
  *  Groups) ride along in the same object, so the index signature is not
@@ -1677,98 +899,6 @@ async function readRoutes(group: string): Promise<RoutingTable | null> {
 const isOurRoute = (r: Record<string, unknown>) => r.id === HTTP_ROUTE_ID || r.name === HTTP_ROUTE_ID
 /** The Syslog route an earlier release inserted. Matched only for removal. */
 const isLegacyRoute = (r: Record<string, unknown>) => r.id === LEGACY_SYSLOG_ROUTE_ID || r.name === LEGACY_SYSLOG_ROUTE_ID
-
-/**
- * Where a NEW route goes: directly above the catch-all. Cribl's table ends with
- * a `default` route that matches everything, and a route below a final
- * match-everything route never sees an event. This returns an insertion point
- * and nothing else — every existing route keeps the index the customer gave it.
- */
-function insertionIndex(routes: Array<Record<string, unknown>>): number {
-  const named = routes.findIndex((r) => r.id === 'default' || r.name === 'default')
-  if (named !== -1) return named
-  // No route called `default`: whatever matches unconditionally is the catch-all
-  // in practice, whatever it is called. Failing that, the end of the table.
-  const unconditional = routes.findIndex((r) => r.filter === 'true' || r.filter === true)
-  return unconditional === -1 ? routes.length : unconditional
-}
-
-/**
- * Add our route when it is missing; leave it exactly where it is when it is not.
- *
- * Position is configuration. An earlier version of this rebuilt the table as
- * `[ours, ...theirs]` on every run, so re-applying an already-installed stack
- * silently moved our route to the top of somebody's table — and a re-apply is a
- * button this tab offers. Now: present and already correct is a no-op (not even
- * a PATCH, so the group's Git status stays clean); present and stale is patched
- * in place at its own index; absent is a single splice above the catch-all.
- */
-async function ensureRoute(ctx: EnsureCtx): Promise<StepResult> {
-  const obj = await readRoutes(ctx.group)
-  if (!obj) return { key: 'route', action: 'error', detail: 'routing table not found' }
-  const at = obj.routes.findIndex(isOurRoute)
-  // The entry this run would send: the live one with ROUTE_SPEC asserted onto
-  // it, so fields we never set — `groupId`, when somebody filed the route into a
-  // Route Group — carry forward. This is the merge the pipeline and the source
-  // did not have until now; it is the same `mergeSpec` for all three, and the
-  // diff below is read off it rather than off the spec.
-  const merged = at !== -1 ? (mergeSpec(obj.routes[at], ROUTE_SPEC) as Record<string, unknown>) : null
-  const diff = merged ? bodyDiff(obj.routes[at], merged) : []
-  if (at !== -1 && diff.length === 0) return { key: 'route', action: 'exists' }
-
-  if (!(await agreed(ctx.confirm, {
-    key: 'route',
-    action: at !== -1 ? 'overwrite' : 'create',
-    object: RESOURCE_PHRASE.route,
-    diff,
-  }))) {
-    return refused('route')
-  }
-
-  // ── THE TABLE THAT IS SENT IS THE TABLE READ AFTER THE ANSWER ─────────────
-  //
-  // `obj` above filled the dialog and is NOT what is sent. This PATCH replaces
-  // the group's ENTIRE routing table, so a table read before a user-paced
-  // confirmation reverts every route another admin added, reordered or deleted
-  // while that dialog was open — the worst instance of the hazard written out
-  // at `mergeSourceAfterConfirm`, because one request carries every route in
-  // the group rather than one object. Read that header before wiring `confirm`.
-  const what = `route ${HTTP_ROUTE_ID} in ${ctx.group}`
-  const fresh = await readRoutes(ctx.group)
-  if (!fresh) return { key: 'route', action: 'error', detail: reReadFailed(`the routing table of ${ctx.group}`) }
-  const freshAt = fresh.routes.findIndex(isOurRoute)
-  if ((freshAt !== -1) !== (at !== -1)) {
-    // The approved ACTION moved, not just its diff: our route appeared or
-    // disappeared while the dialog was open, so "add it above the catch-all"
-    // and "correct it where it sits" are no longer the same press.
-    return {
-      key: 'route',
-      action: 'error',
-      detail:
-        `not applied — ${what} was ${at !== -1 ? 'removed from' : 'added to'} the routing table while that confirmation was open, so the ` +
-        'change you approved is not the change that would now be applied. Look at the routing table in Cribl and re-apply.',
-    }
-  }
-  const freshMerged = freshAt !== -1 ? (mergeSpec(fresh.routes[freshAt], ROUTE_SPEC) as Record<string, unknown>) : null
-  const freshDiff = freshMerged ? bodyDiff(fresh.routes[freshAt], freshMerged) : []
-  if (freshAt !== -1) {
-    if (freshDiff.length === 0) {
-      return { key: 'route', action: 'exists', detail: 'nothing left to change — it was applied while that confirmation was open' }
-    }
-    if (!sameDiff(diff, freshDiff)) return { key: 'route', action: 'error', detail: diffMovedNote(what, diff, freshDiff) }
-  }
-
-  const routes = fresh.routes.slice()
-  // The merged entry, which is what the diff above described — merged onto the
-  // second read, so a field somebody else set on our route in the meantime is
-  // carried forward rather than reverted.
-  if (freshMerged) routes[freshAt] = freshMerged
-  else routes.splice(insertionIndex(routes), 0, ROUTE_SPEC)
-
-  const r = await capi('PATCH', g(ctx.group, `/routes/${fresh.id}`), { ...fresh, routes })
-  if (r.status !== 200) return { key: 'route', action: 'error', detail: errText(r) }
-  return { key: 'route', action: freshAt !== -1 ? 'updated' : 'created' }
-}
 
 // --- Deploy ---------------------------------------------------------------
 
@@ -1989,9 +1119,10 @@ export async function undeployedHead(group: string = DEFAULT_STREAM_GROUP): Prom
  * CAN WE PROVE IT TOUCHES THIS GROUP — the hash of a commit this group has not
  * deployed AND that moved a file belonging to it, or null.
  *
- * This is what the screen needs. `ProvisionPanel` renders it as "commit #X
- * touches ${group} and has not been deployed to it" and offers a deploy that
- * restarts that group's Worker Processes, so a claim derived from a signal that
+ * This is what the screen needs. `ProvisionPanel` renders it as "${group} is
+ * behind a commit that touches it", and every Guided Setup confirmation says
+ * that its deploy — which restarts that group's Worker Processes — carries that
+ * commit live, so a claim derived from a signal that
  * cannot distinguish this group from any other is not good enough. "Could not
  * tell" answers null, exactly like "nothing pending".
  *
@@ -2253,8 +1384,7 @@ export async function commitMatchingAndDeploy(
 /**
  * One entry in this app's own audit trail per completed run.
  *
- * These two actions are the only things the app does to customer configuration,
- * and the only record of them otherwise is a toast that is gone in four seconds
+ * A teardown is a change to customer configuration, and the only record of them otherwise is a toast that is gone in four seconds
  * and a Git commit that does not say who pressed the button. `appendLog` stamps
  * the user and the time itself (cribl/kv.ts).
  *
@@ -2273,105 +1403,6 @@ function logRun(action: string, group: string, steps: StepResult[]): void {
     outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
     steps: steps.map((s) => `${s.key}:${s.action}`),
   })
-}
-
-/** What a caller may say about a run. */
-export interface DeployOptions {
-  /** Asked once per object that is actually about to be written. See
-   *  `preConfirmed` for what passing nothing means. */
-  confirm?: ConfirmChange
-  /**
-   * The landing to provision. Nothing passes one today, and `DEFAULT_PROFILE` is
-   * byte-for-byte the stack this app has always created.
-   *
-   * It is a parameter rather than a constant because §2.4's whole point is that
-   * the landing is a choice somebody can make — but note what this release will
-   * and will not do with it: a profile only reaches Cribl through a CREATE here,
-   * so a profile naming Parquet or partitions describes a dataset this phase can
-   * bring into existence and cannot migrate an existing one to.
-   */
-  profile?: LandingProfile
-  /**
-   * The port and TLS mode for a source that does not exist yet. Read only when
-   * the run has to CREATE the source; a run that finds it present re-applies
-   * `SOURCE_SPEC` and leaves port, TLS and token exactly as they are. Absent
-   * with no source in the group, the source step fails and nothing after it runs.
-   */
-  ingress?: HttpIngress
-  /**
-   * Called once, with the new source's auth token, when — and only when — this
-   * run created the source. The caller shows it and keeps it nowhere else.
-   */
-  onToken?: (token: string) => void
-}
-
-/** Provision the whole stack in dependency order, reporting each step. */
-export async function deployAll(
-  onStep: (r: StepResult) => void,
-  group: string = DEFAULT_STREAM_GROUP,
-  onPhase: OnPhase = noopPhase,
-  opts: DeployOptions = {},
-): Promise<StepResult[]> {
-  const out: StepResult[] = []
-  const ctx: EnsureCtx = {
-    group,
-    profile: opts.profile ?? DEFAULT_PROFILE,
-    confirm: opts.confirm ?? preConfirmed,
-    ingress: opts.ingress ?? null,
-    onToken: opts.onToken ?? (() => {}),
-  }
-  // Dataset lives in Cribl Lake and is group-independent; the rest target the
-  // chosen Stream worker group. The breaker before the source that names it,
-  // the pipeline before the route that sends to it.
-  const steps: Array<[ResourceKey, () => Promise<StepResult>]> = [
-    ['dataset', () => ensureDataset(ctx)],
-    ['destination', () => ensureDestination(ctx)],
-    ['breaker', () => ensureBreaker(ctx)],
-    ['pipeline', () => ensurePipeline(ctx)],
-    ['source', () => ensureSource(ctx)],
-    ['route', () => ensureRoute(ctx)],
-  ]
-  for (let i = 0; i < steps.length; i++) {
-    const [key, fn] = steps[i]
-    onPhase({ kind: 'provision', text: `Applying ${STEP_LABELS[key]}…` })
-    const r = await fn()
-    out.push(r)
-    onStep(r)
-    // A refusal and a failure stop the run the same way and for the same reason —
-    // the steps below each depend on the ones above — but they are not the
-    // same event, and reporting "failed" for an answer somebody gave on purpose
-    // is how a dialog stops being believed. `skipped` from an ensure* means the
-    // confirmation said no and nothing else does (see NOT_CONFIRMED).
-    if (r.action === 'error' || r.action === 'skipped') {
-      const stopped = r.action === 'error'
-      onPhase(
-        stopped
-          ? { kind: 'error', text: `${STEP_LABELS[key]} failed — ${r.detail ?? ''}` }
-          : { kind: 'done', text: `${STEP_LABELS[key]} was not confirmed — stopped there.` },
-      )
-      // The remaining steps depend on the one that just stopped — mark them
-      // skipped (with the blocking step named) rather than leaving them a bare
-      // "absent", and commit nothing.
-      const because = stopped ? `blocked by ${STEP_LABELS[key]}` : `not reached — ${STEP_LABELS[key]} was not confirmed`
-      for (const [k2] of steps.slice(i + 1)) {
-        const sk: StepResult = { key: k2, action: 'skipped', detail: because }
-        out.push(sk); onStep(sk)
-      }
-      // A run that stopped part-way still created whatever came before, so it is
-      // exactly as worth recording as one that finished.
-      logRun('onboarding_stack.applied', group, out)
-      return out
-    }
-  }
-  // Only the resources we actually created/updated get committed — nothing else.
-  const touchedKeys = out
-    .filter((s) => (s.action === 'created' || s.action === 'updated') && groupFile(group, s.key as CommitKey))
-    .map((s) => s.key as CommitKey)
-  const files = await filesToCommit(group, touchedKeys)
-  const cd = await commitAndDeploy(deployCommitMessage(group, out), group, files, markersFor(touchedKeys), onStep, onPhase)
-  const all = [...out, ...cd]
-  logRun('onboarding_stack.applied', group, all)
-  return all
 }
 
 /** One DELETE's answer as a step. 404 is "already gone" (a racy partial
@@ -2398,7 +1429,7 @@ export type RemovalPresence = Partial<Record<CommitKey, ResourceState>>
 
 /** The HTTP stack's keys, and the old Syslog stack's. A presence map holding
  *  only `LEGACY_KEYS` removes only the old stack — see `legacyOnly`. */
-export const HTTP_KEYS: readonly ResourceKey[] = Object.freeze(['source', 'pipeline', 'route', 'breaker'])
+export const HTTP_KEYS: readonly HttpKey[] = Object.freeze(['source', 'pipeline', 'route', 'breaker'])
 
 /** The part of a presence map that is the old Syslog stack, alone — what
  *  "Remove old Syslog objects" passes, so the HTTP source, its token and its
@@ -2410,9 +1441,9 @@ export function legacyOnly(present: RemovalPresence): RemovalPresence {
 }
 
 /**
- * Tear down what `present` says is there: this release's Raw HTTP source,
- * pipeline, route entry and breaker ruleset, and the Syslog source, pipeline and
- * route an earlier release created. Only those fixed ids — plus, for the
+ * Tear down what `present` says is there: the Raw HTTP source, pipeline, route
+ * entry and breaker ruleset, and the Syslog source, pipeline and route, that
+ * earlier releases created. Only those fixed ids — plus, for the
  * ruleset, this app's description stamp and a check that no other source names
  * it. Leaves the shared dataset and destination in place.
  */
@@ -2430,7 +1461,7 @@ export async function removeOnboardingStack(
     if (res.detail === 'deleted') touched.push(res.key as CommitKey)
   }
 
-  // Routes: remove the entries being removed — this release's, the old Syslog
+  // Routes: remove the entries being removed — the Raw HTTP one, the old Syslog
   // one, or both — in ONE edit of the table, keeping every other route at its
   // index. An entry not being removed stays, whichever stack it belongs to.
   const routeKeys = (['route', 'legacy_route'] as const).filter(exists)
@@ -2493,8 +1524,7 @@ export async function removeOnboardingStack(
  *     its state was never known, deleting the ruleset leaves `in_gigamon_http`
  *     naming a ruleset that does not exist.
  *   * THE ID IS NOT PROOF OF OWNERSHIP. The ruleset must carry the description
- *     this app writes (`HTTP_BREAKER_SPEC.description`), the same stamp
- *     `ensureBreaker` checks before overwriting it.
+ *     earlier releases of this app wrote (`HTTP_BREAKER_DESCRIPTION`).
  *   * IT IS A LIBRARY OBJECT. Any other source in the group — the customer's
  *     own, or one inside a pack — may name it. Their sources are read, and a
  *     read that fails keeps it: "could not check" is not "nobody uses it".
