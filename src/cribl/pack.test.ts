@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { describe, it, expect } from 'vitest'
 import {
-  PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody,
+  PIPELINE_SPEC, PARQUET_PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody,
   HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID, CLOUD_PORT_RANGE, tlsFor,
   LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
   DATASET_SPEC, PARQUET_DATASET_SPEC,
@@ -40,7 +40,8 @@ import {
 import { DEFAULT_PROFILE, destinationSpec, pathFilterRows, type LandingProfile } from './landing'
 import {
   PACK_ID, PACK_VERSION, PACK_URL, packTag, packAssetName,
-  PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_BREAKER_ID, PACK_PIPELINE_ID,
+  PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_BREAKER_ID, PACK_PIPELINE_ID, PACK_PARQUET_PIPELINE_ID,
+  PACK_OBJECTS, PACK_0_2_1_OBJECTS,
   PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID,
   PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID,
   PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID,
@@ -159,9 +160,43 @@ describe('the pack pipeline is provision.ts\'s PIPELINE_SPEC: cast and derive, n
     expect(pipeline(PACK_PIPELINE_ID).functions).toEqual(PIPELINE_SPEC.conf.functions)
   })
 
-  it('is the only pipeline, and every route runs it', () => {
-    expect(pipelineDirs()).toEqual([PACK_PIPELINE_ID])
-    for (const r of routes) expect(r.pipeline).toBe(PACK_PIPELINE_ID)
+  it('is run by the JSON and sample routes, which keep _raw', () => {
+    expect(route(PACK_HTTP_JSON_ROUTE_ID)?.pipeline).toBe(PACK_PIPELINE_ID)
+    expect(route(PACK_SAMPLE_ROUTE_ID)?.pipeline).toBe(PACK_PIPELINE_ID)
+    expect(JSON.stringify(pipeline(PACK_PIPELINE_ID))).not.toMatch(/_raw/)
+  })
+})
+
+// 0.2.2 (owner decision 2026-09-25): the Parquet copy drops _raw, the JSON copy
+// keeps it. The removal is an Eval `remove`, after the same two functions.
+describe('the Parquet pipeline is provision.ts\'s PARQUET_PIPELINE_SPEC: the same cast and derive, then _raw removed', () => {
+  const parquet = pipeline(PACK_PARQUET_PIPELINE_ID) as Obj & { functions: Obj[] }
+
+  it('carries the three functions, value for value', () => {
+    expect(PARQUET_PIPELINE_SPEC.id).toBe(PACK_PARQUET_PIPELINE_ID)
+    expect(parquet.functions).toEqual(PARQUET_PIPELINE_SPEC.conf.functions)
+  })
+
+  it('begins with PIPELINE_SPEC\'s functions exactly, so the two copies land the same fields', () => {
+    expect(PARQUET_PIPELINE_SPEC.conf.functions.slice(0, -1)).toEqual(PIPELINE_SPEC.conf.functions)
+    expect(parquet.functions.slice(0, -1)).toEqual(pipeline(PACK_PIPELINE_ID).functions)
+  })
+
+  it('ends with one enabled Eval, on every event, that removes _raw and nothing else', () => {
+    expect(parquet.functions.at(-1)).toEqual({
+      id: 'eval', filter: 'true', disabled: false, description: 'Remove _raw from the Parquet copy', conf: { remove: ['_raw'] },
+    })
+  })
+
+  it('differs from gigamon_ami_normalize\'s file only in its functions and description', () => {
+    expect(without(parquet, 'functions', 'description')).toEqual(without(pipeline(PACK_PIPELINE_ID) as Obj, 'functions', 'description'))
+    expect(parquet.description).not.toBe((pipeline(PACK_PIPELINE_ID) as Obj).description)
+  })
+
+  it('is run by the Parquet route only', () => {
+    expect(pipelineDirs().sort()).toEqual([PACK_PIPELINE_ID, PACK_PARQUET_PIPELINE_ID].sort())
+    expect(routes.filter((r) => r.pipeline === PACK_PARQUET_PIPELINE_ID).map((r) => r.id)).toEqual([PACK_HTTP_PARQUET_ROUTE_ID])
+    expect(outputs[route(PACK_HTTP_PARQUET_ROUTE_ID)!.output as string].format).toBe('parquet')
   })
 })
 
@@ -253,14 +288,14 @@ describe('the pack routes', () => {
     expect(ROUTE_SPEC.final).toBe(true)
   })
 
-  it('HTTP → Parquet is the same route, final, to the Parquet destination only', () => {
+  it('HTTP → Parquet is the same route, final, through the Parquet pipeline to the Parquet destination only', () => {
     expect(route(PACK_HTTP_PARQUET_ROUTE_ID)).toEqual({
       ...ROUTE_SPEC,
       id: PACK_HTTP_PARQUET_ROUTE_ID,
       name: PACK_HTTP_PARQUET_ROUTE_ID,
       final: true,
       filter: http,
-      pipeline: PACK_PIPELINE_ID,
+      pipeline: PACK_PARQUET_PIPELINE_ID,
       output: PACK_PARQUET_OUTPUT_ID,
       description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami_pq, Parquet)',
     })
@@ -572,13 +607,14 @@ describe('Data Flow\'s stack list names each pack release\'s own ids', () => {
   })
 
   it('pack-0.2 is this build\'s pack ids, by their in-pack metric labels, and released since 0.2.0 was', () => {
-    // 0.2.0 (published) and 0.2.1 (this build) ship the same objects under the
-    // same ids, so one stack names both.
+    // 0.2.0 and 0.2.1 (published) and 0.2.2 (this build) ship the same
+    // sources, routes and destinations under the same ids, so one stack names
+    // all three; the Parquet path names 0.2.2's pipeline for the reader only.
     expect(PACK_PUBLISHED_VERSIONS).toContain('0.2.0')
     expect(stack('pack-0.2')?.status).toBe('released')
     expect(stack('pack-0.2')?.paths).toEqual([
       { route: packRouteLabel(PACK_HTTP_JSON_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_JSON_OUTPUT_ID), dataset: PACK_LAKE_DATASET_ID },
-      { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
+      { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PARQUET_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
       { route: packRouteLabel(PACK_SAMPLE_ROUTE_ID), input: packInputLabel('datagen', PACK_SAMPLE_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_SAMPLE_OUTPUT_ID), dataset: PACK_SAMPLE_DATASET_ID },
     ])
     expect(stack('pack-0.2.0')).toBeUndefined()
@@ -596,9 +632,31 @@ describe('pack ids', () => {
   it('are exactly the ids pack.ts names', () => {
     expect([...packIds].sort()).toEqual([
       PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID, PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID,
-      PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID, PACK_PIPELINE_ID, PACK_BREAKER_ID,
+      PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID, PACK_PIPELINE_ID, PACK_PARQUET_PIPELINE_ID, PACK_BREAKER_ID,
       ...Object.keys(samples),
     ].sort())
+  })
+
+  it('PACK_OBJECTS lists exactly the pack\'s objects, by kind', () => {
+    expect([...PACK_OBJECTS.inputs].sort()).toEqual(Object.keys(inputs).sort())
+    expect([...PACK_OBJECTS.breakers].sort()).toEqual(Object.keys(breakers).sort())
+    expect([...PACK_OBJECTS.pipelines].sort()).toEqual(pipelineDirs().sort())
+    expect([...PACK_OBJECTS.routes]).toEqual(routes.map((r) => r.id))
+    expect([...PACK_OBJECTS.outputs].sort()).toEqual(Object.keys(outputs).sort())
+  })
+
+  it('PACK_0_2_1_OBJECTS is what 0.2.0 and 0.2.1 shipped: this build\'s objects without the Parquet pipeline', () => {
+    // Literals, read from the gigamon-pack-v0.2.1 tag's pack source (a034641).
+    expect(PACK_0_2_1_OBJECTS).toEqual({
+      inputs: ['in_gigamon_ami_http', 'in_gigamon_ami_sample'],
+      breakers: ['gigamon_ami_http_json_array'],
+      pipelines: ['gigamon_ami_normalize'],
+      routes: ['gigamon_ami_http_to_json', 'gigamon_ami_http_to_parquet', 'gigamon_ami_sample'],
+      outputs: ['gigamon_ami_json_lake', 'gigamon_ami_parquet_lake', 'gigamon_ami_sample_lake'],
+    })
+    expect({ ...PACK_OBJECTS, pipelines: PACK_OBJECTS.pipelines.filter((id) => id !== PACK_PARQUET_PIPELINE_ID) }).toEqual(PACK_0_2_1_OBJECTS)
+    expect(Object.isFrozen(PACK_0_2_1_OBJECTS)).toBe(true)
+    expect(Object.isFrozen(PACK_0_2_1_OBJECTS.pipelines)).toBe(true)
   })
 
   it('never carry the gno_ prefix, which is reserved for acceleration schedules', () => {
@@ -760,14 +818,15 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
 // until its grants are declared). packClient.ts's `installRefusal` is this
 // function bound to the constants it imports, so the two cannot disagree.
 describe('packRelease — the pinned release, and why it cannot be installed', () => {
-  it('installs 0.2.1 in this build: published, with its release asset’s recorded digest', () => {
-    // gigamon-pack-v0.2.1 was published 2026-09-25, and this digest was hashed
-    // from the downloaded release asset (the local build agreed). CI's
-    // scripts/check-pack-release.mjs re-downloads PACK_URL and compares.
+  it('installs 0.2.2 in this build: released, with its digest recorded', () => {
+    // gigamon-pack-v0.2.2 was published on 2026-09-25 (tag at 2207a65); its
+    // asset, the local build and the release workflow agree on this digest.
+    // (It was refused here for about an hour between the pin and the release.)
     const r = packRelease()
     expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
-    expect(PACK_VERSION).toBe('0.2.1')
-    expect(PACK_SHA256).toBe('2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807')
+    expect(PACK_VERSION).toBe('0.2.2')
+    expect(PACK_PUBLISHED).toBe(true)
+    expect(PACK_SHA256).toBe('e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0')
     expect(r.refusal).toBeNull()
     expect(r.installable).toBe(true)
   })

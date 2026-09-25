@@ -50,7 +50,7 @@ import {
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
 import {
   PACK_BREAKER_ID, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_LAKE_DATASET_ID,
-  PACK_PARQUET_DATASET_ID, PACK_PIPELINE_ID,
+  PACK_PARQUET_DATASET_ID, PACK_PARQUET_PIPELINE_ID, PACK_PIPELINE_ID,
 } from '../cribl/pack'
 
 export interface ProvisionConfirmContext {
@@ -360,7 +360,7 @@ export const PACK_SETUP_FACTS: readonly SetupFact[] = Object.freeze([
   {
     label: `Pack ${PACK_ID} — installed from its release`,
     tip:
-      'Installed from the release this app version pins, with custom functions refused. Its sources, breaker, pipeline, routes and ' +
+      'Installed from the release this app version pins, with custom functions refused. Its sources, breaker, pipelines, routes and ' +
       'destinations live inside the pack, apart from the rest of the group’s configuration.',
   },
   {
@@ -378,7 +378,8 @@ export const PACK_SETUP_FACTS: readonly SetupFact[] = Object.freeze([
     label: `Every record lands twice: JSON and Parquet`,
     tip:
       `Route ${PACK_HTTP_JSON_ROUTE_ID} writes each record to ${PACK_LAKE_DATASET_ID}, which the dashboards read, and passes it on; ` +
-      `route ${PACK_HTTP_PARQUET_ROUTE_ID} writes the same record to ${PACK_PARQUET_DATASET_ID}. Both datasets are created before the pack is installed, and neither is ever deleted by this app.`,
+      `route ${PACK_HTTP_PARQUET_ROUTE_ID} writes the same record to ${PACK_PARQUET_DATASET_ID} through pipeline ${PACK_PARQUET_PIPELINE_ID}, the same fields without _raw, the record’s original text, which only the JSON copy keeps. ` +
+      'Both datasets are created before the pack is installed, and neither is ever deleted by this app.',
   },
   {
     label: `Cribl-managed groups use ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`,

@@ -94,7 +94,7 @@ import {
   type DiffRow, type LandingProfile,
 } from './landing'
 import { listInputs, listPackInputs, type StreamInput } from './lake'
-import { PACK_PARQUET_DATASET_ID } from './pack'
+import { PACK_PARQUET_DATASET_ID, PACK_PARQUET_PIPELINE_ID } from './pack'
 import { loadCommitMemory } from './setupMemory'
 
 /** The Raw HTTP source Gigamon AMX POSTs to. Global (not pack) ids, and each is
@@ -178,6 +178,37 @@ const DERIVE_FN = {
 export const PIPELINE_SPEC = {
   id: HTTP_PIPELINE_ID,
   conf: { functions: [CAST_FN, DERIVE_FN] },
+}
+
+/**
+ * Removes `_raw` from every event. An Eval `remove`, Cribl's documented way to
+ * take a top-level field off an event (the Drop function drops the whole
+ * event). Last, and a function of its own, so the two before it stay
+ * `PIPELINE_SPEC`'s value for value.
+ */
+const DROP_RAW_FN = {
+  id: 'eval', filter: 'true', disabled: false, description: 'Remove _raw from the Parquet copy',
+  conf: { remove: ['_raw'] },
+}
+
+/**
+ * The onboarding pack's Parquet pipeline (pack 0.2.2 on; `PACK_PARQUET_PIPELINE_ID`):
+ * `PIPELINE_SPEC`'s cast and derive, then `DROP_RAW_FN`. The pack's route into
+ * `gigamon_ami_pq` runs it; the JSON and sample routes run `PIPELINE_SPEC`'s
+ * functions and keep `_raw`, which the app's evidence drills, Field Explorer
+ * and Copilot briefs read from `gigamon_ami`. After the breaker every field
+ * of a record is its own field, so in the Parquet copy `_raw` is only a second
+ * copy of the record (owner decision 2026-09-25).
+ *
+ * PACK-ONLY. Nothing in this file writes it: Guided Setup's global stack has no
+ * Parquet path. It lives here, beside `PIPELINE_SPEC`, so the two cannot drift
+ * apart; pack.test.ts holds the pack's
+ * `default/pipelines/gigamon_ami_normalize_parquet/conf.yml` equal to it, and
+ * its first functions to `PIPELINE_SPEC`'s.
+ */
+export const PARQUET_PIPELINE_SPEC = {
+  id: PACK_PARQUET_PIPELINE_ID,
+  conf: { functions: [CAST_FN, DERIVE_FN, DROP_RAW_FN] },
 }
 
 /**

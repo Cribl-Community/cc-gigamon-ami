@@ -27,8 +27,8 @@ import { MANIFEST } from '../accel/manifest'
 import type { AccelRow, AccelState } from '../accel/provision'
 import type { DatasetTarget, TargetReason } from '../datasetTarget'
 import {
-  PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID,
-  packRelease,
+  PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_PARQUET_DATASET_ID, PACK_PARQUET_PIPELINE_ID,
+  PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_VERSION, packRelease,
 } from '../pack'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, tlsFor } from '../provision'
 import { DEFAULT_PROFILE, datasetSpec } from '../landing'
@@ -237,10 +237,14 @@ describe('onboardingPath — which onboarding the page offers', () => {
     }
   })
 
-  it('this build today: the pack (0.2.1 is released), the global panel remove-only while unread', () => {
-    // Global until 2026-09-25, while this build pinned 0.2.1 before its release.
-    expect(onboardingPath(packRelease(), null)).toEqual({ mode: 'pack', provision: 'remove-only' })
-    expect(onboardingPath(packRelease(), { http: false, legacySyslog: false })).toEqual({ mode: 'pack', provision: 'hidden' })
+  it('this build today: the pack, because 0.2.2 is released', () => {
+    // 0.2.2 was released 2026-09-25 and this build records it, so the pack is the
+    // onboarding and the global Raw HTTP stack is remove-only while its objects
+    // may be present. The unreleased case stays pinned with explicit facts.
+    const today = packRelease()
+    expect(today.installable).toBe(true)
+    expect(onboardingPath(today, null)).toEqual({ mode: 'pack', provision: 'remove-only' })
+    expect(onboardingPath(packRelease({ published: false, sha256: null, version: '0.2.2' }), null)).toEqual({ mode: 'global', provision: 'full', why: 'pack 0.2.2 has not been released, so there is nothing to install yet' })
   })
 
   it('with the pack available, the global panel offers Remove only, and only while something is (or may be) there', () => {
@@ -485,11 +489,23 @@ describe('packRemovalDialog', () => {
   const scope = ctx().scope
 
   it('a delete row for the pack and for every object in it, then the deploy — and no Lake dataset', () => {
-    const d = packRemovalDialog({ group: 'g1', version: '0.2.0', scope, undeployed: null })
+    const d = packRemovalDialog({ group: 'g1', version: PACK_VERSION, scope, undeployed: null })
     expect(d.resources.map((r) => `${r.action}:${r.id}`)).toEqual([
       `delete:${PACK_ID}`, ...Object.values(PACK_OBJECTS).flat().map((id) => `delete:${id}`), 'deploy:g1',
     ])
+    expect(d.resources.map((r) => r.id)).toContain(PACK_PARQUET_PIPELINE_ID)
     expect(d.resources.some((r) => r.kind === 'Cribl Lake dataset')).toBe(false)
+  })
+
+  it('names an installed 0.2.0 or 0.2.1 by what they shipped: no Parquet pipeline, which 0.2.2 added', () => {
+    for (const version of ['0.2.0', '0.2.1']) {
+      const d = packRemovalDialog({ group: 'g1', version, scope, undeployed: null })
+      expect(d.resources.map((r) => `${r.action}:${r.id}`), version).toEqual([
+        `delete:${PACK_ID}`, ...Object.values(PACK_0_2_1_OBJECTS).flat().map((id) => `delete:${id}`), 'deploy:g1',
+      ])
+      expect(d.resources.map((r) => r.id), version).not.toContain(PACK_PARQUET_PIPELINE_ID)
+      expect(packObjectsOf(version), version).toBe(PACK_0_2_1_OBJECTS)
+    }
   })
 
   it('names the three datasets it keeps, and how to be rid of the sample flows', () => {
@@ -509,7 +525,7 @@ describe('packRemovalDialog', () => {
     for (const id of ['in_gno_syslog', 'in_gno_sample', 'gno_syslog', 'out_gno_lake']) expect(ids).toContain(id)
     expect(ids).not.toContain(PACK_HTTP_INPUT_ID)
     expect(packObjectsOf('0.1.0').breakers).toEqual([])
-    expect(packObjectsOf('0.2.0')).toBe(PACK_OBJECTS)
+    expect(packObjectsOf(PACK_VERSION)).toBe(PACK_OBJECTS)
   })
 })
 

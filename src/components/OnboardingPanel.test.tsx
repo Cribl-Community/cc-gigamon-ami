@@ -1,8 +1,10 @@
-// The onboarding panel in this build as it ships: 0.2.1 released, its sha256
-// recorded (pack.ts). Nothing here swaps a constant. *(Until 2026-09-25 this
-// file mocked a release in, because the build pinned 0.2.1 before its release;
-// the unreleased build is now OnboardingPanel.unpublished.test.tsx, with its
-// constants moved back explicitly.)*
+// The onboarding panel in a build whose pinned pack is released. This build
+// pins 0.2.2 before its release (pack.ts), so the release constants are moved
+// forward below, as the flip after the tag will move them. *(Corrected
+// 2026-09-25, `feat/pack-022-parquet-pipeline`: from `feat/pack-flip-021`
+// until then this file swapped nothing, because the build shipped with 0.2.1
+// released. Before that it mocked a release in, as it does again now.)* The
+// unreleased build as it ships is OnboardingPanel.unpublished.test.tsx.
 //
 //  10. the premise, pinned: this build installs, Onboard is offered (not
 //      aria-disabled) and opens a real dialog without a write, and an installed
@@ -282,11 +284,11 @@ async function removeThroughTheDialog() {
 
 // ── 10 ──────────────────────────────────────────────────────────────────────
 
-describe('10. this build, as it ships: 0.2.1 released', () => {
-  it('pins the premise: the pinned release is installable, with the digest hashed from its asset', () => {
+describe('10. this build, as it ships: 0.2.2, released and recorded', () => {
+  it('pins the premise: the pinned release is installable, with its real digest', () => {
     expect(thisPackRelease()).toMatchObject({
-      version: '0.2.1', published: true, installable: true, refusal: null, url: PACK_URL,
-      sha256: '2a2a3c3650d0eb39029f18001840d5a13ef7a61f258478daff0947f35b769807',
+      version: '0.2.2', published: true, installable: true, refusal: null, url: PACK_URL,
+      sha256: 'e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0',
     })
   })
 

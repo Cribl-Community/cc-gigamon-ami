@@ -11,10 +11,17 @@
 //   --cap <seconds>          running-time cap prefixed onto each job (default 300)
 //   --base <url>             API base (default http://localhost:5173/capi, the `npm run dev` proxy)
 //   --out <dir>              where the dated report goes (default .dev/parquet-audit, gitignored)
-//   --rows-per-hour <n>      the dataset's intake, for the estimate (default: D-10 s1, 1,050,992)
-//   --cpu-per-1k <n>         billable CPU-s per 1,000 JSON rows, for the estimate (default 0.45)
-//   --types-from <file.json> run the sentinel query with a prior report's census type table,
-//                            instead of both forms for every unresolved field. The 60-minute
+//   --census wide|numeric    wide (default): the 60-min census of every field + density, then the
+//                            sentinel windows. numeric: ONE 15-min census of the five cast-check
+//                            fields and both controls — no density, no sentinel job — to resolve
+//                            the numeric types cheaply.
+//   --sentinels-from <file.json>  numeric only: re-read that report's raw sentinel rows with the
+//                            new census's types, billing nothing. Its windows are that report's.
+//   --rows-per-hour <n>      the dataset's intake, for the estimate (default: the measured run's, 1,049,258)
+//   --census-coef <n>        census CPU-s per 1,000 rows per census field (default: measured 2026-09-25, ≈0.186)
+//   --sentinel-coef <n>      sentinel CPU-s per 1,000 rows (default: measured 2026-09-25, ≈0.369)
+//   --types-from <file.json> wide only: run the sentinel query with a prior report's census type
+//                            table, instead of both forms for every unresolved field. The 60-minute
 //                            census (job 1) STILL RUNS and is billed again; its fresh table is
 //                            recorded beside the prior one's types, not used for the sentinels.
 //
@@ -29,10 +36,14 @@
 // never handles a credential and never talks to Cribl except through that proxy.
 //
 // WHAT IT SPENDS, AND WHY --run. The queries scan `gigamon_ami` (JSON) over one
-// 60-minute and a few 15-minute windows. The estimate is printed first, and
-// nothing is submitted without --run: Cribl has no CPU cap, and the running-time
-// cap bounds wall time only, so the approval has to be a person's, made on the
-// printed figure.
+// 60-minute and a few 15-minute windows (or one 15-minute window, numeric-only).
+// The estimate is printed first, as a FLOOR derived from the one measured run
+// (2026-09-25: the wide census billed 5,457 CPU-s, the three sentinel windows
+// 51, 111 and 128), and nothing is submitted without --run: Cribl has no CPU
+// cap, and the running-time cap bounds wall time only, so the approval has to be
+// a person's, made on the printed figure. After each job the runner reads its
+// metrics for up to ~90 s; a cost that never appears is recorded as "not yet
+// available", never as 0, and the total says it is incomplete.
 //
 // WHY scripts/ AND NOT .dev/. `.dev/` is gitignored because it holds
 // credentials; a runner there would be absent from a fresh clone and invisible
@@ -69,7 +80,7 @@ const R = await import(pathToFileURL(join(ROOT, 'src/cribl/parquetAuditReport.ts
 const J = await import(pathToFileURL(join(ROOT, 'scripts/parquet-audit-job.mjs')).href)
 
 function parseArgs(argv) {
-  const out = { run: false, at: null, offsets: null, cap: 300, base: 'http://localhost:5173/capi', out: join(ROOT, '.dev', 'parquet-audit'), rowsPerHour: null, cpuPer1k: null, typesFrom: null }
+  const out = { run: false, at: null, offsets: null, cap: 300, base: 'http://localhost:5173/capi', out: join(ROOT, '.dev', 'parquet-audit'), rowsPerHour: null, censusCoef: null, sentinelCoef: null, typesFrom: null, census: 'wide', sentinelsFrom: null }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     const next = () => {
@@ -84,15 +95,26 @@ function parseArgs(argv) {
     else if (a === '--base') out.base = next().replace(/\/$/, '')
     else if (a === '--out') out.out = resolve(next())
     else if (a === '--rows-per-hour') out.rowsPerHour = Number(next())
-    else if (a === '--cpu-per-1k') out.cpuPer1k = Number(next())
+    else if (a === '--census-coef') out.censusCoef = Number(next())
+    else if (a === '--sentinel-coef') out.sentinelCoef = Number(next())
+    else if (a === '--cpu-per-1k') throw new Error('--cpu-per-1k is gone: one flat coefficient under-priced the 2026-09-25 run 7×. Use --census-coef and --sentinel-coef.')
     else if (a === '--types-from') out.typesFrom = resolve(next())
+    else if (a === '--census') out.census = next()
+    else if (a === '--sentinels-from') out.sentinelsFrom = resolve(next())
     else if (a === '--help' || a === '-h') {
-      console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(0, 30).join('\n'))
+      const lines = readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n')
+      console.log(lines.slice(0, lines.findIndex((l) => !l.startsWith('//'))).join('\n'))
       process.exit(0)
     } else throw new Error(`unknown argument ${a}`)
   }
   if (!Number.isFinite(out.cap) || out.cap <= 0) throw new Error('--cap must be a positive number of seconds')
   if (out.offsets && out.offsets.some((h) => !Number.isFinite(h) || h < 0)) throw new Error('--offsets must be non-negative hours')
+  if (out.census !== 'wide' && out.census !== 'numeric') throw new Error('--census must be wide or numeric')
+  if (out.census === 'numeric' && (out.typesFrom || out.offsets)) throw new Error('--types-from and --offsets shape the sentinel jobs, which --census numeric does not submit')
+  if (out.census !== 'numeric' && out.sentinelsFrom) throw new Error('--sentinels-from is for --census numeric: a wide run measures its own sentinels')
+  for (const [flag, v] of [['--rows-per-hour', out.rowsPerHour], ['--census-coef', out.censusCoef], ['--sentinel-coef', out.sentinelCoef]]) {
+    if (v !== null && (!Number.isFinite(v) || v <= 0)) throw new Error(`${flag} must be a positive number`)
+  }
   return out
 }
 
@@ -100,12 +122,17 @@ const args = parseArgs(process.argv.slice(2))
 const startedMs = Date.now()
 const nowSec = args.at ? Math.floor(Date.parse(args.at) / 1000) : Math.floor(startedMs / 1000)
 if (!Number.isFinite(nowSec)) throw new Error(`--at ${args.at} is not a date`)
-const windows = R.auditWindows(nowSec, args.offsets ? { sentinelOffsetsHours: args.offsets } : {})
+const numeric = args.census === 'numeric'
+const windows = R.auditWindows(nowSec, numeric ? R.NUMERIC_CENSUS_WINDOW : args.offsets ? { sentinelOffsetsHours: args.offsets } : {})
+const censusFields = numeric ? Q.NUMERIC_CENSUS_FIELDS : Q.CENSUS_COLUMNS_FIELDS
+const censusQuery = numeric ? Q.NUMERIC_CENSUS_QUERY : Q.TYPE_DENSITY_QUERY
+const censusPurpose = numeric ? '8.0b numeric-only census' : '8.0b census + density'
 const basis = {
   rowsPerHour: args.rowsPerHour ?? R.DEFAULT_COST_BASIS.rowsPerHour,
-  cpuPer1kRows: args.cpuPer1k ?? R.DEFAULT_COST_BASIS.cpuPer1kRows,
+  censusCpuPer1kRowsPerField: args.censusCoef ?? R.DEFAULT_COST_BASIS.censusCpuPer1kRowsPerField,
+  sentinelCpuPer1kRows: args.sentinelCoef ?? R.DEFAULT_COST_BASIS.sentinelCpuPer1kRows,
 }
-const estimate = R.auditCostEstimate(windows, basis)
+const estimate = R.auditCostEstimate(windows, basis, censusFields.length, args.census)
 
 let sentinelTypes = Q.STATIC_FIELD_TYPES
 let sentinelQuery = Q.SENTINEL_AUDIT_QUERY
@@ -115,14 +142,24 @@ if (args.typesFrom) {
   sentinelTypes = R.censusTypeTable(prior.census)
   sentinelQuery = Q.sentinelAuditQuery(sentinelTypes)
 }
+// --sentinels-from: an earlier report's raw sentinel rows and its type table,
+// re-read with this run's census. Read (and refused) before anything is billed.
+let priorSentinels = null
+if (args.sentinelsFrom) {
+  const prior = JSON.parse(readFileSync(args.sentinelsFrom, 'utf8'))
+  const rows = prior.raw?.sentinels
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error(`${args.sentinelsFrom} holds no raw sentinel rows to re-read`)
+  priorSentinels = { rows, types: prior.sentinelTypes ?? Q.STATIC_FIELD_TYPES }
+}
 
 // ── The plan, always printed first ──────────────────────────────────────────
 console.log('Phase 8.0b / 8.0c audit — dataset "%s" (JSON), pinned: %s', Q.AUDIT_DATASET, Q.AUDIT_PIN)
 console.log('')
 console.log('Jobs, in order:')
-console.log(`  1. 8.0b census + density   ${windows.census.label}`)
-windows.sentinel.forEach((w, i) => console.log(`  ${i + 2}. 8.0c sentinels          ${w.label}`))
-console.log(`Running-time cap per job: ${args.cap} s. Sentinel types: ${args.typesFrom ? `from ${args.typesFrom}` : 'static (both forms where unknown)'}.`)
+console.log(`  1. ${censusPurpose.padEnd(24)} ${windows.census.label}`)
+windows.sentinel.forEach((w, i) => console.log(`  ${i + 2}. ${'8.0c sentinels'.padEnd(24)} ${w.label}`))
+if (numeric) console.log(`Numeric-only census of ${censusFields.join(', ')}; no density, no sentinel job.${priorSentinels ? ` Sentinels re-read, billing nothing, from ${args.sentinelsFrom}.` : ''}`)
+console.log(`Running-time cap per job: ${args.cap} s.${numeric ? '' : ` Sentinel types: ${args.typesFrom ? `from ${args.typesFrom}` : 'static (both forms where unknown)'}.`}`)
 if (args.typesFrom) console.log('--types-from does not skip the census: job 1 runs and is billed again, and its fresh table is recorded beside the prior types.')
 console.log('')
 console.log('Expected cost:')
@@ -149,7 +186,7 @@ const runJob = (purpose, window, query) => J.runAuditJob(deps, purpose, window, 
 const ranAt = new Date().toISOString()
 console.log('Submitting, one job at a time:')
 const jobs = []
-const census = await runJob('8.0b census + density', windows.census, Q.TYPE_DENSITY_QUERY)
+const census = await runJob(censusPurpose, windows.census, censusQuery)
 jobs.push(census.job)
 const sentinelRows = []
 for (const w of windows.sentinel) {
@@ -158,8 +195,18 @@ for (const w of windows.sentinel) {
   if (r.row) sentinelRows.push(r.row)
 }
 
-const censusEntries = census.row ? R.readTypeCensus(census.row) : null
-if (censusEntries && !args.typesFrom) sentinelTypes = R.censusTypeTable(censusEntries)
+const censusEntries = census.row ? R.readTypeCensus(census.row, censusFields) : null
+let sentinels = null
+if (numeric) {
+  if (censusEntries && priorSentinels) {
+    const reread = R.rereadSentinels(censusEntries, priorSentinels)
+    sentinelTypes = reread.types
+    sentinels = reread.sentinels
+  } else if (censusEntries) sentinelTypes = R.censusTypeTable(censusEntries)
+} else {
+  if (censusEntries && !args.typesFrom) sentinelTypes = R.censusTypeTable(censusEntries)
+  if (sentinelRows.length === windows.sentinel.length) sentinels = R.readSentinels(sentinelRows, sentinelTypes)
+}
 const report = {
   referenceAt: new Date(nowSec * 1000).toISOString(),
   referenceFrom: args.at ? '--at' : 'run start',
@@ -171,9 +218,11 @@ const report = {
   jobs,
   census: censusEntries,
   controls: censusEntries ? R.censusControls(censusEntries) : null,
-  density: census.row ? R.readDensity(census.row) : null,
+  density: census.row && !numeric ? R.readDensity(census.row) : null,
   sentinelTypes,
-  sentinels: sentinelRows.length === windows.sentinel.length ? R.readSentinels(sentinelRows, sentinelTypes) : null,
+  sentinels,
+  censusMode: args.census,
+  sentinelsFrom: sentinels && priorSentinels ? args.sentinelsFrom : null,
   raw: { census: census.row, sentinels: sentinelRows },
 }
 

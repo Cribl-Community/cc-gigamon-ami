@@ -73,7 +73,7 @@ describe('pack.mjs check', () => {
   }, 30_000)
 
   it('passes when the version matches the tag, and fails when it does not', () => {
-    expect(run(['check', '--expect-version', '0.2.1', '--dir', copyPack()]).status).toBe(0)
+    expect(run(['check', '--expect-version', '0.2.2', '--dir', copyPack()]).status).toBe(0)
     const r = run(['check', '--expect-version', '9.9.9', '--dir', copyPack()])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/does not match the expected "9\.9\.9"/)
@@ -83,14 +83,14 @@ describe('pack.mjs check', () => {
   // PACK_PUBLISHED is still false at tag time (it is set in a later PR), so a
   // test keyed on PACK_PUBLISHED never fires when a tag is pushed. The refusal
   // has to live in the step that builds the published bytes.
-  it('passes the committed pack as a 0.2.1 release: nothing in it is PENDING', () => {
-    const r = run(['check', '--expect-version', '0.2.1'])
+  it('passes the committed pack as a 0.2.2 release: nothing in it is PENDING', () => {
+    const r = run(['check', '--expect-version', '0.2.2'])
     expect(r.out).not.toMatch(/PENDING/)
     expect(r.status).toBe(0)
   }, 30_000)
 
   it('refuses a release (--expect-version) while the pack still says PENDING', () => {
-    const r = run(['check', '--expect-version', '0.2.1', '--dir', copyPack(undecided)])
+    const r = run(['check', '--expect-version', '0.2.2', '--dir', copyPack(undecided)])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/README\.md: says PENDING; a release must not ship an undecided setting/)
     expect(r.out).toMatch(/default\/outputs\.yml: says PENDING/)
@@ -99,7 +99,7 @@ describe('pack.mjs check', () => {
   it('builds nothing for a release while the pack still says PENDING', () => {
     const out = mkdtempSync(join(tmpdir(), 'gigamon-crbl-'))
     scratch.push(out)
-    const r = run(['build', '--expect-version', '0.2.1', '--dir', copyPack(undecided), '--out', out])
+    const r = run(['build', '--expect-version', '0.2.2', '--dir', copyPack(undecided), '--out', out])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/says PENDING/)
     expect(readdirSync(out)).toEqual([])
@@ -360,6 +360,40 @@ describe('pack.mjs check', () => {
       /pipeline "gigamon_ami_nowhere" has no default\/pipelines\/gigamon_ami_nowhere\/conf\.yml/,
     ],
     [
+      'the Parquet route running the JSON pipeline, which keeps _raw',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace('pipeline: gigamon_ami_normalize_parquet', 'pipeline: gigamon_ami_normalize')),
+      /gigamon_ami_http_to_parquet: writes the Parquet destination gigamon_ami_parquet_lake through pipeline "gigamon_ami_normalize", which does not remove _raw/,
+    ],
+    [
+      'the JSON route running the Parquet pipeline, which removes _raw',
+      (d) => edit(d, 'default/pipelines/route.yml', (s) => s.replace(
+        /(id: gigamon_ami_http_to_json\n[\s\S]*?pipeline: )gigamon_ami_normalize\n/, '$1gigamon_ami_normalize_parquet\n')),
+      /gigamon_ami_http_to_json: writes the json dataset gigamon_ami through pipeline "gigamon_ami_normalize_parquet", which removes _raw/,
+    ],
+    [
+      'the sample route running a pipeline that removes _raw by a wildcard',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize/conf.yml', (s) => `${s}  - id: eval\n    filter: "true"\n    disabled: false\n    conf:\n      remove:\n        - _r*\n`),
+      /gigamon_ami_sample: writes the json dataset gigamon_ami_sample through pipeline "gigamon_ami_normalize", which removes _raw/,
+    ],
+    [
+      'a Parquet pipeline whose removal of _raw is disabled',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize_parquet/conf.yml', (s) => s.replace(
+        /disabled: false\n    description: Remove _raw/, 'disabled: true\n    description: Remove _raw')),
+      /which does not remove _raw; the Parquet copy must not carry it \(no enabled Eval with filter "true" lists _raw under remove\)/,
+    ],
+    [
+      'a Parquet pipeline that removes _raw only from some events',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize_parquet/conf.yml', (s) => s.replace(
+        /filter: "true"\n    disabled: false\n    description: Remove _raw/, 'filter: "protocol==6"\n    disabled: false\n    description: Remove _raw')),
+      /which does not remove _raw; the Parquet copy must not carry it \(no enabled Eval with filter "true" lists _raw under remove\)/,
+    ],
+    [
+      'a Parquet pipeline that adds _raw back after removing it',
+      (d) => edit(d, 'default/pipelines/gigamon_ami_normalize_parquet/conf.yml', (s) =>
+        `${s}  - id: eval\n    filter: "true"\n    disabled: false\n    description: Put it back\n    conf:\n      add:\n        - name: _raw\n          value: JSON.stringify(__e)\n`),
+      /which does not remove _raw; the Parquet copy must not carry it \(a later function \(Put it back\) adds _raw back\)/,
+    ],
+    [
       'a YAML file that does not parse',
       (d) => edit(d, 'default/outputs.yml', (s) => s.replace('  gigamon_ami_json_lake:', '  gigamon_ami_json_lake:\n   bad: [unclosed')),
       /default\/outputs\.yml: YAML error/,
@@ -416,7 +450,7 @@ describe('pack.mjs build', () => {
     scratch.push(out)
     const r = run(['build', '--dir', dir, '--out', out])
     expect(r.status, r.out).toBe(0)
-    return readFileSync(join(out, `${PACK_ID}-0.2.1.crbl`))
+    return readFileSync(join(out, `${PACK_ID}-0.2.2.crbl`))
   }
 
   it('writes the same bytes every time, and the same bytes from a CRLF working tree', () => {
@@ -440,7 +474,7 @@ describe('pack.mjs build', () => {
       expect(e.mtime * 1000).toBeLessThan(Date.parse('2026-09-23T00:00:00Z'))
     }
     expect(list.filter((e) => e.type === '5').map((e) => e.name)).toEqual(
-      ['data/', 'data/samples/', 'default/', 'default/pipelines/', 'default/pipelines/gigamon_ami_normalize/'],
+      ['data/', 'data/samples/', 'default/', 'default/pipelines/', 'default/pipelines/gigamon_ami_normalize/', 'default/pipelines/gigamon_ami_normalize_parquet/'],
     )
     expect(list.map((e) => e.name)).toContain('package.json')
     expect(list.map((e) => e.name)).toContain('default/breakers.yml')
