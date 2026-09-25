@@ -151,7 +151,10 @@ Key constants in `config.ts`: `SEARCH_GROUP = 'default_search'` (search **always
   not counted. The queries count every stack listed:
   the demo DataGen (`running`), the older Guided Setup Syslog stack (`retired` — this release only
   offers to remove it, but a tenant that ran an earlier one may still be running it), Guided
-  Setup's Raw HTTP stack (`offered`), pack 0.1.0 (`released`, from `PACK_0_1_0`), and `pack-0.2`,
+  Setup's Raw HTTP stack (`retired` too, for the same reason — *corrected 2026-09-25,
+  `feat/collapse-old-onboarding`: it was `offered` until the pack became the only onboarding; the
+  change moved only `STACKS`' digest in the freeze, not `METRICS_QUERY`, `LAKE_TOTAL_QUERY` or the
+  prose, so no schedule drifts*), pack 0.1.0 (`released`, from `PACK_0_1_0`), and `pack-0.2`,
   one stack for 0.2.0, 0.2.1 and 0.2.2 because they ship the same source, route and destination
   ids (0.2.2 adds only a pipeline, and a second stack would count the JSON path twice), `released`
   since 0.2.0 is on `PACK_PUBLISHED_VERSIONS`. Its Parquet path names 0.2.2's

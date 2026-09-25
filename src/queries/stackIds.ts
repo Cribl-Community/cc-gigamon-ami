@@ -95,8 +95,10 @@ export interface Stack {
   scope: 'global' | 'pack'
   /** Whether anything can run it today, and how a tenant comes to have it.
    *  `running` is running in this workspace; `offered` is what this release
-   *  offers to create; `retired` is what an earlier release of this app
-   *  created and this one only offers to remove, which a tenant may still run.
+   *  offers to create as a global stack (none since 2026-09-25: the pack is the
+   *  only onboarding, and its stacks are `released`); `retired` is what an
+   *  earlier release of this app created and this one only offers to remove,
+   *  which a tenant may still run.
    *  Those three are the ones the screen names. `released` is a published pack
    *  release a tenant may have installed — counted, but not named on screen
    *  until it is. `unreleased` is built but not published, `planned` is not
@@ -138,11 +140,17 @@ export const STACKS: readonly Stack[] = [
     // Written out, not imported: ../cribl/provision reaches the network, and
     // this file is loaded under plain Node. stackIds.test.ts holds these equal
     // to provision.ts's HTTP_* and LAKE_DESTINATION_ID, and the `http_raw:`
-    // prefix to the route filter provision.ts writes.
+    // prefix to the route filter packSpecs.ts's ROUTE_SPEC names.
+    //
+    // RETIRED, like the Syslog stack above it (2026-09-25): Guided Setup's
+    // onboarding collapsed into the pack's, so no release offers to create this
+    // stack any more; this one only offers to remove it. A tenant an earlier
+    // release provisioned can still be sending through it, so it is still
+    // counted and still named. (`offered` until then.)
     key: 'global-http',
     scope: 'global',
-    status: 'offered',
-    what: "Guided Setup's Raw HTTP onboarding (src/cribl/provision.ts). It shares the demo's Lake destination.",
+    status: 'retired',
+    what: "The Raw HTTP onboarding earlier releases of Guided Setup created (src/cribl/provision.ts's HTTP_*); this release only offers to remove it. It shares the demo's Lake destination.",
     paths: [
       { route: 'gigamon_ami_http', input: 'http_raw:in_gigamon_http', pipeline: 'gigamon_http_normalize', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
     ],
@@ -276,8 +284,8 @@ const listed = (xs: readonly string[]): string =>
 //
 // The queries count every stack above, so they are right the day a pack is
 // installed. The words on screen name only the stacks a tenant can have today
-// (the demo feed, Guided Setup's onboarding and the Syslog onboarding earlier
-// releases created), so a viewer is never told
+// (the demo feed, and the Raw HTTP and Syslog onboardings earlier releases of
+// Guided Setup created), so a viewer is never told
 // about an object no release has shipped, nor how a planned one will work.
 // The query in the ⓘ still shows every id it counts; the sentence below
 // accounts for the rest in one clause.
