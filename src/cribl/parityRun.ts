@@ -13,8 +13,11 @@
 // NO NETWORK OF ITS OWN. Nothing here submits anything: `executeParityRun`
 // takes a `submit` function, which the runner builds from
 // scripts/parity-run-job.mjs and the tests build from a fake transport. No app
-// module imports this file (parityRun.test.ts fails if one does), so the app
-// never runs a parity job and no router can move one.
+// module imports this file, and none can reach it from src/main.tsx
+// (parityRun.test.ts fails on any import of it, static, dynamic or re-export,
+// in either quote style; policyCoverage.test.ts walks the app's import graph
+// and fails if it is reachable), so the app never runs a parity job and no
+// router can move one.
 //
 // ── WHICH ENTRIES ───────────────────────────────────────────────────────────
 // By default every entry ELIGIBLE under the rule `tableProblems` applies — the
@@ -29,26 +32,45 @@
 // At least three, absolute, on whole 5-minute buckets (the completeness
 // check's), each starting in a different UTC hour, the newest ending at least
 // COMPLETENESS_SETTLE_SECONDS before the reference time — so the check made
-// just before the window's jobs can prove every bucket of it settled.
+// just before the window's jobs can prove every bucket of it settled. A
+// reference time later than the real clock is refused before anything is
+// billed: its newest windows could never be proven settled, and each would
+// still cost a completeness job. *(Added 2026-09-25, review of
+// `feat/phase8-parity-runner`.)*
 //
 // ── ORDER, PER WINDOW, AND WHAT STOPS IT ────────────────────────────────────
 //   1. COMPLETENESS_QUERY over the window. Not proven complete (a gap, an empty
 //      or missing bucket, unsettled, or no answer) → the window is SKIPPED, and
-//      the report says why. Nothing else is submitted for it.
+//      the report says why. Nothing else is submitted for it. An answer with
+//      rows but not one bucket this can read (no `bin_time_5m`, no `_time`)
+//      STOPS THE RUN: no later window could be proven either, and each would
+//      bill another cribl_metrics job to find that out.
 //   2. The control count (`PARITY_COUNT_QUERY`) on both datasets. Not agreeing
 //      within its tolerance → the window is INCOMPARABLE: the two sides did not
 //      hold the same records, and a difference would be landing lag, not
 //      Parquet. Nothing else is submitted for it.
 //   3. Each selected text, as written on `gigamon_ami` and with only its
-//      dataset selector moved (`retarget`) on `gigamon_ami_pq`.
+//      dataset selector moved (`retarget`) on `gigamon_ami_pq` — except that a
+//      top N (a descending sort with a limit) is submitted on both sides with
+//      its limit raised (`comparisonText`) and compared at its own N. With the
+//      text's own `limit N`, Cribl cuts each side at N itself, and when a tie
+//      sits at the N-th rank it may keep a different tied key on each side:
+//      the tie rule in `compareGrouped` can excuse that only when it can see
+//      past the cut. *(Corrected 2026-09-25, review of
+//      `feat/phase8-parity-runner`: every text ran as written, so a boundary
+//      tie on identical data was recorded as a FAIL.)*
 //
 // ── HOW ROWS ARE COMPARED ───────────────────────────────────────────────────
 // `querySpec` reads the text's LAST `summarize` — its named aggregates and its
 // `by` keys — and what follows it, which may only be `sort by c [asc|desc]` and
 // `limit`/`take N`. Anything else after the summarize, an unnamed aggregate, an
 // aggregate it cannot classify as a count or a distribution, or a key that is
-// not a plain field, `name=expr` or `bin(_time, …)` → it refuses the entry at
-// plan time. Then:
+// not a plain field, `name=expr` or `bin(_time, <span>)` → it refuses the entry
+// at plan time. A `bin(_time, 1m)` key comes back named `bin_time_1m` (the live
+// charts read that column), so that is the key compared. *(Corrected
+// 2026-09-25, review of `feat/phase8-parity-runner`: it was named `_time`,
+// which no live row carries, so every minute of a trend folded into one
+// "(absent)" key and one row per side was compared.)* Then:
 //   * a descending sort with a limit is a top N: `compareGrouped` with that
 //     rank and N, and the control's drift;
 //   * anything else returns every row, and every row is compared (N = all) —
@@ -59,7 +81,12 @@
 //     exact equality, absent and "" different — `compareGrouped` reads only
 //     numbers;
 //   * a window where every compared figure was empty or zero on both sides is
-//     UNEXERCISED, never a pass.
+//     UNEXERCISED, never a pass — "" on both sides included;
+//   * rows this cannot tell apart are INCOMPARABLE, never compared: two rows on
+//     one side with the same key, or a key column no row on a side carries;
+//   * in a top N, a key missing from the other side's rows when that side came
+//     back full at the raised limit with the key's rank inside what it cut is
+//     INCOMPARABLE: whether it was cut or lost cannot be read.
 //
 // ── WHAT THIS CANNOT PROVE ──────────────────────────────────────────────────
 // * Density. Evidence is judged, like `tableProblems`, on text and type; the
@@ -87,7 +114,7 @@ import {
   type Row,
 } from './parity'
 import { eligibility } from './routing/eligibility'
-import { COMPLETENESS_SETTLE_SECONDS, bucketRecords, windowCompleteness, type BucketRecord } from './routing/completeness'
+import { COMPLETENESS_BUCKET_COLUMN, COMPLETENESS_SETTLE_SECONDS, bucketRecords, windowCompleteness, type BucketRecord } from './routing/completeness'
 import { ROUTES, evidenceProblems, type RouteEntry, type RouteEvidence } from './routing/table'
 import { COST_MARGIN, DEFAULT_COST_BASIS, MEASURED_RUN } from './parquetAuditReport'
 
@@ -105,6 +132,8 @@ export interface WindowOptions {
   minutes?: number
   /** Hours before the newest window at which each window ends. Default 0, 6, 12. */
   offsetsHours?: readonly number[]
+  /** The real clock, epoch seconds. A reference time later than it is refused. */
+  clockSec?: number
 }
 
 export const DEFAULT_WINDOW_MINUTES = 15
@@ -126,6 +155,9 @@ export function parityRunWindows(nowSec: number, opts: WindowOptions = {}): RunW
   const offsets = opts.offsetsHours ?? DEFAULT_OFFSETS_HOURS
   const B = COMPLETENESS_BUCKET_SECONDS
   if (!Number.isFinite(nowSec)) throw new Error('parity run: the reference time is not a time')
+  if (opts.clockSec !== undefined && nowSec > opts.clockSec) {
+    throw new Error(`parity run: the reference time ${iso(nowSec)} is later than now (${iso(Math.floor(opts.clockSec))}); its windows could never be proven settled, and each would still bill a completeness job`)
+  }
   if (!(minutes > 0) || (minutes * 60) % B !== 0) throw new Error(`parity run: a window must be a whole number of ${B / 60}-minute buckets (got ${minutes} min)`)
   if (offsets.length < MIN_WINDOWS) throw new Error(`parity run: evidence needs at least ${MIN_WINDOWS} windows (got ${offsets.length})`)
   for (const h of offsets) {
@@ -214,9 +246,10 @@ export function querySpec(query: string): SpecResult {
 
   const keys: string[] = []
   for (const k of byParts.length ? splitTop(byParts[0], ',').filter(Boolean) : []) {
-    const bin = /^bin\(\s*_time\s*,[^)]*\)$/.exec(k)
+    const bin = /^bin\(\s*_time\s*,\s*(\w+)\s*\)$/.exec(k)
     const named = /^([A-Za-z_]\w*)\s*=/.exec(k)
-    if (bin) keys.push('_time')
+    // Cribl names a `bin(_time, 1m)` group key `bin_time_1m`.
+    if (bin) keys.push(`bin_time_${bin[1]}`)
     else if (named) keys.push(named[1])
     else if (/^[A-Za-z_][\w.]*$/.test(k)) keys.push(k)
     else return { ok: false, why: `a group key it cannot name, "${k}"` }
@@ -232,6 +265,28 @@ export function querySpec(query: string): SpecResult {
     else return { ok: false, why: `a stage after its summarize this runner does not read, "${s}"` }
   }
   return { ok: true, spec: { keys, aggregates, order, limit } }
+}
+
+// ── What is submitted ───────────────────────────────────────────────────────
+
+/** How many rows a top N of `n` is submitted for, so the rows past the cut — and a tie across it — can be seen. */
+export function topNFetchLimit(n: number): number {
+  return n + Math.max(n, 50)
+}
+
+/**
+ * The text the runner submits for `query`: the text as written, except that a
+ * top N (a descending sort, then `limit`/`take N`) has its limit raised to
+ * `topNFetchLimit(N)`. Each key's figures are the same aggregates over the
+ * same records; only how many rows come back changes. The comparison is still
+ * made at the text's own N (`compareQueryRows`).
+ */
+export function comparisonText(query: string): string {
+  const parsed = querySpec(query)
+  if (!parsed.ok || parsed.spec.order?.dir !== 'desc' || parsed.spec.limit === null) return query
+  const raised = query.replace(/(\|\s*(?:limit|take)\s+)\d+(\s*)$/, `$1${topNFetchLimit(parsed.spec.limit)}$2`)
+  if (raised === query) throw new Error(`parity run: could not raise the limit of ${query}`)
+  return raised
 }
 
 // ── Comparing one query over one window ─────────────────────────────────────
@@ -278,6 +333,22 @@ export function compareQueryRows(query: string, jsonRows: readonly Row[] | null,
   if (!parsed.ok) return { ...base, verdict: 'incomparable', sentence: `Not compared: ${parsed.why}.` }
   const { spec } = parsed
 
+  // Rows this cannot tell apart are not compared: `compareGrouped` keeps one row
+  // per key, so two rows under one key would compare the first and drop the rest.
+  for (const [side, rows] of [['JSON', jsonRows], ['Parquet', parquetRows]] as const) {
+    if (!rows.length) continue
+    const missing = spec.keys.filter((k) => rows.every((r) => r[k] === undefined || r[k] === null))
+    if (missing.length) {
+      return { ...base, verdict: 'incomparable', sentence: `Not compared: no ${side} row carries the key column${missing.length === 1 ? '' : 's'} ${missing.join(', ')}, so its rows cannot be told apart.` }
+    }
+    const seen = new Set<string>()
+    for (const r of rows) {
+      const k = keyOf(r, spec.keys)
+      if (seen.has(k)) return { ...base, verdict: 'incomparable', sentence: `Not compared: two ${side} rows share the key ${k || '(none)'}, so its rows cannot be told apart.` }
+      seen.add(k)
+    }
+  }
+
   const all = Math.max(jsonRows.length, parquetRows.length, 1)
   let grouped: GroupedSpec
   if (spec.order?.dir === 'desc') {
@@ -294,6 +365,35 @@ export function compareQueryRows(query: string, jsonRows: readonly Row[] | null,
   }
   grouped = { ...grouped, columns: Object.fromEntries(spec.aggregates.map((a) => [a.name, a.kind])) }
   const report = compareGrouped(jsonRows, parquetRows, grouped, drift)
+
+  // A top N submitted at the raised limit (`comparisonText`): a key one side
+  // ranks in its top N and the other side did not return at all may only have
+  // been cut there — when that side came back full and the key's rank is no
+  // higher than the lowest rank it returned. Where it went cannot be read, so
+  // the window is not compared, rather than failed or passed.
+  if (spec.order?.dir === 'desc' && spec.limit !== null) {
+    const fetched = topNFetchLimit(spec.limit)
+    const rank = spec.order.column
+    const num = (v: unknown) => (rawKind(v) === 'number' ? Number(v) : -Infinity)
+    const rowOf = (rows: readonly Row[], key: string) => rows.find((r) => keyOf(r, spec.keys) === key)
+    const cutFrom = (side: readonly Row[], key: string, other: readonly Row[]) => {
+      if (side.length < fetched || rowOf(side, key)) return false
+      const lowest = Math.min(...side.map((r) => num(r[rank])))
+      const held = rowOf(other, key)
+      return !!held && num(held[rank]) <= lowest
+    }
+    const cut = [...report.onlyJson.filter((k) => cutFrom(parquetRows, k, jsonRows)), ...report.onlyParquet.filter((k) => cutFrom(jsonRows, k, parquetRows))]
+    if (cut.length) {
+      const one = cut.length === 1
+      return {
+        ...base,
+        verdict: 'incomparable',
+        grouped,
+        report,
+        sentence: `Not compared: ${cut.join(', ')} ${one ? 'is' : 'are'} missing from a side that came back full at ${fetched} rows, with ${one ? 'its' : 'their'} rank inside what that side cut, so whether ${one ? 'it was' : 'they were'} cut or lost cannot be read.`,
+      }
+    }
+  }
 
   // Text figures: exact, absent ≠ "". compareGrouped reads numbers only.
   const byKey = (rows: readonly Row[]) => {
@@ -317,7 +417,9 @@ export function compareQueryRows(query: string, jsonRows: readonly Row[] | null,
       const jk = rawKind(jv)
       const pk = rawKind(pv)
       if (jk === 'text' || pk === 'text') {
-        exercised = true
+        // "" on both sides exercised nothing: an absent value read as "" is
+        // exactly what that cannot tell apart.
+        if (!(jv === '' && pv === '')) exercised = true
         if (!(jk === 'text' && pk === 'text' && jv === pv)) textDiffers.push({ key, column: a.name, json: jv ?? null, parquet: pv ?? null })
       } else if ((jk === 'number' && Number(jv) !== 0) || (pk === 'number' && Number(pv) !== 0)) exercised = true
     }
@@ -509,6 +611,8 @@ export interface WindowResult {
 
 export interface TextResult {
   query: string
+  /** What was submitted on JSON (`comparisonText`); the Parquet side moves only its dataset selector. */
+  submitted: string
   perWindow: (QueryComparison & { window: RunWindow })[]
 }
 
@@ -538,11 +642,17 @@ export async function executeParityRun(windows: readonly RunWindow[], selected: 
     jobs.push(r.job)
     return r.rows
   }
-  const entries: RunResult['entries'] = selected.map((e) => ({ id: e.id, mode: e.mode, ineligible: e.ineligible, texts: e.queries.map((query) => ({ query, perWindow: [] })) }))
+  const entries: RunResult['entries'] = selected.map((e) => ({ id: e.id, mode: e.mode, ineligible: e.ineligible, texts: e.queries.map((query) => ({ query, submitted: comparisonText(query), perWindow: [] })) }))
   const results: WindowResult[] = []
 
+  let stopped: string | null = null
   for (const w of windows) {
     deps.log(`Window ${w.label}`)
+    if (stopped) {
+      results.push({ window: w, status: 'skipped', why: `not run: ${stopped}`, completeness: { complete: false, why: 'not run', checkedAt: null, buckets: [] }, control: null, drift: null })
+      deps.log('  skipped: the run had stopped')
+      continue
+    }
     const rows = await submit('completeness', w, COMPLETENESS_QUERY)
     if (!rows) {
       results.push({ window: w, status: 'skipped', why: 'the completeness check gave no answer, so nothing proves the Parquet copy complete', completeness: { complete: false, why: 'no answer', checkedAt: null, buckets: [] }, control: null, drift: null })
@@ -551,6 +661,12 @@ export async function executeParityRun(windows: readonly RunWindow[], selected: 
     }
     const checkedAt = deps.nowSec()
     const buckets = bucketRecords(rows, checkedAt)
+    if (rows.length && !buckets.length) {
+      stopped = `the completeness check answered ${rows.length} row${rows.length === 1 ? '' : 's'} with no bucket this can read (no ${COMPLETENESS_BUCKET_COLUMN} or _time), so no window could be proven complete, and the run stopped rather than bill another check`
+      results.push({ window: w, status: 'skipped', why: stopped, completeness: { complete: false, why: stopped, checkedAt, buckets }, control: null, drift: null })
+      deps.log(`  skipped, and the run stopped: ${stopped}`)
+      continue
+    }
     const verdict = windowCompleteness(w, checkedAt, new Map(buckets.map((b) => [b.start, b])))
     const completeness = { complete: verdict.complete, why: verdict.why, checkedAt, buckets }
     if (!verdict.complete) {
@@ -577,8 +693,8 @@ export async function executeParityRun(windows: readonly RunWindow[], selected: 
 
     for (const e of entries) {
       for (const t of e.texts) {
-        const j = await submit(`${e.id}, JSON`, w, t.query)
-        const p = await submit(`${e.id}, Parquet`, w, retarget(t.query, pq))
+        const j = await submit(`${e.id}, JSON`, w, t.submitted)
+        const p = await submit(`${e.id}, Parquet`, w, retarget(t.submitted, pq))
         const cmp = compareQueryRows(t.query, j, p, drift)
         t.perWindow.push({ ...cmp, window: w })
         deps.log(`  ${e.id}: ${cmp.verdict}`)
@@ -712,6 +828,7 @@ export function renderParityMarkdown(r: ParityRunReport): string {
   for (const e of r.entries) {
     for (const t of e.texts) {
       out.push('', `### \`${e.id}\``, '', '```kql', t.query, '```', '')
+      if (t.submitted !== t.query) out.push(`Submitted with its limit raised, and compared at its own N: \`${t.submitted}\``, '')
       for (const c of t.perWindow) out.push(`- ${c.window.label}: **${c.verdict}** (rows ${c.rows.json ?? '—'} → ${c.rows.parquet ?? '—'}). ${c.sentence}`)
     }
   }

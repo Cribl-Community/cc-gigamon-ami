@@ -874,11 +874,12 @@ function resolveImport(from: string, spec: string): string | null {
 function reachableFromMain(): Set<string> {
   const seen = new Set<string>()
   const queue = ['src/main.tsx']
+  // Either quote style: a double-quoted specifier loads a module as surely as a single-quoted one.
   const edges = [
-    /^\s*import\s+(?!type\s)[\w$*{},\s]*?\s*from\s*'([^']+)'/gm,
-    /^\s*import\s*'([^']+)'/gm,
-    /^\s*export\s+(?!type\s)(?:\*|\*\s+as\s+[\w$]+|\{[^}]*\})\s*from\s*'([^']+)'/gm,
-    /\bimport\(\s*'([^']+)'\s*\)/g,
+    /^\s*import\s+(?!type\s)[\w$*{},\s]*?\s*from\s*['"]([^'"]+)['"]/gm,
+    /^\s*import\s*['"]([^'"]+)['"]/gm,
+    /^\s*export\s+(?!type\s)(?:\*|\*\s+as\s+[\w$]+|\{[^}]*\})\s*from\s*['"]([^'"]+)['"]/gm,
+    /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g,
   ]
   while (queue.length) {
     const file = queue.shift() as string
@@ -896,6 +897,19 @@ function reachableFromMain(): Set<string> {
 }
 
 const REACHABLE = reachableFromMain()
+
+describe('what the running app must never reach', () => {
+  // The Phase 8.0e parity runner plans Search jobs that cost thousands of
+  // CPU-s; it is a script's (scripts/parity-run.mjs), never the app's. A panel
+  // that imported it, statically, lazily or through a re-export, would put it
+  // one click from a viewer. parityRun.test.ts greps src/ for an import of it;
+  // this holds the same claim over the import graph itself. *(Added
+  // 2026-09-25, review of `feat/phase8-parity-runner`.)*
+  it('does not reach the parity runner from src/main.tsx', () => {
+    expect(REACHABLE.has('src/App.tsx')).toBe(true)
+    expect(REACHABLE.has('src/cribl/parityRun.ts'), 'src/cribl/parityRun.ts is reachable from src/main.tsx').toBe(false)
+  })
+})
 
 describe('calls nothing reaches yet', () => {
   // A module whose calls exist in the source but that nothing on screen can

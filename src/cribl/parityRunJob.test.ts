@@ -16,6 +16,7 @@ import type { FieldType, Row } from './parity'
 import {
   PARITY_CONTROL_QUERY,
   buildParityReport,
+  comparisonText,
   executeParityRun,
   parityCostFloor,
   parityReportStem,
@@ -30,6 +31,8 @@ import { ROUTES, tableProblems, type RouteEntry } from './routing/table'
 const NOW = Date.UTC(2026, 9, 1, 12, 7, 31) / 1000
 const TYPES: Record<string, FieldType> = { http_code: 'number' }
 const CODES = ROUTES.find((e) => e.id === 'web.codes')!.queries[0]
+/** What the runner submits for CODES: its `limit 12` raised, so a tie at rank 12 can be seen. */
+const CODES_SUBMITTED = comparisonText(CODES)
 
 interface Scenario {
   /** Parquet's completeness count for a bucket, given the JSON one; default: equal. */
@@ -38,6 +41,10 @@ interface Scenario {
   rows?: (query: string, parquet: boolean) => Row[]
   /** The header's totalEventCount, when it should not be the row count. */
   total?: (query: string) => number | undefined
+  /** The control count a side answers; default 50,000 on both. */
+  control?: (parquet: boolean, earliest: number) => number
+  /** The column the completeness rows carry their bucket in; default what a live row names it. */
+  bucketColumn?: string
 }
 
 /** A stand-in for the Search API: jobs complete at once and answer from the scenario. */
@@ -66,9 +73,9 @@ function fakeCribl(s: Scenario = {}) {
     let rows: Row[]
     if (q.startsWith('dataset="cribl_metrics"')) {
       rows = []
-      for (let t = job.earliest; t < job.latest; t += B) rows.push({ _time: t, json_events: 1000, pq_events: s.pqEvents?.(t) ?? 1000 })
+      for (let t = job.earliest; t < job.latest; t += B) rows.push({ [s.bucketColumn ?? 'bin_time_5m']: t, json_events: 1000, pq_events: s.pqEvents?.(t) ?? 1000 })
     } else if (q.endsWith(PARITY_CONTROL_QUERY.slice('dataset="gigamon_ami" '.length))) {
-      rows = [{ c: 50_000 }]
+      rows = [{ c: s.control?.(parquet, job.earliest) ?? 50_000 }]
     } else {
       rows = s.rows?.(q, parquet) ?? [{ http_code: 200, n: 900 }, { http_code: 404, n: 40 }]
     }
@@ -133,14 +140,68 @@ describe('a parity run against a fake transport', () => {
     expect(report.billed).toEqual({ known: 1.5 * report.jobs.length, knownJobs: report.jobs.length, unknownJobs: 0, complete: true })
   })
 
-  it('runs the text as written on JSON and moves only the dataset selector on Parquet', async () => {
+  it('runs the text on JSON with only the limit of a top N raised, and moves only the dataset selector on Parquet', async () => {
     const windows = parityRunWindows(NOW)
     const { cribl, result } = run({}, windows)
-    await result
+    const r = await result
+    expect(CODES_SUBMITTED).toBe(CODES.replace(/limit 12$/, 'limit 62'))
+    expect(r.entries[0].texts[0]).toMatchObject({ query: CODES, submitted: CODES_SUBMITTED })
     const texts = cribl.posts.map((p) => p.query.replace(/^set max_running_time_per_search=300; /, ''))
-    expect(texts.filter((t) => t === CODES)).toHaveLength(3)
-    expect(texts.filter((t) => t === CODES.replace('dataset="gigamon_ami" ', 'dataset="gigamon_ami_pq" '))).toHaveLength(3)
+    expect(texts.filter((t) => t === CODES_SUBMITTED)).toHaveLength(3)
+    expect(texts.filter((t) => t === CODES_SUBMITTED.replace('dataset="gigamon_ami" ', 'dataset="gigamon_ami_pq" '))).toHaveLength(3)
+    // The control count: once as written, once on the Parquet dataset, per window.
+    expect(texts.filter((t) => t === PARITY_CONTROL_QUERY)).toHaveLength(3)
+    expect(texts.filter((t) => t === PARITY_CONTROL_QUERY.replace('dataset="gigamon_ami" ', 'dataset="gigamon_ami_pq" '))).toHaveLength(3)
     expect(texts.some((t) => t.includes('allow_previous_results'))).toBe(false)
+  })
+
+  it('does not compare a window whose control count disagrees, and submits nothing more for it', async () => {
+    const windows = parityRunWindows(NOW)
+    const lagging = windows[1]
+    // Parquet holds 10 % fewer records in the middle window: landing lag, not Parquet.
+    const { cribl, plan, result } = run({ control: (pq, earliest) => (pq && earliest === lagging.earliest ? 45_000 : 50_000) }, windows)
+    const { report } = write(await result, plan, windows)
+    expect(report.windows.map((w) => w.status)).toEqual(['compared', 'incomparable', 'compared'])
+    expect(report.windows[1].why).toMatch(/control count disagreed \(50000 on JSON, 45000 on Parquet\)/)
+    // Completeness + the two control counts, and no query run.
+    expect(cribl.posts.filter((p) => p.earliest === lagging.earliest)).toHaveLength(3)
+    expect(report.entries[0].perWindow.map((p) => p.verdict)).toEqual(['pass', 'skipped', 'pass'])
+    expect(report.entries[0]).toMatchObject({ verdict: 'not-enough', evidence: null })
+  })
+
+  it('compares each text with the window\'s control drift', async () => {
+    const windows = parityRunWindows(NOW)
+    // The control agrees, 0.4 % apart. A group of 40 that moved by one record is
+    // outside 1 % of 40 with no drift, and inside the one record a drifting
+    // control allows: it passes only if the drift reached the comparison.
+    const control = (pq: boolean) => (pq ? 50_200 : 50_000)
+    const rows = (_q: string, pq: boolean) => [{ http_code: 200, n: 900 }, { http_code: 404, n: pq ? 41 : 40 }]
+    const drifting = run({ control, rows }, windows)
+    const a = write(await drifting.result, drifting.plan, windows)
+    expect(a.report.windows.every((w) => w.status === 'compared' && w.drift !== null && Math.abs(w.drift - 0.004) < 1e-9)).toBe(true)
+    expect(a.report.entries[0].perWindow.map((p) => p.verdict)).toEqual(['pass', 'pass', 'pass'])
+    // The same rows beside a control that agreed exactly fail.
+    const exact = run({ rows }, windows)
+    const b = write(await exact.result, exact.plan, windows)
+    expect(b.report.entries[0]).toMatchObject({ verdict: 'failed', evidence: null })
+  })
+
+  it('stops the run when the completeness answer carries no bucket it can read, rather than bill another check', async () => {
+    const windows = parityRunWindows(NOW)
+    const { cribl, plan, result } = run({ bucketColumn: 'bucket_start' }, windows)
+    const { report } = write(await result, plan, windows)
+    expect(report.windows.map((w) => w.status)).toEqual(['skipped', 'skipped', 'skipped'])
+    expect(report.windows[0].why).toMatch(/no bucket this can read \(no bin_time_5m or _time\)/)
+    expect(report.windows[1].why).toMatch(/^not run: /)
+    // One completeness job, then nothing.
+    expect(cribl.posts).toHaveLength(1)
+  })
+
+  it('proves a window complete from rows that name the bucket as a live result does', async () => {
+    const windows = parityRunWindows(NOW)
+    const { plan, result } = run({ bucketColumn: 'bin_time_5m' }, windows)
+    const { report } = write(await result, plan, windows)
+    expect(report.windows.map((w) => w.status)).toEqual(['compared', 'compared', 'compared'])
   })
 
   it('skips a window the completeness check does not prove complete, and submits nothing else for it', async () => {
@@ -179,7 +240,7 @@ describe('a parity run against a fake transport', () => {
 
   it('does not compare a read cut short of the job\'s totalEventCount', async () => {
     const windows = parityRunWindows(NOW)
-    const { plan, result } = run({ total: (q) => (q === CODES ? 5000 : undefined) }, windows)
+    const { plan, result } = run({ total: (q) => (q === CODES_SUBMITTED ? 5000 : undefined) }, windows)
     const { report } = write(await result, plan, windows)
     const cmp = report.entries[0].texts[0].perWindow
     expect(cmp.map((c) => c.verdict)).toEqual(['notrun', 'notrun', 'notrun'])

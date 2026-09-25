@@ -10,12 +10,14 @@ import { describe, expect, it } from 'vitest'
 import { COMPLETENESS_BUCKET_SECONDS as B } from '../queries/routing'
 import type { FieldType, Row } from './parity'
 import {
+  comparisonText,
   compareQueryRows,
   entryOutcome,
   parityCostFloor,
   parityRunWindows,
   planEntries,
   querySpec,
+  topNFetchLimit,
   type RunResult,
   type RunWindow,
   type WindowResult,
@@ -43,7 +45,7 @@ describe('parityRunWindows', () => {
   it('makes windows a completeness check read at the reference time can prove settled', () => {
     for (const w of parityRunWindows(NOW)) {
       const rows = []
-      for (let t = w.earliest; t < w.latest; t += B) rows.push({ _time: t, json_events: 10, pq_events: 10 })
+      for (let t = w.earliest; t < w.latest; t += B) rows.push({ bin_time_5m: t, json_events: 10, pq_events: 10 })
       const recs = new Map(bucketRecords(rows, NOW).map((r) => [r.start, r]))
       expect(windowCompleteness(w, NOW, recs)).toEqual({ complete: true, why: null })
     }
@@ -55,6 +57,17 @@ describe('parityRunWindows', () => {
     expect(() => parityRunWindows(NOW, { minutes: 7 })).toThrow(/whole number/)
     expect(() => parityRunWindows(NOW, { offsetsHours: [0, 6, 12.1] })).toThrow(/bucket grid/)
     expect(() => parityRunWindows(NOW, { offsetsHours: [0, -6, 12] })).toThrow(/non-negative/)
+  })
+
+  it('refuses a reference time later than the real clock, before anything is billed', () => {
+    // --at tomorrow: every window would end in the future, and each would still bill a completeness job.
+    expect(() => parityRunWindows(NOW + 86_400, { clockSec: NOW })).toThrow(/later than now/)
+    expect(parityRunWindows(NOW, { clockSec: NOW })).toHaveLength(3)
+    expect(parityRunWindows(NOW - 3600, { clockSec: NOW })).toHaveLength(3)
+  })
+
+  it('the runner hands it the real clock', () => {
+    expect(readFileSync(join(ROOT, 'scripts/parity-run.mjs'), 'utf8')).toMatch(/parityRunWindows\(nowSec, \{[^}]*clockSec: Math\.floor\(startedMs \/ 1000\)/)
   })
 })
 
@@ -71,7 +84,7 @@ describe('querySpec', () => {
     expect(r).toEqual({
       ok: true,
       spec: {
-        keys: ['http_code', '_time'],
+        keys: ['http_code', 'bin_time_1m'],
         aggregates: [
           { name: 'n', expr: 'count()', kind: 'count' },
           { name: 'p', expr: 'percentile(x,95)', kind: 'distribution' },
@@ -125,6 +138,82 @@ describe('compareQueryRows', () => {
     expect(compareQueryRows(q, [{ s: 'a', flows: 10, issuer: 'CA' }], [{ s: 'a', flows: 10, issuer: 'CA' }]).verdict).toBe('pass')
   })
 
+  it('calls "" on both sides of a text figure unexercised, never a pass', () => {
+    const q = 'dataset="gigamon_ami" | summarize issuer=max(ssl_issuer)'
+    expect(compareQueryRows(q, [{ issuer: '' }], [{ issuer: '' }]).verdict).toBe('unexercised')
+    expect(compareQueryRows(q, [{ issuer: 'CA' }], [{ issuer: 'CA' }]).verdict).toBe('pass')
+  })
+
+  it('widens a count by the control\'s drift, and only by it', () => {
+    const q = 'dataset="gigamon_ami" | summarize events=count()'
+    // 3 % apart: outside the 1 % count tolerance with no drift, inside it once the control drifted 5 %.
+    expect(compareQueryRows(q, [{ events: 10_000 }], [{ events: 10_300 }], 0).verdict).toBe('fail')
+    expect(compareQueryRows(q, [{ events: 10_000 }], [{ events: 10_300 }], 0.05).verdict).toBe('pass')
+  })
+})
+
+describe('compareQueryRows over a time bin', () => {
+  const TREND = ROUTES.find((e) => e.id === 'tcp.trend')!.queries[0]
+  // A live result names a `bin(_time, 1m)` key `bin_time_1m`, as the charts read it.
+  const live = (vs: [number, number, number][]): Row[] => vs.map(([t, v, flows]) => ({ bin_time_1m: t, v, flows }))
+
+  it('compares every minute, so one wrong minute fails', () => {
+    const j = live([[1000, 10, 100], [1060, 5, 50], [1120, 7, 70]])
+    const p = live([[1000, 10, 100], [1060, 0, 0], [1120, 1, 900]])
+    const c = compareQueryRows(TREND, j, p)
+    expect(c.verdict).toBe('fail')
+    expect([...(c.report?.compared ?? [])].sort()).toEqual(['1000', '1060', '1120'])
+    expect(compareQueryRows(TREND, j, j).verdict).toBe('pass')
+  })
+
+  it('will not compare rows it cannot tell apart: a key column no row carries, or two rows under one key', () => {
+    const noKey = [{ _time: 1000, v: 1, flows: 1 }, { _time: 1060, v: 2, flows: 2 }]
+    expect(compareQueryRows(TREND, noKey, noKey)).toMatchObject({ verdict: 'incomparable', sentence: expect.stringMatching(/key column bin_time_1m/) })
+    const dup = live([[1000, 1, 1], [1000, 2, 2]])
+    expect(compareQueryRows(TREND, dup, live([[1000, 1, 1]]))).toMatchObject({ verdict: 'incomparable', sentence: expect.stringMatching(/two JSON rows share the key 1000/) })
+    // Scalar: more than one row is not one group.
+    const q = 'dataset="gigamon_ami" | summarize events=count()'
+    expect(compareQueryRows(q, [{ events: 1 }, { events: 2 }], [{ events: 1 }]).verdict).toBe('incomparable')
+  })
+})
+
+describe('a top N and a tie at its boundary', () => {
+  const TOP = 'dataset="gigamon_ami" http_code=* | summarize n=count() by http_code | sort by n desc | limit 3'
+
+  it('is submitted with its limit raised, and compared at its own N', () => {
+    expect(comparisonText(TOP)).toBe(TOP.replace('limit 3', `limit ${topNFetchLimit(3)}`))
+    expect(topNFetchLimit(3)).toBeGreaterThan(3)
+    expect(topNFetchLimit(120)).toBe(240)
+    const hosts = ROUTES.find((e) => e.id === 'web.hosts')!.queries[0]
+    expect(comparisonText(hosts)).toMatch(/\| limit 62$/)
+    // Anything that is not a descending top N runs exactly as written.
+    for (const q of ['dataset="gigamon_ami" | summarize events=count()', 'dataset="gigamon_ami" a in ("x") | summarize pqc=count() by b | limit 2', ROUTES.find((e) => e.id === 'tcp.trend')!.queries[0]]) {
+      expect(comparisonText(q)).toBe(q)
+    }
+  })
+
+  it('passes identical data whose tie at rank N the server broke differently, once it can see past the cut', () => {
+    // Ranks 1–2 are 900 and 50; 500 and 503 both have n=2. Cut at 3, JSON kept 500 and Parquet 503.
+    const j = [{ http_code: 200, n: 900 }, { http_code: 404, n: 50 }, { http_code: 500, n: 2 }, { http_code: 503, n: 2 }]
+    const p = [{ http_code: 200, n: 900 }, { http_code: 404, n: 50 }, { http_code: 503, n: 2 }, { http_code: 500, n: 2 }]
+    const c = compareQueryRows(TOP, j, p)
+    expect(c.verdict).toBe('pass')
+    expect(c.report?.tied.sort()).toEqual(['500', '503'])
+  })
+
+  it('will not judge a key the other side cut at the raised limit: neither fail nor pass', () => {
+    const fetched = topNFetchLimit(3)
+    const filler = (from: number) => Array.from({ length: fetched - 3 }, (_, i) => ({ http_code: from + i, n: 2 }))
+    // Both sides full at the raised limit; 777 (n=2) is on JSON's rows only, at the rank Parquet cut at.
+    const j = [{ http_code: 200, n: 900 }, { http_code: 404, n: 50 }, { http_code: 777, n: 2 }, ...filler(1000)]
+    const p = [{ http_code: 200, n: 900 }, { http_code: 404, n: 50 }, { http_code: 888, n: 2 }, ...filler(1000)]
+    expect(j).toHaveLength(fetched)
+    // 777 ranks 3rd on JSON (a stable sort keeps it ahead of the filler): in its top 3, absent from Parquet.
+    expect(compareQueryRows(TOP, j, p)).toMatchObject({ verdict: 'incomparable', sentence: expect.stringMatching(/missing from a side that came back full/) })
+    // The same keys missing from sides that were NOT full are a real difference.
+    expect(compareQueryRows(TOP, j.slice(0, 5), p.slice(0, 5)).verdict).toBe('fail')
+  })
+
   it('compares a scalar summarize as one group, and calls all-zero unexercised', () => {
     const q = 'dataset="gigamon_ami" | summarize events=count(), bytes=sum(total_bytes)'
     expect(compareQueryRows(q, [{ events: 100, bytes: 5 }], [{ events: 100, bytes: 5 }]).verdict).toBe('pass')
@@ -174,7 +263,7 @@ describe('the evidence an entry earns', () => {
     id: 'web.codes',
     mode,
     ineligible: mode === 'measurement' ? ['type not measured: http_code'] : [],
-    texts: [{ query: TEXT, perWindow: windows.map((w, i) => ({ window: w, verdict: verdicts[i] as 'pass', sentence: '', rows: { json: 1, parquet: 1 }, grouped: null, report: null, textDiffers: [] })) }],
+    texts: [{ query: TEXT, submitted: TEXT, perWindow: windows.map((w, i) => ({ window: w, verdict: verdicts[i] as 'pass', sentence: '', rows: { json: 1, parquet: 1 }, grouped: null, report: null, textDiffers: [] })) }],
   })
 
   it('is accepted by tableProblems when pasted into its entry', () => {
@@ -222,7 +311,10 @@ describe('wiring', () => {
         const p = join(dir, e.name)
         if (e.isDirectory()) walk(p)
         else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
-          if (/from '[./]*(?:cribl\/)?parityRun'/.test(readFileSync(p, 'utf8'))) offenders.push(relative(ROOT, p))
+          // Any spelling that loads it: `from '…'` or `from "…"` (an import or a
+          // re-export), a side-effect `import '…'`, or a dynamic `import('…')`.
+          // policyCoverage.test.ts also walks the import graph from src/main.tsx.
+          if (/(?:\bfrom\s*|\bimport\s*\(?\s*)['"`][^'"`]*\bparityRun(?:\.ts)?['"`]/.test(readFileSync(p, 'utf8'))) offenders.push(relative(ROOT, p))
         }
       }
     }
@@ -230,13 +322,34 @@ describe('wiring', () => {
     expect(offenders).toEqual([])
   })
 
-  it('has its npm script, and the runner never writes the routing table', () => {
+  it('catches every spelling of an import of it', () => {
+    const re = /(?:\bfrom\s*|\bimport\s*\(?\s*)['"`][^'"`]*\bparityRun(?:\.ts)?['"`]/
+    for (const src of [
+      "import { x } from './parityRun'",
+      'import { x } from "../cribl/parityRun"',
+      "const P = await import('../cribl/parityRun')",
+      'export * from "./parityRun"',
+      "import './parityRun.ts'",
+    ]) expect(re.test(src), src).toBe(true)
+    expect(re.test("import { x } from './parityRunJob'")).toBe(false)
+  })
+
+  it('has its npm script, and the runner writes nothing but its report, into the report directory', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
     expect(pkg.scripts['parity:run']).toBe('node scripts/parity-run.mjs')
-    for (const f of ['scripts/parity-run.mjs', 'scripts/parity-run-job.mjs']) {
-      const src = readFileSync(join(ROOT, f), 'utf8')
-      expect(src, f).not.toMatch(/writeFileSync\([^)]*table/)
-      expect(src, f).not.toMatch(/routing\/table\.ts['"]\s*\)/)
-    }
+    // Structural, not a grep for the table's name: no file-writing API at all
+    // in the runner, whose one write is `writeReportOnce` into `args.out`…
+    const WRITES = /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|rename|renameSync|copyFile|copyFileSync|cp|cpSync|createWriteStream|rm|rmSync|unlink|unlinkSync|truncate|truncateSync|open|openSync|symlink|symlinkSync)\b|node:fs\/promises|['"]fs\/promises['"]/
+    const runner = readFileSync(join(ROOT, 'scripts/parity-run.mjs'), 'utf8')
+    expect(runner).not.toMatch(WRITES)
+    expect(runner.match(/from 'node:fs'/g)).toHaveLength(1)
+    expect(runner).toMatch(/import \{ mkdirSync, readFileSync \} from 'node:fs'/)
+    expect(runner.match(/writeReportOnce\(/g)).toHaveLength(1)
+    expect(runner).toMatch(/W\.writeReportOnce\(\{\s*dir: args\.out,/)
+    // …and in the job module the only write is writeReportOnce's own, through the fs it is handed.
+    const job = readFileSync(join(ROOT, 'scripts/parity-run-job.mjs'), 'utf8')
+    expect(job.replace(/writeFileSync as fsWrite|fs\.writeFileSync\(|writeFileSync: fsWrite|writeFileSync\s*\(p, data/g, '')).not.toMatch(WRITES)
+    const audit = readFileSync(join(ROOT, 'scripts/parquet-audit-job.mjs'), 'utf8')
+    expect(audit).not.toMatch(/node:fs|['"]fs['"]/)
   })
 })

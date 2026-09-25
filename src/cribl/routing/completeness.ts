@@ -96,12 +96,37 @@ export function bucketVerdict(json: number, parquet: number): BucketVerdict {
   return Math.abs(parquet - json) <= COMPLETENESS_TOLERANCE * json ? 'complete' : 'gap'
 }
 
-/** The rows of one COMPLETENESS_QUERY run, as bucket records. Rows without a usable `_time` are dropped. */
+/**
+ * The column a COMPLETENESS_QUERY row carries its bucket start in. A group key
+ * `bin(_time, 5m)` comes back from Cribl Search as `bin_time_5m`, not `_time` —
+ * the live charts read `bin_time_1m` for their `bin(_time, 1m)` (TcpHealth.tsx,
+ * WebApiHealth.tsx, FlowMap.tsx). completeness.test.ts holds this to the
+ * query's own span. *(Added 2026-09-25, `feat/phase8-parity-runner`: this
+ * module read `r._time`, which a live row does not carry, so every row was
+ * dropped and every window answered "no completeness check covers the bucket";
+ * the tests built their rows with `_time` and never saw it.)*
+ */
+export const COMPLETENESS_BUCKET_COLUMN = `bin_time_${BUCKET / 60}m`
+
+function bucketStartOf(r: Readonly<Record<string, unknown>>): number | null {
+  for (const v of [r[COMPLETENESS_BUCKET_COLUMN], r._time]) {
+    if (v === undefined || v === null || v === '') continue
+    const t = Number(v)
+    if (Number.isFinite(t)) return t
+  }
+  return null
+}
+
+/**
+ * The rows of one COMPLETENESS_QUERY run, as bucket records. The bucket start
+ * is read from COMPLETENESS_BUCKET_COLUMN, then `_time`; a row with neither is
+ * dropped.
+ */
 export function bucketRecords(rows: ReadonlyArray<Readonly<Record<string, unknown>>>, checkedAt: number): BucketRecord[] {
   const out: BucketRecord[] = []
   for (const r of rows) {
-    const t = Number(r._time)
-    if (!Number.isFinite(t)) continue
+    const t = bucketStartOf(r)
+    if (t === null) continue
     const start = Math.floor(t / BUCKET) * BUCKET
     const json = num(r.json_events)
     const parquet = num(r.pq_events)

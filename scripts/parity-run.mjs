@@ -11,7 +11,8 @@
 //   --force-ineligible        also run entries the type table makes ineligible — to MEASURE them.
 //                             Their results are marked measurement-only and never carry evidence.
 //   --at <ISO time>           the reference "now" (default: the current time). The newest window
-//                             ends on a 5-minute edge at least 360 s before it.
+//                             ends on a 5-minute edge at least 360 s before it. A time later than
+//                             the real clock is refused before anything is billed.
 //   --offsets 0,6,12          hours before the newest window at which each window ends (≥ 3,
 //                             each window starting in a different UTC hour)
 //   --minutes 15              window length, a whole number of 5-minute buckets
@@ -108,7 +109,7 @@ const nowSec = args.at ? Math.floor(Date.parse(args.at) / 1000) : Math.floor(sta
 if (!Number.isFinite(nowSec)) throw new Error(`--at ${args.at} is not a date`)
 
 // Everything below up to --run is free: plan, windows, floor. Each refuses before anything is billed.
-const windows = P.parityRunWindows(nowSec, { minutes: args.minutes ?? undefined, offsetsHours: args.offsets ?? undefined })
+const windows = P.parityRunWindows(nowSec, { minutes: args.minutes ?? undefined, offsetsHours: args.offsets ?? undefined, clockSec: Math.floor(startedMs / 1000) })
 const plan = P.planEntries({ only: args.entries, forceIneligible: args.forceIneligible })
 const basis = {
   rowsPerHour: args.rowsPerHour ?? P.DEFAULT_PARITY_COST_BASIS.rowsPerHour,
