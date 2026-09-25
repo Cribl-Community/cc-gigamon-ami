@@ -1154,8 +1154,12 @@ export interface GroupedReport {
   sentence: string
 }
 
-/** One row's key as text. An absent value and "" stay different keys. */
-function keyOf(row: Row, keys: readonly string[]): string {
+/**
+ * One row's key as text. An absent value and "" stay different keys. Exported
+ * for the parity runner (parityRun.ts), which looks a compared key's rows up by
+ * the same text `compareGrouped` reports.
+ */
+export function keyOf(row: Row, keys: readonly string[]): string {
   return keys.map((k) => (row[k] === undefined || row[k] === null ? '(absent)' : JSON.stringify(row[k]))).join(' · ')
 }
 

@@ -14,7 +14,9 @@ import {
   PACK_PARQUET_OUTPUT_LABEL,
 } from '../../queries/routing'
 import {
+  COMPLETENESS_BUCKET_COLUMN,
   COMPLETENESS_SETTLE_SECONDS as SETTLE,
+  bucketRecords,
   bucketVerdict,
   forgetCompleteness,
   recordCompleteness,
@@ -24,7 +26,8 @@ import {
 
 const B = COMPLETENESS_BUCKET_SECONDS
 const T0 = 1_790_157_600 // a bucket boundary: 1_790_157_600 % 300 === 0
-const bucket = (i: number, json: number, pq: number) => ({ _time: T0 + i * B, json_events: json, pq_events: pq })
+// A live row names a `bin(_time, 5m)` key `bin_time_5m`, never `_time`.
+const bucket = (i: number, json: number, pq: number) => ({ bin_time_5m: T0 + i * B, json_events: json, pq_events: pq })
 /** Three full buckets, 15 minutes, both destinations writing the same. */
 const WHOLE = [bucket(0, 87_000, 87_000), bucket(1, 86_500, 86_500), bucket(2, 88_100, 88_090)]
 const WINDOW = { earliest: T0, latest: T0 + 3 * B }
@@ -50,6 +53,17 @@ describe('the query', () => {
 
   it('bins by the bucket size the verdicts are kept at', () => {
     expect(COMPLETENESS_QUERY).toContain(`bin(_time, ${B / 60}m)`)
+  })
+
+  it('reads the bucket start from the column Cribl names a bin key, bin_time_<span>', () => {
+    expect(COMPLETENESS_BUCKET_COLUMN).toBe(`bin_time_${B / 60}m`)
+    // A live row: no `_time` at all. Before 2026-09-25 this row was dropped.
+    expect(bucketRecords([{ bin_time_5m: T0, json_events: 10, pq_events: 10 }], AFTER)).toEqual([
+      { start: T0, json: 10, parquet: 10, verdict: 'complete', checkedAt: AFTER },
+    ])
+    // `_time` is still read when the bin column is not there; a row with neither is dropped.
+    expect(bucketRecords([{ _time: T0 + B, json_events: 1, pq_events: 1 }], AFTER).map((r) => r.start)).toEqual([T0 + B])
+    expect(bucketRecords([{ json_events: 1, pq_events: 1 }], AFTER)).toEqual([])
   })
 })
 

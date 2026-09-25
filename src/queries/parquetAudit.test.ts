@@ -109,6 +109,9 @@ describe('pinned: measurement, on the JSON dataset', () => {
         else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
           const rel = relative(ROOT, p).replace(/\\/g, '/')
           if (rel === 'src/queries/parquetAudit.ts' || rel === 'src/cribl/parquetAuditReport.ts') continue
+          // The parity runner's module takes the audit's measured cost basis. It is
+          // runner-only too: parityRun.test.ts fails if any app module imports it.
+          if (rel === 'src/cribl/parityRun.ts') continue
           if (/from '[./]*(?:queries\/)?parquetAudit(?:Report)?'/.test(readFileSync(p, 'utf8'))) offenders.push(rel)
         }
       }

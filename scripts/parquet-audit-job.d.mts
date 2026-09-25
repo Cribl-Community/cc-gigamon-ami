@@ -19,6 +19,15 @@ export function readBilledCpu(
   path: string,
   delays?: readonly number[],
 ): Promise<{ value: number | null; note: string }>
+export type JobDeps = { api: Api; sleep: (ms: number) => Promise<void>; now: () => number; log: (line: string) => void; cap: number }
+export function sendCancel(api: Api, path: string): Promise<string>
+export function runSearchJob<T>(
+  deps: JobDeps,
+  purpose: string,
+  window: AuditWindow,
+  query: string,
+  opts: { limit: number; accept: (rows: Row[], header: Row | null) => T },
+): Promise<{ job: AuditJob; value: T | null }>
 export function runAuditJob(
   deps: { api: Api; sleep: (ms: number) => Promise<void>; now: () => number; log: (line: string) => void; cap: number },
   purpose: string,

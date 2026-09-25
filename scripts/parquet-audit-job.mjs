@@ -67,6 +67,25 @@ export function makeApi({ base, fetch, sleep }) {
  * deps: { api, sleep, now: () => epoch ms, log: (line) => void, cap: seconds }
  */
 export async function runAuditJob(deps, purpose, window, query) {
+  const { job, value } = await runSearchJob(deps, purpose, window, query, {
+    limit: 10,
+    accept: (rows) => {
+      if (rows.length !== 1) throw new Error(`expected one summary row, got ${rows.length}`)
+      return rows[0]
+    },
+  })
+  return { job, row: value }
+}
+
+/**
+ * The job loop both runners share (this one and scripts/parity-run-job.mjs):
+ * submit once, poll, read up to `limit` result rows, and hand them — with the
+ * NDJSON header `{ totalEventCount, job, … }` when there is one — to `accept`,
+ * whose answer is `value` and whose throw is the job's error. Then read what it
+ * billed. Never throws; a job that may still be running after a failure is
+ * cancelled, never abandoned.
+ */
+export async function runSearchJob(deps, purpose, window, query, { limit, accept }) {
   const { api, sleep, now, log, cap } = deps
   const executed = `set max_running_time_per_search=${cap}; ${query}`
   const job = {
@@ -84,7 +103,7 @@ export async function runAuditJob(deps, purpose, window, query) {
   }
   const t0 = now()
   const jobPath = () => `/search/jobs/${encodeURIComponent(job.jobId)}`
-  let row = null
+  let value = null
   try {
     job.submittedAt = new Date(t0).toISOString()
     const created = JSON.parse(await api('POST', '/search/jobs', { query: executed, earliest: window.earliest, latest: window.latest }))
@@ -108,11 +127,10 @@ export async function runAuditJob(deps, purpose, window, query) {
     }
     job.elapsedMs = now() - t0
     if (job.status === 'completed') {
-      const text = await api('GET', `${jobPath()}/results?limit=10`)
-      const rows = text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
-        .filter((o) => !(typeof o.totalEventCount === 'number' && 'job' in o))
-      if (rows.length !== 1) throw new Error(`expected one summary row, got ${rows.length}`)
-      row = rows[0]
+      const text = await api('GET', `${jobPath()}/results?limit=${limit}`)
+      const all = text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l))
+      const isHeader = (o) => typeof o.totalEventCount === 'number' && 'job' in o
+      value = accept(all.filter((o) => !isHeader(o)), all.find(isHeader) ?? null)
     }
   } catch (err) {
     job.error = String(err?.message ?? err)
@@ -130,7 +148,7 @@ export async function runAuditJob(deps, purpose, window, query) {
   }
   const billed = job.billableCPUSeconds ?? (job.jobId ? 'not yet available' : 'none (no job)')
   log(`  ${purpose}: ${job.status}${job.error ? ` — ${job.error}` : ''}${job.cancel ? ` (cancel ${job.cancel})` : ''}; billable CPU-s ${billed}${job.costRead ? ` (${job.costRead})` : ''}`)
-  return { job, row }
+  return { job, value }
 }
 
 /**
@@ -164,7 +182,8 @@ export async function readBilledCpu(api, sleep, path, delays = COST_READ_DELAYS_
   return { value: null, note: `not yet available after ${Math.round(waited / 1000)} s of reads` }
 }
 
-async function sendCancel(api, path) {
+/** Cancel a job a runner submitted: 'sent', or 'failed: …'. Never throws. */
+export async function sendCancel(api, path) {
   try {
     await api('POST', `${path}/cancel`)
     return 'sent'
