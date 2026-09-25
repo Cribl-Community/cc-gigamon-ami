@@ -81,8 +81,32 @@ export const SAMPLE_DATASET_SPEC = Object.freeze({
   description: 'Synthetic Gigamon AMI sample flows (generated, not real traffic)',
 })
 
-/** The datasets the run ensures, in run order: the customer's, its Parquet
- *  copy, and the sample's only when ticked. */
+/**
+ * The retention gigamon_ami_pq copies: gigamon_ami's live retention when that
+ * dataset is listed, and `DATASET_SPEC`'s when it is not — then this same run
+ * creates gigamon_ami at that retention, so the two still match. A figure
+ * passed for a dataset that is not listed is not used. Null only when
+ * gigamon_ami is there and its retention could not be read.
+ */
+export function jsonRetentionFor(datasets: readonly string[], jsonRetentionDays: number | null): number | null {
+  return datasets.includes(PACK_LAKE_DATASET_ID) ? jsonRetentionDays : (DATASET_SPEC.retentionPeriodInDays as number)
+}
+
+/**
+ * The datasets the run ensures, in run order: the customer's, its Parquet
+ * copy, and the sample's only when ticked. `jsonRetentionDays` is
+ * `jsonRetentionFor(…)`, as the dialog computes it.
+ *
+ * gigamon_ami IS `DATASET_SPEC`, DELIBERATELY — the body Guided Setup's
+ * dataset step has always created, and not a saved Lake landing profile.
+ * That step builds `datasetSpec(ctx.profile)`, but `ctx.profile` is
+ * `opts.profile ?? DEFAULT_PROFILE` and no caller passes one, so both
+ * creators create the same body (JSON, 30 days, no partitions — the design's
+ * "JSON, 30 days"). The profile is not used here because it can name a format
+ * and partitions, which are fixed at creation, and the dashboards read JSON.
+ * plan.test.ts fails if a caller of `deployAll` starts passing a profile, so
+ * the two cannot drift apart silently.
+ */
 export function onboardingDatasets(opts: { sample: boolean; jsonRetentionDays: number | null }): LakeDatasetSpec[] {
   return [
     DATASET_SPEC as LakeDatasetSpec,
@@ -334,6 +358,16 @@ const OBJECT_KIND: Record<PackObjectKind, string> = {
 const LAKE = 'Cribl Lake dataset'
 
 /**
+ * Whether a schedule already in the workspace is running, and stays running
+ * through this run: `enabled`, or `differs` with a flag that is not `false` —
+ * applyAcceleration re-reads a drifted one and PATCHes it with its stored
+ * flag, `true` when none is readable. A `foreign` one is somebody else's, and
+ * not this app's to count.
+ */
+const keepsRunning = (row: AccelState['rows'][number] | undefined): boolean =>
+  row !== undefined && (row.state === 'enabled' || (row.state === 'differs' && row.enabled !== false))
+
+/**
  * The one confirmation before an onboarding run: every object in run order,
  * the before→after of both sources, the cost in words and every consequence.
  * The run is handed `approvedHttp`, `approvedSample` and `approvedAccel` from
@@ -345,15 +379,21 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
   const resources: ConfirmResource[] = []
 
   // 1–3. The datasets, created when absent and never edited.
-  if (!has(PACK_LAKE_DATASET_ID)) {
-    resources.push({ action: 'create', kind: LAKE, id: PACK_LAKE_DATASET_ID, detail: `JSON · ${ONBOARDING_RETENTION_DAYS}-day retention · never edited or deleted by this app` })
+  const jsonAbsent = !has(PACK_LAKE_DATASET_ID)
+  if (jsonAbsent) {
+    resources.push({ action: 'create', kind: LAKE, id: PACK_LAKE_DATASET_ID, detail: `JSON · ${String(DATASET_SPEC.retentionPeriodInDays)}-day retention · never edited or deleted by this app` })
   }
   if (!has(PACK_PARQUET_DATASET_ID)) {
-    const pq = parquetDatasetSpec(ctx.jsonRetentionDays)
+    const jsonDays = jsonRetentionFor(ctx.datasets, ctx.jsonRetentionDays)
+    const pq = parquetDatasetSpec(jsonDays)
+    const why = jsonAbsent
+      ? `the same as ${PACK_LAKE_DATASET_ID}, created by this run`
+      : jsonDays === null
+        ? `the default, because ${PACK_LAKE_DATASET_ID}’s could not be read`
+        : `the same as ${PACK_LAKE_DATASET_ID}`
     resources.push({
       action: 'create', kind: LAKE, id: PACK_PARQUET_DATASET_ID,
-      detail: `Parquet · automatic schema · no partitions · ${String(pq.retentionPeriodInDays)}-day retention, ` +
-        `${ctx.jsonRetentionDays === null ? 'the default, because ' + PACK_LAKE_DATASET_ID + '’s could not be read' : 'the same as ' + PACK_LAKE_DATASET_ID} · format and partitions are fixed at creation`,
+      detail: `Parquet · automatic schema · no partitions · ${String(pq.retentionPeriodInDays)}-day retention, ${why} · format and partitions are fixed at creation`,
     })
   }
   if (ctx.sample && !has(PACK_SAMPLE_DATASET_ID)) {
@@ -386,17 +426,25 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
   // 7. The deploy.
   resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
 
-  // 8. The scheduled searches, each marked running or installed paused.
+  // 8. The scheduled searches. A CREATE is marked with the mode it is created
+  // in; a correction (`replace`) keeps the pause state Cribl holds for it
+  // (applyAcceleration's `differs` branch), so it is marked with THAT — a
+  // running schedule corrected during a paused-mode run goes on running.
   const mode = accelMode(ctx.sample, ctx.target)
   const approvedAccel = approvedWrites(ctx.accel)
+  const byId = new Map(ctx.accel.rows.map((r) => [r.id as string, r]))
   for (const r of applyResources(ctx.accel)) {
-    resources.push({ ...r, detail: `${mode === 'running' ? 'running' : 'installed paused'} · ${r.detail ?? ''}`.replace(/ · $/, '') })
+    const state = r.action === 'create'
+      ? (mode === 'running' ? 'running' : 'installed paused')
+      : (keepsRunning(byId.get(r.id)) ? 'running' : 'paused')
+    resources.push({ ...r, detail: `${state} · ${r.detail ?? ''}`.replace(/ · $/, '') })
   }
   const lakeUnresolved = ctx.accel.rows.filter((r) => r.windowUnresolved && (r.state === 'absent' || r.state === 'differs')).map((r) => r.id)
 
   const created = Object.entries(approvedAccel).filter(([, s]) => s === 'absent').map(([id]) => id as AccelId)
+  const keepRunning = ctx.accel.rows.filter(keepsRunning).length
   const costLine = [
-    accelCostWords(mode, mode === 'running' ? setCostWords(estimateScheduleSetCost(created)) : null),
+    accelCostWords(mode, mode === 'running' ? setCostWords(estimateScheduleSetCost(created)) : null, { created: created.length, keepRunning }),
     storageCostWords(),
     ...(ctx.sample ? [sampleVolumeWords(sampleVolume())] : []),
   ].join(' ')

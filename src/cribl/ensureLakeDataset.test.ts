@@ -101,6 +101,22 @@ describe('Guided Setup’s dataset step goes through it', () => {
     expect(steps[0]).toMatchObject({ key: 'dataset', action: 'error' })
     expect(writes().filter((c) => c.path === DATASETS)).toEqual([])
   })
+
+  it('an existing gigamon_ami whose shape differs says so in the step, and is still left alone', async () => {
+    listed = [{ id: 'gigamon_ami', format: 'parquet', acceleratedFields: ['protocol'] }]
+    const steps = await deployAll(() => {}, 'default')
+    expect(steps[0]).toMatchObject({ key: 'dataset', action: 'exists' })
+    expect(steps[0].detail).toContain('format parquet, not json')
+    expect(steps[0].detail).toContain('partitions protocol, not none')
+    expect(steps[0].detail).toMatch(/fixed at creation/)
+    expect(writes().filter((c) => c.path === DATASETS)).toEqual([])
+  })
+
+  it('an existing gigamon_ami of the right shape is a plain "exists"', async () => {
+    listed = [{ id: 'gigamon_ami', format: 'json' }]
+    const steps = await deployAll(() => {}, 'default')
+    expect(steps[0]).toEqual({ key: 'dataset', action: 'exists' })
+  })
 })
 
 // What this file could not assert: that Cribl Lake answers a POST for an id

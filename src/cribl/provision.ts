@@ -1299,7 +1299,13 @@ async function ensureDataset(ctx: EnsureCtx): Promise<StepResult> {
     confirm: () => agreed(ctx.confirm, { key: 'dataset', action: 'create', object: RESOURCE_PHRASE.dataset, diff: [] }),
   })
   if (r.action === 'skipped') return refused('dataset')
-  return r.detail === undefined ? { key: 'dataset', action: r.action } : { key: 'dataset', action: r.action, detail: r.detail }
+  // A dataset that exists with another format or partitions is left as it is —
+  // both are fixed at creation — and the step says so, rather than a bare
+  // "exists" over a dataset the saved landing does not describe.
+  const detail = r.differs?.length
+    ? `left as it is: ${r.differs.join('; ')} (format and partitions are fixed at creation)`
+    : r.detail
+  return detail === undefined ? { key: 'dataset', action: r.action } : { key: 'dataset', action: r.action, detail }
 }
 
 /** A Lake dataset's create body: `id` plus whatever else Cribl Lake takes. */

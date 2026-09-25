@@ -5,19 +5,43 @@
 // a pure string can be asserted directly.
 //
 // No internal project history in anything here: no spike ids, phase numbers,
-// decision numbers or dates. onboardingCopy.test.ts holds that.
+// decision numbers or dates. plan.test.ts's copy-hygiene test holds that, over
+// everything the dialog built from these says.
 
 import { PACK_HTTP_INPUT_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID } from '../cribl/pack'
 import type { SampleVolume } from '../cribl/onboarding/plan'
 
 const whole = (n: number) => Math.round(n).toLocaleString('en-US')
 
-/** The cost line's acceleration half. `running` names what the searches bill
- *  and save (accelPanelCopy.ts `setCostWords`); paused bills nothing yet. */
-export function accelCostWords(mode: 'running' | 'paused', runningWords: string | null): string {
-  return mode === 'running'
-    ? `Scheduled searches: ${runningWords ?? 'no scheduled search — nothing billed, nothing saved'}.`
-    : 'Scheduled searches: installed paused, so nothing is billed until they are switched on in Acceleration.'
+/**
+ * The cost line's acceleration half.
+ *
+ * ABOUT THE SEARCHES THIS RUN CREATES, and then the ones already there. The
+ * mode decides only how a CREATE is written (accel/provision.ts
+ * `applyAcceleration` `{ enabled }`); a schedule an earlier Apply installed
+ * keeps whatever pause state Cribl holds, and a correction keeps it too. So
+ * "installed paused, nothing billed" is a claim about the new ones alone, and
+ * the ones already running are counted in a sentence of their own — a line
+ * that said "nothing is billed" over eighteen running schedules would be the
+ * cost claim a reader acts on, and wrong.
+ *
+ * `runningWords` is accelPanelCopy.ts `setCostWords` over the searches this run
+ * creates; read only in `running` mode.
+ */
+export function accelCostWords(
+  mode: 'running' | 'paused',
+  runningWords: string | null,
+  counts: { created: number; keepRunning: number },
+): string {
+  const created =
+    counts.created === 0
+      ? 'Scheduled searches: this run creates none.'
+      : mode === 'running'
+        ? `Scheduled searches this run creates: ${runningWords ?? 'no scheduled search — nothing billed, nothing saved'}.`
+        : 'Scheduled searches this run creates: installed paused, so they bill nothing until they are switched on in Acceleration.'
+  if (counts.keepRunning === 0) return created
+  const n = counts.keepRunning
+  return `${created} ${n} already installed ${n === 1 ? 'keeps' : 'keep'} running and billing as ${n === 1 ? 'it does' : 'they do'} now.`
 }
 
 /** The cost line's storage half. The Parquet copy's size is not claimed. */

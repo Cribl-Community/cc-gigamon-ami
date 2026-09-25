@@ -333,6 +333,38 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
   const uncommented = (s: string) => s.split('\n').filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join('\n')
   const code = sources(SRC).map((p) => ({ p, s: uncommented(readFileSync(p, 'utf8')) }))
 
+  /**
+   * Every mention of ensureLakeDataset in code that is not its definition, a
+   * direct call (the scan below reads those) or a plain named import: an alias
+   * (`import { ensureLakeDataset as ensure }`, `export { … as … }`) or a call by
+   * reference (`specs.map(ensureLakeDataset)`) would let a second creator in
+   * without an `ensureLakeDataset(` for the call scan to find. String literals
+   * are blanked first — authz.ts and paths.ts name the site in prose.
+   */
+  function bareReferences(files: { p: string; s: string }[]): string[] {
+    const out: string[] = []
+    for (const { p, s } of files) {
+      const noStrings = s.replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+      if (/\bensureLakeDataset\s+as\b/.test(noStrings)) out.push(`${p}: aliased`)
+      const noImports = noStrings.replace(/\bimport\s+(?:type\s+)?\{[^}]*\}\s*from\s*''/g, '')
+      for (const m of noImports.matchAll(/\bensureLakeDataset\b/g)) {
+        const at = m.index ?? 0
+        if (noImports.slice(Math.max(0, at - 9), at) === 'function ') continue
+        if (/^\s*\(/.test(noImports.slice(at + 'ensureLakeDataset'.length))) continue
+        out.push(`${p}: ${noImports.slice(at, at + 40).split('\n')[0]}`)
+      }
+    }
+    return out
+  }
+
+  it('the guard against a second creator sees an alias and a call by reference', () => {
+    expect(bareReferences([{ p: 'x.ts', s: "import { ensureLakeDataset as ensure } from './provision'\nensure(SPEC)" }])).not.toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "import { ensureLakeDataset } from './provision'\nawait Promise.all(specs.map(ensureLakeDataset))" }])).not.toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "export { ensureLakeDataset as ensure } from './provision'" }])).not.toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "import {\n  capi,\n  ensureLakeDataset,\n} from './provision'\nawait ensureLakeDataset(SPEC)" }])).toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "  at: 'cribl/provision.ts#ensureLakeDataset',\nexport async function ensureLakeDataset(" }])).toEqual([])
+  })
+
   it('the one dataset POST in src is ensureLakeDataset, and its only caller creates gigamon_ami', () => {
     // A second creator (the onboarding run calling ensureLakeDataset with the
     // Parquet or the sample spec) fails this until PACK_DATASETS_NOT_CREATED
@@ -347,6 +379,7 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
       { p: expect.stringMatching(/cribl[\\/]provision\.ts$/), arg: 'datasetSpec(ctx.profile) as LakeDatasetSpec' },
     ])
     expect(DATASET_SPEC.id).toBe(PACK_LAKE_DATASET_ID)
+    expect(bareReferences(code), 'ensureLakeDataset is reached some way the call scan above cannot see').toEqual([])
     expect([...PACK_DATASETS_NOT_CREATED].sort()).toEqual([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID].sort())
   })
 

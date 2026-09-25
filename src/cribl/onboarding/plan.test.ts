@@ -8,7 +8,7 @@
 //     it — so the dialog shown before the pack exists is the diff the run will
 //     be handed back as `approved`;
 //   * truth tables for `accelMode` and `onboardingPath`.
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
@@ -30,10 +30,17 @@ import {
   packRelease,
 } from '../pack'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, tlsFor } from '../provision'
+import { DEFAULT_PROFILE, datasetSpec } from '../landing'
+import { SAVED_KIND } from '../../components/accelPanelCopy'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const PACK_DIR = join(ROOT, 'packs', PACK_ID)
 const yml = (rel: string) => parse(readFileSync(join(PACK_DIR, rel), 'utf8')) as Record<string, unknown>
+const srcFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+  const p = join(dir, e.name)
+  if (e.isDirectory()) return srcFiles(p)
+  return /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [p] : []
+})
 const inputs = yml('default/inputs.yml').inputs as Record<string, Record<string, unknown>>
 const samples = yml('default/samples.yml') as Record<string, { size: number; numEvents: number }>
 
@@ -153,6 +160,26 @@ describe('the datasets the run creates', () => {
     expect(all[0]).toBe(DATASET_SPEC)
     expect(all[1].retentionPeriodInDays).toBe(60)
   })
+
+  it('gigamon_ami is created with the same body by both creators — DATASET_SPEC, never a saved profile', () => {
+    // Guided Setup's dataset step builds `datasetSpec(ctx.profile)`, and
+    // `ctx.profile` is `opts.profile ?? DEFAULT_PROFILE`. No caller passes one:
+    // if a caller starts to, the onboarding run's DATASET_SPEC must follow it,
+    // and this fails so that it does.
+    expect(onboardingDatasets({ sample: false, jsonRetentionDays: null })[0]).toEqual(datasetSpec(DEFAULT_PROFILE))
+    const callers = srcFiles(join(ROOT, 'src')).flatMap((p) => {
+      const s = readFileSync(p, 'utf8').replace(/\r\n/g, '\n')
+      return [...s.matchAll(/(?<!function )\bdeployAll\(/g)].map((m) => {
+        const end = s.indexOf('\n', s.indexOf('})', m.index ?? 0))
+        return { p, call: s.slice(m.index, end) }
+      })
+    })
+    expect(callers.map((c) => c.p)).toEqual([expect.stringMatching(/ProvisionPanel\.tsx$/)])
+    for (const c of callers) {
+      expect(c.call).toMatch(/onToken/)
+      expect(c.call, c.p).not.toMatch(/\bprofile\b/)
+    }
+  })
 })
 
 // ── Truth tables ────────────────────────────────────────────────────────────
@@ -220,9 +247,10 @@ describe('onboardingSteps — the order, and what stops the run', () => {
 // ── The one confirmation ────────────────────────────────────────────────────
 
 const LAKE = 'gno_lake_30d_c1d'
-const accel = (opts: { unresolved?: boolean; state?: AccelRow['state'] } = {}): AccelState => ({
+const accel = (opts: { unresolved?: boolean; state?: AccelRow['state']; enabled?: boolean | null } = {}): AccelState => ({
   rows: MANIFEST.map((entry) => ({
-    id: entry.id, entry, state: opts.state ?? 'absent', enabled: null, differences: [], stamp: null, ours: false, recorded: false,
+    id: entry.id, entry, state: opts.state ?? 'absent', enabled: opts.enabled ?? null,
+    differences: opts.state === 'differs' ? ['its schedule'] : [], stamp: null, ours: false, recorded: false,
     intended: {} as AccelRow['intended'], stored: null, windowUnresolved: entry.id === LAKE && opts.unresolved === true,
   })),
   orphans: [], denied: false, error: null, truncated: false, readAt: 0,
@@ -281,7 +309,7 @@ describe('onboardingDialog', () => {
     expect(d.approvedSample).toEqual([{ key: 'disabled', kind: 'changed', before: true, after: false }])
     expect(d.costLine).toContain(sampleVolumeWords(sampleVolume()))
     expect(d.accelMode).toBe('paused')
-    expect(d.costLine).toContain(accelCostWords('paused', null))
+    expect(d.costLine).toContain(accelCostWords('paused', null, { created: MANIFEST.length, keepRunning: 0 }))
     expect(d.resources.filter((r) => r.kind === 'Cribl Search saved search').every((r) => r.detail?.startsWith('installed paused'))).toBe(true)
   })
 
@@ -306,7 +334,7 @@ describe('onboardingDialog', () => {
     const d = onboardingDialog(ctx({ target: target('has-data') }))
     expect(d.accelMode).toBe('running')
     expect(d.costLine).toContain(storageCostWords())
-    expect(d.costLine).toMatch(/Scheduled searches: bills /)
+    expect(d.costLine).toMatch(/Scheduled searches this run creates: bills /)
     expect(d.consequences).not.toContain(emptyRealDatasetSentence())
   })
 
@@ -331,8 +359,67 @@ describe('onboardingDialog', () => {
     expect(onboardingDialog(ctx()).consequences).not.toContain(globalStackSentence('g1'))
   })
 
+  it('a corrected schedule is labelled with the pause state it keeps, not the mode new ones are created in', () => {
+    // Paused mode (sample ticked, nothing seen), over schedules that run and drifted:
+    // the correction keeps them running, so the row must not say "installed paused".
+    const paused = onboardingDialog(ctx({ sample: true, accel: accel({ state: 'differs', enabled: true }) }))
+    expect(paused.accelMode).toBe('paused')
+    const replaced = (d: ReturnType<typeof onboardingDialog>) => d.resources.filter((r) => r.kind === SAVED_KIND && r.action === 'replace')
+    expect(replaced(paused)).toHaveLength(MANIFEST.length)
+    for (const r of replaced(paused)) {
+      expect(r.detail).not.toMatch(/installed paused/)
+      expect(r.detail).toMatch(/^running · Overwritten/)
+    }
+    // The reverse: running mode over a paused schedule that drifted — it stays paused.
+    const running = onboardingDialog(ctx({ target: target('has-data'), accel: accel({ state: 'differs', enabled: false }) }))
+    expect(running.accelMode).toBe('running')
+    expect(replaced(running)).toHaveLength(MANIFEST.length)
+    for (const r of replaced(running)) expect(r.detail).toMatch(/^paused · Overwritten/)
+    // A drifted schedule with no readable flag is PATCHed enabled (applyAcceleration), so it reads running.
+    for (const r of replaced(onboardingDialog(ctx({ sample: true, accel: accel({ state: 'differs', enabled: null }) })))) {
+      expect(r.detail).toMatch(/^running · /)
+    }
+  })
+
+  it('paused mode claims no "nothing billed" while schedules from an earlier Apply keep running', () => {
+    const n = MANIFEST.length
+    for (const a of [accel({ state: 'enabled', enabled: true }), accel({ state: 'differs', enabled: true }), accel({ state: 'differs', enabled: null })]) {
+      const d = onboardingDialog(ctx({ sample: true, accel: a }))
+      expect(d.accelMode).toBe('paused')
+      expect(d.costLine).not.toMatch(/nothing is billed|bill nothing|nothing billed/)
+      expect(d.costLine).toContain(`${n} already installed keep running and billing`)
+    }
+    // Paused ones that stay paused bill nothing, and are not counted.
+    expect(onboardingDialog(ctx({ sample: true, accel: accel({ state: 'differs', enabled: false }) })).costLine).not.toMatch(/keep running/)
+    expect(onboardingDialog(ctx({ sample: true, accel: accel({ state: 'paused', enabled: false }) })).costLine).not.toMatch(/keep running/)
+    // Fresh: the "bill nothing" claim is about the searches this run creates, and only those.
+    expect(onboardingDialog(ctx({ sample: true })).costLine).toContain(
+      'Scheduled searches this run creates: installed paused, so they bill nothing until they are switched on in Acceleration.',
+    )
+  })
+
+  it('running mode with nothing to create does not say nothing is billed while the installed ones run', () => {
+    const d = onboardingDialog(ctx({ target: target('has-data'), accel: accel({ state: 'enabled', enabled: true }) }))
+    expect(d.accelMode).toBe('running')
+    expect(d.costLine).not.toMatch(/nothing billed|bill nothing/)
+    expect(d.costLine).toContain(`${MANIFEST.length} already installed keep running and billing`)
+  })
+
+  it('the Parquet row on a fresh tenant: gigamon_ami’s retention, because this run creates gigamon_ami', () => {
+    const fresh = onboardingDialog(ctx({ datasets: [], jsonRetentionDays: null }))
+    const pq = fresh.resources.find((r) => r.id === PACK_PARQUET_DATASET_ID)?.detail ?? ''
+    expect(pq).toMatch(/30-day retention, the same as gigamon_ami, created by this run/)
+    expect(pq).not.toMatch(/could not be read/)
+    // A retention figure for a dataset that is not there is not used: the JSON dataset is created at its own.
+    const stray = onboardingDialog(ctx({ datasets: [], jsonRetentionDays: 90 }))
+    expect(stray.resources.find((r) => r.id === PACK_PARQUET_DATASET_ID)?.detail).toMatch(/30-day retention, the same as gigamon_ami, created by this run/)
+    // Present and unreadable is the one case that falls back to the default.
+    const unread = onboardingDialog(ctx({ datasets: ['gigamon_ami'], jsonRetentionDays: null }))
+    expect(unread.resources.find((r) => r.id === PACK_PARQUET_DATASET_ID)?.detail).toMatch(/the default, because gigamon_ami’s could not be read/)
+  })
+
   it('the Parquet row says its retention and that its shape is fixed at creation', () => {
-    const d = onboardingDialog(ctx({ jsonRetentionDays: 90 }))
+    const d = onboardingDialog(ctx({ datasets: ['gigamon_ami'], jsonRetentionDays: 90 }))
     const pq = d.resources.find((r) => r.id === PACK_PARQUET_DATASET_ID)?.detail ?? ''
     expect(pq).toMatch(/Parquet/)
     expect(pq).toMatch(/90-day/)
@@ -351,8 +438,11 @@ describe('copy hygiene', () => {
 
 describe('what the plan may import', () => {
   it('never packClient.ts — the page imports this module, and that client must stay unreached', () => {
+    // Any spelling of the specifier, static or dynamic. Indirect reach (through a
+    // module that imports it) is policyCoverage.test.ts's reachability check from
+    // src/main.tsx, which is the real protection; this names the direct case.
     const src = readFileSync(join(ROOT, 'src', 'cribl', 'onboarding', 'plan.ts'), 'utf8')
-    expect(src).not.toMatch(/from '\.\.\/packClient'/)
+    expect(src).not.toMatch(/['"`][^'"`\n]*\bpackClient(\.ts|\.js)?['"`]/)
   })
 })
 
