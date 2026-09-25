@@ -77,6 +77,7 @@ export async function runAuditJob(deps, purpose, window, query) {
     submittedAt: null,
     status: 'not submitted',
     billableCPUSeconds: null,
+    costRead: null,
     elapsedMs: null,
     error: null,
     cancel: null,
@@ -122,22 +123,45 @@ export async function runAuditJob(deps, purpose, window, query) {
       job.status = `${job.status}; canceled by the runner after the error`
     }
   }
-  // billableCPUSeconds reads 0 while a job runs and may lag its completion.
   if (job.jobId) {
-    for (let i = 0; i < 3; i++) {
-      try {
-        const j = JSON.parse(await api('GET', jobPath()))
-        const v = j.items?.[0]?.metrics?.cpuMetrics?.billableCPUSeconds
-        if (typeof v === 'number' && v > 0) {
-          job.billableCPUSeconds = v
-          break
-        }
-      } catch { /* the figure is reported as unknown */ }
-      await sleep(3000)
-    }
+    const cost = await readBilledCpu(api, sleep, jobPath())
+    job.billableCPUSeconds = cost.value
+    job.costRead = cost.note
   }
-  log(`  ${purpose}: ${job.status}${job.error ? ` — ${job.error}` : ''}${job.cancel ? ` (cancel ${job.cancel})` : ''}; billable CPU-s ${job.billableCPUSeconds ?? 'unknown'}`)
+  const billed = job.billableCPUSeconds ?? (job.jobId ? 'not yet available' : 'none (no job)')
+  log(`  ${purpose}: ${job.status}${job.error ? ` — ${job.error}` : ''}${job.cancel ? ` (cancel ${job.cancel})` : ''}; billable CPU-s ${billed}${job.costRead ? ` (${job.costRead})` : ''}`)
   return { job, row }
+}
+
+/**
+ * Waits between reads of a finished job's metrics: 2, 4, 8, then 15 s at a
+ * time, 89 s in all. The first real run (2026-09-25) read three times over ~9 s
+ * and printed "unknown" for every job, while the figures were readable about a
+ * minute later.
+ */
+export const COST_READ_DELAYS_MS = [2000, 4000, 8000, 15000, 15000, 15000, 15000, 15000]
+
+/**
+ * A finished job's billable CPU-s, from `GET /search/jobs/:id/metrics` — the
+ * endpoint the app itself reads (src/cribl/jobCost.ts, accel/status.ts); the
+ * first runner read the job record instead. `billableCPUSeconds` reads 0 on a
+ * job not billed yet, so only a positive number is taken; a read that fails is
+ * tried again like a 0. Answers `{ value: null, note: 'not yet available …' }`
+ * when the figure never appears — never 0.
+ */
+export async function readBilledCpu(api, sleep, path, delays = COST_READ_DELAYS_MS) {
+  let waited = 0
+  for (let i = 0; ; i++) {
+    try {
+      const j = JSON.parse(await api('GET', `${path}/metrics`))
+      const v = j.items?.[0]?.metrics?.cpuMetrics?.billableCPUSeconds
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) return { value: v, note: `read after ${Math.round(waited / 1000)} s` }
+    } catch { /* read again after the next wait */ }
+    if (i >= delays.length) break
+    await sleep(delays[i])
+    waited += delays[i]
+  }
+  return { value: null, note: `not yet available after ${Math.round(waited / 1000)} s of reads` }
 }
 
 async function sendCancel(api, path) {

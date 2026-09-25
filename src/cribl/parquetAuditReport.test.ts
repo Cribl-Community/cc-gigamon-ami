@@ -7,11 +7,15 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { CENSUS_COLUMNS_FIELDS, SENTINEL_FIELDS, STATIC_FIELD_TYPES } from '../queries/parquetAudit'
+import { CAST_CHECK_FIELDS, CENSUS_COLUMNS_FIELDS, NUMERIC_CENSUS_FIELDS, SENTINEL_FIELDS, STATIC_FIELD_TYPES } from '../queries/parquetAudit'
 import {
   COST_MARGIN,
+  DEFAULT_COST_BASIS,
+  MEASURED_RUN,
+  NUMERIC_CENSUS_WINDOW,
   auditCostEstimate,
   auditWindows,
+  billedTotal,
   censusControls,
   censusTypeTable,
   freeReportStem,
@@ -20,6 +24,9 @@ import {
   readTypeCensus,
   renderAuditMarkdown,
   reportFileStem,
+  rereadSentinels,
+  typeCountsText,
+  type AuditJob,
   type AuditReport,
   type Row,
 } from './parquetAuditReport'
@@ -27,19 +34,28 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const NOON = Date.parse('2026-09-25T12:00:30Z') / 1000
 
-/** A census row where every field is present `n` times as `type`, with overrides. */
-function censusRow(over: Record<string, { n: number; s: number; lo: string; hi: string }> = {}): Row {
+type Counts = { n: number; s?: number; i?: number; l?: number; r?: number }
+
+/** A census row, per-type counts per field: numbers read `int`, the rest `string`, with overrides. */
+function censusRow(over: Record<string, Counts> = {}, fields: readonly string[] = CENSUS_COLUMNS_FIELDS): Row {
   const row: Row = {}
-  for (const f of CENSUS_COLUMNS_FIELDS) {
+  for (const f of fields) {
     const numeric = STATIC_FIELD_TYPES[f] === 'number' || f === 'protocol'
-    const v = over[f] ?? (numeric ? { n: 10, s: 0, lo: 'long', hi: 'long' } : { n: 10, s: 10, lo: 'string', hi: 'string' })
+    const v = over[f] ?? (numeric ? { n: 10, i: 10 } : { n: 10, s: 10 })
     row[`tn_${f}`] = v.n
-    row[`ts_${f}`] = v.s
-    row[`tlo_${f}`] = v.n ? v.lo : '~'
-    row[`thi_${f}`] = v.n ? v.hi : ''
+    row[`ts_${f}`] = v.s ?? 0
+    row[`ti_${f}`] = v.i ?? 0
+    row[`tl_${f}`] = v.l ?? 0
+    row[`tr_${f}`] = v.r ?? 0
   }
   return row
 }
+
+/** A job as the runner records it. */
+const job = (over: Partial<AuditJob> = {}): AuditJob => ({
+  purpose: '8.0c sentinels', window: { earliest: 0, latest: 900, label: 'w' }, query: 'q', jobId: '1.a', submittedAt: '2026-09-25T12:00:31.000Z',
+  status: 'completed', billableCPUSeconds: 100, costRead: 'read after 14 s', elapsedMs: 1000, error: null, cancel: null, ...over,
+})
 
 describe('auditWindows', () => {
   it('ends every window ten minutes before now, on the minute, and spaces the sentinel windows by hours', () => {
@@ -55,60 +71,137 @@ describe('auditWindows', () => {
 })
 
 describe('auditCostEstimate', () => {
-  it('prices each window from the flat JSON coefficient, and says it is not a bound', () => {
+  it('reproduces the measured 2026-09-25 run for its own shape: 5,457 + 290 ≈ 5,747 CPU-s, not the flat ≈828', () => {
     const e = auditCostEstimate(auditWindows(NOON))
-    expect(Math.round(e.census)).toBe(473)
-    expect(Math.round(e.sentinel)).toBe(355)
+    expect(Math.round(e.census)).toBe(MEASURED_RUN.census.billed)
+    expect(Math.round(e.sentinel)).toBe(290)
+    expect(Math.round(e.total)).toBe(5_747)
     expect(e.planFor).toBeCloseTo(e.total * COST_MARGIN)
-    expect(e.lines.join(' ')).toContain('not a bound')
-    expect(e.lines.join(' ')).toContain('wall time only')
+  })
+
+  it('derives each shape\'s coefficient from the measured figures, not a typed-in constant', () => {
+    expect(DEFAULT_COST_BASIS.censusCpuPer1kRowsPerField).toBeCloseTo(5_457 / 1_049.258 / 28, 9)
+    expect(DEFAULT_COST_BASIS.sentinelCpuPer1kRows).toBeCloseTo((51 + 111 + 128) / 786.522, 9)
+    expect(DEFAULT_COST_BASIS.rowsPerHour).toBe(1_049_258)
+    expect(MEASURED_RUN.census.fields).toBe(CENSUS_COLUMNS_FIELDS.length)
+  })
+
+  it('states itself as a floor from the measured run, dated, and never as a bound', () => {
+    const text = auditCostEstimate(auditWindows(NOON)).lines.join(' ')
+    expect(text).toContain('measured on the demo feed, 2026-09-25')
+    expect(text).toContain('5,457 CPU-s')
+    expect(text).toContain('51, 111, 128 CPU-s')
+    expect(text).toContain('Expected at least ≈5,747 CPU-s')
+    expect(text).toContain('a floor, not a bound')
+    expect(text).toContain('wall time only')
+    expect(text).not.toMatch(/up to ≈/)
+  })
+
+  it('prices the numeric-only census per field over its 15-minute window, with no sentinels', () => {
+    const w = auditWindows(NOON, NUMERIC_CENSUS_WINDOW)
+    expect(w.sentinel).toEqual([])
+    expect(w.census.latest - w.census.earliest).toBe(15 * 60)
+    const e = auditCostEstimate(w, DEFAULT_COST_BASIS, NUMERIC_CENSUS_FIELDS.length, 'numeric')
+    expect(Math.round(e.total)).toBe(341)
+    expect(e.sentinel).toBe(0)
+    expect(e.lines.join(' ')).toContain('numeric-only census, 15 min, 7 fields, no density')
+    expect(e.lines.join(' ')).toContain('a census this narrow is unmeasured')
   })
 
   it('scales with the install\'s own intake when given it', () => {
-    const e = auditCostEstimate(auditWindows(NOON), { rowsPerHour: 2_101_984, cpuPer1kRows: 0.45 })
-    expect(Math.round(e.census)).toBe(946)
+    const e = auditCostEstimate(auditWindows(NOON), { ...DEFAULT_COST_BASIS, rowsPerHour: 2 * 1_049_258 })
+    expect(Math.round(e.census)).toBe(2 * 5_457)
   })
 })
 
 describe('the type census', () => {
-  it('types each field from its present and string counts, and flags a contradiction of the pipeline', () => {
+  it('types each field from which per-type counts are non-zero, and flags a contradiction of the pipeline', () => {
     const c = readTypeCensus(censusRow({
-      http2_code: { n: 5, s: 0, lo: 'long', hi: 'long' },
-      krb5_message_type: { n: 8, s: 3, lo: 'long', hi: 'string' },
-      sip_from: { n: 0, s: 0, lo: '', hi: '' },
-      ssl_ext_ec_supported_groups_type: { n: 4, s: 0, lo: 'array', hi: 'array' },
-      tcp_rtt: { n: 6, s: 6, lo: 'string', hi: 'string' },
+      http2_code: { n: 5, l: 5 },
+      krb5_message_type: { n: 8, s: 3, i: 5 },
+      sip_from: { n: 0 },
+      ssl_ext_ec_supported_groups_type: { n: 4 },
+      http_cookie: { n: 6, s: 4 },
+      tcp_rtt: { n: 6, s: 6 },
+      tcp_rtt_app: { n: 9, i: 7, r: 2 },
     }))
     const by = Object.fromEntries(c.map((e) => [e.field, e]))
-    expect(by.http2_code.verdict).toBe('number')
-    expect(by.krb5_message_type.verdict).toBe('mixed')
-    expect(by.sip_from).toMatchObject({ verdict: 'absent', lo: null, hi: null })
-    expect(by.ssl_ext_ec_supported_groups_type.verdict).toBe('other')
+    expect(by.http2_code).toMatchObject({ verdict: 'number', names: ['long'] })
+    expect(by.krb5_message_type).toMatchObject({ verdict: 'mixed', names: ['string', 'int'] })
+    expect(by.sip_from).toMatchObject({ verdict: 'absent', names: [], other: 0 })
+    // Present values no counted name accounts for are never read as a number or a string.
+    expect(by.ssl_ext_ec_supported_groups_type).toMatchObject({ verdict: 'other', other: 4, names: ['other'] })
+    expect(by.http_cookie).toMatchObject({ verdict: 'mixed', other: 2 })
     expect(by.tcp_rtt).toMatchObject({ verdict: 'string', expected: 'number', agrees: false })
+    // int and real together are still a number, and the report shows the mix.
+    expect(by.tcp_rtt_app).toMatchObject({ verdict: 'number', names: ['int', 'real'], agrees: true })
+    expect(typeCountsText(by.tcp_rtt_app)).toBe('int 7 · real 2')
     expect(by.http_code).toMatchObject({ verdict: 'string', expected: 'string', agrees: true })
     expect(censusControls(c).ok).toBe(true)
   })
 
+  it('types the sparse numeric fields the min/max probe left unresolved on 2026-09-25', () => {
+    // The shape that run recorded for tcp_rtt, with the per-type columns it lacked.
+    const c = readTypeCensus({ rows: 1_049_258, tn_tcp_rtt: 55_107, ts_tcp_rtt: 0, ti_tcp_rtt: 0, tl_tcp_rtt: 0, tr_tcp_rtt: 55_107, tlo_tcp_rtt: '~', thi_tcp_rtt: 0 }, ['tcp_rtt'])
+    expect(c).toHaveLength(1)
+    expect(c[0]).toMatchObject({ field: 'tcp_rtt', verdict: 'number', names: ['real'], agrees: true })
+  })
+
   it('distrusts the whole census when a control reads wrong', () => {
-    const c = readTypeCensus(censusRow({ app_name: { n: 10, s: 0, lo: 'str', hi: 'str' } }))
+    const c = readTypeCensus(censusRow({ app_name: { n: 10 } }))
     expect(censusControls(c)).toMatchObject({ ok: false })
+    expect(censusControls(c).why).toContain('uncounted 10')
     // Untrusted: the sentinel types fall back to the static table.
     expect(censusTypeTable(c)).toEqual(STATIC_FIELD_TYPES)
-    const p = readTypeCensus(censusRow({ protocol: { n: 10, s: 10, lo: 'string', hi: 'string' } }))
+    const p = readTypeCensus(censusRow({ protocol: { n: 10, s: 10 } }))
     expect(censusControls(p).ok).toBe(false)
+    const mixed = readTypeCensus(censusRow({ protocol: { n: 10, i: 9, s: 1 } }))
+    expect(censusControls(mixed).ok).toBe(false)
+    expect(censusControls(readTypeCensus(censusRow())).why).toBe('Controls hold: `app_name` reads string, `protocol` reads int.')
   })
 
   it('resolves unknowns from a trusted census, keeps them unknown when mixed, and keeps static types when absent', () => {
     const t = censusTypeTable(readTypeCensus(censusRow({
-      http2_code: { n: 5, s: 0, lo: 'long', hi: 'long' },
-      krb5_message_type: { n: 8, s: 3, lo: 'long', hi: 'string' },
-      sip_from: { n: 0, s: 0, lo: '', hi: '' },
+      http2_code: { n: 5, l: 5 },
+      krb5_message_type: { n: 8, s: 3, i: 5 },
+      sip_from: { n: 0 },
     })))
     expect(t.http2_code).toBe('number')
     expect(t.krb5_message_type).toBe('unknown')
     expect(t.sip_from).toBe(STATIC_FIELD_TYPES.sip_from)
     expect(t.snmp_community).toBe('string')
     expect(Object.keys(t)).toEqual([...SENTINEL_FIELDS])
+  })
+
+  it('reads a numeric-only census over its own fields, and keeps the base table for the rest', () => {
+    const c = readTypeCensus(censusRow({}, NUMERIC_CENSUS_FIELDS), NUMERIC_CENSUS_FIELDS)
+    expect(c.map((e) => e.field)).toEqual([...NUMERIC_CENSUS_FIELDS])
+    expect(censusControls(c).ok).toBe(true)
+    const base = { ...STATIC_FIELD_TYPES, krb5_message_type: 'string' as const }
+    const t = censusTypeTable(c, base)
+    expect(t.krb5_message_type).toBe('string')
+    for (const f of CAST_CHECK_FIELDS) expect(t[f]).toBe('number')
+  })
+})
+
+describe('re-reading an earlier report\'s sentinels with a numeric-only census', () => {
+  it('turns the five "type unresolved" numeric rows of 2026-09-25 into verdicts, billing nothing', () => {
+    // The prior report's shape: those five were typed "unknown" after its census,
+    // and its sentinel query (run before the census) emitted only their `0` form.
+    const priorTypes = { ...STATIC_FIELD_TYPES, ...Object.fromEntries(CAST_CHECK_FIELDS.map((f) => [f, 'unknown' as const])) }
+    const rows: Row[] = [0, 1, 2].map(() => ({
+      ...Object.fromEntries(CAST_CHECK_FIELDS.flatMap((f) => [[`sn_${f}`, 1000], [`sz_${f}`, 0]])),
+      sn_http_code: 3000, se_http_code: 0,
+    }))
+    expect(readSentinels(rows, priorTypes).find((s) => s.field === 'tcp_rtt')?.verdict).toBe('type unresolved')
+    const census = readTypeCensus(censusRow({ tcp_rtt: { n: 50, r: 50 }, dst_port: { n: 90, i: 90 } }, NUMERIC_CENSUS_FIELDS), NUMERIC_CENSUS_FIELDS)
+    const { types, sentinels } = rereadSentinels(census, { rows, types: priorTypes })
+    const by = Object.fromEntries(sentinels.map((s) => [s.field, s]))
+    for (const f of CAST_CHECK_FIELDS) {
+      expect(types[f], f).toBe('number')
+      expect(by[f], f).toMatchObject({ applies: '0', present: 3000, sentinels: 0, verdict: 'no real sentinel (R eligible)' })
+    }
+    expect(types.http_code).toBe('string')
   })
 })
 
@@ -142,7 +235,7 @@ describe('sentinels', () => {
 describe('the Markdown report', () => {
   it('writes the three tables, the jobs and the exact query text', () => {
     const w = auditWindows(NOON)
-    const census = readTypeCensus(censusRow({ tcp_rtt: { n: 6, s: 6, lo: 'string', hi: 'string' } }))
+    const census = readTypeCensus(censusRow({ tcp_rtt: { n: 6, s: 6 } }))
     const report: AuditReport = {
       referenceAt: '2026-09-25T12:00:30.000Z',
       referenceFrom: '--at',
@@ -160,9 +253,9 @@ describe('the Markdown report', () => {
     }
     const md = renderAuditMarkdown(report)
     for (const h of ['## Type table (8.0b)', '## Density table (8.0b)', '## Sentinel table (8.0c)', '## Jobs']) expect(md).toContain(h)
-    expect(md).toContain('| `tcp_rtt` (check) | 6 | 6 | string | string | number | **no** |')
+    expect(md).toContain('| `tcp_rtt` (check) | 6 | string 6 | string | number | **no** |')
     expect(md).toContain('set max_running_time_per_search=300; dataset="gigamon_ami"')
-    expect(md).toContain('Billed in total: 402 CPU-s')
+    expect(md).toContain('Billed in total: 402 CPU-s, against an estimated floor of ≈5,747.')
     // The two times are kept apart: when the jobs ran, and what the windows were measured from.
     expect(md).toContain('Taken 2026-09-26T08:15:02.000Z to 2026-09-26T08:21:40.000Z')
     expect(md).toContain('reference time 2026-09-25T12:00:30.000Z (given by `--at`, not when the jobs ran)')
@@ -181,6 +274,45 @@ describe('the Markdown report', () => {
       census: null, controls: null, density: null, sentinelTypes: STATIC_FIELD_TYPES, sentinels: null,
     })
     expect(md).toContain('running; canceled by the runner after the error: GET /search/jobs/2.x/status → 502 bad / gateway | sent |')
+    expect(md).toContain('| sent | not yet available |')
+  })
+
+  const reportWith = (jobs: AuditJob[]): AuditReport => ({
+    referenceAt: '2026-09-25T12:00:30.000Z', referenceFrom: 'run start', ranAt: '2026-09-25T12:00:31.000Z', finishedAt: '2026-09-25T12:09:00.000Z',
+    dataset: 'gigamon_ami', capSeconds: 300, estimate: auditCostEstimate(auditWindows(NOON)),
+    jobs, census: null, controls: null, density: null, sentinelTypes: STATIC_FIELD_TYPES, sentinels: null,
+  })
+
+  it('never sums a cost it could not read as 0: the total says it is incomplete, and by how many jobs', () => {
+    const jobs = [job({ billableCPUSeconds: 5_457 }), job({ billableCPUSeconds: null, costRead: 'not yet available after 89 s of reads' }), job({ billableCPUSeconds: 111 })]
+    expect(billedTotal(jobs)).toEqual({ known: 5_568, knownJobs: 2, unknownJobs: 1, complete: false })
+    const md = renderAuditMarkdown(reportWith(jobs))
+    expect(md).not.toContain('Billed in total: 5,568 CPU-s,')
+    expect(md).toContain('Billed in total: incomplete — 5,568 CPU-s over 2 of 3 jobs; the cost of 1 job is not yet available, so the true total is higher')
+    expect(md).toContain('| not yet available |')
+  })
+
+  it('says "not yet available", not 0, when no job\'s cost could be read — the first run\'s report said "0 CPU-s"', () => {
+    const md = renderAuditMarkdown(reportWith([job({ billableCPUSeconds: null }), job({ billableCPUSeconds: null })]))
+    expect(md).toContain('Billed in total: not yet available — no job\'s cost could be read (2 jobs). Not 0')
+    expect(md).not.toMatch(/Billed in total: 0 /)
+  })
+
+  it('leaves out a job that was never created: it billed nothing and has no cost to wait for', () => {
+    const jobs = [job({ billableCPUSeconds: 51 }), job({ jobId: null, billableCPUSeconds: null, status: 'not submitted', error: 'POST → 429' })]
+    expect(billedTotal(jobs)).toMatchObject({ known: 51, unknownJobs: 0, complete: true })
+    const md = renderAuditMarkdown(reportWith(jobs))
+    expect(md).toContain('Billed in total: 51 CPU-s, against an estimated floor')
+    expect(md).toContain('| — | — |')
+  })
+
+  it('says a numeric-only run read no density and no sentinels, rather than that a job failed', () => {
+    const census = readTypeCensus(censusRow({}, NUMERIC_CENSUS_FIELDS), NUMERIC_CENSUS_FIELDS)
+    const md = renderAuditMarkdown({ ...reportWith([job()]), censusMode: 'numeric', census, controls: censusControls(census) })
+    expect(md).toContain('Census: numeric-only')
+    expect(md).toContain('Not read: the numeric-only census reads no density.')
+    expect(md).toContain('Not read: the numeric-only census submits no sentinel job')
+    expect(md).toContain('| `protocol` (check) | 10 | int 10 | number | number | yes |')
   })
 })
 
@@ -217,9 +349,35 @@ describe('scripts/parquet-audit.mjs', () => {
     const r = spawnSync(process.execPath, ['scripts/parquet-audit.mjs', '--at', '2026-09-25T12:00:30Z', '--base', 'http://127.0.0.1:9/capi'], { cwd: ROOT, encoding: 'utf8' })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('pinned: measurement')
-    expect(r.stdout).toContain('Expected ≈828 CPU-s')
+    expect(r.stdout).toContain('Expected at least ≈5,747 CPU-s — a floor')
+    expect(r.stdout).not.toContain('≈828')
     expect(r.stdout).toContain('Nothing submitted. Re-run with --run')
     expect(r.stdout).not.toContain('submitted\n  ')
+  })
+
+  it('plans a numeric-only census as one 15-minute job, and re-reads earlier sentinels without billing them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pqa-'))
+    try {
+      const prior = join(dir, 'prior.json')
+      writeFileSync(prior, JSON.stringify({ sentinelTypes: STATIC_FIELD_TYPES, raw: { sentinels: [{ sn_tcp_rtt: 1, sz_tcp_rtt: 0 }] } }))
+      const r = spawnSync(process.execPath, ['scripts/parquet-audit.mjs', '--at', '2026-09-25T12:00:30Z', '--base', 'http://127.0.0.1:9/capi', '--census', 'numeric', '--sentinels-from', prior], { cwd: ROOT, encoding: 'utf8' })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toContain('1. 8.0b numeric-only census 2026-09-25T11:35:00Z → 2026-09-25T11:50:00Z')
+      expect(r.stdout).not.toContain('2. ')
+      expect(r.stdout).toContain('Sentinels re-read, billing nothing')
+      expect(r.stdout).toContain('Expected at least ≈341 CPU-s')
+      expect(r.stdout).toContain('Nothing submitted.')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses options that do not fit the census mode, and the retired flat coefficient', () => {
+    const run = (...a: string[]) => spawnSync(process.execPath, ['scripts/parquet-audit.mjs', '--base', 'http://127.0.0.1:9/capi', ...a], { cwd: ROOT, encoding: 'utf8' })
+    expect(run('--sentinels-from', 'x.json').stderr).toContain('--sentinels-from is for --census numeric')
+    expect(run('--census', 'numeric', '--types-from', 'x.json').stderr).toContain('which --census numeric does not submit')
+    expect(run('--census', 'narrow').stderr).toContain('--census must be wide or numeric')
+    expect(run('--cpu-per-1k', '0.45').stderr).toContain('--cpu-per-1k is gone')
   })
 
   it('says in the plan that --types-from runs the census again', () => {
