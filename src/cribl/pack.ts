@@ -78,7 +78,14 @@
 //     removed, so 0.1.0's `in_gno_syslog` stayed behind as an orphan. CLAUDE.md's
 //     onboarding section records what that means for the Upgrade dialog.)
 //   - that the Parquet destination's `onBackpressure: drop` keeps gigamon_ami
-//     flowing while gigamon_ami_pq does not exist or cannot be written.
+//     flowing while gigamon_ami_pq does not exist or cannot be written. The
+//     value is CONFIGURED [measured: packs/…/default/outputs.yml]; what it DOES
+//     is unmeasured. If it behaves as intended, gigamon_ami_pq can have holes
+//     by design, which is why the Phase 8 router checks completeness per window
+//     before any live panel reads it (src/cribl/routing/completeness.ts).
+//   - the HTTP input path end to end inside a pack (breaker, then the JSON and
+//     Parquet routes, then a Parquet destination writing from a pack): the
+//     2026-09-25 proof exercised only the sample DataGen path.
 
 /** The pack's id on the Leader. Never starts with `v` — see the tag note below. */
 export const PACK_ID = 'cc-network-gigamon-ami'
