@@ -18,14 +18,28 @@
 // A bucket is `complete` only when the JSON destination wrote something AND the
 // Parquet one wrote the same within COMPLETENESS_TOLERANCE. No row for a bucket,
 // a bucket where JSON wrote nothing (nothing to be complete about, or the pack
-// is not what feeds `gigamon_ami`), a bucket still open when it was checked, and
-// a window this cannot resolve to absolute seconds all refuse. Refusing costs a
-// JSON read, which is always right; routing wrongly costs a wrong number.
+// is not what feeds `gigamon_ami`), a bucket that had not SETTLED when it was
+// checked (below), and a window this cannot resolve to absolute seconds all
+// refuse. Refusing costs a JSON read, which is always right; routing wrongly
+// costs a wrong number.
+//
+// ── SETTLED, NOT MERELY CLOSED ──────────────────────────────────────────────
+// A bucket proves something only when it was checked at least
+// COMPLETENESS_SETTLE_SECONDS after it ENDED — not after the window ended, and
+// not merely after it ended. A counter row says an event reached the
+// destination; the event is queryable only once its file closes, up to the
+// destination's `maxFileOpenTimeSec` later (R8). So a window that ends at "now"
+// always refuses: its last bucket is still open, whatever second the check ran
+// in. *(Corrected 2026-09-25, review of `feat/phase8-1-router`: the rule
+// compared the check with `min(bucket end, window end)` using `<`, so a check
+// made in the same epoch second as a window ending "now" passed an open bucket,
+// and the test that claimed to prove refusal refused for a missing record.)*
 //
 // ── WHAT THIS CANNOT PROVE ──────────────────────────────────────────────────
 // * That a counted event is queryable: Parquet files close on an interval, so an
-//   event written to the destination may not be in Lake yet (R8). A window that
-//   ends at "now" is refused anyway (its last bucket is still open).
+//   event written to the destination may not be in Lake yet (R8). The settle
+//   margin is the only allowance for that, and for the delay before Stream's
+//   own counter rows reach `cribl_metrics`, which is unmeasured.
 // * That `total.out_events` excludes a dropped event (unmeasured).
 // * That the pack's JSON output is the only writer of `gigamon_ami` (see
 //   src/queries/routing.ts).
@@ -39,6 +53,25 @@ import { COMPLETENESS_BUCKET_SECONDS as BUCKET } from '../../queries/routing'
  * hole. Judgement, not measurement.
  */
 export const COMPLETENESS_TOLERANCE = 0.001
+
+/**
+ * How long after a bucket ENDS it must have been checked to count: 360 s.
+ *
+ * WHERE IT COMES FROM. The one landing lag this project has measured is the
+ * file-open time: a two-minute sample window ending two minutes back came up
+ * roughly half empty under a 120 s open time, and ending three minutes back —
+ * the 120 s plus a minute — fixed it (accel/manifest.ts, `gno_sample_2m_c1h`;
+ * every schedule's `-3m` end keeps the same margin). The pack's Parquet
+ * destination ships with 60 s, but a tenant can override it, and the longest
+ * open time any flush preset this app offers is Cribl's own default, 300 s
+ * (landing.ts `FLUSH_PRESETS`). So: the longest open time a destination here
+ * may carry, plus the same minute of spare. completeness.test.ts holds it at
+ * or above that sum, read from the pack's outputs.yml and the presets.
+ *
+ * NOT MEASURED: how late `total.out_events` rows arrive in `cribl_metrics`.
+ * The minute of spare is the only allowance for it.
+ */
+export const COMPLETENESS_SETTLE_SECONDS = 360
 
 export type BucketVerdict = 'complete' | 'gap' | 'empty'
 
@@ -126,8 +159,10 @@ export interface WindowVerdict {
 }
 
 /**
- * Whether every bucket the window touches was checked, after the window's own
- * end, and found complete. `now` is epoch seconds.
+ * Whether every bucket the window touches was checked at least
+ * COMPLETENESS_SETTLE_SECONDS after that bucket ended, and found complete.
+ * `now` is epoch seconds; a record dated after `now` counts as checked at `now`,
+ * since a clock this cannot check is not evidence.
  */
 export function windowCompleteness(w: WindowSpan, now: number, records: ReadonlyMap<number, BucketRecord> = cache): WindowVerdict {
   const abs = resolveWindow(w, now)
@@ -138,7 +173,13 @@ export function windowCompleteness(w: WindowSpan, now: number, records: Readonly
     if (!rec) return { complete: false, why: `no completeness check covers the bucket from ${when}` }
     if (rec.verdict === 'gap') return { complete: false, why: `the Parquet copy is missing records in the bucket from ${when} (${rec.parquet} of ${rec.json})` }
     if (rec.verdict === 'empty') return { complete: false, why: `the JSON destination wrote nothing in the bucket from ${when}, so there was nothing to compare` }
-    if (rec.checkedAt < Math.min(start + BUCKET, abs.latest)) return { complete: false, why: `the bucket from ${when} was checked before the window ended` }
+    const settledAt = start + BUCKET + COMPLETENESS_SETTLE_SECONDS
+    if (Math.min(rec.checkedAt, now) < settledAt) {
+      return {
+        complete: false,
+        why: `the bucket from ${when} had not settled when it was checked: it ends at ${new Date((start + BUCKET) * 1000).toISOString()}, and its files and counters can land up to ${COMPLETENESS_SETTLE_SECONDS} s after that`,
+      }
+    }
   }
   return { complete: true, why: null }
 }
