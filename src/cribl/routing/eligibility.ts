@@ -11,8 +11,9 @@
 //      NEUTRAL (JSON already counts the absent value as one distinct value).
 //      D and F refuse unless (3) says the field is dense. T refuses.
 //   2. The field TYPE table (src/data/fieldTypes.ts). Every field the query
-//      reads must have a measured type; an unknown one refuses. It is empty
-//      today, so every query that reads a field refuses on this alone.
+//      reads must have a measured type; an unknown one refuses. It holds
+//      only what the 2026-09-25 censuses counted (28 fields); a query reading
+//      any other field still refuses on this alone.
 //   3. Per-install DENSITY: how many rows carry a field. A `by f` or `f=*` on a
 //      field present on EVERY row reads the same on both copies; on a sparse
 //      field it does not. Demo figures are not production figures, so density

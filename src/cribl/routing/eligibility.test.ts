@@ -14,12 +14,19 @@ const TREND = buildTrendQuery('dupacks')
 const TREND_TYPES = { protocol: 'number', tcp_dup_ack: 'number' } as const
 
 describe('the type table', () => {
-  it('is empty in this release, so every query that reads a field refuses', () => {
-    // 8.0b fills it from a gettype census; until then "unknown" refuses.
-    expect(FIELD_TYPES).toEqual({})
+  it('still refuses a field no census counted: the TCP trend on tcp_dup_ack', () => {
+    // protocol was typed by the 2026-09-25 numeric census; tcp_dup_ack was
+    // never counted, so "unknown" still refuses (src/data/fieldTypes.ts).
+    expect(FIELD_TYPES.protocol).toBe('number')
+    expect(FIELD_TYPES.tcp_dup_ack).toBeUndefined()
     const e = eligibility(TREND, FIELD_TYPES)
     expect(e.eligible).toBe(false)
-    expect(e.refusals).toEqual([{ kind: 'type', words: 'type not measured: protocol, tcp_dup_ack' }])
+    expect(e.refusals).toEqual([{ kind: 'type', words: 'type not measured: tcp_dup_ack' }])
+  })
+
+  it('lets DNS OVERALL through on the shipped table: every field it reads was measured', () => {
+    const e = eligibility(OVERALL, FIELD_TYPES)
+    expect(e).toEqual({ eligible: true, refusals: [], neutral: ['C'] })
   })
 
   it('lets a class-free query through once every field it reads has a type', () => {
