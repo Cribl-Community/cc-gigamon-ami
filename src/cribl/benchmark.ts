@@ -235,6 +235,15 @@ export function compare(summaries: readonly TargetSummary[]): Comparison {
 // whoever happens to pay for it. It is the second axis of this comparison: a
 // store can win on wall-clock while doing far more work to get there, and that
 // gap predicts how it behaves under load in a way one timing cannot.
+//
+// *(Corrected 2026-09-25, `feat/phase9-benchmark-panel`: the screen that
+// renders this — Guided Setup's <BenchmarkPanel> — DOES confirm before it
+// submits, and states work in words. Not a cost gate: no threshold refuses a
+// run. It is the staging guard the Phase 8 design's §3.2 asks for, because
+// Cribl puts no bound on a search's CPU (a Parquet group-by stopped by its
+// 120 s cap billed 8,266 CPU-s): run each search once over one minute, show
+// what it did, and offer the 15-minute runs only after a person has seen that
+// figure multiplied out. benchmarkPlan.ts carries the rule.)*
 
 /** How many searches a full benchmark submits. */
 export function runCount(targets: readonly BenchTarget[]): number {
