@@ -279,10 +279,29 @@ const jobsSubmitted = (calls: readonly Call[]) => calls.filter((c) => c.method =
 let container: HTMLDivElement
 let root: Root
 
+/**
+ * Every `console.error` a test caused, as the text it would have printed.
+ *
+ * NOTHING HERE IS EXPECTED TO LOG AN ERROR, so any entry fails the test that
+ * caused it. This file passed for a while with a stack overflow printed to
+ * stderr by nine of its tests — React catches an error thrown from an event
+ * handler, reports it, and carries on, so the assertions after the click still
+ * ran against a page that had half-handled it. A green run with a thrown
+ * handler in it is not a green run. The calls still reach the real console, so
+ * the failure comes with the message beside it.
+ */
+let consoleErrors: string[] = []
+
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  consoleErrors = []
+  const realError = console.error.bind(console)
+  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    consoleErrors.push(args.map((a) => (a instanceof Error ? `${a.name}: ${a.message}` : String(a))).join(' '))
+    realError(...args)
+  })
   resetDenials()
   container = document.createElement('div')
   // Capra's Modal portals out of this element and marks it `inert`, so the
@@ -301,6 +320,8 @@ afterEach(() => {
   vi.useRealTimers()
   resetDenials()
   resetSetupRunLock()
+  // Last, so a failure here still leaves the next test a clean page.
+  expect(consoleErrors, 'this test logged an error it did not expect').toEqual([])
 })
 
 /** Let the environment run: the group read, the profile read, nine independent
@@ -942,7 +963,12 @@ describe('one Guided Setup run at a time', () => {
     const { calls } = stubWorkspace()
     await mount()
     await typeInto(inputLabelled('Retention, in days'), '45')
-    const release = acquireSetupRun('onboarding_pack')!
+    // Inside act: taking the lock notifies the panel's store subscription, and
+    // a state update outside act is a warning — which fails this file.
+    let release: () => void = () => {}
+    await act(async () => {
+      release = acquireSetupRun('onboarding_pack')!
+    })
     await settle()
     const apply = controlIn('Retention', 'Apply')
     expect(apply?.getAttribute('aria-disabled')).toBe('true')
@@ -950,7 +976,7 @@ describe('one Guided Setup run at a time', () => {
     await press(apply)
     expect(bodyText()).not.toContain('Raise retention on Cribl Lake dataset gigamon_ami')
     expect(criblWrites(calls)).toEqual([])
-    release()
+    act(() => release())
   })
 
   /** The run lock's holder at each request that changes Cribl, as it is sent. */

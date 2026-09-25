@@ -11,6 +11,35 @@
 // registered, and that test would silently run against the real module.
 import { beforeEach } from 'vitest'
 
+// THE HTML "CLICK IN PROGRESS" FLAG, which happy-dom does not implement.
+//
+// The spec's `click()` returns at once when the same element's `click()` is
+// already running (the HTML spec's "click in progress flag"); every browser does
+// this. Capra's RadioTile depends on it: the tile's onClick calls its input's
+// `click()`, and that click bubbles back up to the tile. In a browser the inner
+// `click()` is a no-op. In happy-dom 20.14.5 (`HTMLElement.click` dispatches
+// unconditionally) it recursed until the stack ran out, React caught the
+// RangeError in its event handler and printed it, and LakeLandingPanel.test.tsx
+// passed with a stack overflow on stderr in nine tests. This is the environment
+// being made to behave like the browser, not the app being worked around;
+// src/harness.test.tsx holds it.
+//
+// Only where there is a DOM: a file under `@vitest-environment node`
+// (devInitScript.test.ts) has no HTMLElement to patch.
+if (typeof HTMLElement !== 'undefined') {
+  const clicking = new WeakSet<HTMLElement>()
+  const click = HTMLElement.prototype.click
+  HTMLElement.prototype.click = function (this: HTMLElement) {
+    if (clicking.has(this)) return
+    clicking.add(this)
+    try {
+      click.call(this)
+    } finally {
+      clicking.delete(this)
+    }
+  }
+}
+
 beforeEach(async () => {
   const [
     { forgetRunHistory },
