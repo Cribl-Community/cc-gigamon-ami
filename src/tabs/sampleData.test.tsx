@@ -303,9 +303,11 @@ describe('the same workspace once real data lands', () => {
     })
     vi.stubGlobal('fetch', real)
     submits = []
-    // Where the submits stand when the verdict moves. The Refresh itself
-    // re-runs the panels while the re-check is still out, so those run against
-    // the sample once more; everything after the move must not.
+    // Where the submits stand when the verdict moves. The Refresh holds its
+    // re-run until the re-check answers (app/DashboardContext.tsx), so the only
+    // job before the move is the probe itself: no panel runs on the sample
+    // once more. (Corrected 2026-09-25, `fix/sample-data-known-gaps`: this
+    // allowed the Refresh's own re-run against the sample before the move.)
     let movedAt = -1
     const off = subscribeDatasetTarget(() => { if (!datasetTarget().sample && movedAt < 0) movedAt = submits.length })
     const refresh = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('Refresh'))
@@ -317,8 +319,11 @@ describe('the same workspace once real data lands', () => {
     off()
     // The TLS panels have no schedule, so they re-ran live — against gigamon_ami.
     expect(movedAt).toBeGreaterThanOrEqual(0)
+    expect(submits.slice(0, movedAt).map(bare), 'nothing but the probe before the verdict').toEqual([REAL_DATA_PROBE_QUERY])
     const after = submits.slice(movedAt).map(bare).filter((q) => q !== REAL_DATA_PROBE_QUERY)
     expect(after.length).toBeGreaterThan(0)
-    for (const q of after) expect(q).not.toContain('gigamon_ami_sample')
+    for (const q of submits.map(bare)) expect(q).not.toContain('gigamon_ami_sample')
+    // One re-run per panel, not one for the nonce and one for the dataset.
+    expect(new Set(after).size, after.join(' || ')).toBe(after.length)
   })
 })

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useWriteGate } from '../cribl/authz'
 import { LAKE_DATASET } from '../cribl/config'
-import { aiEnabled, generateDatasetIntel, getDatasetIntel, type IntelStatus } from '../cribl/datasetIntel'
+import { aiEnabled, generateDatasetIntel, getDatasetIntel, intelAllowed, type IntelStatus } from '../cribl/datasetIntel'
+import { useDatasetTarget } from '../cribl/datasetTarget'
 import { usePref } from '../cribl/prefs'
 import type { AppBanner } from './AppBanners'
 import { GatedControl } from './GatedControl'
@@ -27,6 +28,21 @@ import { GatedControl } from './GatedControl'
  * rather than only on Findings. So it is gated on the dismissal instead of
  * racing it — a viewer who has said no costs the platform nothing at all, and
  * an undismissed one costs the same two GETs it always did.
+ *
+ * NOT ON SAMPLE DATA, AND NOT BEFORE THE VERDICT (added 2026-09-25,
+ * `fix/sample-data-known-gaps`). While the app reads the pack's sample dataset,
+ * `gigamon_ami` holds nothing: a summary generated then would describe an
+ * empty dataset, and one of `gigamon_ami_sample` would describe the pack's
+ * generator. So the banner — the offer, its probe and its receipt — waits for a
+ * verdict `intelAllowed` passes (no sample dataset, or data seen: never the
+ * hold's provisional `deadline`, never sample, and never a real verdict
+ * reached only by doubt — an unreadable listing or a failed probe; corrected
+ * 2026-09-25 after review, when this was `realDataConfirmed`), and appears
+ * on its own when a Refresh or a tick turns a sample verdict real. A verdict
+ * reached by doubt is final for the page, so there the banner waits for the
+ * next load. The probe is a read on that change, never a write;
+ * `generateDatasetIntel` refuses on the same rule, so a click that raced the
+ * verdict sends nothing.
  */
 export function useDatasetIntelBanner(): AppBanner | null {
   const [status, setStatus] = useState<IntelStatus | null>(null)
@@ -38,13 +54,16 @@ export function useDatasetIntelBanner(): AppBanner | null {
   // bare `Could not start generation (403)` below would be saying the same thing
   // twice and worse.
   const gate = useWriteGate('dataset_intel.generate')
+  // A verdict on which there is something to summarise (`intelAllowed`).
+  const realData = intelAllowed(useDatasetTarget())
 
   useEffect(() => {
     // `undefined` is the preference still in flight and `true` is a viewer who
     // has already said no — neither is a reason to ask Cribl anything. Only a
     // definite `false` starts the probe, and flipping to `true` on the dismissal
-    // aborts whatever it had in the air.
-    if (dismissed !== false) return
+    // aborts whatever it had in the air. Nor is sample data, or a verdict not
+    // yet final: there is nothing in `gigamon_ami` to offer a summary of.
+    if (dismissed !== false || !realData) return
     const ctrl = new AbortController()
     let cancelled = false
     void (async () => {
@@ -58,11 +77,11 @@ export function useDatasetIntelBanner(): AppBanner | null {
       }
     })()
     return () => { cancelled = true; ctrl.abort(); if (poll.current) window.clearInterval(poll.current) }
-  }, [dismissed])
+  }, [dismissed, realData])
 
   // While generating, poll until the agent settles.
   useEffect(() => {
-    if (status !== 'processing') return
+    if (status !== 'processing' || !realData) return
     poll.current = window.setInterval(() => {
       void getDatasetIntel().then((i) => {
         setStatus(i.status)
@@ -70,7 +89,7 @@ export function useDatasetIntelBanner(): AppBanner | null {
       }).catch(() => {})
     }, 15000)
     return () => { if (poll.current) window.clearInterval(poll.current) }
-  }, [status])
+  }, [status, realData])
 
   const start = async () => {
     setError(null)
@@ -85,7 +104,7 @@ export function useDatasetIntelBanner(): AppBanner | null {
   // `dismissed` is three-valued: undefined until the stored preference lands
   // (cribl/prefs.ts). Only a definite `false` shows the banner, so a viewer who
   // dismissed it once does not watch it appear and vanish on every load.
-  if (dismissed !== false || status === null) return null
+  if (dismissed !== false || status === null || !realData) return null
   if (status === 'complete' || status === 'partial' || status === 'unknown') return null
 
   if (status === 'processing') {

@@ -164,6 +164,15 @@ let inFlight: Promise<DatasetTarget> | null = null
 /** When the last read started, for the tick throttle. */
 let lastLook = 0
 const listeners = new Set<() => void>()
+/** Callers waiting for the next verdict a look publishes (`recheckDatasetTarget`'s
+ *  `then`). Each is called once, in the same synchronous turn as the publish. */
+const waiters = new Set<() => void>()
+
+function flushWaiters(): void {
+  const ws = [...waiters]
+  waiters.clear()
+  for (const w of ws) w()
+}
 
 function publish(next: DatasetTarget): void {
   state = next
@@ -205,6 +214,10 @@ function run(): Promise<DatasetTarget> {
     if (inFlight !== p) return
     inFlight = null
     publish(next)
+    // In the same synchronous turn as the publish, so a React state change a
+    // waiter makes lands in the same render as the verdict's own — one re-run
+    // of every panel, not two.
+    flushWaiters()
   })
   return p
 }
@@ -233,20 +246,41 @@ export function resolveDatasetTarget(): Promise<DatasetTarget> {
  * A REAL verdict is final for the page: data does not leave a dataset between
  * two presses. A SAMPLE one is how an open page finds the first real record,
  * and the panels keep reading the sample until the new verdict says otherwise.
+ *
+ * Answers whether a look is out (started here, or one already in flight that
+ * this joins). When it is, `then` is called once, in the same synchronous turn
+ * as the verdict that look publishes, so the caller's own state change and the
+ * verdict land in one render. `then` is NOT called when the look fails to
+ * publish (it threw, or a newer one superseded it and publishes instead — then
+ * the newer one calls it); the caller keeps its own deadline for that. On a
+ * real verdict it answers false at once and never calls `then`.
  */
-export function recheckDatasetTarget(): void {
-  if (!state.sample || inFlight !== null) return
-  void run()
+export function recheckDatasetTarget(then?: () => void): boolean {
+  if (!state.sample) return false
+  if (then) waiters.add(then)
+  if (inFlight === null) void run()
+  return true
 }
 
 /**
  * Look again from an auto-refresh tick — at most every TICK_RECHECK_MS since
  * the last read, and only while reading the sample. A read, never a write.
+ * Answers, and calls `then`, as `recheckDatasetTarget` does, and like it
+ * JOINS a look already in flight (a Refresh's, or `reconsiderDatasetTarget`'s)
+ * without starting another: the throttle limits reads, not waiting. A tick
+ * that neither starts nor joins a look answers false, and its caller re-runs
+ * at once. *(Corrected 2026-09-25, `fix/sample-data-known-gaps`, after review:
+ * a tick landing while a Refresh's look was out answered false, so its re-run
+ * went out on the sample and every panel ran again when the verdict moved.)*
  */
-export function recheckDatasetTargetOnTick(): void {
-  if (!state.sample || inFlight !== null) return
-  if (Date.now() - lastLook < TICK_RECHECK_MS) return
-  void run()
+export function recheckDatasetTargetOnTick(then?: () => void): boolean {
+  if (!state.sample) return false
+  if (inFlight === null) {
+    if (Date.now() - lastLook < TICK_RECHECK_MS) return false
+    void run()
+  }
+  if (then) waiters.add(then)
+  return true
 }
 
 /**
@@ -313,11 +347,13 @@ export function settleDatasetTarget(sample: boolean, reason: TargetReason = samp
   inFlight = null
   lastLook = Date.now()
   publish(make(true, sample, reason))
+  flushWaiters()
 }
 
 /** Tests only: back to a page that has read nothing. */
 export function resetDatasetTarget(): void {
   inFlight = null
   lastLook = 0
+  waiters.clear()
   publish(READING)
 }
