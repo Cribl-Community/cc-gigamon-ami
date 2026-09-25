@@ -118,7 +118,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     const id = setInterval(() => {
       // While on sample data, look for real data at most every ten minutes —
       // otherwise a wall display would never move back. A read, not a write.
-      // A tick that looks waits for the answer, as Refresh does.
+      // A tick that looks, or lands while another look is out, waits for the
+      // answer, as Refresh does.
       afterRecheck(recheckDatasetTargetOnTick, () => {
         setRefreshNonce((n) => n + 1)
         setLastRefresh(Date.now())

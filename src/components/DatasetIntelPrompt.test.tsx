@@ -107,6 +107,26 @@ describe('the dataset-intelligence banner and the sample-data verdict', () => {
     expect(writes()).toEqual([])
   })
 
+  // Review 2026-09-25: `realDataConfirmed` passed these two, which are real
+  // only because nothing is known — the banner probed and offered Generate
+  // for a `gigamon_ami` the probe could not see into.
+  it.each(['probe-failed', 'unreadable'] as const)('offers nothing, and asks nothing, on a real verdict reached only by doubt (%s)', async (reason) => {
+    settleDatasetTarget(false, reason)
+    await mount()
+    expect(shown()).toBe('')
+    expect(intelCalls(), 'no probe').toEqual([])
+    expect(intelRefusal()).toBe(INTEL_REFUSED_NO_DATA)
+    await expect(generateDatasetIntel()).rejects.toThrow(INTEL_REFUSED_NO_DATA)
+    expect(writes()).toEqual([])
+  })
+
+  it('offers generation where there is no sample dataset at all, as before sample data existed', async () => {
+    settleDatasetTarget(false, 'no-sample')
+    await mount()
+    expect(shown()).toContain('AI investigations aren’t grounded yet')
+    expect(intelRefusal()).toBeNull()
+  })
+
   it('comes back on its own when the verdict turns real, and goes when it turns sample', async () => {
     settleDatasetTarget(true, 'real-empty')
     await mount()

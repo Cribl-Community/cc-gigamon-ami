@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useWriteGate } from '../cribl/authz'
 import { LAKE_DATASET } from '../cribl/config'
-import { aiEnabled, generateDatasetIntel, getDatasetIntel, type IntelStatus } from '../cribl/datasetIntel'
-import { realDataConfirmed, useDatasetTarget } from '../cribl/datasetTarget'
+import { aiEnabled, generateDatasetIntel, getDatasetIntel, intelAllowed, type IntelStatus } from '../cribl/datasetIntel'
+import { useDatasetTarget } from '../cribl/datasetTarget'
 import { usePref } from '../cribl/prefs'
 import type { AppBanner } from './AppBanners'
 import { GatedControl } from './GatedControl'
@@ -34,9 +34,13 @@ import { GatedControl } from './GatedControl'
  * `gigamon_ami` holds nothing: a summary generated then would describe an
  * empty dataset, and one of `gigamon_ami_sample` would describe the pack's
  * generator. So the banner — the offer, its probe and its receipt — waits for a
- * FINAL real verdict (`realDataConfirmed`: known, not the hold's provisional
- * `deadline`, not sample), and appears on its own when a Refresh or a tick
- * turns the verdict real. The probe is a read on that change, never a write;
+ * verdict `intelAllowed` passes (no sample dataset, or data seen: never the
+ * hold's provisional `deadline`, never sample, and never a real verdict
+ * reached only by doubt — an unreadable listing or a failed probe; corrected
+ * 2026-09-25 after review, when this was `realDataConfirmed`), and appears
+ * on its own when a Refresh or a tick turns a sample verdict real. A verdict
+ * reached by doubt is final for the page, so there the banner waits for the
+ * next load. The probe is a read on that change, never a write;
  * `generateDatasetIntel` refuses on the same rule, so a click that raced the
  * verdict sends nothing.
  */
@@ -50,8 +54,8 @@ export function useDatasetIntelBanner(): AppBanner | null {
   // bare `Could not start generation (403)` below would be saying the same thing
   // twice and worse.
   const gate = useWriteGate('dataset_intel.generate')
-  // Real data, confirmed: the only verdict on which there is anything to summarise.
-  const realData = realDataConfirmed(useDatasetTarget())
+  // A verdict on which there is something to summarise (`intelAllowed`).
+  const realData = intelAllowed(useDatasetTarget())
 
   useEffect(() => {
     // `undefined` is the preference still in flight and `true` is a viewer who

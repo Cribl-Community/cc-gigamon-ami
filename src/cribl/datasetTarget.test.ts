@@ -334,6 +334,56 @@ describe('an auto-refresh tick looks again while on the sample, throttled', () =
     expect(writes()).toEqual([])
   })
 
+  // Review 2026-09-25: the tick's waiter contract, which DashboardContext's
+  // re-run waits on, was held only through a mock there.
+  it('calls a tick’s waiter once, in the same turn as the verdict, when the tick starts the look', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_790_000_000_000)
+    listing = [{ id: 'gigamon_ami', metrics: {} }, { id: 'gigamon_ami_sample', metrics: {} }]
+    await resolveDatasetTarget()
+    probeRows = [{ src_ip: '10.0.0.1' }]
+    vi.setSystemTime(1_790_000_000_000 + TICK_RECHECK_MS)
+    const seen: boolean[] = []
+    const then = vi.fn(() => seen.push(datasetTarget().sample))
+    expect(recheckDatasetTargetOnTick(then), 'past the throttle: a look is out').toBe(true)
+    await vi.waitFor(() => expect(then).toHaveBeenCalledTimes(1))
+    expect(seen, 'the waiter sees the new verdict').toEqual([false])
+    settleDatasetTarget(true)
+    expect(then).toHaveBeenCalledTimes(1)
+  })
+
+  it('inside the throttle with no look out, answers false and never calls the waiter', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_790_000_000_000)
+    listing = [{ id: 'gigamon_ami', metrics: {} }, { id: 'gigamon_ami_sample', metrics: {} }]
+    await resolveDatasetTarget()
+    calls = []
+    const then = vi.fn()
+    expect(recheckDatasetTargetOnTick(then)).toBe(false)
+    await Promise.resolve()
+    expect(calls).toEqual([])
+    settleDatasetTarget(false, 'probe-found')
+    expect(then).not.toHaveBeenCalled()
+  })
+
+  it('joins a look already in flight — inside the throttle too — and starts no second read', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_790_000_000_000)
+    listing = [{ id: 'gigamon_ami', metrics: {} }, { id: 'gigamon_ami_sample', metrics: {} }]
+    await resolveDatasetTarget()
+    probeRows = [{ src_ip: '10.0.0.1' }]
+    calls = []
+    const refresh = vi.fn()
+    const seen: boolean[] = []
+    const tick = vi.fn(() => seen.push(datasetTarget().sample))
+    expect(recheckDatasetTarget(refresh), 'a Refresh starts the look').toBe(true)
+    expect(recheckDatasetTargetOnTick(tick), 'a tick landing while it is out joins it').toBe(true)
+    await vi.waitFor(() => expect(tick).toHaveBeenCalledTimes(1))
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(seen, 'the tick re-runs on the new verdict, not the sample').toEqual([false])
+    expect(calls.filter((c) => c.url.includes('/lakes/default/datasets')), 'one look, not two').toHaveLength(1)
+  })
+
   it('reads nothing on a tick once the verdict is real', async () => {
     listing = [{ id: 'gigamon_ami', metrics: {} }]
     await resolveDatasetTarget()

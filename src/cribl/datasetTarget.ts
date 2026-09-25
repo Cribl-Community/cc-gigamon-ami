@@ -265,14 +265,21 @@ export function recheckDatasetTarget(then?: () => void): boolean {
 /**
  * Look again from an auto-refresh tick — at most every TICK_RECHECK_MS since
  * the last read, and only while reading the sample. A read, never a write.
- * Answers, and calls `then`, as `recheckDatasetTarget` does — but joins no
- * look already in flight: a tick that starts nothing answers false.
+ * Answers, and calls `then`, as `recheckDatasetTarget` does, and like it
+ * JOINS a look already in flight (a Refresh's, or `reconsiderDatasetTarget`'s)
+ * without starting another: the throttle limits reads, not waiting. A tick
+ * that neither starts nor joins a look answers false, and its caller re-runs
+ * at once. *(Corrected 2026-09-25, `fix/sample-data-known-gaps`, after review:
+ * a tick landing while a Refresh's look was out answered false, so its re-run
+ * went out on the sample and every panel ran again when the verdict moved.)*
  */
 export function recheckDatasetTargetOnTick(then?: () => void): boolean {
-  if (!state.sample || inFlight !== null) return false
-  if (Date.now() - lastLook < TICK_RECHECK_MS) return false
+  if (!state.sample) return false
+  if (inFlight === null) {
+    if (Date.now() - lastLook < TICK_RECHECK_MS) return false
+    void run()
+  }
   if (then) waiters.add(then)
-  void run()
   return true
 }
 
