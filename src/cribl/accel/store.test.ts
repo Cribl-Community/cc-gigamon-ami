@@ -252,6 +252,16 @@ describe('per-viewer preferences', () => {
     expect(calls.find((c) => c.method === 'PUT')?.path).toBe('/kvstore/accel/prefs/u-42')
   })
 
+  it('keys an Auth0 id with no percent-escape in the path: the store 404s a PUT to auth0%7C… (measured 2026-09-25)', async () => {
+    vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|0123abcd', username: 'viewer' }))
+    const { calls } = stubStore()
+    const { saveAccelPref } = await load()
+    expect(await saveAccelPref('liveReads', true)).toBe(true)
+    const put = calls.find((c) => c.method === 'PUT')?.path
+    expect(put).toBe('/kvstore/accel/prefs/auth0_7c0123abcd')
+    expect(put, 'a percent-escape reached the key path').not.toMatch(/%/)
+  })
+
   it('keeps a field it does not know about when one is set', async () => {
     // Forward compatibility, and the reason the write is read-merge-write rather
     // than a write of the one field. A NEWER release of this app writes a

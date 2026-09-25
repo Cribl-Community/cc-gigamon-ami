@@ -56,7 +56,7 @@
 
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { getDoc, putDoc } from './kv'
-import { currentUserId } from './user'
+import { currentUserId, userKeySegment } from './user'
 
 /** The flags the per-user document holds. Each records something this viewer
  *  has already seen, so absent means "not yet" — a viewer who has dismissed
@@ -78,7 +78,7 @@ export type PrefFlag = {
   [K in keyof Prefs]-?: NonNullable<Prefs[K]> extends boolean ? K : never
 }[keyof Prefs]
 
-const key = (userId: string) => `app/prefs/${userId}`
+const key = (userId: string) => `app/prefs/${userKeySegment(userId)}`
 
 /** The document, or null while it is still unknown. Replaced wholesale on every
  *  change, never mutated, so useSyncExternalStore can compare by identity. */

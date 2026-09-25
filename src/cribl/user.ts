@@ -49,3 +49,25 @@ export async function currentUserId(): Promise<string | null> {
   const user = await currentUser()
   return user ? user.id : null
 }
+
+/**
+ * A user id as one KV key segment, with no character the store's routing can
+ * mishandle. MEASURED 2026-09-25 in Cribl's Live Preview: a PUT to
+ * `kvstore/accel/prefs/auth0%7C669a…` (an Auth0 id, `auth0|…`, which kv.ts
+ * percent-encodes) answered 404, while an install-wide key with no escapes
+ * saved fine — so every per-user preference failed to save. Here every
+ * character outside [A-Za-z0-9-] becomes `_` plus its hex code (`|` → `_7c`,
+ * `_` → `_5f`; above U+00FF, `_u` plus four hex digits), which leaves nothing
+ * for kv.ts to escape. Injective, so two ids never share a document; stable,
+ * so a viewer finds their document again. No document was ever saved under the
+ * escaped form (every such PUT failed), so nothing needs migrating.
+ */
+export function userKeySegment(id: string): string {
+  let out = ''
+  for (const ch of id) {
+    if (/^[A-Za-z0-9-]$/.test(ch)) { out += ch; continue }
+    const code = ch.codePointAt(0) ?? 0
+    out += code <= 0xff ? `_${code.toString(16).padStart(2, '0')}` : `_u${code.toString(16).padStart(4, '0')}`
+  }
+  return out
+}
