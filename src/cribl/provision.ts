@@ -551,8 +551,10 @@ function matching(pending: readonly string[], group: string, markers: readonly s
 }
 
 /** True when a pending path belongs to the target group. Named groups carry a
- *  `groups/<group>/` segment; a group-rooted layout has no `groups/<x>/` at all. */
-function pathInGroup(path: string, group: string): boolean {
+ *  `groups/<group>/` segment; a group-rooted layout has no `groups/<x>/` at all.
+ *  Exported for the cutover preflight (cribl/cutoverPreflight.ts), which lists
+ *  every pending file of the group rather than one run's. */
+export function pathInGroup(path: string, group: string): boolean {
   if (path.includes(`groups/${group}/`)) return true
   return !path.includes('groups/')
 }

@@ -25,6 +25,7 @@
     "pack:check": "node scripts/gen-pack-samples.mjs --check && node scripts/pack.mjs check",
     "pack:build": "node scripts/pack.mjs build",
     "pack:release-check": "node scripts/check-pack-release-cli.mjs",
+    "cutover:preflight": "node scripts/cutover-preflight.mjs",
     "preview": "vite preview",
     "package": "node scripts/package.mjs"
   },
