@@ -287,7 +287,7 @@ type Run = typeof import('./run')
 type Plan = typeof import('./plan')
 type Target = typeof import('../datasetTarget')
 
-/** The run with 0.2.0's release recorded (as a release moves pack.ts's
+/** The run with PACK_VERSION's release recorded (as a release moves pack.ts's
  *  constants), or with pack.ts as it is today. */
 async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; plan: Plan; dt: Target }> {
   vi.resetModules()
@@ -298,7 +298,7 @@ async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; pla
   else {
     vi.doMock('../pack', async (orig) => ({
       ...(await orig<typeof import('../pack')>()),
-      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', PACK_VERSION]),
+      PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0', PACK_VERSION]),
     }))
   }
   const [run, plan, dt] = await Promise.all([import('./run'), import('./plan'), import('../datasetTarget')])

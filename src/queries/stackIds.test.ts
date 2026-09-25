@@ -14,7 +14,7 @@ import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 import { LAKE_DATASET } from '../cribl/config'
 import {
-  PACK_0_1_0, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, PACK_ROUTES_FILE,
+  PACK_0_1_0, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_PUBLISHED_VERSIONS, PACK_ROUTES_FILE,
   PACK_SAMPLE_ROUTE_ID, packRouteLabel,
 } from '../cribl/pack'
 import {
@@ -260,9 +260,12 @@ describe('the stack list', () => {
     }
   })
 
-  it('does not call the pack released before its release exists', () => {
+  it('calls the 0.2.x pack released exactly when 0.2.0 is on the published list', () => {
+    // 0.2.0 was published (2026-09-25) before this build's 0.2.1 was; both ship
+    // the same objects, so a tenant may run the stack's ids either way.
     const pack = STACKS.find((s) => s.key === 'pack-0.2')!
-    expect(pack.status === 'released').toBe(PACK_PUBLISHED)
+    expect(pack.status === 'released').toBe(PACK_PUBLISHED_VERSIONS.includes('0.2.0'))
+    expect(pack.status).toBe('released')
   })
 
   it('calls 0.1.0 released, with the ids that release shipped', () => {

@@ -86,15 +86,17 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * A PLACEHOLDER UNTIL ITS RELEASE EXISTS. No `gigamon-pack-v0.2.0` release has
+ * A PLACEHOLDER UNTIL ITS RELEASE EXISTS. No `gigamon-pack-v0.2.1` release has
  * been published, so `PACK_URL` below is a 404 today. Bumping this constant is
  * how the app ships a pack update; `packs/cc-network-gigamon-ami/package.json`
- * may run ahead of it, never behind.
+ * may run ahead of it, never behind. *(0.2.0 until 2026-09-25: 0.2.0 was
+ * released and delivers nothing, see 0.2.1 in the header, so this build pins
+ * the fix.)*
  */
-export const PACK_VERSION = '0.2.0'
+export const PACK_VERSION = '0.2.1'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. False: no 0.2.0 release has
+ * Whether `PACK_VERSION`'s release exists on GitHub. False: no 0.2.1 release has
  * been published. Set it to true in the same change that sets `PACK_SHA256`;
  * pack.test.ts fails if one moves without the other, and fails while
  * `PACK_PENDING` below still holds anything.
@@ -223,7 +225,16 @@ export function packRelease(
  * `PACK_SHA256`; pack.test.ts fails if the list and `PACK_PUBLISHED` disagree,
  * and if any version it has ever held is missing.
  */
-export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze(['0.1.0'])
+export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze([
+  '0.1.0',
+  // gigamon-pack-v0.2.0, tag commit 0d93f9c, asset sha256
+  // 978415d7b74d7217559800ac40f5e7ec893d5ae8df7d8ef9c394feb605e6bc6b. Released
+  // on 2026-09-25 while this build still pinned it unpublished; its route
+  // filters never match inside a pack, so it delivers nothing, but a tenant may
+  // hold it and Remove and Upgrade must recognise it. Its objects are this
+  // build's ids (`PACK_OBJECTS`): 0.2.1 renamed nothing.
+  '0.2.0',
+])
 
 // ── Objects inside the pack. Each is referenced by these ids in the pack's YAML.
 

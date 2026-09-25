@@ -146,7 +146,7 @@ async function load(): Promise<{ run: Run; plan: Plan }> {
   vi.doMock('../provision', async (orig) => ({ ...(await orig<typeof import('../provision')>()), generateToken: mint }))
   vi.doMock('../pack', async (orig) => ({
     ...(await orig<typeof import('../pack')>()),
-    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', PACK_VERSION]),
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0', PACK_VERSION]),
   }))
   const [run, plan] = await Promise.all([import('./run'), import('./plan')])
   return { run, plan }

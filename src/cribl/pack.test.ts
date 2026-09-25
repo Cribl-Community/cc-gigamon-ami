@@ -571,8 +571,11 @@ describe('Data Flow\'s stack list names each pack release\'s own ids', () => {
     expect(stack('pack-0.1.0')?.paths).toEqual(PACK_0_1_0.paths)
   })
 
-  it('pack-0.2 is this build\'s pack ids, by their in-pack metric labels', () => {
-    expect(stack('pack-0.2')?.status).toBe(PACK_PUBLISHED ? 'released' : 'unreleased')
+  it('pack-0.2 is this build\'s pack ids, by their in-pack metric labels, and released since 0.2.0 was', () => {
+    // 0.2.0 (published) and 0.2.1 (this build) ship the same objects under the
+    // same ids, so one stack names both.
+    expect(PACK_PUBLISHED_VERSIONS).toContain('0.2.0')
+    expect(stack('pack-0.2')?.status).toBe('released')
     expect(stack('pack-0.2')?.paths).toEqual([
       { route: packRouteLabel(PACK_HTTP_JSON_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_JSON_OUTPUT_ID), dataset: PACK_LAKE_DATASET_ID },
       { route: packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_PARQUET_OUTPUT_ID), dataset: PACK_PARQUET_DATASET_ID },
@@ -677,7 +680,7 @@ describe('the pinned pack', () => {
     // APPEND to EVER_RELEASED when a release is published; never remove from
     // it. A version missing from the list is "not published" to every tenant
     // running it: packClient.ts's Remove keeps it and its Upgrade refuses it.
-    const EVER_RELEASED = ['0.1.0']
+    const EVER_RELEASED = ['0.1.0', '0.2.0']
     for (const v of EVER_RELEASED) expect(PACK_PUBLISHED_VERSIONS, `${v} was released and has left the list`).toContain(v)
     expect(PACK_PUBLISHED_VERSIONS).toContain(PACK_0_1_0.version)
     expect(PACK_PUBLISHED_VERSIONS.includes(PACK_VERSION)).toBe(PACK_PUBLISHED)
@@ -757,7 +760,7 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
 // until its grants are declared). packClient.ts's `installRefusal` is this
 // function bound to the constants it imports, so the two cannot disagree.
 describe('packRelease — the pinned release, and why it cannot be installed', () => {
-  it('refuses today: 0.2.0 has no release', () => {
+  it('refuses today: 0.2.1 has no release', () => {
     const r = packRelease()
     expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
     expect(r.refusal).toMatch(/has not been released/)

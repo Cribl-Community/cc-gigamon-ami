@@ -65,7 +65,7 @@
 
 import {
   PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_JSON_OUTPUT_ID,
-  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PIPELINE_ID, PACK_PUBLISHED,
+  PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PIPELINE_ID, PACK_PUBLISHED_VERSIONS,
   PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_SAMPLE_OUTPUT_ID, PACK_SAMPLE_ROUTE_ID,
   packInputLabel, packOutputLabel, packRouteLabel,
 } from '../cribl/pack'
@@ -161,17 +161,17 @@ export const STACKS: readonly Stack[] = [
     paths: PACK_0_1_0.paths,
   },
   {
-    // 0.2.0 (whose route filters never match inside a pack) and 0.2.1 (which
-    // fixes them) ship the same objects under the same ids, so their metric
-    // labels are the same and one stack counts both.
+    // 0.2.0 (published 2026-09-25, whose route filters never match) and 0.2.1
+    // (this build's pin, which fixes them) ship the same objects under the
+    // same ids, so their metric labels are the same and one stack counts both.
     // The ids come from ../cribl/pack; the `<type>:` prefixes are the YAML's
     // `type:` fields, which stackIds.test.ts reads to hold them equal. The HTTP
     // source fans out: one route to the JSON dataset the dashboards read, one
     // to the Parquet copy, both through the same cast/derive pipeline.
-    // (Keyed `pack-0.2.0` until 2026-09-25.)
+    // (Keyed `pack-0.2.0`, and `unreleased`, until 2026-09-25.)
     key: 'pack-0.2',
     scope: 'pack',
-    status: PACK_PUBLISHED ? 'released' : 'unreleased',
+    status: PACK_PUBLISHED_VERSIONS.includes('0.2.0') ? 'released' : 'unreleased',
     what: 'cc-network-gigamon-ami 0.2.0 and 0.2.1: Raw HTTP, dual-written as JSON and Parquet, plus a sample DataGen. 0.2.0 delivers nothing; 0.2.1 fixes its route filters.',
     paths: [
       { route: packRouteLabel(PACK_HTTP_JSON_ROUTE_ID), input: packInputLabel('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: packOutputLabel('cribl_lake', PACK_JSON_OUTPUT_ID), dataset: PACK_LAKE_DATASET_ID },

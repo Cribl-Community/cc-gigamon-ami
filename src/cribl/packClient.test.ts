@@ -4,7 +4,7 @@
 // request a Leader would receive: the method, the path and the exact body.
 // Four things are pinned here because each is expensive to get wrong:
 //
-//   THE RELEASE GATE. Today no 0.2.0 release exists, so install and upgrade must
+//   THE RELEASE GATE. Today no 0.2.1 release exists, so install and upgrade must
 //   refuse without sending a single request. The same functions with the
 //   release recorded (`withRelease`, which swaps pack.ts's two constants) must
 //   install from the pinned URL with custom functions refused, and read the
@@ -173,20 +173,20 @@ const liveHttp = (extra: Record<string, unknown> = {}): Record<string, unknown> 
 })
 const liveSample = (extra: Record<string, unknown> = {}) => ({ id: PACK_SAMPLE_INPUT_ID, type: 'datagen', disabled: true, samples: [], ...extra })
 
-/** The client with pack.ts as it is today (no 0.2.0 release). */
+/** The client with pack.ts as it is today (0.1.0 and 0.2.0 released, no 0.2.1 release). */
 async function today(): Promise<Client> {
   vi.resetModules()
   vi.doUnmock('./pack')
   return loadClient()
 }
 
-/** The client with 0.2.0's release recorded: pack.ts's three release
- *  constants moved as a release moves them, nothing else. */
+/** The client with PACK_VERSION's release recorded: pack.ts's three release
+ *  constants moved as a release moves them (the version appended), nothing else. */
 async function withRelease(): Promise<Client> {
   vi.resetModules()
   vi.doMock('./pack', async (orig) => ({
     ...(await orig<typeof import('./pack')>()),
-    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', PACK_VERSION]),
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32), PACK_PUBLISHED_VERSIONS: Object.freeze(['0.1.0', '0.2.0', PACK_VERSION]),
   }))
   return loadClient()
 }
@@ -213,9 +213,10 @@ describe('packPath', () => {
 })
 
 describe('the release gate', () => {
-  it('counts only 0.1.0 as published while 0.2.0 has no release', async () => {
+  it('counts 0.1.0 and 0.2.0 as published while 0.2.1 has no release', async () => {
     const c = await today()
-    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0'])
+    expect(PACK_VERSION).toBe('0.2.1')
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0'])
     expect(c.installRefusal()).toMatch(/has not been released/)
   })
 
@@ -237,7 +238,7 @@ describe('the release gate', () => {
   it('with the release recorded, installs from the pinned URL with custom functions refused, and reads it back', async () => {
     const c = await withRelease()
     expect(c.installRefusal()).toBeNull()
-    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', PACK_VERSION])
+    expect(c.PUBLISHED_PACK_VERSIONS).toEqual(['0.1.0', '0.2.0', PACK_VERSION])
     leader({ packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp(), liveSample()] })
     const steps = await c.installPack(GROUP)
     expect(sent('POST', PACKS)?.body).toEqual({ id: PACK_ID, source: PACK_URL, allowCustomFunctions: false })
@@ -258,7 +259,7 @@ describe('the release gate', () => {
     const c = await withRelease()
     leader({ packsAfterWrite: [ours('0.1.0')], packInputs: [liveHttp()] })
     const steps = await c.installPack(GROUP)
-    expect(steps[1]).toMatchObject({ key: 'verify', action: 'error', detail: expect.stringMatching(/0\.1\.0, not 0\.2\.0/) })
+    expect(steps[1]).toMatchObject({ key: 'verify', action: 'error', detail: `${PACK_ID} reports version 0.1.0, not ${PACK_VERSION}` })
   })
 
   it('reports an install whose known object is missing as failed', async () => {
@@ -289,6 +290,14 @@ describe('the release gate', () => {
     expect((await c.upgradePack(GROUP))[0].action).toBe('exists')
     expect(writes()).toEqual([])
   })
+
+  it('upgrades a published 0.2.0, whose route filters never matched, in place', async () => {
+    const c = await withRelease()
+    leader({ packs: [ours('0.2.0')], packsAfterWrite: [ours(PACK_VERSION)], packInputs: [liveHttp()] })
+    const steps = await c.upgradePack(GROUP)
+    expect(sent('PATCH', PACK)?.body).toEqual({ source: PACK_URL, allowCustomFunctions: false })
+    expect(steps.map((s) => s.action)).toEqual(['updated', 'exists'])
+  })
 })
 
 describe('removePack', () => {
@@ -299,9 +308,9 @@ describe('removePack', () => {
     expect(writes()).toEqual([{ method: 'DELETE', path: PACK, body: undefined }])
   })
 
-  it('keeps a version this app did not publish — including 0.2.0 before its release', async () => {
+  it('keeps a version this app did not publish — including PACK_VERSION before its release', async () => {
     const c = await today()
-    for (const version of ['0.2.0', '9.9.9', undefined]) {
+    for (const version of [PACK_VERSION, '9.9.9', undefined]) {
       leader({ packs: [{ id: PACK_ID, version, source: version ? packReleaseUrl(version) : undefined }] })
       expect(await c.removePack(GROUP)).toMatchObject({ action: 'error', detail: expect.stringMatching(/^kept/) })
       expect(writes()).toEqual([])
@@ -317,7 +326,23 @@ describe('removePack', () => {
     expect(writes()).toEqual([])
   })
 
-  it('with 0.2.0 released, removes 0.2.0 too', async () => {
+  it('deletes an installed 0.2.0: released 2026-09-25, and installed from its own release', async () => {
+    const c = await today()
+    leader({ packs: [ours('0.2.0')] })
+    expect(await c.removePack(GROUP)).toEqual({ key: 'pack', action: 'updated', detail: 'deleted' })
+    expect(writes()).toEqual([{ method: 'DELETE', path: PACK, body: undefined }])
+  })
+
+  it('keeps a 0.2.0 that was not installed from 0.2.0\'s release: both ownership signals are needed', async () => {
+    const c = await today()
+    for (const source of [packReleaseUrl('0.1.0'), 'https://example.com/cc-network-gigamon-ami-0.2.0.crbl', undefined]) {
+      leader({ packs: [{ id: PACK_ID, version: '0.2.0', source }] })
+      expect(await c.removePack(GROUP)).toMatchObject({ action: 'error', detail: expect.stringMatching(/^kept/) })
+      expect(writes()).toEqual([])
+    }
+  })
+
+  it('with PACK_VERSION released, removes it too', async () => {
     const c = await withRelease()
     leader({ packs: [ours(PACK_VERSION)] })
     expect((await c.removePack(GROUP)).detail).toBe('deleted')
