@@ -105,14 +105,14 @@ one event per second each.
 - **An in-place upgrade keeps the pack's `local/` settings.** That includes a setting made on a
   source the new version no longer ships. Upgrading from 0.1.0 after changing `in_gno_syslog` leaves
   that source behind in `local/`, disabled and read by no route. Delete it in Cribl if you changed it.
+- **The pack's event breaker is read from `default/breakers.yml`.** The ruleset read back from the
+  pack's own library, and a JSON array POSTed to the pack's Raw HTTP source was split into one event
+  per record, with every field extracted, in both the JSON and the Parquet copy.
 
 ## Not verified yet
 
 These are left for a later install on a real Leader:
 
-- **Where a pack keeps event breakers.** This pack puts them in `default/breakers.yml`, the global
-  file's path without `cribl/`, as for every other pack file. Another Cribl Community pack does the
-  same, but no pack breaker has yet been read back from a Leader.
 - **That the Parquet copy cannot stall the JSON feed.** `gigamon_ami_parquet_lake` drops events
   under backpressure rather than blocking. It shares its source with `gigamon_ami_json_lake`, and a
   blocked Parquet writer would otherwise stop the data every dashboard reads. The install has to show
@@ -122,6 +122,11 @@ These are left for a later install on a real Leader:
   change what the JSON route already wrote. This pack relies on that, and it has not been measured
   here. The 0.2.2 install has to show `gigamon_ami` rows that still carry `_raw` and `gigamon_ami_pq`
   rows that carry none.
+- **That an upgrade from 0.2.1 moves the Parquet route onto the new pipeline.** An upgrade keeps the
+  pack's `local/` settings (measured above). If you changed this pack's routes after installing it,
+  Cribl keeps your own copy of the route table, and the Parquet route may still use
+  `gigamon_ami_normalize`, so `gigamon_ami_pq` would keep receiving `_raw`. After upgrading, check
+  that `gigamon_ami_http_to_parquet` names `gigamon_ami_normalize_parquet`.
 
 ## Releases
 
@@ -136,5 +141,5 @@ its sources. Version 0.2.1 fixes the filters and changes nothing else; upgrade f
   `gigamon_ami_http_to_parquet` now uses it, so rows written to `gigamon_ami_pq` no longer carry
   `_raw`. Nothing else changed: the JSON and sample routes, the sources, the breaker and the
   destinations are as they were in 0.2.1. Rows already in `gigamon_ami_pq` keep their `_raw`, since
-  Lake rewrites nothing. An in-place upgrade from 0.2.1 adds the new pipeline; it keeps the pack's
-  `local/` settings, as measured above for an upgrade from 0.1.0.
+  Lake rewrites nothing. An upgrade from 0.2.1 keeps the pack's `local/` settings; see "Not verified
+  yet" for what that means if you changed the pack's routes.

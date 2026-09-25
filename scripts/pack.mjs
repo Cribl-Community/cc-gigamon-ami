@@ -150,7 +150,9 @@ const namesField = (pattern, field) =>
  * What a pipeline does to `_raw`. `touched`: some enabled function lists it
  * (or a wildcard matching it) in an Eval-style `remove`. `removed`: an enabled
  * Eval with filter "true" removes it from every event — `keep` not holding it
- * back — and no later enabled function adds it again. Deliberately narrow: the
+ * back — and no later enabled Eval `add` names it again. Only an Eval `add` is
+ * detected: another function that rebuilds `_raw` (a Serialize, a Parser writing
+ * to it) would pass this check, so review any function after the removal. Deliberately narrow: the
  * only removal this recognises is the one the pack ships, so a cleverer one is
  * refused on a Parquet route rather than trusted.
  */
