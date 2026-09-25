@@ -1,0 +1,1 @@
+var e=`once an hour, at 20 past the hour UTC`,t=`fifteen minutes, ending three minutes before the run`,n=e,r=t,i=`once an hour, at 36 past the hour UTC`,a=t;export{t as a,r as i,a as n,n as r,i as t};
