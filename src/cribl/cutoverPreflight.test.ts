@@ -1,0 +1,395 @@
+// The cutover preflight (runbook 4c): read-only, built from Guided Setup's own
+// readers, and plain about what blocks the cutover.
+//
+// The first block runs the REAL readers (LIVE_READERS → packClient.ts,
+// provision.ts, lake.ts → capi.ts) over the runner's own guarded fetch and a
+// fake transport, and holds every request that reached the transport to a GET
+// that src/cribl/paths.ts (and so config/policies.yml) already grants, with no
+// Search path among them. The rest drive the verdict with fake readers.
+//
+// What this cannot show: that a Leader answers in these shapes. The bodies are
+// the shapes the readers' own tests use; the preflight has not been run
+// against a Leader (see the module header).
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PreflightRefusal, readOnlyFetch, refusalOf, searchOriginFromDevPage } from '../../scripts/cutover-preflight-fetch.mjs'
+import {
+  LIVE_READERS,
+  gatherPreflight,
+  preflightReport,
+  preflightVerdict,
+  type PreflightFacts,
+  type PreflightReaders,
+} from './cutoverPreflight'
+import type { LakeDataset } from './lake'
+import { PACK_ID, PACK_OBJECTS, PACK_VERSION, packReleaseUrl } from './pack'
+import type { PackState } from './packClient'
+import { API_CALLS } from './paths'
+
+const ROOT = join(__dirname, '..', '..')
+const TOKEN = 'SECRET-TOKEN-must-never-print'
+
+// ── A fake Leader, in the shapes the readers parse ─────────────────────────
+
+const packPrefix = `/m/default/p/${PACK_ID}`
+function leaderBodies(): Record<string, { status: number; body: unknown }> {
+  const ok = (body: unknown) => ({ status: 200, body })
+  const nf = { status: 404, body: { message: 'not found' } }
+  return {
+    '/m/default/packs': ok({ items: [{ id: PACK_ID, version: PACK_VERSION, source: packReleaseUrl(PACK_VERSION) }] }),
+    [`${packPrefix}/system/inputs`]: ok({
+      items: [
+        { id: 'in_gigamon_ami_http', type: 'http_raw', disabled: false, port: 20005, authTokens: [{ token: TOKEN }], tls: { disabled: false, certificateName: 'cloud' } },
+        { id: 'in_gigamon_ami_sample', type: 'datagen', disabled: true },
+      ],
+    }),
+    [`${packPrefix}/lib/breakers/gigamon_ami_http_json_array`]: ok({ items: [{ id: 'gigamon_ami_http_json_array' }] }),
+    [`${packPrefix}/pipelines`]: ok({ items: PACK_OBJECTS.pipelines.map((id) => ({ id })) }),
+    [`${packPrefix}/routes`]: ok({ items: [{ id: 'default', routes: PACK_OBJECTS.routes.map((id) => ({ id })) }] }),
+    [`${packPrefix}/system/outputs`]: ok({ items: PACK_OBJECTS.outputs.map((id) => ({ id })) }),
+    '/m/default/system/inputs': ok({ items: [{ id: 'in_gigamon_http', type: 'http_raw', port: 20000 }, { id: 'datagen', type: 'datagen' }] }),
+    '/m/default/system/inputs/in_gigamon_http': ok({ items: [{ id: 'in_gigamon_http', authTokens: [{ token: 'OLD-GLOBAL-TOKEN' }] }] }),
+    '/m/default/system/inputs/in_gigamon_syslog': nf,
+    '/m/default/pipelines/gigamon_http_normalize': ok({ items: [{ id: 'gigamon_http_normalize' }] }),
+    '/m/default/pipelines/gigamon_syslog': nf,
+    '/m/default/lib/breakers/gigamon_ami_json_array': ok({ items: [{ id: 'gigamon_ami_json_array' }] }),
+    '/m/default/routes': ok({ items: [{ id: 'default', routes: [{ id: 'gigamon_ami_http' }, { id: 'default' }] }] }),
+    '/products/lake/lakes/default/datasets': ok({
+      items: [
+        { id: 'gigamon_ami', format: 'json', metrics: { currentSizeBytes: 5 * 1024 ** 3, metricsDate: '2026-09-24' } },
+        { id: 'gigamon_ami_pq', format: 'parquet', metrics: { currentSizeBytes: 0, metricsDate: '2026-09-24' } },
+      ],
+    }),
+    '/products/stream/groups': ok({ items: [{ id: 'default', onPrem: false, configVersion: 'aaa111' }] }),
+    '/products/stream/groups/default': ok({ items: [{ id: 'default', configVersion: 'aaa111' }] }),
+    '/version': ok({ items: [{ hash: 'aaa111', refs: 'HEAD -> main' }] }),
+    '/version/status': ok({ items: [{ files: [] }] }),
+  }
+}
+
+function fakeTransport(bodies = leaderBodies()) {
+  const seen: { method: string; url: string }[] = []
+  const transport = vi.fn(async (url: string, init: { method: string }) => {
+    seen.push({ method: init.method, url })
+    const path = new URL(url).pathname.replace(/^\/capi/, '')
+    const hit = bodies[path] ?? { status: 404, body: { message: 'no such path in the fake' } }
+    return new Response(JSON.stringify(hit.body), { status: hit.status, headers: { 'Content-Type': 'application/json' } })
+  })
+  return { seen, transport }
+}
+
+/** Does a request path match a declared GET in paths.ts? `:x` is one segment. */
+function grantedGet(path: string): boolean {
+  const segs = path.split('/')
+  return API_CALLS.some((c) => {
+    if (c.method !== 'GET') return false
+    const want = c.path.split('/')
+    return want.length === segs.length && want.every((w, i) => w.startsWith(':') || w === decodeURIComponent(segs[i]))
+  })
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  delete (window as { __CRIBL_SEARCH_ORIGIN?: string }).__CRIBL_SEARCH_ORIGIN
+})
+
+describe('the real readers, over the runner’s guarded fetch', () => {
+  it('sends only GETs, touches no Search path, reads only granted paths — and prints no token', async () => {
+    const { seen, transport } = fakeTransport()
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    const verdict = preflightVerdict(facts)
+
+    expect(seen.length).toBeGreaterThan(10)
+    for (const r of seen) {
+      expect(r.method).toBe('GET')
+      const path = new URL(r.url).pathname.replace(/^\/capi/, '')
+      expect(path, 'a Search path').not.toMatch(/(^|\/)search(\/|$)/)
+      expect(grantedGet(path), `${path} is not a GET config/policies.yml grants`).toBe(true)
+    }
+
+    expect(verdict.blockers).toEqual([])
+    expect(verdict.ready).toBe(true)
+    expect(verdict.target).toBe('default.main.acme.cribl.cloud:20005')
+    expect(verdict.url).toBe('https://default.main.acme.cribl.cloud:20005/')
+    expect(facts.pack.http).toMatchObject({ disabled: false, port: 20005, tokenSet: true, tls: true })
+    expect(facts.datasets.map((d) => `${d.id}:${d.state}`)).toEqual(['gigamon_ami:present', 'gigamon_ami_pq:present', 'gigamon_ami_sample:absent'])
+    expect(facts.globalObjects.filter((o) => o.state === 'present').map((o) => o.id)).toEqual([
+      'in_gigamon_http', 'gigamon_ami_json_array', 'gigamon_http_normalize', 'gigamon_ami_http',
+    ])
+
+    const text = [...preflightReport(facts, verdict), JSON.stringify(facts), JSON.stringify(verdict)].join('\n')
+    expect(text).not.toContain(TOKEN)
+    expect(text).not.toContain('OLD-GLOBAL-TOKEN')
+    expect(text).toContain('Ready to point AMX at default.main.acme.cribl.cloud:20005')
+  })
+
+  // HEAD ahead of the group's commit, and the group record only on the
+  // deprecated /master path: the history, /master/groups/:gid and
+  // /version/files reads now go through the guard and the grant check too.
+  const behindBodies = (files: { status: number; body: unknown }) => {
+    const b = leaderBodies()
+    b['/products/stream/groups/default'] = { status: 404, body: { message: 'not found' } }
+    b['/master/groups/default'] = { status: 200, body: { items: [{ id: 'default', configVersion: 'aaa111' }] } }
+    b['/version'] = { status: 200, body: { items: [{ hash: 'bbb222', refs: 'HEAD -> main' }, { hash: 'aaa111', refs: '' }] } }
+    b['/version/files'] = files
+    return b
+  }
+
+  it.each<[string, { status: number; body: unknown }, RegExp]>([
+    ['a commit in between touches the group', { status: 200, body: { items: [{ count: 1, items: [{ name: `groups/default/default/${PACK_ID}/package.json` }] }] } }, /behind the Leader’s HEAD \(bbb222; it runs aaa111\), and a commit in between touches it/],
+    ['the commit’s files cannot be read', { status: 403, body: { message: 'forbidden' } }, /whether a commit in between touches it could not be told/],
+  ])('blocks, over the real readers, when HEAD is ahead and %s', async (_name, files, words) => {
+    const { seen, transport } = fakeTransport(behindBodies(files))
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    const verdict = preflightVerdict(facts)
+
+    const paths = seen.map((r) => new URL(r.url).pathname.replace(/^\/capi/, ''))
+    expect(paths).toContain('/master/groups/default')
+    expect(paths).toContain('/version/files')
+    for (const r of seen) {
+      expect(r.method).toBe('GET')
+      const path = new URL(r.url).pathname.replace(/^\/capi/, '')
+      expect(path, 'a Search path').not.toMatch(/(^|\/)search(\/|$)/)
+      expect(grantedGet(path), `${path} is not a GET config/policies.yml grants`).toBe(true)
+    }
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(words)
+    expect(preflightReport(facts, verdict).join('\n')).not.toContain('Ready to point AMX')
+  })
+
+  it('is ready, with a warning, over the real readers when every commit in between was read and none touches the group', async () => {
+    const { transport } = fakeTransport(behindBodies({ status: 200, body: { items: [{ count: 1, items: [{ name: 'groups/other/local/cribl/inputs.yml' }] }] } }))
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    expect(facts.git.deploy).toEqual({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'clear', detail: null })
+    const verdict = preflightVerdict(facts)
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(/none touches this group/)
+  })
+
+  it('blocks, over the real readers, when the group record cannot be read', async () => {
+    const b = leaderBodies()
+    b['/products/stream/groups/default'] = { status: 403, body: { message: 'forbidden' } }
+    const { transport } = fakeTransport(b)
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    const verdict = preflightVerdict(await gatherPreflight('default', LIVE_READERS))
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/could not be told: the commit default is running/)
+  })
+})
+
+describe('the guarded fetch', () => {
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'post'])('refuses %s before anything is sent', async (method) => {
+    const { transport } = fakeTransport()
+    const f = readOnlyFetch({ base: 'http://x/capi', fetch: transport })
+    await expect(f('/capi/m/default/packs', { method })).rejects.toBeInstanceOf(PreflightRefusal)
+    expect(transport).not.toHaveBeenCalled()
+  })
+
+  it('refuses any Search path, a job submit included, and anything outside /capi', async () => {
+    const { transport } = fakeTransport()
+    const f = readOnlyFetch({ base: 'http://x/capi', fetch: transport })
+    await expect(f('/capi/m/default_search/search/jobs', { method: 'POST', body: '{}' })).rejects.toBeInstanceOf(PreflightRefusal)
+    await expect(f('/capi/m/default_search/search/jobs')).rejects.toBeInstanceOf(PreflightRefusal)
+    await expect(f('/capi/search/saved')).rejects.toBeInstanceOf(PreflightRefusal)
+    await expect(f('https://evil.example/capi/m/default/packs')).rejects.toBeInstanceOf(PreflightRefusal)
+    await expect(f('/api/v1/m/default/packs')).rejects.toBeInstanceOf(PreflightRefusal)
+    expect(transport).not.toHaveBeenCalled()
+    // A dataset id that merely CONTAINS the word is not a Search path.
+    expect(refusalOf('GET', '/capi/products/lake/lakes/default/datasets/research_x')).toBeNull()
+  })
+
+  it('rewrites /capi onto the base and sends no body', async () => {
+    const { seen, transport } = fakeTransport()
+    const f = readOnlyFetch({ base: 'http://localhost:5173/capi/', fetch: transport })
+    await f('/capi/version?offset=0&limit=50', { headers: { 'Content-Type': 'application/json' } })
+    expect(seen).toEqual([{ method: 'GET', url: 'http://localhost:5173/capi/version?offset=0&limit=50' }])
+    expect(transport.mock.calls[0][1]).toEqual({ method: 'GET', signal: undefined })
+  })
+
+  it('reads the Leader origin off the dev page, and nothing that is not an http(s) origin', () => {
+    expect(searchOriginFromDevPage('<script>window.__CRIBL_SEARCH_ORIGIN = "https://main-acme.cribl.cloud";</script>')).toBe('https://main-acme.cribl.cloud')
+    expect(searchOriginFromDevPage('<script>window.__CRIBL_SEARCH_ORIGIN = "javascript:alert(1)";</script>')).toBeNull()
+    expect(searchOriginFromDevPage('<html></html>')).toBeNull()
+    expect(searchOriginFromDevPage(null)).toBeNull()
+  })
+})
+
+describe('the runner’s wiring', () => {
+  it('is `npm run cutover:preflight`, and installs the guard before it imports a module that can reach Cribl', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts['cutover:preflight']).toBe('node scripts/cutover-preflight.mjs')
+    const src = readFileSync(join(ROOT, 'scripts', 'cutover-preflight.mjs'), 'utf8')
+    const guard = src.indexOf('globalThis.fetch = G.readOnlyFetch(')
+    const load = src.indexOf("'src/cribl/cutoverPreflight.ts'")
+    expect(guard).toBeGreaterThan(0)
+    expect(load).toBeGreaterThan(guard)
+    // No other src/ import precedes the guard.
+    expect(src.slice(0, guard)).not.toMatch(/import\([^)]*src\/cribl\//)
+    expect(src.slice(0, guard)).not.toMatch(/from\s+['"][^'"]*src\//)
+  })
+})
+
+// ── The verdict, over fake readers ──────────────────────────────────────────
+
+function packState(over: Partial<PackState> = {}): PackState {
+  const all = (ids: readonly string[]) => Object.fromEntries(ids.map((id) => [id, 'present' as const]))
+  return {
+    error: null, installed: true, version: PACK_VERSION, published: true, fromRelease: true, current: true,
+    objects: {
+      inputs: all(PACK_OBJECTS.inputs), breakers: all(PACK_OBJECTS.breakers), pipelines: all(PACK_OBJECTS.pipelines),
+      routes: all(PACK_OBJECTS.routes), outputs: all(PACK_OBJECTS.outputs),
+    },
+    http: { disabled: false, port: 20005, tokenSet: true, tls: true, tlsCert: 'cloud' },
+    sample: { disabled: true },
+    installedSample: { id: 'in_gigamon_ami_sample', disabled: true },
+    ...over,
+  }
+}
+
+const dataset = (id: string, extra: Partial<LakeDataset> = {}): LakeDataset => ({
+  id, description: null, format: 'json', retentionPeriodInDays: 30, acceleratedFields: null, searchConfig: null,
+  deletionStartedAt: null, metrics: { currentSizeBytes: 1024, metricsDate: '2026-09-24' }, raw: {}, ...extra,
+})
+
+function readers(over: Partial<PreflightReaders> = {}): PreflightReaders {
+  const absent = { breaker: 'absent', pipeline: 'absent', source: 'absent', route: 'absent' } as const
+  return {
+    readPackState: async () => packState(),
+    checkStatus: async () => ({ ...absent }),
+    checkLegacyStatus: async () => ({ legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' }),
+    listDatasets: async () => ({ outcome: 'ok', value: [dataset('gigamon_ami'), dataset('gigamon_ami_pq', { format: 'parquet' })], object: '/x', status: 200, detail: null }),
+    listStreamGroupsCurrent: async () => ({ outcome: 'ok', value: [{ id: 'default', name: 'default', configVersion: 'a', onPrem: false }], object: '/x', status: 200, detail: null }),
+    portsOfOthers: async () => [20000],
+    pendingConfigPaths: async () => [],
+    deployState: async () => ({ state: 'current', head: 'aaa111' }),
+    leaderHostname: () => 'main-acme.cribl.cloud',
+    suggestedIngressHost: () => 'default.main.acme.cribl.cloud',
+    ...over,
+  }
+}
+
+async function verdictWith(over: Partial<PreflightReaders> = {}) {
+  const facts = await gatherPreflight('default', readers(over))
+  return { facts, verdict: preflightVerdict(facts) }
+}
+
+describe('the verdict', () => {
+  it('is ready on a current, owned, started pack with both datasets and nothing pending', async () => {
+    const { verdict } = await verdictWith()
+    expect(verdict).toMatchObject({ ready: true, blockers: [], target: 'default.main.acme.cribl.cloud:20005' })
+  })
+
+  it('names a placeholder, never a guess, when the ingress host cannot be derived', async () => {
+    const { verdict } = await verdictWith({ suggestedIngressHost: () => null })
+    expect(verdict.ready).toBe(true)
+    expect(verdict.target).toBe('<this group’s worker ingress host>:20005')
+    expect(verdict.url).toBeNull()
+  })
+
+  const cases: [string, Partial<PreflightReaders>, RegExp][] = [
+    ['no pack', { readPackState: async () => packState({ installed: false, version: null, http: null }) }, /not installed .*Onboard/],
+    ['an unreadable pack list', { readPackState: async () => packState({ error: 'HTTP 403', installed: false }) }, /could not be read/],
+    ['a copy this app did not install', { readPackState: async () => packState({ fromRelease: false, current: false }) }, /is not this app’s/],
+    ['0.2.0, whose routes never match', { readPackState: async () => packState({ version: '0.2.0', current: false }) }, /0\.2\.0 delivers nothing/],
+    ['no token', { readPackState: async () => packState({ http: { disabled: false, port: 20005, tokenSet: false, tls: true, tlsCert: 'c' } }) }, /no auth token/],
+    ['a stopped source', { readPackState: async () => packState({ http: { disabled: true, port: 20005, tokenSet: true, tls: true, tlsCert: 'c' } }) }, /stopped/],
+    ['a port another source holds', { portsOfOthers: async () => [20005] }, /already listens on 20005/],
+    ['ports that cannot be read', { portsOfOthers: async () => null }, /cannot check that this port is free/],
+    ['a missing Parquet dataset', { listDatasets: async () => ({ outcome: 'ok', value: [dataset('gigamon_ami')], object: '/x', status: 200, detail: null }) }, /gigamon_ami_pq does not exist/],
+    ['a dataset being deleted', { listDatasets: async () => ({ outcome: 'ok', value: [dataset('gigamon_ami', { deletionStartedAt: 'x' }), dataset('gigamon_ami_pq')], object: '/x', status: 200, detail: null }) }, /gigamon_ami is being deleted/],
+    ['an unreadable Lake listing', { listDatasets: async () => ({ outcome: 'not-readable', value: null, object: '/products/lake/lakes/default/datasets', status: 403, detail: 'no' }) }, /datasets are unknown: .*could not be read \(HTTP 403\)/],
+    ['uncommitted pack files', { pendingConfigPaths: async () => [`groups/default/default/${PACK_ID}/local/inputs.yml`] }, /pack has uncommitted changes/],
+    ['a group behind a commit that touches it', { deployState: async () => ({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'touches', detail: null }) }, /behind the Leader’s HEAD \(bbb222; it runs aaa111\), and a commit in between touches it/],
+    ['a HEAD not deployed, with nothing proved either way', { deployState: async () => ({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'unknown', detail: 'the files of 1 of 1 commit(s) in between could not be read' }) }, /not running the Leader’s HEAD \(bbb222; it runs aaa111\), and whether a commit in between touches it could not be told/],
+    ['a deploy state that cannot be read', { deployState: async () => ({ state: 'unreadable', detail: 'the Leader’s commit history could not be read' }) }, /could not be told: the Leader’s commit history could not be read/],
+    ['a version this app never published', { readPackState: async () => packState({ published: false, current: false }) }, /this app did not publish that version/],
+    ['a source port it cannot read', { readPackState: async () => packState({ http: { disabled: false, port: null, tokenSet: true, tls: true, tlsCert: 'c' } }) }, /no port this preflight can read/],
+    ['an unreadable Git status', { pendingConfigPaths: async () => null }, /Git’s status could not be read/],
+    ['a missing pack route', { readPackState: async () => { const s = packState(); s.objects.routes.gigamon_ami_http_to_parquet = 'absent'; return s } }, /route gigamon_ami_http_to_parquet is missing/],
+  ]
+  it.each(cases)('blocks on %s, in plain words', async (_name, over, words) => {
+    const { verdict } = await verdictWith(over)
+    expect(verdict.ready).toBe(false)
+    expect(verdict.target).toBeNull()
+    expect(verdict.blockers.join('\n')).toMatch(words)
+  })
+
+  it('warns, and does not block, on an owned 0.2.1 that is behind', async () => {
+    const { verdict } = await verdictWith({
+      readPackState: async () => {
+        const s = packState({ version: '0.2.1', current: false })
+        s.objects.pipelines.gigamon_ami_normalize_parquet = 'absent'
+        return s
+      },
+    })
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(/0\.2\.1 is installed; this build pins/)
+  })
+
+  it('warns, and does not block, when HEAD is ahead and every commit in between was read and none touches the group', async () => {
+    const { verdict } = await verdictWith({ deployState: async () => ({ state: 'behind', head: 'bbb222', deployed: 'aaa111', proof: 'clear', detail: null }) })
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(/not running the Leader’s HEAD \(bbb222; it runs aaa111\); every commit in between was read and none touches/)
+  })
+
+  it.each<[string, Partial<PreflightReaders>, RegExp]>([
+    ['a managed group whose source has no TLS', { readPackState: async () => packState({ http: { disabled: false, port: 20005, tokenSet: true, tls: false, tlsCert: null } }) }, /does not terminate TLS/],
+    ['a running sample source', { readPackState: async () => packState({ sample: { disabled: false } }) }, /sample source is running/],
+    ['a group record not found', { listStreamGroupsCurrent: async () => ({ outcome: 'ok', value: [], object: '/x', status: 200, detail: null }) }, /group record for default was not found/],
+    ['an unreadable group record', { listStreamGroupsCurrent: async () => ({ outcome: 'not-readable', value: null, object: '/x', status: 403, detail: 'no' }) }, /group record for default was unreadable/],
+    ['hosting it cannot tell', { leaderHostname: () => null }, /Hosting could not be told/],
+  ])('warns, and does not block, on %s', async (_name, over, words) => {
+    const { verdict } = await verdictWith(over)
+    expect(verdict.ready).toBe(true)
+    expect(verdict.warnings.join('\n')).toMatch(words)
+  })
+
+  it('says nothing of Remove refusing when no global object is present, whatever is uncommitted', async () => {
+    const { facts, verdict } = await verdictWith({ pendingConfigPaths: async () => ['groups/default/local/cribl/inputs.yml'] })
+    expect(facts.git.globalStackFiles).toEqual([])
+    expect(verdict.afterCutover.join('\n')).toMatch(/nothing for Remove to take/)
+    expect(verdict.afterCutover.join('\n')).not.toMatch(/Remove will refuse/)
+  })
+
+  it('does not name a Syslog pipeline file for a Remove that takes only the Raw HTTP stack', async () => {
+    const { facts } = await verdictWith({
+      checkStatus: async () => ({ breaker: 'absent', pipeline: 'present', source: 'absent', route: 'absent' }),
+      pendingConfigPaths: async () => ['groups/default/local/cribl/pipelines/gigamon_syslog/conf.yml'],
+    })
+    expect(facts.git.globalStackFiles).toEqual([])
+  })
+
+  it('says what Remove will meet afterwards: the global objects, and files it would refuse over', async () => {
+    const { verdict } = await verdictWith({
+      checkStatus: async () => ({ breaker: 'present', pipeline: 'present', source: 'present', route: 'unreadable' }),
+      pendingConfigPaths: async () => ['groups/default/local/cribl/inputs.yml'],
+    })
+    expect(verdict.ready).toBe(true)
+    const after = verdict.afterCutover.join('\n')
+    expect(after).toMatch(/Remove will find: in_gigamon_http/)
+    expect(after).toMatch(/Could not be read: gigamon_ami_http/)
+    expect(after).toMatch(/Remove will refuse .*groups\/default\/local\/cribl\/inputs\.yml/)
+    expect(after).toMatch(/Re-point Gigamon AMX before removing in_gigamon_http/)
+  })
+
+  it('reports each fact the runbook asks for', async () => {
+    const { facts, verdict } = await verdictWith()
+    const text = preflightReport(facts as PreflightFacts, verdict).join('\n')
+    for (const want of [
+      `${PACK_ID} ${PACK_VERSION}`, 'owned: yes', 'current: yes', 'Raw HTTP source: enabled, port 20005, TLS on, token set',
+      'sample source: stopped', 'gigamon_ami: present', 'gigamon_ami_pq: present', 'gigamon_ami_sample: absent',
+      'in_gigamon_http (raw-http source): absent', 'in_gigamon_syslog (syslog source): absent', 'uncommitted in default: none',
+      'managed',
+    ]) expect(text).toContain(want)
+  })
+})
