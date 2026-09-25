@@ -87,8 +87,11 @@
 // record the window edge added may be the first T1572 flow in it — so a
 // one-record window-edge difference is not reported as the class A failure.
 // 0 or 18 → 40,280 is still thousands of records outside it. The same slack
-// means a +1 distinct value (class C) cannot be seen on a run whose control
-// drifted, and the class C sentence says so rather than calling that a pass.
+// hides a +1 distinct value on a run whose control drifted. That is the +1 the
+// check still EXPECTS for class C (`NULL_CLASSES.C`) — not the effect Parquet
+// is expected to have, which the table above now infers is none (JSON already
+// counts the null bucket) — and the class C sentence says it could not be seen
+// rather than calling that a pass.
 //
 // ── THE EXTREMES UNDER DRIFT ────────────────────────────────────────────────
 // A min or a max is set by ONE record, so the records the control says one
@@ -109,9 +112,11 @@
 // * The tolerances are chosen, not measured. The only measured agreement is the
 //   bare count, within 0.2 % over "comparable" six-minute windows of two
 //   datasets fed by one generator. ±1 % and ±5 % are judgement.
-// * Class C's +1 is outside ±1 % only while the distinct count is under 100
-//   (1/100 = 1 %). On a larger count it is inside the tolerance and invisible,
-//   and the class sentence says so rather than implying otherwise.
+// * The +1 the check expects for class C (kept in code until the first real
+//   Parquet run; the table above infers C is parity-neutral) is outside ±1 %
+//   only while the distinct count is under 100 (1/100 = 1 %). On a larger count
+//   it is inside the tolerance and invisible, and the class sentence says so
+//   rather than implying otherwise.
 // * `dcount()` is approximate (≈ ±0.5 % at ~10k distinct values, exact at a few
 //   hundred — measured 2026-09-23), which is part of why C is not compared
 //   exactly.

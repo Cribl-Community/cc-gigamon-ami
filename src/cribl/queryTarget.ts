@@ -50,9 +50,12 @@
 //   is inverted.
 //
 //   EVIDENCE — every drill-down and deep link is a whole-row read that an
-//   analyst opens to see what actually happened. It wants `_raw` and every
-//   field, which the curated copy does not carry. A drill that lands on Parquet
-//   would show a narrower row than the number that led to it.
+//   analyst opens to see what actually happened. The Parquet copy is not
+//   curated today and still carries `_raw` and every field (above), but it
+//   reads a field a record never had back as `""` or `0` (proof (g), in both
+//   schema modes), so a drill there shows values the record never held — and
+//   a later pipeline change may drop `_raw` from it. The row an analyst opens
+//   must be the record as it arrived, so evidence drills stay on JSON.
 //
 // A pin is therefore a property of the QUESTION, not of the tenant's setup, and
 // stays true whichever target they pick.
@@ -94,8 +97,10 @@ export const TARGET_WORDS: Readonly<Record<QueryTarget, string>> = Object.freeze
  * makes a move a data change backed by evidence, never an edit to this
  * constant. Until the first such run exists, every query resolves to JSON.
  *
- * A tenant can still CHOOSE Parquet in the picker; they are simply not defaulted
- * into it. `SAFE_WITHOUT_MEASUREMENT` is what the UI reads to say so.
+ * No target picker exists yet: nothing in the app imports this module, so no
+ * tenant can choose Parquet today. Were one built, choosing it would be the
+ * tenant's call, never a default; `SAFE_WITHOUT_MEASUREMENT` is what it would
+ * read to say so.
  */
 export const DEFAULT_TARGET: QueryTarget = 'lake-json'
 export const SAFE_WITHOUT_MEASUREMENT: readonly QueryTarget[] = Object.freeze(['lake-json'])
