@@ -22,7 +22,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { DashboardProvider } from '../app/DashboardContext'
 import { MANIFEST } from '../cribl/accel/manifest'
@@ -153,6 +153,15 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
+// Every tab but the landing one is a lazy chunk (src/app/tabs.tsx), so rendering
+// one is a real module import, transformed on first use. Guided Setup's is the
+// largest, and on a busy machine it outlasted `settle(40)`: the test then counted
+// ⓘs on "Loading tab…" and failed with "/setup shows no ⓘ at all". Load every
+// tab once, through the tab bar's own `preload`, as tabJobBudget.test.tsx does.
+beforeAll(async () => {
+  await Promise.all(TABS.map((t) => t.preload?.()))
+}, 60_000)
+
 async function renderAt(path: string): Promise<void> {
   await act(async () => {
     root.render(
@@ -164,6 +173,8 @@ async function renderAt(path: string): Promise<void> {
     )
   })
   await settle(40)
+  // A tab still on its Suspense fallback would pass every "nothing was sent" check by rendering nothing.
+  expect(container.textContent, `${path} never left "Loading tab…"`).not.toContain('Loading tab…')
 }
 
 const EXEC_PREFIX = /^(?:set [^;]+;\s*)+/

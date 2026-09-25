@@ -14,14 +14,23 @@ import { loadSearchCaps } from './cribl/searchCaps'
 import { prefetchRunHistory } from './cribl/accel/status'
 import { resolveDatasetTarget } from './cribl/datasetTarget'
 import { loadAccelServing } from './cribl/accel/serving'
-import { installTrace } from './cribl/devTrace'
+import { installTrace, relayError, startRelay } from './cribl/devTrace'
 
 // The dev-only page trace (cribl/devTrace.ts). `import.meta.env.DEV` is a
 // build-time constant, so a production bundle drops this branch entirely.
 // StrictMode is off while tracing: it mounts every effect twice in dev, which
-// submits, cancels and resubmits jobs production never does.
-const TRACE = import.meta.env.DEV && new URLSearchParams(window.location.search).has('trace')
+// submits, cancels and resubmits jobs production never does. `?trace` turns it
+// on for a page you can script; the dev server's `.dev/trace-on` flag turns it
+// on for every page it serves, Live Preview's frame included, and that page
+// then relays its trace to the dev server (vite.config.ts `/__trace`).
+const RELAY = import.meta.env.DEV && (window as { __GNO_TRACE__?: boolean }).__GNO_TRACE__ === true
+const TRACE = import.meta.env.DEV && (RELAY || new URLSearchParams(window.location.search).has('trace'))
+if (RELAY) {
+  window.addEventListener('error', (e) => relayError(window, e.error ?? e.message))
+  window.addEventListener('unhandledrejection', (e) => relayError(window, e.reason))
+}
 if (TRACE) installTrace()
+if (RELAY) startRelay()
 
 // Applied before React mounts so there's no flash of the wrong theme. Defaults
 // to dark (the reference dashboards are dark) unless the user or OS says light.

@@ -13,7 +13,15 @@
 // trace would count them.
 //
 // READ FROM THE CONSOLE: `__gnoTrace.summary()`, or `__gnoTrace.reset()` before
-// a measured action. Nothing here is sent anywhere.
+// a measured action.
+//
+// OR FROM THE DEV SERVER, for Cribl's Live Preview. That page loads this dev
+// server in a sandboxed, cross-origin frame whose URL carries only `?init=`, so
+// neither `?trace` nor the console can reach it. With `.dev/trace-on` present
+// the dev server marks every page it serves for tracing (vite.config.ts), and
+// `startRelay` posts the trace back to that same dev server, which appends it
+// to `.dev/trace.ndjson`. It goes nowhere else: the URL is the dev server's
+// own, relative to the page.
 
 export type RequestKind =
   | 'history'
@@ -47,9 +55,13 @@ export interface PanelMarks {
 interface Trace {
   requests: TracedRequest[]
   panels: Map<string, PanelMarks>
+  /** False where the page's `fetch` could not be replaced: then only panel marks are recorded. */
+  requestsTraced: boolean
 }
 
 let trace: Trace | null = null
+/** The page's own fetch, before the trace wrapped it, so the relay's posts are not traced. */
+let untraced: typeof fetch | null = null
 
 /** True when tracing is on for this page. */
 export function tracing(): boolean {
@@ -70,12 +82,16 @@ export function classify(url: string, method: string): RequestKind {
   return 'other'
 }
 
-/** Wrap `fetch` so every request is recorded. Call once, before first render. */
+/** Wrap `fetch` so every request is recorded. Call once, before first render.
+ *  Where the host has made `fetch` read-only, which Cribl's Live Preview frame
+ *  does, the assignment throws; the trace then records panel marks only
+ *  (`requestsTraced: false`) rather than stopping the page from rendering. */
 export function installTrace(win: Window & { __gnoTrace?: unknown } = window): void {
   if (trace !== null) return
-  trace = { requests: [], panels: new Map() }
+  trace = { requests: [], panels: new Map(), requestsTraced: false }
   const inner = win.fetch.bind(win)
-  win.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  untraced = inner
+  const wrapped = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const rec: TracedRequest = {
@@ -90,12 +106,22 @@ export function installTrace(win: Window & { __gnoTrace?: unknown } = window): v
     const res = await inner(input, init)
     rec.status = res.status
     // Timed to the last byte, which is what the app waits for: it reads text().
-    res.clone().text().then(
-      (t) => { rec.end = performance.now(); rec.bytes = t.length },
-      () => { rec.end = performance.now() },
-    )
+    try {
+      res.clone().text().then(
+        (t) => { rec.end = performance.now(); rec.bytes = t.length },
+        () => { rec.end = performance.now() },
+      )
+    } catch {
+      rec.end = performance.now() // a host's Response that cannot be cloned: timed to the headers
+    }
     return res
   }
+  try {
+    win.fetch = wrapped
+  } catch {
+    // read-only fetch: see the doc comment
+  }
+  trace.requestsTraced = win.fetch === wrapped
   win.__gnoTrace = { summary, reset, raw: () => trace }
 }
 
@@ -153,6 +179,7 @@ export function summary(): unknown {
     .map((r) => ({ kind: r.kind, startMs: Math.round(r.start), durMs: ms(r.start, r.end), kB: r.bytes === null ? null : Math.round(r.bytes / 1024) }))
   const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
   return {
+    requestsTraced: trace.requestsTraced,
     // Page milestones, ms from navigation start.
     page: nav ? { domInteractive: Math.round(nav.domInteractive), domContentLoaded: Math.round(nav.domContentLoadedEventEnd) } : null,
     requests: byKind,
@@ -161,4 +188,43 @@ export function summary(): unknown {
     lastPaintMs: paints.length ? Math.max(...paints) : null,
     pending: panels.filter((p) => p.toPaintMs === null).map((p) => p.panel),
   }
+}
+
+/**
+ * Post the trace to the dev server whenever it has changed, once a second, so a
+ * page nobody can script (Live Preview's frame) still reports. Each post is the
+ * whole trace so far: the newest line for a page is its answer. Returns a stop.
+ */
+export function startRelay(win: Window = window, url = '/__trace', everyMs = 1000): () => void {
+  let last = ''
+  const id = win.setInterval(() => {
+    if (!trace) return
+    const panels = [...trace.panels.entries()].map(([panel, m]) => ({ panel, ...m }))
+    const key = JSON.stringify([trace.requests.length, trace.requests.filter((r) => r.end !== null).length, panels.map((p) => [p.start, p.paint])])
+    if (key === last) return
+    last = key
+    relayPost(win, url, { page: win.location.pathname, origin: Math.round(performance.timeOrigin), summary: summary(), panels })
+  }, everyMs)
+  return () => win.clearInterval(id)
+}
+
+/** Report a page error through the relay, so a frame nobody can inspect says why it is blank. */
+export function relayError(win: Window, err: unknown, url = '/__trace'): void {
+  const e = err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) }
+  relayPost(win, url, { page: win.location.pathname, error: e })
+}
+
+/** To the dev server that served this page, by an absolute URL so a host's fetch
+ *  proxy cannot reroute it: a beacon where there is one, else the untraced fetch. */
+function relayPost(win: Window, url: string, payload: unknown): void {
+  const body = JSON.stringify(payload)
+  const href = (win.location as Location | undefined)?.href
+  const target = href ? new URL(url, href).href : url
+  try {
+    if (win.navigator?.sendBeacon?.(target, new Blob([body], { type: 'text/plain' }))) return
+  } catch {
+    // fall through to fetch
+  }
+  const send = untraced ?? win.fetch.bind(win)
+  void send(target, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body }).catch(() => {})
 }
