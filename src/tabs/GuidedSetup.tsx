@@ -15,6 +15,7 @@
 
 import { AccelPanel } from '../components/AccelPanel'
 import { MetricsStorePanel } from '../components/MetricsStorePanel'
+import { OnboardingPanel } from '../components/OnboardingPanel'
 import { LakeLandingPanel } from '../components/LakeLandingPanel'
 // The anchor id lives beside the panel's other pure constants, not in the
 // component file — src/components/lakeLandingCopy.ts.
@@ -48,6 +49,15 @@ export function GuidedSetup() {
           a `.tab` flex column is one flex item wrapping one panel; it changes
           nothing about the layout. */}
       <div id={INGEST_ANCHOR_ID}>
+        {/* The pack's onboarding first, then the Raw HTTP stack's panel. Which
+            of the two IS the onboarding is onboarding/plan.ts
+            `onboardingPath`: the Raw HTTP stack's until this build's pack
+            release can be installed, and then the pack's, with the Raw HTTP
+            panel reduced to Remove while its stack is in the group. Both read
+            one worker group (useSetupGroup) and one run lock
+            (cribl/setupRunLock.ts), so they cannot name two groups or commit
+            over each other. */}
+        <OnboardingPanel />
         <ProvisionPanel />
       </div>
 

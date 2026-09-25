@@ -54,6 +54,7 @@ import {
   PACK_BREAKER_ID,
   PACK_HTTP_INPUT_ID,
   PACK_ID,
+  PACK_PARQUET_DATASET_ID,
   PACK_SAMPLE_DATASET_ID,
   PACK_SAMPLE_INPUT_ID,
 } from './pack'
@@ -142,13 +143,12 @@ export interface Unreached {
   reason: string
 }
 
-export const UNREACHED_MODULES: readonly Unreached[] = [
-  {
-    file: 'src/cribl/packClient.ts',
-    reason:
-      'The onboarding pack client (install, upgrade, remove, and the pack source’s port, token, TLS and enable, then commit and deploy) is built a slice ahead of the Guided Setup UI that calls it. Until that UI lands nothing can press any of it, so none of its pack-scoped calls is asked of an admin yet.',
-  },
-]
+// EMPTY SINCE 2026-09-24. Its one entry was src/cribl/packClient.ts, the
+// onboarding pack client, built a slice ahead of its UI; Guided Setup's
+// onboarding panel now imports it, and its calls are granted below and in
+// config/policies.yml. The list stays so the next module built ahead of its
+// screen has somewhere to say so.
+export const UNREACHED_MODULES: readonly Unreached[] = []
 
 /**
  * THE CALL SURFACE. Every entry is reachable from a click in this app, except
@@ -354,7 +354,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: '/products/lake/lakes/default/datasets',
     scope: 'product',
     site: 'provision.ts ensureLakeDataset',
-    why: `Create the ${LAKE_DATASET_ID} dataset when it is absent. Additive: an existing dataset is left exactly as it is.`,
+    why: `Create a Cribl Lake dataset when it is absent: ${LAKE_DATASET_ID}, from Guided Setup's Raw HTTP deploy or its onboarding run, and — from the onboarding run only — the pack's Parquet copy ${PACK_PARQUET_DATASET_ID} and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}. Additive: an existing dataset is left exactly as it is.`,
     creates: 'dataset',
   },
 
@@ -460,13 +460,14 @@ export const API_CALLS: readonly ApiCall[] = [
     site: 'lake.ts listPackInputs',
     why: 'Read the sources inside each installed pack: their ports, so the new Raw HTTP source is not given one a pack source already listens on, and the event breaker rulesets they name, so Remove never deletes this app’s ruleset while a pack source still uses it. Read only; `:pack` is any installed pack’s id, because the port check has to see all of them.',
   },
-  // ── The onboarding pack (src/cribl/packClient.ts) — NOT YET GRANTED ───────
-  // Every entry below sits in a module on UNREACHED_MODULES: written, tested,
-  // and reached by nothing on screen until Guided Setup's pack UI lands. They
-  // are not in config/policies.yml, and must not be until then — see
-  // UNREACHED_MODULES. Each pack-scoped path names this app's pack by its id
-  // and, where one object is meant, that object, so the grant when it comes is
-  // "this pack's two sources", never "any source in any pack".
+  // ── The onboarding pack (src/cribl/packClient.ts) ─────────────────────────
+  // Reached from Guided Setup's onboarding panel (components/OnboardingPanel
+  // .tsx) through its run (cribl/onboarding/run.ts), and granted in
+  // config/policies.yml with exactly these methods. Each pack-scoped path names
+  // this app's pack by its id and, where one object is meant, that object, so
+  // the grant is "this pack's two sources", never "any source in any pack".
+  // *(Until 2026-09-24 these were written and deliberately not granted, while
+  // nothing on screen reached them.)*
   {
     method: 'POST',
     path: '/m/:gid/packs',
@@ -480,7 +481,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
     site: 'packClient.ts upgradePack',
-    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused.`,
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. This release shows the Upgrade control refused, so nothing sends it yet; it is declared because the client that holds it is loaded, and it is the same grant the upgrade will need.`,
   },
   {
     method: 'DELETE',
@@ -790,7 +791,7 @@ export const LEFT_BEHIND: readonly LeftBehind[] = [
   {
     resource: 'dataset',
     reason:
-      `The ${LAKE_DATASET_ID} Lake dataset holds the customer's ingested flow records. A DELETE grant here would let this app destroy that data, and an uninstall that silently took the data with it is far worse than one that leaves a dataset behind. Removing it is a Cribl Lake operation the customer performs deliberately, in Cribl Lake, on a dataset they can see the size of.`,
+      `The ${LAKE_DATASET_ID} Lake dataset holds the customer's ingested flow records. A DELETE grant here would let this app destroy that data, and an uninstall that silently took the data with it is far worse than one that leaves a dataset behind. Removing it is a Cribl Lake operation the customer performs deliberately, in Cribl Lake, on a dataset they can see the size of. The onboarding run also creates ${PACK_PARQUET_DATASET_ID} (the Parquet copy of the same records) and, when sample data is ticked, ${PACK_SAMPLE_DATASET_ID}; both are left behind for the same reason — Lake has no version control, and a pack cannot own a dataset — and Remove pack names all three as kept. For ${PACK_SAMPLE_DATASET_ID} its confirmation says to delete it in Cribl Lake to be rid of the sample flows.`,
   },
   {
     resource: 'destination',

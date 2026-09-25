@@ -365,22 +365,29 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
     expect(bareReferences([{ p: 'x.ts', s: "  at: 'cribl/provision.ts#ensureLakeDataset',\nexport async function ensureLakeDataset(" }])).toEqual([])
   })
 
-  it('the one dataset POST in src is ensureLakeDataset, and its only caller creates gigamon_ami', () => {
-    // A second creator (the onboarding run calling ensureLakeDataset with the
-    // Parquet or the sample spec) fails this until PACK_DATASETS_NOT_CREATED
-    // and the pack text are changed with it. Naming a spec is not creating it:
-    // the onboarding plan names both, and nothing calls it yet.
+  it('the one dataset POST in src is ensureLakeDataset, called by Guided Setup’s dataset step and the onboarding run only', () => {
+    // A third creator fails this until PACK_DATASETS_NOT_CREATED and the pack
+    // text are changed with it. The onboarding run's one call takes each spec
+    // onboarding/plan.ts `onboardingDatasets` returns — gigamon_ami, its
+    // Parquet copy and, when ticked, the sample's — and nothing else.
+    // *(Until 2026-09-24 the run did not exist, the only caller created
+    // gigamon_ami, and PACK_DATASETS_NOT_CREATED held the other two.)*
     const posts = code.flatMap(({ p, s }) => [...s.matchAll(/capi\('POST', datasetsPath, (\w+)\)/g)].map((m) => ({ p, body: m[1] })))
     expect(posts).toHaveLength(1)
     expect(posts[0].p.endsWith(join('cribl', 'provision.ts'))).toBe(true)
     const callers = code.flatMap(({ p, s }) =>
       [...s.matchAll(/(?<!function )\bensureLakeDataset\(([^\n,]*)/g)].map((m) => ({ p, arg: m[1].trim() })))
-    expect(callers, 'ensureLakeDataset has a new caller: take what it creates out of PACK_DATASETS_NOT_CREATED').toEqual([
+    expect(callers, 'ensureLakeDataset has a new caller: say what it creates in PACK_DATASETS_NOT_CREATED and the pack text').toEqual([
+      { p: expect.stringMatching(/cribl[\\/]onboarding[\\/]run\.ts$/), arg: 'spec)' },
       { p: expect.stringMatching(/cribl[\\/]provision\.ts$/), arg: 'datasetSpec(ctx.profile) as LakeDatasetSpec' },
     ])
+    // The run's `spec` is each of onboardingDatasets' specs, and only those.
+    const run = code.find(({ p }) => /cribl[\\/]onboarding[\\/]run\.ts$/.test(p))?.s ?? ''
+    expect(run).toMatch(/const specs = onboardingDatasets\(/)
+    expect(run).toMatch(/for \(const \[i, spec\] of specs\.entries\(\)\) \{\s*const r = await ensureLakeDataset\(spec\)/)
     expect(DATASET_SPEC.id).toBe(PACK_LAKE_DATASET_ID)
     expect(bareReferences(code), 'ensureLakeDataset is reached some way the call scan above cannot see').toEqual([])
-    expect([...PACK_DATASETS_NOT_CREATED].sort()).toEqual([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID].sort())
+    expect([...PACK_DATASETS_NOT_CREATED]).toEqual([])
   })
 
   it('no pack file says the app creates a dataset it does not', () => {
@@ -389,16 +396,24 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
     }
   })
 
-  it('the README names each dataset nothing creates yet, and what happens until something does', () => {
-    const para = text('README.md').split(/\r?\n\r?\n/).find((b) => /No release of the app creates/.test(b)) ?? ''
-    // The sentence itself, not the paragraph: a later clause may name an id too.
-    const which = /No release of the app creates ([^.]*) yet\./.exec(para)?.[1] ?? ''
-    for (const id of PACK_DATASETS_NOT_CREATED) expect(which).toContain(`\`${id}\``)
-    expect(which).not.toContain(`\`${PACK_LAKE_DATASET_ID}\``)
-    expect(para).toMatch(/drops/)
-    expect(para).toMatch(/refuses to start the sample source/)
-    const yml = text('default/outputs.yml')
-    for (const id of PACK_DATASETS_NOT_CREATED) expect(yml).toMatch(new RegExp(`nothing creates[^.]*${id}[^.]*yet`, 's'))
+  it('the README and outputs.yml say the onboarding run creates all three, and what happens while the Parquet copy is missing', () => {
+    // Nothing is left uncreated (PACK_DATASETS_NOT_CREATED is empty), so no
+    // pack file may still say that nothing, or no release, creates one.
+    for (const f of ['README.md', 'default/outputs.yml']) {
+      expect(text(f)).not.toMatch(/nothing creates|No release of the app creates/i)
+    }
+    const readme = text('README.md').replace(/\s+/g, ' ')
+    const creates = /The app's onboarding run creates ([^.]*)\./.exec(readme)?.[1] ?? ''
+    for (const id of [PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID]) expect(creates).toContain(`\`${id}\``)
+    expect(creates).toMatch(/only when sample data is ticked/)
+    expect(creates).toMatch(/never edits or deletes/)
+    const missing = text('README.md').split(/\r?\n\r?\n/).find((b) => /is missing anyway/.test(b)) ?? ''
+    expect(missing).toMatch(/drops/)
+    expect(missing).toMatch(/refuses to start the sample source/)
+    const yml = text('default/outputs.yml').replace(/#\s*/g, '').replace(/\s+/g, ' ')
+    expect(yml).toContain(
+      `onboarding run creates ${PACK_LAKE_DATASET_ID}, ${PACK_PARQUET_DATASET_ID} and (only when sample data is ticked) ${PACK_SAMPLE_DATASET_ID}`,
+    )
   })
 })
 

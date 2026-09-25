@@ -158,3 +158,30 @@ describe('worker-group preference', () => {
     expect(calls, 'an unidentified viewer touched the store').toEqual([])
   })
 })
+
+describe('commit memory, written by two panels', () => {
+  it('a change reads the stored document again and keeps the other panel’s key', async () => {
+    // The Raw HTTP panel loaded {pipeline} on mount; the onboarding panel then
+    // recorded the pack's commit. The Raw HTTP panel's next change must not
+    // write back the document it loaded and drop `onboarding_pack`.
+    const { store } = stubStore({ 'guided_setup_memory/commits': envelope(MEM) })
+    const { updateCommitMemory } = await loadSetupMemory()
+    await updateCommitMemory({ group: 'default', set: { onboarding_pack: { hash: 'pack111', message: 'onboard' } } })
+    const { memory, saved } = await updateCommitMemory({ group: 'default', drop: ['pipeline'], set: { source: { hash: 'src222', message: 'x' } } })
+    expect(saved).toBe(true)
+    expect(memory).toEqual({ default: { onboarding_pack: { hash: 'pack111', message: 'onboard' }, source: { hash: 'src222', message: 'x' } } })
+    expect(docIn(store.get('guided_setup_memory/commits')!)).toEqual(memory)
+  })
+
+  it('two changes started together run one after the other, and neither is lost', async () => {
+    const { store } = stubStore()
+    const { updateCommitMemory } = await loadSetupMemory()
+    await Promise.all([
+      updateCommitMemory({ group: 'default', set: { onboarding_pack: { hash: 'a', message: 'a' } } }),
+      updateCommitMemory({ group: 'default', set: { route: { hash: 'b', message: 'b' } } }),
+    ])
+    expect(docIn(store.get('guided_setup_memory/commits')!)).toEqual({
+      default: { onboarding_pack: { hash: 'a', message: 'a' }, route: { hash: 'b', message: 'b' } },
+    })
+  })
+})

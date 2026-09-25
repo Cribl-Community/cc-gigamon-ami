@@ -6,20 +6,19 @@
 // ── WHERE THIS SITS ─────────────────────────────────────────────────────────
 // Guided Setup's pack flow (design 2026-09-24, owner answers applied): one
 // Onboard press reads the workspace, shows ONE <ConfirmDialog>, and then runs
-// the steps below strictly in order. This module is the first half of that —
-// the plan. The runner and the panel are the next change; until they land,
-// nothing on screen calls `onboardingDialog` or `onboardingSteps`, and nothing
-// here can write. The page does read `onboardingPath` today, to decide which
-// "What gets created" list it shows.
+// the steps below strictly in order. This module is the plan; the run is
+// ./run.ts and the screen is components/OnboardingPanel.tsx, which builds the
+// dialog from `onboardingDialog` and hands the run what that dialog showed.
+// Nothing here can write.
 //
 // ── WHAT IT MAY IMPORT ──────────────────────────────────────────────────────
-// Never packClient.ts: that module is on paths.ts `UNREACHED_MODULES`, and the
-// page imports this one, so importing it here would make the pack client
-// reachable before its grants are declared (policyCoverage.test.ts fails).
-// What the plan needs from the pack — its ids, its objects, whether its release
-// may be installed — is in pack.ts, which is pure. The words come from the
-// pure copy modules in src/components/, the same sentences the other Guided
-// Setup dialogs say, so one fact is said one way.
+// Nothing that reaches the network. It stays PURE so the dialog is a function
+// of what was read, and can be asserted without a Leader; in particular it
+// does not import packClient.ts, whose reads and writes are the run's. What the
+// plan needs from the pack — its ids, its objects, whether its release may be
+// installed — is in pack.ts, which is pure. The words come from the pure copy
+// modules in src/components/, the same sentences the other Guided Setup
+// dialogs say, so one fact is said one way.
 //
 // ── OWNER ANSWERS THIS FOLLOWS (2026-09-24) ─────────────────────────────────
 //   * No "Accelerate dashboards" box: onboarding always installs acceleration,
@@ -37,8 +36,9 @@ import {
   HTTP_RESTART_PRECAUTION, carriesSentence, pendingSentence, undeployedSentence,
 } from '../../components/provisionPanelCopy'
 import {
-  ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, accelCostWords, emptyRealDatasetSentence,
-  globalStackSentence, lakeEntryNotCreatedSentence, sampleVolumeWords, storageCostWords,
+  ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
+  globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
+  removePackIrreversible, sampleVolumeWords, storageCostWords,
 } from '../../components/onboardingCopy'
 import { approvedWrites, type AccelState, type ApprovedWrites } from '../accel/provision'
 import { estimateScheduleSetCost } from '../accel/estimate'
@@ -46,7 +46,7 @@ import type { AccelId } from '../accel/manifest'
 import { realDataConfirmed, type DatasetTarget } from '../datasetTarget'
 import { DEFAULT_PROFILE, DEPLOY_CONSEQUENCES, datasetSpec, type DiffRow } from '../landing'
 import {
-  PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
+  PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
   PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, type PackObjectKind, type PackRelease,
 } from '../pack'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, tlsFor, type CommitScope, type LakeDatasetSpec } from '../provision'
@@ -199,6 +199,26 @@ export const SAMPLE_START_DIFF: readonly DiffRow[] = Object.freeze([
 const printed = (resourceId: string, rows: readonly DiffRow[]): DiffEntry[] =>
   rows.map((r) => ({ resourceId, key: r.key, before: printValue(r.before), after: printValue(r.after) }))
 
+// ── What the run does to the Raw HTTP source ────────────────────────────────
+
+/**
+ * What step 3 does to the pack's Raw HTTP source:
+ *   * `configure` — ONE whole-body PATCH: port, a NEW token, TLS for the
+ *     group's hosting, and started. A fresh install, and any source with no
+ *     token (it would accept a POST from anyone who can reach the port).
+ *   * `enable` — it has a token and is only stopped: started, and nothing
+ *     else. No rotation: the token an exporter may already hold keeps working.
+ *   * `none` — it has a token and is running. Nothing is sent.
+ */
+export type HttpAction = 'configure' | 'enable' | 'none'
+
+/** Step 3's action, from what `readPackState` says of the source — null when
+ *  the pack is not installed, which is a fresh install: `configure`. */
+export function httpActionOf(http: { tokenSet: boolean; disabled: boolean } | null): HttpAction {
+  if (http === null || !http.tokenSet) return 'configure'
+  return http.disabled ? 'enable' : 'none'
+}
+
 // ── Acceleration's mode ─────────────────────────────────────────────────────
 
 export type AccelMode = 'running' | 'paused'
@@ -312,6 +332,9 @@ export interface OnboardingDialogContext {
   release: PackRelease
   /** Whether the pack is installed and current in the group. */
   packInstalled: boolean
+  /** What step 3 does to the Raw HTTP source (`httpActionOf`). Absent is
+   *  `configure`, which is what a fresh install always does. */
+  httpAction?: HttpAction
   /** Ids Cribl Lake lists, from `listDatasets()`. */
   datasets: readonly string[]
   /** gigamon_ami's live retention, or null when it could not be read. */
@@ -411,12 +434,20 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
     }
   }
 
-  // 5–6. The two sources, each replaced whole.
-  const httpDiff: readonly DiffRow[] = ctx.liveHttpDiff ?? expectedConfigureDiff(ctx.hosting, ctx.port)
-  resources.push({
-    action: 'replace', kind: 'Raw HTTP source', id: PACK_HTTP_INPUT_ID, group,
-    detail: `a new auth token, port ${ctx.port}, TLS for a ${ctx.hosting === 'managed' ? 'Cribl-managed' : 'hybrid'} group, and started`,
-  })
+  // 5–6. The two sources, each replaced whole — the Raw HTTP one only when
+  // step 3 will write it at all (`httpActionOf`).
+  const httpAction: HttpAction = ctx.httpAction ?? 'configure'
+  const httpDiff: readonly DiffRow[] = httpAction === 'none'
+    ? []
+    : ctx.liveHttpDiff ?? (httpAction === 'configure' ? expectedConfigureDiff(ctx.hosting, ctx.port) : [])
+  if (httpAction !== 'none') {
+    resources.push({
+      action: 'replace', kind: 'Raw HTTP source', id: PACK_HTTP_INPUT_ID, group,
+      detail: httpAction === 'configure'
+        ? `a new auth token, port ${ctx.port}, TLS for a ${ctx.hosting === 'managed' ? 'Cribl-managed' : 'hybrid'} group, and started`
+        : 'started, keeping its auth token, port and TLS as they are',
+    })
+  }
   let sampleDiff: readonly DiffRow[] = []
   if (ctx.sample) {
     sampleDiff = ctx.liveSampleDiff ?? SAMPLE_START_DIFF
@@ -479,3 +510,81 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
   }
 }
 
+// ── Remove pack ─────────────────────────────────────────────────────────────
+
+/**
+ * The objects an installed copy of this pack holds, by the version it reports.
+ * 0.1.0 is the published record (`PACK_0_1_0`), never the current ids: several
+ * kept their names while their values moved. Any other version is named by
+ * this build's own list, which is what a copy of `PACK_VERSION` holds.
+ */
+export function packObjectsOf(version: string | null): Readonly<Record<PackObjectKind, readonly string[]>> {
+  if (version === PACK_0_1_0.version) {
+    return {
+      inputs: Object.values(PACK_0_1_0.inputs),
+      breakers: [],
+      pipelines: Object.values(PACK_0_1_0.pipelines),
+      routes: Object.values(PACK_0_1_0.routes),
+      outputs: Object.values(PACK_0_1_0.outputs),
+    }
+  }
+  return PACK_OBJECTS
+}
+
+/** Everything the Remove confirmation is built from — read before it opens. */
+export interface RemovalDialogContext {
+  group: string
+  /** The installed copy's version, as the pack list reports it. */
+  version: string | null
+  scope: CommitScope | null
+  undeployed: string | null
+  undeployedChecking?: boolean
+}
+
+export interface RemovalDialog {
+  title: string
+  resources: ConfirmResource[]
+  irreversible: { why: string }
+  consequences: string[]
+  undo: string
+  /** The Lake datasets the removal keeps, by name — all three, always. */
+  kept: readonly string[]
+}
+
+/**
+ * The Remove pack confirmation: a delete row for the pack and one per object
+ * in it, then the deploy; what it keeps, by name; and the sentence that makes
+ * it irreversible. It deletes NO Lake dataset — the app holds no Lake DELETE
+ * grant, and that stays true — so the three are named as kept, with the one
+ * thing to do about the sample's.
+ */
+export function packRemovalDialog(ctx: RemovalDialogContext): RemovalDialog {
+  const { group } = ctx
+  const objects = packObjectsOf(ctx.version)
+  const resources: ConfirmResource[] = [
+    { action: 'delete', kind: 'Pack', id: PACK_ID, group, detail: `${ctx.version ?? 'unknown version'}, and everything in it` },
+  ]
+  for (const kind of Object.keys(objects) as PackObjectKind[]) {
+    for (const id of objects[kind]) resources.push({ action: 'delete', kind: OBJECT_KIND[kind], id, group, detail: `in pack ${PACK_ID}` })
+  }
+  resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
+  const kept = [PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID]
+  const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
+  const undeployedLine = undeployedSentence(commitCtx)
+  return {
+    title: `Remove the Gigamon AMI pack from ${group}`,
+    resources,
+    irreversible: { why: removePackIrreversible(group) },
+    consequences: [
+      keptDatasetsSentence(kept),
+      keptSchedulesSentence(),
+      keptGlobalStackSentence(group),
+      carriesSentence(commitCtx, 'removal'),
+      pendingSentence(commitCtx),
+      ...(undeployedLine ? [undeployedLine] : []),
+      ...DEPLOY_CONSEQUENCES,
+    ],
+    undo: REMOVE_PACK_UNDO,
+    kept,
+  }
+}

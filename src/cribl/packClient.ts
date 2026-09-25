@@ -10,24 +10,21 @@
 // Putting them there would drag `capi`, the KV store and provision.ts into
 // everything that only wants an id.
 //
-// ── NOTHING REACHES THIS YET, AND THE GATES KNOW IT ─────────────────────────
-// Guided Setup's pack UI is a later slice. Until it lands, no module that
-// `src/main.tsx` imports imports this one, so nothing on screen can call it.
-// That is recorded, not assumed:
-//   * src/cribl/paths.ts lists this file in `UNREACHED_MODULES`. The calls it
-//     makes are named in `API_CALLS` like every other (so the source scan still
-//     proves the list is complete), but `config/policies.yml` does NOT grant
-//     them yet: a grant is asked of an admin for something a user can press.
-//     policyCoverage.test.ts fails if one is declared early, fails the moment
-//     anything reachable from `src/main.tsx` imports this file while it is
-//     still on that list — at which point the grants are due — and fails if a
-//     module NOT on that list makes one of these calls, since an entry covers
-//     only calls in the files its `site` names.
-//   * src/cribl/authz.ts registers the writes under four `onboarding_pack.*`
-//     WriteIds marked `unrendered`. gatedWrites.test.ts lets an unrendered id
-//     go without a `<GatedControl>` only while every write it gates sits in an
-//     unreached module, and fails once a control renders it with the marker
-//     still on.
+// ── WHO REACHES THIS, AND WHAT THAT COST ────────────────────────────────────
+// Guided Setup's onboarding panel (components/OnboardingPanel.tsx) and its run
+// (cribl/onboarding/run.ts) import this module, so every call here is reachable
+// from `src/main.tsx` and is GRANTED in `config/policies.yml` — each pack path
+// named with exactly the methods called on it, and no `*` (policyCoverage
+// .test.ts holds both directions). Its writes are registered in
+// src/cribl/authz.ts under `onboarding_pack.install`, `.upgrade` and `.remove`,
+// each rendered by a `<GatedControl>` on that panel. *(Until 2026-09-24 this
+// module was on paths.ts `UNREACHED_MODULES`, built a slice ahead of its UI,
+// with its grants deliberately withheld.)*
+//
+// Upgrade is not offered yet: its control renders, refused, and `upgradePack`
+// has no caller. The pack sources' own settings outside an onboarding run
+// (rotate the token, move the port, start or stop the sample) have no control
+// either, so their WriteId was withdrawn until they do.
 //
 // ── WHAT EVERY WRITE HERE ASSUMES OF ITS CALLER ─────────────────────────────
 // Each export that writes is an entry point reached from a confirmed click and
@@ -117,6 +114,7 @@ import {
   PACK_VERSION,
   packRelease,
   packReleaseUrl,
+  type PackRelease,
 } from './pack'
 import {
   SOURCE_SERVER_OWNED,
@@ -163,6 +161,13 @@ export interface PackStep {
   key: PackStepKey
   action: StepAction
   detail?: string
+  /**
+   * Set on an `error` that the write itself answered — the request WAS sent —
+   * so a caller can tell it from a refusal that sent nothing. The onboarding
+   * run re-reads the source only then: a token may have landed although the
+   * answer was an error, and a refusal cannot have put one there.
+   */
+  sent?: boolean
 }
 
 // ── Reading ─────────────────────────────────────────────────────────────────
@@ -362,7 +367,17 @@ export async function readPackState(group: string): Promise<PackState> {
  * `packRelease` for what the guard is and what it is not.
  */
 export function installRefusal(): string | null {
-  return packRelease({ published: PACK_PUBLISHED, sha256: PACK_SHA256, version: PACK_VERSION }).refusal
+  return thisPackRelease().refusal
+}
+
+/**
+ * This build's pinned release, judged from the constants THIS MODULE imports —
+ * pack.ts `packRelease()` with them passed in rather than defaulted. The same
+ * answer in production; the difference is that a test which swaps pack.ts's
+ * release constants moves every screen that asks this, not only the client.
+ */
+export function thisPackRelease(): PackRelease {
+  return packRelease({ published: PACK_PUBLISHED, sha256: PACK_SHA256, version: PACK_VERSION })
 }
 
 /** Read back what an install or upgrade left: the pack list says `version`,
@@ -512,7 +527,7 @@ function tlsToSet(live: Record<string, unknown>, hosting: 'managed' | 'hybrid'):
 
 /** The ports every other source in the group listens on — its own, and other
  *  packs' — or null when any could not be read ("cannot tell" is never "free"). */
-async function portsOfOthers(group: string): Promise<number[] | null> {
+export async function portsOfOthers(group: string): Promise<number[] | null> {
   const inputs = await groupInputs(group)
   if (!inputs) return null
   return portsInUse(inputs.filter((i) => !(i.pack === PACK_ID && i.id === PACK_HTTP_INPUT_ID)))
@@ -678,7 +693,7 @@ async function patchPackInput(group: string, plan: Plan, approved?: readonly Dif
   const r = plan.which === 'http'
     ? await capi('PATCH', packPath(group, `/system/inputs/${PACK_HTTP_INPUT_ID}`), body)
     : await capi('PATCH', packPath(group, `/system/inputs/${PACK_SAMPLE_INPUT_ID}`), body)
-  if (r.status < 200 || r.status >= 300) return { key, action: 'error', detail: scrubbedErrText(r, d.scrub) }
+  if (r.status < 200 || r.status >= 300) return { key, action: 'error', detail: scrubbedErrText(r, d.scrub), sent: true }
   return { key, action: 'updated', detail: d.diff.map((row) => row.key).join(', ') }
 }
 

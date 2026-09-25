@@ -15,12 +15,12 @@ import { parse } from 'yaml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ONBOARDING_RETENTION_DAYS, SAMPLE_DATASET_SPEC, SAMPLE_FEED, SAMPLE_START_DIFF, SHIPPED_HTTP_INPUT,
-  accelMode, expectedConfigureDiff, onboardingDatasets, onboardingDialog, onboardingPath, onboardingSteps,
-  parquetDatasetSpec, sampleVolume, type OnboardingDialogContext,
+  accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingPath, onboardingSteps,
+  packObjectsOf, packRemovalDialog, parquetDatasetSpec, sampleVolume, type OnboardingDialogContext,
 } from './plan'
 import {
-  ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, accelCostWords, emptyRealDatasetSentence,
-  globalStackSentence, lakeEntryNotCreatedSentence, sampleVolumeWords, storageCostWords,
+  ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
+  globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, lakeEntryNotCreatedSentence, sampleVolumeWords, storageCostWords,
 } from '../../components/onboardingCopy'
 import { MANIFEST } from '../accel/manifest'
 import type { AccelRow, AccelState } from '../accel/provision'
@@ -427,6 +427,70 @@ describe('onboardingDialog', () => {
   })
 })
 
+// ── What step 3 does to the Raw HTTP source ─────────────────────────────────
+
+describe('httpActionOf — configure, start, or leave alone', () => {
+  it.each([
+    [null, 'configure'],
+    [{ tokenSet: false, disabled: true }, 'configure'],
+    [{ tokenSet: false, disabled: false }, 'configure'],
+    [{ tokenSet: true, disabled: true }, 'enable'],
+    [{ tokenSet: true, disabled: false }, 'none'],
+  ] as const)('%j → %s', (http, want) => {
+    expect(httpActionOf(http)).toBe(want)
+  })
+
+  it('a source that is only stopped is started, keeping its token: no token row, and no "new auth token" claim', () => {
+    const live = [{ key: 'disabled', kind: 'changed' as const, before: true, after: false }]
+    const d = onboardingDialog(ctx({ packInstalled: true, httpAction: 'enable', liveHttpDiff: live, datasets: ['gigamon_ami', PACK_PARQUET_DATASET_ID] }))
+    const row = d.resources.find((r) => r.id === PACK_HTTP_INPUT_ID)
+    expect(row?.detail).toBe('started, keeping its auth token, port and TLS as they are')
+    expect(d.approvedHttp).toEqual(live)
+    expect(d.diff.some((r) => r.key === 'authTokensExt')).toBe(false)
+  })
+
+  it('a source that has a token and runs is not named, and nothing is approved for it', () => {
+    const d = onboardingDialog(ctx({ packInstalled: true, httpAction: 'none', liveHttpDiff: [], datasets: ['gigamon_ami', PACK_PARQUET_DATASET_ID] }))
+    expect(d.resources.some((r) => r.id === PACK_HTTP_INPUT_ID)).toBe(false)
+    expect(d.approvedHttp).toEqual([])
+    expect(d.diff.filter((r) => r.resourceId === PACK_HTTP_INPUT_ID)).toEqual([])
+  })
+})
+
+// ── Remove pack ─────────────────────────────────────────────────────────────
+
+describe('packRemovalDialog', () => {
+  const scope = ctx().scope
+
+  it('a delete row for the pack and for every object in it, then the deploy — and no Lake dataset', () => {
+    const d = packRemovalDialog({ group: 'g1', version: '0.2.0', scope, undeployed: null })
+    expect(d.resources.map((r) => `${r.action}:${r.id}`)).toEqual([
+      `delete:${PACK_ID}`, ...Object.values(PACK_OBJECTS).flat().map((id) => `delete:${id}`), 'deploy:g1',
+    ])
+    expect(d.resources.some((r) => r.kind === 'Cribl Lake dataset')).toBe(false)
+  })
+
+  it('names the three datasets it keeps, and how to be rid of the sample flows', () => {
+    const d = packRemovalDialog({ group: 'g1', version: '0.2.0', scope, undeployed: null })
+    expect(d.kept).toEqual(['gigamon_ami', PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID])
+    expect(d.consequences[0]).toBe(keptDatasetsSentence(d.kept))
+    expect(d.consequences[0]).toMatch(new RegExp(`Delete ${PACK_SAMPLE_DATASET_ID} in Cribl Lake`))
+    expect(d.consequences).toContain(keptSchedulesSentence())
+    expect(d.irreversible.why).toMatch(/Git history/)
+    expect(d.irreversible.why).toMatch(/new auth token/)
+    expect(d.undo).toBe(REMOVE_PACK_UNDO)
+  })
+
+  it('names 0.1.0’s objects by their published ids, not the current ones', () => {
+    const d = packRemovalDialog({ group: 'g1', version: '0.1.0', scope, undeployed: null })
+    const ids = d.resources.map((r) => r.id)
+    for (const id of ['in_gno_syslog', 'in_gno_sample', 'gno_syslog', 'out_gno_lake']) expect(ids).toContain(id)
+    expect(ids).not.toContain(PACK_HTTP_INPUT_ID)
+    expect(packObjectsOf('0.1.0').breakers).toEqual([])
+    expect(packObjectsOf('0.2.0')).toBe(PACK_OBJECTS)
+  })
+})
+
 describe('copy hygiene', () => {
   it('no internal project history in anything the dialog says', () => {
     const d = onboardingDialog(ctx({ sample: true, globalStackPresent: true, accel: accel({ unresolved: true }), undeployed: 'a'.repeat(40) }))
@@ -434,13 +498,20 @@ describe('copy hygiene', () => {
     expect(text).not.toMatch(/\b(spike|Phase \d|A-SP|I-D\d|P-S\d|slice)\b/)
     expect(text).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
   })
+
+  it('nor in anything Remove pack says', () => {
+    const d = packRemovalDialog({ group: 'g1', version: '0.2.0', scope: ctx().scope, undeployed: 'a'.repeat(40) })
+    const text = [d.title, d.undo, d.irreversible.why, ...d.consequences, ...d.resources.map((r) => `${r.kind} ${r.id} ${r.detail ?? ''}`)].join('\n')
+    expect(text).not.toMatch(/\b(spike|Phase \d|A-SP|I-D\d|P-S\d|slice)\b/)
+    expect(text).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
+  })
 })
 
 describe('what the plan may import', () => {
-  it('never packClient.ts — the page imports this module, and that client must stay unreached', () => {
-    // Any spelling of the specifier, static or dynamic. Indirect reach (through a
-    // module that imports it) is policyCoverage.test.ts's reachability check from
-    // src/main.tsx, which is the real protection; this names the direct case.
+  it('never packClient.ts — the plan stays pure, and the reads and writes are the run’s', () => {
+    // Any spelling of the specifier, static or dynamic. The client is reachable
+    // now (the run and the panel import it); what this holds is that the plan,
+    // which the dialog is a pure function of, reaches no network through it.
     const src = readFileSync(join(ROOT, 'src', 'cribl', 'onboarding', 'plan.ts'), 'utf8')
     expect(src).not.toMatch(/['"`][^'"`\n]*\bpackClient(\.ts|\.js)?['"`]/)
   })

@@ -78,6 +78,43 @@ export async function saveCommitMemory(mem: CommitMemory): Promise<boolean> {
   return putDoc(COMMITS_KEY, mem)
 }
 
+/** One change to one group's commit notes: the keys to set, and the keys to drop. */
+export interface CommitMemoryChange {
+  group: string
+  set?: Readonly<Record<string, CommitInfo>>
+  drop?: readonly string[]
+}
+
+/** The chain every `updateCommitMemory` call waits its turn on. */
+let commitQueue: Promise<unknown> = Promise.resolve()
+
+/**
+ * Change one group's commit notes by READ, MERGE, WRITE — in turn, never two at
+ * once — and answer the document as written and whether the store took it.
+ *
+ * TWO PANELS WRITE THIS DOCUMENT NOW. Guided Setup's Raw HTTP panel records
+ * the stack's keys; the onboarding panel records the pack's commit under
+ * `onboarding_pack` (packClient.ts `PACK_COMMIT_KEY`). A panel that wrote back
+ * the whole document it loaded on mount would drop the other panel's key — the
+ * prefs.ts bug — and a dropped pack hash is one the stranded-commit repair then
+ * refuses to deploy as "not made by this app". So every write reads the
+ * document again inside its own turn and changes only its own keys.
+ */
+export function updateCommitMemory(change: CommitMemoryChange): Promise<{ memory: CommitMemory; saved: boolean }> {
+  const turn = commitQueue.then(async () => {
+    const mem = await loadCommitMemory()
+    const forGroup = { ...(mem[change.group] ?? {}) }
+    for (const [k, v] of Object.entries(change.set ?? {})) forGroup[k] = v
+    for (const k of change.drop ?? []) delete forGroup[k]
+    const memory: CommitMemory = { ...mem, [change.group]: forGroup }
+    const saved = await saveCommitMemory(memory)
+    return { memory, saved }
+  })
+  // The next turn waits for this one whether it wrote or threw.
+  commitQueue = turn.catch(() => undefined)
+  return turn
+}
+
 /** What Guided Setup remembers about one viewer. A document rather than a bare
  *  string, so a second preference on this screen is a field rather than another
  *  key and another round trip. */

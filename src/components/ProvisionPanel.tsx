@@ -84,7 +84,11 @@ import {
 } from './provisionPanelCopy'
 import { InfoTip } from './InfoTip'
 import { useSetupGroup } from './useSetupGroup'
-import { loadCommitMemory, saveCommitMemory, type CommitMemory } from '../cribl/setupMemory'
+import { onboardingPath } from '../cribl/onboarding/plan'
+import { thisPackRelease } from '../cribl/packClient'
+import { SETUP_RUN_BUSY, acquireSetupRun, useSetupRunHolder } from '../cribl/setupRunLock'
+import { REMOVE_ONLY_LEAD, REMOVE_ONLY_TIP } from './onboardingCopy'
+import { loadCommitMemory, updateCommitMemory, type CommitMemory, type CommitMemoryChange } from '../cribl/setupMemory'
 
 interface ResourceMeta { key: ResourceKey; label: string; detail: string }
 const RESOURCES: ResourceMeta[] = [
@@ -186,6 +190,9 @@ export function ProvisionPanel() {
   // is worse than telling them at the button they pressed.
   const applyGate = useWriteGate('onboarding_stack.apply')
   const removeGate = useWriteGate('onboarding_stack.remove')
+  // The page's one run lock (cribl/setupRunLock.ts): the onboarding panel above
+  // commits and deploys the same group, and two runs must never overlap.
+  const lockHolder = useSetupRunHolder()
 
   // Step logs and fatal errors are kept PER worker group so switching groups (or
   // re-checking) preserves the last outcome for each — a provisioning failure
@@ -225,28 +232,30 @@ export function ProvisionPanel() {
   const refreshSeq = useRef(0)
   /** The undeployed-commit answer for the current refresh, read by openConfirm. */
   const pendingNow = useRef<UndeployedAtOpen>(NOT_KNOWN)
-  const applyCommits = useCallback(async (next: CommitMemory) => {
-    commitsRef.current = next
-    setCommits(next)
+  // Every change is a read-merge-write of the stored document, in turn
+  // (setupMemory.ts `updateCommitMemory`): the onboarding panel on this page
+  // writes the same document, under its own key, and writing back the copy this
+  // panel loaded on mount would drop that key. (It did exactly that until
+  // 2026-09-24, when there was only one writer and it did not matter.)
+  const applyChange = useCallback(async (change: CommitMemoryChange) => {
+    const { memory, saved } = await updateCommitMemory(change)
+    commitsRef.current = memory
+    setCommits(memory)
     // KV is authoritative; write before any re-read. A refused write means this
     // page is the only place the note exists, so say so — otherwise the screen
     // shows a commit ref that the next reload quietly removes.
-    if (!(await saveCommitMemory(next))) {
+    if (!saved) {
       pushToast({ kind: 'error', text: 'Could not save the commit note to the app store — it will be gone after a reload.' })
     }
   }, [])
   const recordCommit = useCallback((gid: string, keys: ResourceKey[], hash: string, message: string) => {
     if (!keys.length) return Promise.resolve()
-    const forGroup = { ...(commitsRef.current[gid] ?? {}) }
-    for (const k of keys) forGroup[k] = { hash, message }
-    return applyCommits({ ...commitsRef.current, [gid]: forGroup })
-  }, [applyCommits])
+    return applyChange({ group: gid, set: Object.fromEntries(keys.map((k) => [k, { hash, message }])) })
+  }, [applyChange])
   const clearCommits = useCallback((gid: string, keys: ResourceKey[]) => {
     if (!keys.length) return Promise.resolve()
-    const forGroup = { ...(commitsRef.current[gid] ?? {}) }
-    for (const k of keys) delete forGroup[k]
-    return applyCommits({ ...commitsRef.current, [gid]: forGroup })
-  }, [applyCommits])
+    return applyChange({ group: gid, drop: keys })
+  }, [applyChange])
 
   // Re-check the live resource status for the current group. A successful
   // re-check leaves any lingering deploy/remove outcome for this group untouched
@@ -420,8 +429,9 @@ export function ProvisionPanel() {
       ? `This app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range and TLS: its group record does not say, or this Leader is not Cribl.Cloud.`
       : portProblem(port, hosting === 'managed', usedPorts)
   // One place each, so the click guard and the aria state cannot drift apart.
-  const deployBlocked = running !== null || loading || applyGate.denied !== null || portIssue !== null
-  const removeBlocked = running !== null || removeGate.denied !== null
+  const deployBlocked = running !== null || lockHolder !== null || loading || applyGate.denied !== null || portIssue !== null
+  const removeBlocked = running !== null || lockHolder !== null || removeGate.denied !== null
+  const busy = running !== null || lockHolder !== null ? SETUP_RUN_BUSY : null
 
   // What each confirmation names, as objects rather than as prose. AGENTS.md
   // wants "exactly what will be affected" before the call, and a list is the form
@@ -551,6 +561,12 @@ export function ProvisionPanel() {
   // every one of which AGENTS.md calls volatile.
   const onDeploy = async () => {
     const gid = group
+    const release = acquireSetupRun('onboarding_stack')
+    if (!release) {
+      setConfirming(null)
+      setGroupErr(gid, `Nothing was written: ${SETUP_RUN_BUSY}`)
+      return
+    }
     setRunning('deploy')
     setConfirming(null)
     resetOutcome(gid)
@@ -599,6 +615,7 @@ export function ProvisionPanel() {
       setGroupErr(gid, (e as Error).message)
     } finally {
       setRunning(null)
+      release()
     }
   }
 
@@ -607,6 +624,12 @@ export function ProvisionPanel() {
   // its port with them.
   const onRemove = async (scope: 'all' | 'legacy') => {
     const gid = group
+    const release = acquireSetupRun('onboarding_stack')
+    if (!release) {
+      setConfirming(null)
+      setGroupErr(gid, `Nothing was written: ${SETUP_RUN_BUSY}`)
+      return
+    }
     setRunning('remove')
     resetOutcome(gid)
     setConfirming(null)
@@ -629,6 +652,7 @@ export function ProvisionPanel() {
       setGroupErr(gid, (e as Error).message)
     } finally {
       setRunning(null)
+      release()
     }
   }
 
@@ -645,19 +669,41 @@ export function ProvisionPanel() {
     })
   }
 
+  // WHICH ONBOARDING THIS PANEL IS (onboarding/plan.ts `onboardingPath`).
+  // While the pack cannot be installed, this panel is THE onboarding, exactly
+  // as it always was. Once it can, the pack panel above onboards, and this one
+  // shows only while a global Raw HTTP or old Syslog object is in the group —
+  // or may be: a read that has not answered, or was refused, counts as present,
+  // so a stack that exists is never hidden by a failed read — and then offers
+  // Remove and nothing else. It holds no picker then either: the page has one,
+  // and in pack mode it is the onboarding panel's.
+  const globalPresence = status && legacy
+    ? { http: HTTP_KEYS.some((k) => status[k] !== 'absent'), legacySyslog: LEGACY_KEYS.some((k) => legacy[k] !== 'absent') }
+    : null
+  const path = onboardingPath(thisPackRelease(), globalPresence)
+  const removeOnly = path.mode === 'pack'
+  if (path.mode === 'pack' && path.provision === 'hidden') return null
+
   return (
     <>
       <Panel
-        title="Guided setup — onboard live Gigamon AMI over Raw HTTP"
+        title={removeOnly ? 'Raw HTTP stack created outside the pack' : 'Guided setup — onboard live Gigamon AMI over Raw HTTP'}
         note={<span className={`env-chip ${IS_INSTALLED ? 'env-installed' : 'env-dev'}`}>{IS_INSTALLED ? 'Cribl' : 'dev preview'}</span>}
       >
         {/* One lead line; the rest is behind the ⓘ (provisionPanelCopy.ts). */}
-        <p className="gs-intro">
-          {PROVISION_LEAD}
-          <InfoTip text={PROVISION_LEAD_TIP} />
-        </p>
+        {removeOnly ? (
+          <p className="gs-intro">
+            {REMOVE_ONLY_LEAD}
+            <InfoTip text={REMOVE_ONLY_TIP} />
+          </p>
+        ) : (
+          <p className="gs-intro">
+            {PROVISION_LEAD}
+            <InfoTip text={PROVISION_LEAD_TIP} />
+          </p>
+        )}
 
-        <div className="gs-group-picker">
+        {!removeOnly && <div className="gs-group-picker">
           <label htmlFor="gs-group-select" className="gs-group-label">Worker group</label>
           <InfoTip text={GROUP_TIP} />
           <select
@@ -677,9 +723,9 @@ export function ProvisionPanel() {
               </option>
             ))}
           </select>
-        </div>
+        </div>}
 
-        {needsPort && (
+        {needsPort && !removeOnly && (
           <div className="gs-port-picker">
             <label htmlFor="gs-port-input" className="gs-group-label">Source port</label>
             <InfoTip text={PORT_TIP} />
@@ -759,6 +805,7 @@ export function ProvisionPanel() {
               than rewritten — they were written to satisfy AGENTS.md and they are
               right. What is new is `undo`: what puts this back. */}
           <div className="gs-actions">
+            {!removeOnly && <>
             <button
               type="button"
               className="btn btn-primary"
@@ -781,7 +828,8 @@ export function ProvisionPanel() {
                 belongs here, beside the trigger the user is now looking at. */}
             <GateNote write="onboarding_stack.apply" />
             <p className="gs-action-note">{deployNote(group)}</p>
-            {unreadable.length > 0 && (
+            </>}
+            {unreadable.length > 0 && !removeOnly && (
               <p className="gs-action-note gs-action-warn">
                 Cribl refused to let this app read part of <code>{group}</code>{' '}
                 ({unreadable.map((r) => r.label).join(', ')}), so the rows above are an incomplete
@@ -854,7 +902,7 @@ export function ProvisionPanel() {
               write="onboarding_stack.apply"
               label={allPresent ? `Yes, re-apply to ${group}` : `Yes, deploy to ${group}`}
               busyLabel="Deploying…"
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busy}
               run={onDeploy}
             />
           }
@@ -887,7 +935,7 @@ export function ProvisionPanel() {
               label={`Yes, delete from ${group}`}
               busyLabel="Removing…"
               className="btn btn-danger"
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busy}
               run={() => onRemove('all')}
             />
           }
@@ -910,7 +958,7 @@ export function ProvisionPanel() {
               label={`Yes, delete from ${group}`}
               busyLabel="Removing…"
               className="btn btn-danger"
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busy}
               run={() => onRemove('legacy')}
             />
           }

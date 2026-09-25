@@ -4,9 +4,9 @@
 // structural rather than remembered, and so a test can read them.
 //
 // ── THE SHAPE, decided 2026-09-22; PLANNED, NOT BUILT ────────────────────────
-// Two Lake datasets rather than one. Only the first exists today: Guided
-// Setup's `ensureDataset` creates gigamon_ami, and nothing creates
-// gigamon_ami_pq yet (pack.ts `PACK_DATASETS_NOT_CREATED`).
+// Two Lake datasets rather than one. Guided Setup creates gigamon_ami, and its
+// onboarding run (cribl/onboarding/run.ts) also creates gigamon_ami_pq; no
+// query reads the second yet.
 //
 //   gigamon_ami      JSON, keeps `_raw`, 30-day archive. Drill-downs, Field
 //                    Explorer and Copilot read it. Nothing about it changes.

@@ -282,3 +282,32 @@ describe('every gate is actually rendered', () => {
     ).toBe(0)
   })
 })
+
+describe('the onboarding pack’s controls (Guided Setup’s onboarding panel)', () => {
+  // The generic links above already hold these; this names the onboarding
+  // run's own claims, so a site dropped from its gate reads as what it is.
+  const pack = (Object.keys(GATED_WRITES) as WriteId[]).filter((id) => id.startsWith('onboarding_pack.'))
+
+  it('renders every onboarding_pack.* id, and marks none of them unrendered', () => {
+    expect(pack.sort()).toEqual(['onboarding_pack.install', 'onboarding_pack.remove', 'onboarding_pack.upgrade'])
+    const rendered = new Set(controls.declared)
+    for (const id of pack) {
+      expect(rendered.has(id), `${id} has no <GatedControl>`).toBe(true)
+      expect(GATED_WRITES[id].unrendered, `${id} is still marked unrendered`).toBeUndefined()
+    }
+  })
+
+  it('names Onboard on every write the one run makes, and Remove on its own', () => {
+    const gatesOf = (at: string) => WRITE_SITES.find((s) => s.at === at)?.gates ?? []
+    for (const at of [
+      'cribl/provision.ts#ensureLakeDataset', 'cribl/packClient.ts#installPack', 'cribl/packClient.ts#patchPackInput',
+      'cribl/accel/provision.ts#createSaved', 'cribl/accel/provision.ts#patchSaved',
+      'cribl/provision.ts#commitAndDeploy', 'cribl/provision.ts#deployGroup',
+    ]) expect(gatesOf(at), at).toContain('onboarding_pack.install')
+    for (const at of ['cribl/packClient.ts#removePack', 'cribl/provision.ts#commitAndDeploy', 'cribl/provision.ts#deployGroup']) {
+      expect(gatesOf(at), at).toContain('onboarding_pack.remove')
+    }
+    expect(gatesOf('cribl/packClient.ts#upgradePack')).toEqual(['onboarding_pack.upgrade'])
+    expect(GATED_WRITES['onboarding_pack.install'].does).toBe('onboarding Gigamon AMI (datasets, pack, scheduled searches)')
+  })
+})
