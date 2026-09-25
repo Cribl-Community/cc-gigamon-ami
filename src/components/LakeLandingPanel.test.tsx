@@ -18,8 +18,8 @@
 //     the increase does neither and carries `undo` instead.
 //   * A SPEND ON LOAD. No Cribl Search job may be submitted by mounting this
 //     panel, by re-reading it, or by leaving it alone. Measurement is a button.
-//   * A PANEL-LEVEL STATE MACHINE WEARING NINE FIELDS. One endpoint is refused
-//     and the other eight rows must still render their values. On a healthy
+//   * A PANEL-LEVEL STATE MACHINE WEARING ONE FIELD PER ROW. One endpoint is refused
+//     and every other row must still render its value. On a healthy
 //     workspace a per-panel implementation is indistinguishable from a per-row
 //     one, which is why this is a test and not an eyeball.
 //
@@ -384,7 +384,7 @@ afterEach(() => {
   expectNoConsoleErrors('in this test')
 })
 
-/** Let the environment run: the group read, the profile read, nine independent
+/** Let the environment run: the group read, the profile read, every independent row
  *  reads and the audit list all settle on their own turns. */
 async function settle(turns = 6) {
   for (let i = 0; i < turns; i++) {
@@ -716,11 +716,11 @@ describe('the controls this phase refused to build', () => {
 
 // ── The rendered panel ──────────────────────────────────────────────────────
 
-describe('the nine reads', () => {
+describe('the per-row reads', () => {
   it('paints the table before the first response, one busy cell per row', async () => {
     stubWorkspace()
     // A SYNCHRONOUS act: an async one flushes every pending microtask, which
-    // would resolve all nine stubbed reads before the assertion and make this
+    // would resolve every stubbed read before the assertion and make this
     // test pass against a panel that painted nothing until they had.
     act(() => {
       root.render(wrap(<LakeLandingPanel />))
@@ -757,21 +757,21 @@ describe('the nine reads', () => {
   })
 
   it('degrades exactly one row when one endpoint is refused', async () => {
-    // Preview 1.3 and 1.6. The other eight must still render values, and the
+    // Preview 1.3 and 1.6. Every other row must still render its value, and the
     // failed row must NAME the object an admin has to grant — "unavailable"
     // with nothing named is the state this requirement exists to prevent.
     stubWorkspace({ status: { [`GET ${DESTINATION}`]: 403 } })
     await mount()
     const text = bodyText()
     expect(text).toContain('needs GET on /m/:gid/system/outputs/gigamon_lake')
-    // The eight that resolved are still on screen.
+    // The rows that resolved are still on screen.
     expect(text).toContain('30 days')
     expect(text).toContain('no local search engines')
     expect(text).toContain('1 not readable')
   })
 
-  it('re-issues one GET on Retry, not nine', async () => {
-    // Preview 1.5. Nine reads to recover one row is eight requests nobody asked
+  it('re-issues one GET on Retry, not every read', async () => {
+    // Preview 1.5. Re-reading every row to recover one is requests nobody asked
     // for, on the panel whose commonest failure will go on failing.
     const { calls } = stubWorkspace({ status: { [`GET ${DESTINATION}`]: 500 } })
     await mount()

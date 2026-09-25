@@ -103,7 +103,7 @@ export const PACK_DESTINATION_LEAD =
 export const PACK_DESTINATION_TIP =
   'The onboarding pack’s releases set how gigamon_ami_json_lake writes objects, and this panel does not change it. ' +
   'A change made here would be kept as a local setting of the pack, which a later release of the pack does not replace — ' +
-  'so the destination would quietly stop following the pack. When a release changes these settings, upgrading the pack from the onboarding panel brings them in.'
+  'so the destination would quietly stop following the pack. When a release changes these settings, upgrading the pack from the onboarding panel brings them in, unless a local setting was already made in Cribl, which the upgrade keeps.'
 
 /** One line, shown only while both destinations exist in the group. */
 export const BOTH_DESTINATIONS_NOTE =
