@@ -120,6 +120,7 @@ import {
   PACK_SHA256,
   PACK_URL,
   PACK_VERSION,
+  packRelease,
   packReleaseUrl,
 } from './pack'
 import {
@@ -364,28 +365,15 @@ export async function readPackState(group: string): Promise<PackState> {
 
 // ── Installing, upgrading, removing ─────────────────────────────────────────
 
-/** A sha256 as pack-release.yml prints it: 64 lowercase hex characters. */
-const SHA256_SHAPE = /^[0-9a-f]{64}$/
-
 /**
  * Why this build may not install (or upgrade to) `PACK_VERSION`, or null when
- * it may.
- *
- * WHAT THIS GUARD IS, AND WHAT IT IS NOT. It refuses while no release of
- * `PACK_VERSION` exists (`PACK_PUBLISHED`) or while its digest is unrecorded or
- * is not a sha256 at all (`PACK_SHA256`): `PACK_URL` would be a 404, or would
- * name bytes nobody wrote down. It does NOT compare the downloaded bytes with
- * `PACK_SHA256`, because it never sees them — the Leader fetches `PACK_URL`
- * itself and `POST /packs` has no digest field. After an install the version,
- * the source and one known object are read back (`verifyInstalled`).
+ * it may. pack.ts's `packRelease`, bound to the three constants this module
+ * imports — the logic and its sentences live there, pure, so the Guided Setup
+ * page can show the same refusal without importing this module. See
+ * `packRelease` for what the guard is and what it is not.
  */
 export function installRefusal(): string | null {
-  if (!PACK_PUBLISHED) return `pack ${PACK_VERSION} has not been released, so there is nothing to install yet`
-  if (!PACK_SHA256) return `pack ${PACK_VERSION} has no recorded sha256, so this app will not install it`
-  if (!SHA256_SHAPE.test(PACK_SHA256)) {
-    return `pack ${PACK_VERSION}’s recorded sha256 is not 64 lowercase hex characters, so this app will not install it`
-  }
-  return null
+  return packRelease({ published: PACK_PUBLISHED, sha256: PACK_SHA256, version: PACK_VERSION }).refusal
 }
 
 /** Read back what an install or upgrade left: the pack list says `version`,

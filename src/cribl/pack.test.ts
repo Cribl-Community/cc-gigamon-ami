@@ -47,7 +47,7 @@ import {
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
   PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_DECISIONS, PACK_0_1_0,
-  PACK_DATASETS_NOT_CREATED,
+  PACK_DATASETS_NOT_CREATED, packRelease,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -333,15 +333,20 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
   const uncommented = (s: string) => s.split('\n').filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join('\n')
   const code = sources(SRC).map((p) => ({ p, s: uncommented(readFileSync(p, 'utf8')) }))
 
-  it('the one dataset POST in src is ensureDataset, and its body is gigamon_ami\'s', () => {
-    // A second creator (the onboarding run gaining gigamon_ami_pq) fails this
-    // until PACK_DATASETS_NOT_CREATED and the pack text are changed with it.
+  it('the one dataset POST in src is ensureLakeDataset, and its only caller creates gigamon_ami', () => {
+    // A second creator (the onboarding run calling ensureLakeDataset with the
+    // Parquet or the sample spec) fails this until PACK_DATASETS_NOT_CREATED
+    // and the pack text are changed with it. Naming a spec is not creating it:
+    // the onboarding plan names both, and nothing calls it yet.
     const posts = code.flatMap(({ p, s }) => [...s.matchAll(/capi\('POST', datasetsPath, (\w+)\)/g)].map((m) => ({ p, body: m[1] })))
     expect(posts).toHaveLength(1)
     expect(posts[0].p.endsWith(join('cribl', 'provision.ts'))).toBe(true)
+    const callers = code.flatMap(({ p, s }) =>
+      [...s.matchAll(/(?<!function )\bensureLakeDataset\(([^\n,]*)/g)].map((m) => ({ p, arg: m[1].trim() })))
+    expect(callers, 'ensureLakeDataset has a new caller: take what it creates out of PACK_DATASETS_NOT_CREATED').toEqual([
+      { p: expect.stringMatching(/cribl[\\/]provision\.ts$/), arg: 'datasetSpec(ctx.profile) as LakeDatasetSpec' },
+    ])
     expect(DATASET_SPEC.id).toBe(PACK_LAKE_DATASET_ID)
-    const uses = code.reduce((n, { s }) => n + (s.match(/\bPARQUET_DATASET_SPEC\b/g)?.length ?? 0), 0)
-    expect(uses, 'PARQUET_DATASET_SPEC is used now: take gigamon_ami_pq out of PACK_DATASETS_NOT_CREATED').toBe(1)
     expect([...PACK_DATASETS_NOT_CREATED].sort()).toEqual([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID].sort())
   })
 
@@ -663,5 +668,38 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
     expect(guard).toBeLessThan(code.indexOf('pack.mjs build'))
     // A depth-1 checkout has no history for merge-base to walk.
     expect(code).toMatch(/fetch-depth: 0/)
+  })
+})
+
+// Whether this build may install its pinned pack, as a pure answer the UI can
+// read without importing the pack client (which nothing on screen may reach
+// until its grants are declared). packClient.ts's `installRefusal` is this
+// function bound to the constants it imports, so the two cannot disagree.
+describe('packRelease — the pinned release, and why it cannot be installed', () => {
+  it('refuses today: 0.2.0 has no release', () => {
+    const r = packRelease()
+    expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
+    expect(r.refusal).toMatch(/has not been released/)
+    expect(r.installable).toBe(false)
+  })
+
+  it('refuses a release with no sha256, or one that is not 64 lowercase hex characters', () => {
+    expect(packRelease({ published: true, sha256: null, version: '9.9.9' }).refusal).toMatch(/no recorded sha256/)
+    for (const sha of ['x', 'ab'.repeat(31), 'AB'.repeat(32), `${'ab'.repeat(32)} `]) {
+      expect(packRelease({ published: true, sha256: sha, version: '9.9.9' }).refusal, sha).toMatch(/sha256/)
+    }
+  })
+
+  it('opens only on a published version with a well-formed digest, and names that version’s URL', () => {
+    const r = packRelease({ published: true, sha256: 'ab'.repeat(32), version: '9.9.9' })
+    expect(r.refusal).toBeNull()
+    expect(r.installable).toBe(true)
+    expect(r.url).toBe(packReleaseUrl('9.9.9'))
+  })
+
+  it('never says how the gate is built — no internal names in the sentence a customer reads', () => {
+    for (const r of [packRelease(), packRelease({ published: true, sha256: null, version: '9.9.9' })]) {
+      expect(r.refusal).not.toMatch(/PACK_|sha256_shape|packClient|\bspike\b|Phase \d/)
+    }
   })
 })

@@ -91,8 +91,8 @@ export const PACK_PUBLISHED: boolean = false
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
  * summary prints it. MUST BE SET before any code installs from `PACK_URL`:
- * packClient.ts `installRefusal` refuses to install or upgrade while it is
- * null. That is a record, not a check of the bytes: the Leader downloads
+ * `packRelease` below refuses while it is null, and so does packClient.ts's
+ * `installRefusal`, which is that function bound to these constants. That is a record, not a check of the bytes: the Leader downloads
  * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
  * sees the asset to hash it. Null only while no release exists
  * (`PACK_PUBLISHED` false).
@@ -144,6 +144,58 @@ export const PACK_URL: string = packReleaseUrl(PACK_VERSION)
  */
 export function packReleaseUrl(version: string): string {
   return `https://github.com/Cribl-Community/cc-gigamon-ami/releases/download/${packTag(version)}/${packAssetName(version)}`
+}
+
+/** A sha256 as pack-release.yml prints it: 64 lowercase hex characters. */
+const SHA256_SHAPE = /^[0-9a-f]{64}$/
+
+/** The three release facts `packRelease` judges. */
+export interface PackReleaseFacts {
+  published: boolean
+  sha256: string | null
+  version: string
+}
+
+/** The pinned release, and whether this build may install it. */
+export interface PackRelease extends PackReleaseFacts {
+  /** Where the Leader would download it from. */
+  url: string
+  /** Why this build may not install (or upgrade to) it, as a sentence a
+   *  customer can read; null when it may. */
+  refusal: string | null
+  /** `refusal === null`. */
+  installable: boolean
+}
+
+/**
+ * The pinned release and whether this build may install it — pure, so the
+ * Guided Setup page can say why Onboard is refused without importing
+ * packClient.ts (which nothing on screen may reach until its grants are
+ * declared). packClient.ts's `installRefusal` is this, bound to the constants
+ * it imports, so the page and the client cannot give two answers.
+ *
+ * WHAT THIS GUARD IS, AND WHAT IT IS NOT. It refuses while no release of the
+ * version exists (`published`) or while its digest is unrecorded or is not a
+ * sha256 at all: the URL would be a 404, or would name bytes nobody wrote
+ * down. It does NOT compare the downloaded bytes with the digest, because the
+ * app never sees them — the Leader fetches the URL itself and `POST /packs`
+ * has no digest field. After an install the version, the source and one known
+ * object are read back (packClient.ts `verifyInstalled`).
+ *
+ * The argument defaults to this build's constants; tests pass their own.
+ */
+export function packRelease(
+  facts: PackReleaseFacts = { published: PACK_PUBLISHED, sha256: PACK_SHA256, version: PACK_VERSION },
+): PackRelease {
+  const { published, sha256, version } = facts
+  const refusal = !published
+    ? `pack ${version} has not been released, so there is nothing to install yet`
+    : !sha256
+      ? `pack ${version} has no recorded sha256, so this app will not install it`
+      : !SHA256_SHAPE.test(sha256)
+        ? `pack ${version}’s recorded sha256 is not 64 lowercase hex characters, so this app will not install it`
+        : null
+  return Object.freeze({ published, sha256, version, url: packReleaseUrl(version), refusal, installable: refusal === null })
 }
 
 /**
@@ -208,8 +260,9 @@ export const PACK_SAMPLE_DATASET_ID = 'gigamon_ami_sample'
  *     `PARQUET_DATASET_SPEC` is the body to create it with.
  *   - gigamon_ami_sample: packClient.ts refuses to start the sample source.
  * The pack README ships inside the .crbl and says the same; pack.test.ts fails
- * when a dataset POST is added to src and this list and the README are not
- * changed with it.
+ * when a second dataset POST, or a second caller of provision.ts
+ * `ensureLakeDataset` (the one creator, today called only for gigamon_ami), is
+ * added to src and this list and the README are not changed with it.
  */
 export const PACK_DATASETS_NOT_CREATED: readonly string[] = Object.freeze([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID])
 

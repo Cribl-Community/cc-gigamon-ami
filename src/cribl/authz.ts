@@ -262,10 +262,10 @@ export interface WriteSite {
 export const WRITE_SITES: readonly WriteSite[] = [
   // --- Guided Setup: the only customer configuration this app writes --------
   {
-    at: 'cribl/provision.ts#ensureDataset',
+    at: 'cribl/provision.ts#ensureLakeDataset',
     gates: ['onboarding_stack.apply'],
     surface: 'config',
-    why: 'POST creates the Cribl Lake dataset the dashboards read, when the tenant has none.',
+    why: 'POST creates a Cribl Lake dataset when the tenant has none by that id, and never edits one that exists. Today its one caller is Guided Setup’s dataset step, creating the gigamon_ami dataset the dashboards read; the onboarding run will also create the pack’s Parquet copy and the sample dataset through it, and gains its own gate when it does.',
   },
   {
     at: 'cribl/provision.ts#ensureDestination',

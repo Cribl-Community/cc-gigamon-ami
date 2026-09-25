@@ -700,11 +700,26 @@ export function approvedWrites(state: AccelState): ApprovedWrites {
  * dialog to name a set (the tests, and any future unattended path); the panel
  * passes `approvedWrites(state)` built from the same rows `applyResources`
  * rendered, so the two cannot drift.
+ *
+ * ── `{ enabled }` IS WHAT A CREATE WRITES, AND NOTHING ELSE ─────────────────
+ * The onboarding run installs acceleration every time, and while only sample
+ * data exists it must not start billing schedules over an empty `gigamon_ami`,
+ * so it passes `{ enabled: false }` and every search it CREATES is created
+ * paused (the master switch turns them on later). It does not reach a
+ * correction: a `differs` row keeps the pause state Cribl holds for it, for
+ * the same reason Apply never resumes one — pausing is somebody's choice, and
+ * this is not the control for it. Omitted, a create is enabled, as before.
+ *
+ * The unresolved-window guard below runs first for every row, whatever
+ * `approved` and `enabled` say, so no caller can create or overwrite the Lake
+ * entry on a window nobody resolved.
  */
 export async function applyAcceleration(
   onStep: (s: AccelStep) => void = () => {},
   approved?: ApprovedWrites,
+  opts: { enabled?: boolean } = {},
 ): Promise<ApplyResult> {
+  const createEnabled = opts.enabled ?? true
   const before = await readAccelState({ background: false })
   if (before.error !== null) {
     const steps = MANIFEST.map<AccelStep>((e) => ({ id: e.id, action: 'skipped', detail: before.error as string }))
@@ -761,9 +776,9 @@ export async function applyAcceleration(
       continue
     }
     if (row.state === 'absent') {
-      const r = await createSaved(intended)
+      const r = await createSaved(createEnabled ? intended : { ...intended, schedule: { ...intended.schedule, enabled: false } })
       if (accepted(r)) {
-        step({ id: row.id, action: 'created' })
+        step(createEnabled ? { id: row.id, action: 'created' } : { id: row.id, action: 'created', detail: 'created paused' })
         written[row.id] = creationRecord(intended, by, true)
       } else {
         step({ id: row.id, action: 'error', detail: errText(r) })

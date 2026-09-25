@@ -250,6 +250,26 @@ export function recheckDatasetTargetOnTick(): void {
 }
 
 /**
+ * Look again after a CONFIRMED RUN that may have changed the answer — whatever
+ * the current verdict, final or not. A read: one GET, and at most one probe.
+ *
+ * WHY A REAL VERDICT IS NOT FINAL HERE. "Final for the page" rests on data not
+ * leaving a dataset between two presses, and that still holds. What it missed
+ * is a dataset ARRIVING: onboarding with sample data ticked creates
+ * `gigamon_ami_sample` on a page that already decided `no-sample`, and nothing
+ * else ever looks again — `recheckDatasetTarget` and the tick run only while on
+ * the sample. So the run calls this once it has finished writing, and never
+ * anything else: not a mount, not a render, not a timer.
+ *
+ * A read already in flight is superseded rather than awaited. It started before
+ * the run's writes, so its answer is about a workspace that no longer exists;
+ * `run` drops the result of any read that is no longer the latest.
+ */
+export function reconsiderDatasetTarget(): Promise<DatasetTarget> {
+  return run()
+}
+
+/**
  * Whether anything may turn a scheduled search ON.
  *
  * Only on a FINAL verdict of real data. `sample: false` is not enough: it is

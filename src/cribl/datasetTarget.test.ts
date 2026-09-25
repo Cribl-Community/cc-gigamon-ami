@@ -17,6 +17,7 @@ import {
   TICK_RECHECK_MS,
   realDataConfirmed,
   recheckDatasetTarget,
+  reconsiderDatasetTarget,
   recheckDatasetTargetOnTick,
   resetDatasetTarget,
   resolveDatasetTarget,
@@ -335,5 +336,64 @@ describe('whether a schedule may be turned on', () => {
     for (const r of ['no-sample', 'has-data', 'probe-found', 'unreadable', 'probe-failed'] as const) {
       expect(realDataConfirmed(t(true, false, r)), r).toBe(true)
     }
+  })
+})
+
+// A REAL verdict is final for the page — except after a confirmed run that may
+// have created the sample dataset. Onboarding with "Also send sample data"
+// creates `gigamon_ami_sample` on a page that already decided "no sample", and
+// nothing else would ever look again: `recheckDatasetTarget` only runs while on
+// the sample. `reconsiderDatasetTarget` is that one extra look, called only
+// after such a run, and it is a READ.
+describe('reconsiderDatasetTarget — looking again after a confirmed run', () => {
+  it('re-reads a REAL verdict and moves to the sample the run just created', async () => {
+    listing = [{ id: 'gigamon_ami', metrics: {} }]
+    await resolveDatasetTarget()
+    expect(datasetTarget()).toMatchObject({ sample: false, reason: 'no-sample' })
+    listing = [{ id: 'gigamon_ami', metrics: {} }, { id: 'gigamon_ami_sample', metrics: {} }]
+    calls = []
+    const t = await reconsiderDatasetTarget()
+    expect(t).toMatchObject({ known: true, sample: true, reason: 'real-empty', dataset: 'gigamon_ami_sample' })
+    await vi.waitFor(() => expect(datasetTarget().sample).toBe(true))
+    expect(activeDataset()).toBe('gigamon_ami_sample')
+    expect(writes(), 'a read, never a write').toEqual([])
+    const probes = submitted()
+    expect(probes, 'one probe').toHaveLength(1)
+    expect(probes[0].endsWith(REAL_DATA_PROBE_QUERY), 'it asks about the customer dataset').toBe(true)
+  })
+
+  it('keeps REAL when the run created nothing that changes the answer', async () => {
+    listing = [{ id: 'gigamon_ami', metrics: {} }]
+    await resolveDatasetTarget()
+    calls = []
+    const t = await reconsiderDatasetTarget()
+    expect(t).toMatchObject({ sample: false, reason: 'no-sample' })
+    expect(calls.map((c) => c.method)).toEqual(['GET'])
+  })
+
+  it('supersedes a read already in flight, whose answer predates the run', async () => {
+    // The first listing is held open and answers LAST, with the workspace as
+    // it was before the run: no sample dataset.
+    let release: () => void = () => {}
+    const held = new Promise<void>((r) => { release = r })
+    const inner = globalThis.fetch
+    let first = true
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (first && String(url).includes('/lakes/default/datasets')) {
+        first = false
+        await held
+        return res(200, { items: [{ id: 'gigamon_ami', metrics: {} }] })
+      }
+      return inner(url, init)
+    })
+    const stale = resolveDatasetTarget()
+    await vi.waitFor(() => expect(first).toBe(false))
+    listing = [{ id: 'gigamon_ami_sample', metrics: {} }]
+    const fresh = await reconsiderDatasetTarget()
+    expect(fresh).toMatchObject({ sample: true, reason: 'real-absent' })
+    release()
+    await stale
+    await Promise.resolve()
+    expect(datasetTarget(), 'the older read must not land over the newer one').toMatchObject({ sample: true, reason: 'real-absent' })
   })
 })
