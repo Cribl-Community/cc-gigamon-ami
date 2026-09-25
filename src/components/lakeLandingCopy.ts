@@ -86,6 +86,43 @@ export const ROW_MARKERS = Object.freeze({
   storage: 'not a setting',
 })
 
+// ── The onboarding pack's destination: shown, never edited ──────────────────
+//
+// Owner decision 2026-09-25: where the pack is installed, this panel shows the
+// pack's `gigamon_ami_json_lake` READ ONLY. The reason, kept here and out of
+// the tip's wording: a change to a pack object is stored as a local setting of
+// the pack, and an in-place pack upgrade keeps local settings (measured
+// 2026-09-25, 0.1.0 → 0.2.0 on a Leader), so an edit made here would outlive
+// every later release's value for it without anybody seeing that it had.
+
+/** The one line above the table while the pack's destination is on it. */
+export const PACK_DESTINATION_LEAD =
+  'The onboarding pack writes gigamon_ami through its own destination, gigamon_ami_json_lake, shown below read only.'
+
+/** Behind the ⓘ at the end of that line. */
+export const PACK_DESTINATION_TIP =
+  'The onboarding pack’s releases set how gigamon_ami_json_lake writes objects, and this panel does not change it. ' +
+  'A change made here would be kept as a local setting of the pack, which a later release of the pack does not replace — ' +
+  'so the destination would quietly stop following the pack. When a release changes these settings, upgrading the pack from the onboarding panel brings them in.'
+
+/** One line, shown only while both destinations exist in the group. */
+export const BOTH_DESTINATIONS_NOTE =
+  'gigamon_lake can still write gigamon_ami as well — for the demo feed, or a stack from before the pack — and its “How objects are written” row is the one this panel changes.'
+
+/** The Change column of the pack's row, where a control would be. */
+export const PACK_DESTINATION_MARKER = 'set by the pack'
+
+/** What a destination does when Cribl Lake cannot keep up, in words. The value
+ *  Cribl reports is printed as it is when this app has no words for it. */
+export function backpressureWords(raw: Readonly<Record<string, unknown>> | null | undefined): string {
+  const v = raw?.onBackpressure
+  if (v === 'block') return 'blocks when Cribl Lake falls behind'
+  if (v === 'drop') return 'drops events when Cribl Lake falls behind'
+  if (v === 'queue') return 'queues to disk when Cribl Lake falls behind'
+  if (typeof v === 'string' && v) return `backpressure: ${v}`
+  return 'backpressure behaviour not reported'
+}
+
 /** Inside the collapsed "Adjust how objects are written". */
 export const ADJUST_NOTE =
   'Nothing here is applied until you press Change on the “How objects are written” row and confirm the before-and-after.'

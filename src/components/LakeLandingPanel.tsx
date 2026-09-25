@@ -87,8 +87,13 @@ import {
   LAKE_LEAD,
   LAKE_LEAD_TIP,
   LAKE_RETENTION_WARNING,
+  BOTH_DESTINATIONS_NOTE,
+  PACK_DESTINATION_LEAD,
+  PACK_DESTINATION_MARKER,
+  PACK_DESTINATION_TIP,
   ROW_MARKERS,
   ROW_TIPS,
+  backpressureWords,
   partitionLimitWords,
   LAG_CPU_SECONDS,
   PARTITION_CPU_SECONDS,
@@ -142,6 +147,7 @@ import {
   getDestination,
   getLakeConfig,
   getLocalSearch,
+  getPackDestination,
   getSearchDataset,
   listDatasets,
   listInputs,
@@ -205,6 +211,7 @@ const REREAD: Record<RowKey, (group: string) => Promise<ReadResult<unknown>>> = 
   routes: (group) => listRoutes(group),
   localSearch: () => getLocalSearch(),
   groups: () => listStreamGroupsCurrent(),
+  packDestination: (group) => getPackDestination(group),
 }
 
 // ── One row of the grid ─────────────────────────────────────────────────────
@@ -746,6 +753,20 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
     destinationApplied && steps.some((s) => (s.key === 'commit' || s.key === 'deploy') && s.status !== 'applied')
 
   const feeds = resolveFeeds(rows.inputs.value ?? [], rows.routes.value ?? [], DESTINATION_ID)
+
+  // The onboarding pack's own destination — shown, never edited. Its row is on
+  // the table once the pack list says the pack is installed, or when that read
+  // could not answer (the row then names what it could not read); with no pack
+  // in the group the panel is exactly what it was.
+  const packRead = rows.packDestination.value
+  const packDest = packRead?.installed ? packRead.destination : null
+  const showPackRow =
+    rows.packDestination.state === 'unreadable' ||
+    rows.packDestination.state === 'failed' ||
+    rows.packDestination.state === 'absent' ||
+    packRead?.installed === true
+  const packFlush = flushOf(packDest)
+  const bothDestinations = packDest !== null && rows.destination.state === 'value'
   const thisGroup = rows.groups.value?.find((g) => g.id === group) ?? null
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -755,7 +776,7 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
       title="How data lands in Cribl Lake"
       note={statusNote}
       tourId="lake-landing"
-      info="Every value on this panel and the endpoint it came from. Dataset, retention, description, object format and partitions: GET /products/lake/lakes/default/datasets/gigamon_ami?includeMetrics=true. Datasets in this lake: GET /products/lake/lakes/default/datasets?excludeDeleted=false&includeMetrics=true. Storage location and the partition-field limit: GET /products/lake/lakes/default/config. Search reader: GET /m/default_search/search/datasets/gigamon_ami. Acceleration tier: GET /m/default_search/search/local_search, with its engine count from the same path's /engines. How objects are written, and destination health: GET /m/{gid}/system/outputs/gigamon_lake. Feeds writing through it: GET /m/{gid}/system/inputs and GET /m/{gid}/routes. Worker group and the commit its Workers are running: GET /products/stream/groups. Landing lag and the partition-candidate statistics are NOT reads — each is a Cribl Search job started by its own Measure button, and what you see afterwards comes back from this app's own store, app/settings/lake_landing, with the time it was taken, so reloading the page does not spend the credits again."
+      info="Every value on this panel and the endpoint it came from. Dataset, retention, description, object format and partitions: GET /products/lake/lakes/default/datasets/gigamon_ami?includeMetrics=true. Datasets in this lake: GET /products/lake/lakes/default/datasets?excludeDeleted=false&includeMetrics=true. Storage location and the partition-field limit: GET /products/lake/lakes/default/config. Search reader: GET /m/default_search/search/datasets/gigamon_ami. Acceleration tier: GET /m/default_search/search/local_search, with its engine count from the same path's /engines. How objects are written, and destination health: GET /m/{gid}/system/outputs/gigamon_lake. Feeds writing through it: GET /m/{gid}/system/inputs and GET /m/{gid}/routes. The onboarding pack's own destination, shown read only where the pack is installed: GET /m/{gid}/packs, then GET /m/{gid}/p/cc-network-gigamon-ami/system/outputs/gigamon_ami_json_lake. Worker group and the commit its Workers are running: GET /products/stream/groups. Landing lag and the partition-candidate statistics are NOT reads — each is a Cribl Search job started by its own Measure button, and what you see afterwards comes back from this app's own store, app/settings/lake_landing, with the time it was taken, so reloading the page does not spend the credits again."
       infoLabel="Where every value on this panel came from"
       infoDialogLabel="The read map for “How data lands in Cribl Lake”"
     >
@@ -772,6 +793,19 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
           report.{' '}
           <a href={`#${INGEST_ANCHOR_ID}`}>Create it from the onboarding panel at the top of this page</a>
           {' '}— this panel changes objects, it does not create them.
+        </p>
+      )}
+
+      {packDest && (
+        <p className="gs-action-note">
+          {PACK_DESTINATION_LEAD}
+          <InfoTip text={PACK_DESTINATION_TIP} />
+          {bothDestinations && (
+            <>
+              {' '}
+              {BOTH_DESTINATIONS_NOTE}
+            </>
+          )}
         </p>
       )}
 
@@ -1111,6 +1145,32 @@ export function LakeLandingPanel({ mode }: LakeLandingPanelProps = {}) {
                 ) : null
               }
             />
+
+            {showPackRow && (
+              <LandingRowView
+                rowKey="packDestination"
+                label="Onboarding pack destination"
+                row={rows.packDestination}
+                onRetry={retryRow}
+                marker={packDest ? PACK_DESTINATION_MARKER : undefined}
+                value={
+                  packDest ? (
+                    <span className="ac-serves">
+                      <span className="ac-serves-name">
+                        {packDest.id || 'gigamon_ami_json_lake'} ·{' '}
+                        {packFlush ? flushWords(packFlush) : 'this destination did not report all three flush settings'}
+                      </span>
+                      <span className="ac-serves-id">
+                        {backpressureWords(packDest.raw)} ·{' '}
+                        {packDest.health ? `health ${packDest.health}` : 'health not reported'}
+                      </span>
+                    </span>
+                  ) : (
+                    <>the installed pack has no gigamon_ami_json_lake destination</>
+                  )
+                }
+              />
+            )}
 
             <LandingRowView
               rowKey="groups"
