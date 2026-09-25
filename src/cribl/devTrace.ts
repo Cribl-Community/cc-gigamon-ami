@@ -55,6 +55,8 @@ export interface PanelMarks {
 interface Trace {
   requests: TracedRequest[]
   panels: Map<string, PanelMarks>
+  /** False where the page's `fetch` could not be replaced: then only panel marks are recorded. */
+  requestsTraced: boolean
 }
 
 let trace: Trace | null = null
@@ -80,13 +82,16 @@ export function classify(url: string, method: string): RequestKind {
   return 'other'
 }
 
-/** Wrap `fetch` so every request is recorded. Call once, before first render. */
+/** Wrap `fetch` so every request is recorded. Call once, before first render.
+ *  Where the host has made `fetch` read-only, which Cribl's Live Preview frame
+ *  does, the assignment throws; the trace then records panel marks only
+ *  (`requestsTraced: false`) rather than stopping the page from rendering. */
 export function installTrace(win: Window & { __gnoTrace?: unknown } = window): void {
   if (trace !== null) return
-  trace = { requests: [], panels: new Map() }
+  trace = { requests: [], panels: new Map(), requestsTraced: false }
   const inner = win.fetch.bind(win)
   untraced = inner
-  win.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const wrapped = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const rec: TracedRequest = {
@@ -101,12 +106,22 @@ export function installTrace(win: Window & { __gnoTrace?: unknown } = window): v
     const res = await inner(input, init)
     rec.status = res.status
     // Timed to the last byte, which is what the app waits for: it reads text().
-    res.clone().text().then(
-      (t) => { rec.end = performance.now(); rec.bytes = t.length },
-      () => { rec.end = performance.now() },
-    )
+    try {
+      res.clone().text().then(
+        (t) => { rec.end = performance.now(); rec.bytes = t.length },
+        () => { rec.end = performance.now() },
+      )
+    } catch {
+      rec.end = performance.now() // a host's Response that cannot be cloned: timed to the headers
+    }
     return res
   }
+  try {
+    win.fetch = wrapped
+  } catch {
+    // read-only fetch: see the doc comment
+  }
+  trace.requestsTraced = win.fetch === wrapped
   win.__gnoTrace = { summary, reset, raw: () => trace }
 }
 
@@ -164,6 +179,7 @@ export function summary(): unknown {
     .map((r) => ({ kind: r.kind, startMs: Math.round(r.start), durMs: ms(r.start, r.end), kB: r.bytes === null ? null : Math.round(r.bytes / 1024) }))
   const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
   return {
+    requestsTraced: trace.requestsTraced,
     // Page milestones, ms from navigation start.
     page: nav ? { domInteractive: Math.round(nav.domInteractive), domContentLoaded: Math.round(nav.domContentLoadedEventEnd) } : null,
     requests: byKind,
@@ -182,13 +198,33 @@ export function summary(): unknown {
 export function startRelay(win: Window = window, url = '/__trace', everyMs = 1000): () => void {
   let last = ''
   const id = win.setInterval(() => {
-    if (!trace || !untraced) return
+    if (!trace) return
     const panels = [...trace.panels.entries()].map(([panel, m]) => ({ panel, ...m }))
     const key = JSON.stringify([trace.requests.length, trace.requests.filter((r) => r.end !== null).length, panels.map((p) => [p.start, p.paint])])
     if (key === last) return
     last = key
-    const body = JSON.stringify({ page: win.location.pathname, origin: Math.round(performance.timeOrigin), summary: summary(), panels })
-    void untraced(url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body }).catch(() => {})
+    relayPost(win, url, { page: win.location.pathname, origin: Math.round(performance.timeOrigin), summary: summary(), panels })
   }, everyMs)
   return () => win.clearInterval(id)
+}
+
+/** Report a page error through the relay, so a frame nobody can inspect says why it is blank. */
+export function relayError(win: Window, err: unknown, url = '/__trace'): void {
+  const e = err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) }
+  relayPost(win, url, { page: win.location.pathname, error: e })
+}
+
+/** To the dev server that served this page, by an absolute URL so a host's fetch
+ *  proxy cannot reroute it: a beacon where there is one, else the untraced fetch. */
+function relayPost(win: Window, url: string, payload: unknown): void {
+  const body = JSON.stringify(payload)
+  const href = (win.location as Location | undefined)?.href
+  const target = href ? new URL(url, href).href : url
+  try {
+    if (win.navigator?.sendBeacon?.(target, new Blob([body], { type: 'text/plain' }))) return
+  } catch {
+    // fall through to fetch
+  }
+  const send = untraced ?? win.fetch.bind(win)
+  void send(target, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body }).catch(() => {})
 }

@@ -14,7 +14,7 @@ import { loadSearchCaps } from './cribl/searchCaps'
 import { prefetchRunHistory } from './cribl/accel/status'
 import { resolveDatasetTarget } from './cribl/datasetTarget'
 import { loadAccelServing } from './cribl/accel/serving'
-import { installTrace, startRelay } from './cribl/devTrace'
+import { installTrace, relayError, startRelay } from './cribl/devTrace'
 
 // The dev-only page trace (cribl/devTrace.ts). `import.meta.env.DEV` is a
 // build-time constant, so a production bundle drops this branch entirely.
@@ -25,6 +25,10 @@ import { installTrace, startRelay } from './cribl/devTrace'
 // then relays its trace to the dev server (vite.config.ts `/__trace`).
 const RELAY = import.meta.env.DEV && (window as { __GNO_TRACE__?: boolean }).__GNO_TRACE__ === true
 const TRACE = import.meta.env.DEV && (RELAY || new URLSearchParams(window.location.search).has('trace'))
+if (RELAY) {
+  window.addEventListener('error', (e) => relayError(window, e.error ?? e.message))
+  window.addEventListener('unhandledrejection', (e) => relayError(window, e.reason))
+}
 if (TRACE) installTrace()
 if (RELAY) startRelay()
 
