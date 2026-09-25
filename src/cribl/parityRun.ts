@@ -21,9 +21,10 @@
 //
 // ── WHICH ENTRIES ───────────────────────────────────────────────────────────
 // By default every entry ELIGIBLE under the rule `tableProblems` applies — the
-// text's classes and the type table, with density left to the install. Today
-// `FIELD_TYPES` is empty, so no entry is eligible and the default run submits
-// nothing: the plan lists every entry and why. `--force-ineligible` runs an
+// text's classes and the type table, with density left to the install. With
+// `FIELD_TYPES` as filled on 2026-09-25 that is nine entries (dns.overall, and
+// eight the router refuses today only on unmeasured density); the plan lists
+// every other entry and why. `--force-ineligible` runs an
 // ineligible entry to MEASURE it; its result is marked measurement-only and
 // never carries evidence. A pinned entry, one with no text, and one whose rows
 // this module cannot compare (below) never run.

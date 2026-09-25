@@ -228,13 +228,26 @@ describe('a top N and a tie at its boundary', () => {
 })
 
 describe('planEntries', () => {
-  it('runs nothing today: the type table is empty, so no entry is eligible, and each says why', () => {
-    const plan = planEntries()
+  it('runs nothing on an empty type table: no entry is eligible, and each says why', () => {
+    const plan = planEntries({ types: {} })
     expect(plan.selected).toEqual([])
     expect(plan.refused.map((r) => r.id)).toEqual(ROUTES.map((e) => e.id))
     for (const e of ROUTES.filter((x) => !x.pin && x.queries.length)) {
       expect(plan.refused.find((r) => r.id === e.id)?.why).toMatch(/^not eligible — .*type not measured/)
     }
+  })
+
+  it('runs, for evidence, exactly what the shipped type table makes eligible, and says why for the rest', () => {
+    // src/data/fieldTypes.ts, filled 2026-09-25 from the censuses: dns.overall is eligible
+    // outright; the eight others are refused by the router only on density, which the runner
+    // leaves to each install (fieldTypes.test.ts pins the same lists).
+    const plan = planEntries()
+    expect(plan.selected.map((s) => s.id).sort()).toEqual([
+      'dns.overall', 'flowMap.edges', 'flowMap.serviceEdges', 'pqc.groups', 'tls.pqcByServer',
+      'web.codes', 'web.h2', 'web.hosts', 'web.trend',
+    ])
+    expect(plan.selected.every((s) => s.mode === 'evidence')).toBe(true)
+    expect(plan.refused.find((r) => r.id === 'tcp.trend')?.why).toMatch(/tcp_dup_ack/)
   })
 
   it('selects an entry once its fields are typed, for evidence', () => {
@@ -243,7 +256,7 @@ describe('planEntries', () => {
   })
 
   it('runs an ineligible entry only to measure it, and never a pinned one', () => {
-    const plan = planEntries({ only: ['web.codes', 'web.errorsDrill', 'flowMap.trend'], forceIneligible: true })
+    const plan = planEntries({ only: ['web.codes', 'web.errorsDrill', 'flowMap.trend'], forceIneligible: true, types: {} })
     expect(plan.selected).toEqual([expect.objectContaining({ id: 'web.codes', mode: 'measurement' })])
     expect(plan.refused.map((r) => r.id).sort()).toEqual(['flowMap.trend', 'web.errorsDrill'])
   })

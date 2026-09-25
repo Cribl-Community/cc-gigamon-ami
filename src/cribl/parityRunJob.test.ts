@@ -230,8 +230,8 @@ describe('a parity run against a fake transport', () => {
     const a = write(await differ.result, differ.plan, windows)
     expect(a.report.entries[0]).toMatchObject({ verdict: 'failed', evidence: null })
 
-    // The shipped type table is empty: forced, the same passing rows are a measurement, never evidence.
-    const forced = run({}, windows, planEntries({ only: ['web.codes'], forceIneligible: true }))
+    // On an empty type table, forced, the same passing rows are a measurement, never evidence.
+    const forced = run({}, windows, planEntries({ only: ['web.codes'], forceIneligible: true, types: {} }))
     const b = write(await forced.result, forced.plan, windows)
     expect(b.report.entries[0]).toMatchObject({ mode: 'measurement', verdict: 'measured-only', evidence: null })
     expect(b.report.entries[0].perWindow.map((p) => p.verdict)).toEqual(['pass', 'pass', 'pass'])
