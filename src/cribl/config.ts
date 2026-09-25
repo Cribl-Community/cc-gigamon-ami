@@ -31,6 +31,15 @@ export interface CriblUser {
 export const IS_INSTALLED =
   typeof window !== 'undefined' && typeof window.CRIBL_API_URL === 'string' && window.CRIBL_API_URL.length > 0
 
+/** True when this page is served by the Vite dev server (`npm run dev`): the
+ *  localhost page AND Cribl's Live Preview, which loads that server inside the
+ *  platform, so it is also IS_INSTALLED. False in every built bundle, where
+ *  Vite replaces it with a constant. Use it for developer-only views, never
+ *  for how the app talks to Cribl — that is IS_INSTALLED's job. `?.` because
+ *  scripts/extract-queries.mjs loads this module under plain Node, which has no
+ *  `import.meta.env`. */
+export const IS_DEV_SERVER = import.meta.env?.DEV === true
+
 /** Base for all Cribl API calls. Installed → platform URL; dev → Vite proxy. */
 export const API_BASE = IS_INSTALLED ? (window.CRIBL_API_URL as string) : '/capi'
 
