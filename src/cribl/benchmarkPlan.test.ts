@@ -10,7 +10,17 @@ import {
   PARQUET_DATASET,
   PARQUET_TARGET_ID,
   WINDOW_END_AGO_SECONDS,
+  LANDING_MARGIN_SECONDS,
+  LANDING_MAX_SHIFT_SECONDS,
+  LANDING_READ_SECONDS,
   benchPlan,
+  chooseWindow,
+  coveredEnd,
+  landingCostLine,
+  landingEstimate,
+  landingQueryFor,
+  landingReadWindow,
+  landingWords,
   benchReport,
   benchTargets,
   canonicalAnswer,
@@ -28,8 +38,11 @@ import {
   stageWorkWords,
   type BenchQueryId,
   type BenchRun,
+  type LagReading,
   type StageRecord,
 } from './benchmarkPlan'
+import { LANDING_LAG_QUERY } from '../queries/lakeLanding'
+import { BENCH_LANDING_QUERY } from '../queries/benchmark'
 import { MEASURED_RUNS, WARMUP_RUNS } from './benchmark'
 import { PARITY_COUNT_QUERY } from '../queries/lakeLanding'
 import { buildTrendQuery } from '../queries/tcpHealth'
@@ -129,6 +142,129 @@ describe('the windows', () => {
     expect(fifteen.latest - fifteen.earliest).toBe(900)
     expect(one.latest % 60).toBe(0)
     expect(now / 1000 - fifteen.latest).toBeGreaterThanOrEqual(WINDOW_END_AGO_SECONDS)
+  })
+})
+
+describe('the landing check', () => {
+  const now = Date.UTC(2026, 8, 25, 14, 37, 42)
+  const usual = stageWindow('fifteen', now)
+  const reading = (dataset: string, over: Partial<LagReading> = {}): LagReading => ({
+    targetId: dataset === PARQUET_DATASET ? PARQUET_TARGET_ID : JSON_TARGET_ID,
+    dataset,
+    query: '',
+    jobId: 'j',
+    newest: now / 1000 - 60,
+    count: 1000,
+    cpuSeconds: 4,
+    ...over,
+  })
+
+  it('is the Lake landing panel’s own landing-lag search, imported, with only the dataset moved', () => {
+    expect(BENCH_LANDING_QUERY).toBe(LANDING_LAG_QUERY)
+    expect(landingQueryFor(both[0])).toBe(LANDING_LAG_QUERY)
+    expect(landingQueryFor(both[1])).toBe(LANDING_LAG_QUERY.replace('dataset="gigamon_ami"', `dataset="${PARQUET_DATASET}"`))
+  })
+
+  it('reads from the earliest end the window may move back to, up to now', () => {
+    const r = landingReadWindow(now)
+    expect(r.earliest).toBe(usual.latest - LANDING_MAX_SHIFT_SECONDS)
+    expect(r.latest).toBe(Math.floor(now / 1000))
+    expect(r.latest - r.earliest).toBeGreaterThanOrEqual(LANDING_READ_SECONDS)
+    expect(r.latest - r.earliest).toBeLessThan(LANDING_READ_SECONDS + 60)
+  })
+
+  it('keeps the usual window when every store covers its end', () => {
+    const c = chooseWindow(now, [reading('gigamon_ami'), reading(PARQUET_DATASET)])
+    expect(c.refusal).toBeNull()
+    expect(c.window).toEqual(usual)
+    expect(c.shiftedSeconds).toBe(0)
+  })
+
+  it('holds back the margin for files still being written, on a whole minute', () => {
+    const newest = usual.latest + 30
+    expect(coveredEnd(reading('x', { newest }))).toBe(Math.floor((newest - LANDING_MARGIN_SECONDS) / 60) * 60)
+    expect(coveredEnd(reading('x', { newest: null }))).toBeNull()
+    expect(coveredEnd(reading('x', { count: 0 }))).toBeNull()
+    expect(coveredEnd(reading('x', { error: 'boom' }))).toBeNull()
+  })
+
+  it('moves the window back to the latest end EVERY store covers, fifteen minutes long', () => {
+    const behind = usual.latest - 7 * 60 + LANDING_MARGIN_SECONDS + 20
+    const c = chooseWindow(now, [reading('gigamon_ami'), reading(PARQUET_DATASET, { newest: behind })])
+    expect(c.refusal).toBeNull()
+    expect(c.window.latest).toBe(usual.latest - 7 * 60)
+    expect(c.window.latest - c.window.earliest).toBe(900)
+    expect(c.shiftedSeconds).toBe(7 * 60)
+    // Whichever store is behind decides: the JSON dataset lagging moves it too.
+    const j = chooseWindow(now, [reading('gigamon_ami', { newest: behind }), reading(PARQUET_DATASET)])
+    expect(j.window.latest).toBe(usual.latest - 7 * 60)
+  })
+
+  it('moves back as far as the limit, and refuses one minute past it', () => {
+    const atLimit = usual.latest - LANDING_MAX_SHIFT_SECONDS + LANDING_MARGIN_SECONDS
+    expect(chooseWindow(now, [reading(PARQUET_DATASET, { newest: atLimit })]).shiftedSeconds).toBe(LANDING_MAX_SHIFT_SECONDS)
+    const past = chooseWindow(now, [reading(PARQUET_DATASET, { newest: atLimit - 60 })])
+    expect(past.refusal).toContain(`${PARQUET_DATASET}’s newest record is from`)
+    expect(past.refusal).toContain('more than 15 minutes before the window’s usual end')
+    expect(past.refusal).toContain('ran nothing else')
+    expect(past.window).toEqual(usual)
+  })
+
+  it('refuses when a store has nothing in the window it read, when a check failed, and when nothing was checked', () => {
+    expect(chooseWindow(now, [reading('gigamon_ami'), reading(PARQUET_DATASET, { newest: null, count: 0 })]).refusal)
+      .toContain(`Nothing has landed in ${PARQUET_DATASET} since`)
+    expect(chooseWindow(now, [reading(PARQUET_DATASET, { error: 'HTTP 500' })]).refusal)
+      .toContain(`The landing check on ${PARQUET_DATASET} did not complete (HTTP 500)`)
+    expect(chooseWindow(now, []).refusal).toContain('No store was checked')
+  })
+
+  it('says what it found, whether the window moved, and its work — never counting unreported work as zero', () => {
+    const read = landingReadWindow(now)
+    const moved = landingWords({ read, readings: [reading('gigamon_ami'), reading(PARQUET_DATASET)], shiftedSeconds: 180, refusal: null })
+    expect(moved.join(' ')).toContain('The window was moved back 3 minutes')
+    expect(moved.join(' ')).toContain('Work done by the landing check: 8 CPU-seconds.')
+    const kept = landingWords({ read, readings: [reading('gigamon_ami', { cpuSeconds: null }), reading(PARQUET_DATASET)], shiftedSeconds: 0, refusal: null })
+    expect(kept.join(' ')).toContain('Every store holds the whole window, so it was not moved.')
+    expect(kept.join(' ')).toContain('at least 4 CPU-seconds')
+    const refused = landingWords({ read, readings: [reading(PARQUET_DATASET)], shiftedSeconds: 0, refusal: 'no' })
+    expect(refused.join(' ')).not.toMatch(/moved/)
+  })
+
+  it('prices itself from the row count’s one-minute work, and says so when it cannot', () => {
+    const probe: StageRecord = {
+      stage: 'one',
+      key: 'k',
+      window: stageWindow('one', now),
+      queryIds: ['count'],
+      targets: both,
+      runs: [
+        { queryId: 'count', query: '', jobId: 'a', targetId: JSON_TARGET_ID, warmup: false, serverMs: 1, clientMs: 1, cpuSeconds: 2, rows: 1 },
+        { queryId: 'count', query: '', jobId: 'b', targetId: PARQUET_TARGET_ID, warmup: false, serverMs: 1, clientMs: 1, cpuSeconds: 4, rows: 1 },
+      ],
+      planned: 2,
+      ended: true,
+    }
+    expect(landingEstimate(probe, JSON_TARGET_ID)).toBe(2 * 25)
+    expect(landingCostLine(probe, both)).toContain('Expect about 150 CPU-seconds')
+    const noCount = { ...probe, runs: probe.runs.map((r) => ({ ...r, queryId: 'dupacks' as const })) }
+    expect(landingEstimate(noCount, JSON_TARGET_ID)).toBeNull()
+    expect(landingCostLine(noCount, both)).toContain('not known until they run')
+  })
+
+  it('is not a "stop": a stage the check refused says why instead', () => {
+    const rec: StageRecord = {
+      stage: 'fifteen',
+      key: 'k',
+      window: usual,
+      queryIds: ['count'],
+      targets: both,
+      runs: [],
+      planned: 8,
+      ended: true,
+      landing: { read: landingReadWindow(now), readings: [], shiftedSeconds: 0, refusal: 'behind' },
+    }
+    expect(stageStopped(rec)).toBe(false)
+    expect(stageStopped({ ...rec, landing: undefined })).toBe(true)
   })
 })
 

@@ -8,7 +8,11 @@
 //   (3) a fastest store is refused when the row counts disagree;
 //   (4) the Parquet choice is not rendered when gigamon_ami_pq is absent or
 //       holds no data;
-//   (5) each confirmation states its cost line before anything is submitted.
+//   (5) each confirmation states its cost line before anything is submitted;
+//   (6) the 15-minute stage checks when each store last landed data before it
+//       picks its window: it moves the window back when a store is behind,
+//       and refuses — running nothing else, with the reason on screen — when a
+//       store is too far behind or holds nothing.
 //
 // WHAT THIS FILE CANNOT ESTABLISH: happy-dom has no layout, so nothing here is
 // evidence about how the panel looks, and no focus navigation, so nothing here
@@ -45,6 +49,11 @@ interface Workspace {
   hold?: { on: boolean }
   /** The status a job submit answers with (403: Cribl refuses it). */
   submitStatus?: number
+  /**
+   * What the landing check finds, per store: seconds between now and its
+   * newest record (default 60), or null for an empty window (no row at all).
+   */
+  landedAgo?: { json?: number | null; pq?: number | null }
 }
 
 /** Server time the stub reports: the Parquet copy twice as fast as JSON. */
@@ -82,7 +91,15 @@ function stub(ws: Workspace = {}) {
       const q = submitted[Number(id.split('-')[1]) - 1] ?? ''
       const pq = q.includes(PARQUET_DATASET)
       if (kind === 'status') return res(200, { items: [{ status: ws.hold?.on ? 'running' : 'completed' }] })
+      // Stop cancels the job in flight on the server.
+      if (kind === 'cancel') return res(200, { items: [{ id, status: 'canceled' }] })
       if (kind === 'results') {
+        if (q.includes('newest=max(_time)')) {
+          const ago = pq ? ws.landedAgo?.pq : ws.landedAgo?.json
+          if (ago === null) return res(200, {}, JSON.stringify({ totalEventCount: 0, job: id }))
+          const newest = Math.floor(Date.now() / 1000) - (ago ?? 60)
+          return res(200, {}, [JSON.stringify({ totalEventCount: 1, job: id }), JSON.stringify({ newest, n: 1000, lag_s: ago ?? 60 })].join('\n'))
+        }
         const n = pq ? (ws.pqRows ?? 5) : 5
         // Every row read back in full, so a search checked on values has one.
         const rows = Array.from({ length: n }, (_, i) => JSON.stringify({ v: i + (pq ? (ws.pqShift ?? 0) : 0) }))
@@ -98,6 +115,10 @@ function stub(ws: Workspace = {}) {
 }
 
 const submits = () => calls.filter((c) => c.method === 'POST' && /\/search\/jobs$/.test(c.url))
+
+interface Sent { query: string; earliest: number; latest: number }
+const sentBodies = (): Sent[] => submits().map((c) => JSON.parse(c.body!) as Sent)
+const isLanding = (s: Sent) => s.query.includes('newest=max(_time)')
 
 let host: HTMLDivElement
 let root: Root
@@ -281,6 +302,13 @@ describe('the stage gate', () => {
     // 6 pairs × 2.5 = 15 measured; × 15 × 4 = 900.
     expect(text).toContain('The one-minute stage did 15 CPU-seconds of work')
     expect(text).toContain('about 900 CPU-seconds')
+    // The landing check is named and priced before anything runs: one per
+    // store, from the row count's one-minute work × 25 minutes (2.5 × 25 each).
+    expect(text).toContain('Landing check — gigamon_ami')
+    expect(text).toContain(`Landing check — ${PARQUET_DATASET}`)
+    expect(text).toContain('2 landing checks — one per store — read the last 25 minutes')
+    expect(text).toContain('Expect about 125 CPU-seconds')
+    expect(confirmButton()!.textContent).toBe('Run 26 searches')
     expect(text).toMatch(/assumption, not a measurement/)
     expect(submits().length).toBe(before)
   })
@@ -334,8 +362,9 @@ describe('the 15-minute verdict', () => {
     await mount()
     await confirmStage(ONE_LABEL)
     await confirmStage(FIFTEEN_LABEL)
-    // 3 searches × 2 stores × (1 warm-up + 3 measured), after the 6 one-minute runs.
-    expect(submits()).toHaveLength(6 + 24)
+    // 3 searches × 2 stores × (1 warm-up + 3 measured), after the 6 one-minute
+    // runs and one landing check per store.
+    expect(submits()).toHaveLength(6 + 2 + 24)
     expect(bodyText()).toContain('15-minute benchmark')
     // The stub times Parquet at 400 ms and JSON at 800: the winner and the
     // multiplier are both specific, so a reversed ordering fails here.
@@ -426,5 +455,121 @@ describe('when Cribl refuses the search submit', () => {
     // Try again opens it.
     await press(buttonNamed('Try again'))
     expect(buttonNamed(ONE_LABEL)!.getAttribute('aria-disabled')).toBeNull()
+  })
+})
+
+describe('the landing check before the 15-minute stage', () => {
+  const fifteenRuns = () => sentBodies().filter((b) => !isLanding(b) && b.latest - b.earliest === 900)
+  const section = () => (document.body.querySelector('section[aria-label="15-minute benchmark"]')?.textContent ?? '').replace(/\s+/g, ' ')
+
+  it('reads each store before the stage, as written, reuse off, and keeps the usual window when both cover it', async () => {
+    stub({ pqSize: 5e8 })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    const t0 = Date.now()
+    await confirmStage(FIFTEEN_LABEL)
+    const sent = sentBodies()
+    const landing = sent.filter(isLanding)
+    expect(landing.map((b) => b.query)).toEqual([
+      expect.stringContaining('dataset="gigamon_ami" | summarize newest=max(_time)'),
+      expect.stringContaining(`dataset="${PARQUET_DATASET}" | summarize newest=max(_time)`),
+    ])
+    for (const b of landing) expect(b.query).not.toContain('allow_previous_results')
+    // Both checks go out before the first 15-minute run.
+    const firstRun = sent.findIndex((b) => !isLanding(b) && b.latest - b.earliest === 900)
+    expect(sent.findIndex(isLanding)).toBeLessThan(firstRun)
+    expect(sent.map(isLanding).lastIndexOf(true)).toBeLessThan(firstRun)
+    // The usual window: whole minutes, ending ten minutes ago.
+    const usualEnd = Math.floor(t0 / 60_000) * 60 - 600
+    for (const b of fifteenRuns()) expect(Math.abs(b.latest - usualEnd)).toBeLessThanOrEqual(60)
+    expect(section()).toContain('Every store holds the whole window, so it was not moved.')
+    expect(section()).toMatch(/Verdict:/)
+  })
+
+  it('moves the window back, in whole minutes, when the Parquet copy is behind', async () => {
+    // The Parquet copy's newest record is 18 minutes old: less 5 for open
+    // files, it holds everything up to about 23 minutes ago.
+    stub({ pqSize: 5e8, landedAgo: { pq: 18 * 60 } })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    const t0 = Math.floor(Date.now() / 1000)
+    await confirmStage(FIFTEEN_LABEL)
+    const runs = fifteenRuns()
+    expect(runs).toHaveLength(24)
+    const ends = new Set(runs.map((b) => b.latest))
+    expect(ends.size).toBe(1)
+    const [end] = [...ends]
+    expect(end % 60).toBe(0)
+    expect(end).toBeLessThanOrEqual(t0 - 18 * 60 - 300)
+    expect(end).toBeGreaterThan(t0 - 18 * 60 - 300 - 120)
+    expect(section()).toMatch(/The window was moved back \d+ minutes, so that every store holds all of it\./)
+    expect(section()).toContain(`${PARQUET_DATASET}’s newest record is from`)
+  })
+
+  it('refuses the stage, running nothing else, when a store is more than 15 minutes too far behind', async () => {
+    stub({ pqSize: 5e8, landedAgo: { pq: 40 * 60 } })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    const before = submits().length
+    await confirmStage(FIFTEEN_LABEL)
+    // Only the two landing checks went out.
+    expect(submits().length - before).toBe(2)
+    expect(fifteenRuns()).toEqual([])
+    expect(section()).toContain(`${PARQUET_DATASET}’s newest record is from`)
+    expect(section()).toContain('more than 15 minutes before the window’s usual end')
+    expect(section()).toContain('The 15-minute stage ran nothing else')
+    // A refusal is not a stop, and names no verdict.
+    expect(bodyText()).not.toContain(STOPPED_VERDICT)
+    expect(bodyText()).not.toMatch(/Verdict:/)
+  })
+
+  it('refuses the stage when a store has landed nothing in the window it reads', async () => {
+    stub({ pqSize: 5e8, landedAgo: { pq: null } })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    await confirmStage(FIFTEEN_LABEL)
+    expect(fifteenRuns()).toEqual([])
+    expect(section()).toContain(`Nothing has landed in ${PARQUET_DATASET} since`)
+  })
+
+  it('checks the JSON dataset alone when the Parquet copy is not offered', async () => {
+    stub({ landedAgo: { json: 30 } })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    await press(buttonNamed(FIFTEEN_LABEL))
+    const text = (dialog()!.textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toContain('one landing check reads the last 25 minutes')
+    expect(text).not.toContain(`Landing check — ${PARQUET_DATASET}`)
+    await press(confirmButton())
+    await settle()
+    expect(sentBodies().filter(isLanding).map((b) => b.query)).toEqual([expect.stringContaining('dataset="gigamon_ami" |')])
+  })
+
+  it('says what it is checking while it checks, and Stop during the check is a stop, not a failure', async () => {
+    const hold = { on: false }
+    stub({ pqSize: 5e8, hold })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    hold.on = true
+    await press(buttonNamed(FIFTEEN_LABEL))
+    await press(confirmButton())
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)) })
+    expect(bodyText()).toContain('Checking when the newest record landed in gigamon_ami…')
+    await press(buttonNamed('Stop'))
+    await settle()
+    expect(fifteenRuns()).toEqual([])
+    expect(bodyText()).toContain(STOPPED_VERDICT)
+    expect(document.body.querySelector('.sl-note-warn[role="status"]')).toBeNull()
+  })
+
+  it('sends nothing for the landing check until the 15-minute stage is confirmed', async () => {
+    stub({ pqSize: 5e8 })
+    await mount()
+    await confirmStage(ONE_LABEL)
+    expect(sentBodies().filter(isLanding)).toEqual([])
+    await press(buttonNamed(FIFTEEN_LABEL))
+    expect(sentBodies().filter(isLanding)).toEqual([])
+    await press(buttonNamed('Cancel'))
+    expect(sentBodies().filter(isLanding)).toEqual([])
   })
 })

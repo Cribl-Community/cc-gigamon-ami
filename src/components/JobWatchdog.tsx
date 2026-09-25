@@ -166,8 +166,10 @@ import {
   thresholdMinutes,
   timeLimitLabel,
   windowLabel,
+  WATCHED_WORDS,
 } from './jobWatchdogCopy'
 import { LAKE_DATASET, SEARCH_GROUP, criblUiUrl } from '../cribl/config'
+import { PACK_PARQUET_DATASET_ID } from '../cribl/pack'
 import {
   POLL_MS,
   cancelHungJob,
@@ -411,7 +413,8 @@ function WatchdogDrawer({ isOpen, onClose, watch }: DrawerProps) {
     >
       <div className="jw-body" ref={bodyRef}>
         <p className="jw-scope">
-          This watch lists searches of <code>{LAKE_DATASET}</code> that have been running for more than{' '}
+          This watch lists searches of <code>{LAKE_DATASET}</code> or its Parquet copy{' '}
+          <code>{PACK_PARQUET_DATASET_ID}</code> that have been running for more than{' '}
           {minutes} minutes and are still running. It checks every {POLL_MINUTES} minutes while this app is
           open and pauses when the tab is in the background.
           {/* Written as one literal and carrying no runtime number, on purpose.
@@ -456,7 +459,7 @@ function WatchdogDrawer({ isOpen, onClose, watch }: DrawerProps) {
             <div className="jw-tablewrap">
               <table className="dtable">
                 <caption className="sr-only">
-                  Searches of {LAKE_DATASET} running longer than {minutes} minutes, oldest first
+                  Searches of {WATCHED_WORDS} running longer than {minutes} minutes, oldest first
                   {watch.error && ', as of the last poll that worked'}
                 </caption>
                 <thead>
@@ -489,7 +492,8 @@ function WatchdogDrawer({ isOpen, onClose, watch }: DrawerProps) {
           <p className="jw-note">
             {plural(watch.otherDatasetsOverThreshold, 'other search', 'other searches')} in this workspace
             {watch.otherDatasetsOverThreshold === 1 ? ' is' : ' are'} also running past {minutes} minutes on a
-            different dataset. This app watches only <code>{LAKE_DATASET}</code> and cannot explain those.
+            different dataset. This app watches only <code>{LAKE_DATASET}</code> and{' '}
+            <code>{PACK_PARQUET_DATASET_ID}</code> and cannot explain those.
           </p>
         )}
 

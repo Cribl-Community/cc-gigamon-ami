@@ -53,6 +53,11 @@ import {
   cpuWords,
   fifteenCostLine,
   fifteenRefusal,
+  LANDING_READ_SECONDS,
+  chooseWindow,
+  landingCostLine,
+  landingReadWindow,
+  landingWords,
   oneMinuteCostLine,
   parquetState,
   planFor,
@@ -65,13 +70,14 @@ import {
   stageWorkWords,
   type BenchQueryId,
   type BenchRun,
+  type LagReading,
   type PlannedBenchRun,
   type Stage,
   type StageRecord,
 } from '../cribl/benchmarkPlan'
 import { BENCH_PARQUET_DATASET, BENCH_QUERIES, onParquet } from '../queries/benchmark'
 import { STORE_WORDS, type BenchTarget } from '../cribl/benchmark'
-import { runPlan } from '../cribl/benchmarkRun'
+import { readLanding, runPlan } from '../cribl/benchmarkRun'
 import { listDatasets, type LakeDataset, type ReadResult } from '../cribl/lake'
 import { useDatasetTarget } from '../cribl/datasetTarget'
 import { denialMark, latchDenial, useWriteGate } from '../cribl/authz'
@@ -85,6 +91,7 @@ import {
   CONSEQUENCES,
   FIFTEEN_HEADING,
   FIFTEEN_LABEL,
+  FIFTEEN_WINDOW_TIP,
   NOT_REPORTED,
   NO_SEARCH,
   ONE_HEADING,
@@ -104,6 +111,7 @@ import {
   disagreeWords,
   valuesDisagreeWords,
   fifteenTitle,
+  landingProgressWords,
   oneTitle,
   progressWords,
   windowWords,
@@ -114,6 +122,8 @@ interface Progress {
   done: number
   total: number
   next: PlannedBenchRun | null
+  /** The store the 15-minute stage's landing check is reading now, if any. */
+  checking: string | null
 }
 
 const DEFAULT_QUERIES: readonly BenchQueryId[] = BENCH_QUERIES.filter((q) => q.defaultOn).map((q) => q.id)
@@ -221,7 +231,8 @@ export function BenchmarkPanel() {
       setDialog(null)
       return
     }
-    const window = stageWindow(stage, Date.now())
+    const nowMs = Date.now()
+    let window = stageWindow(stage, nowMs)
     const ctl = new AbortController()
     abortRef.current = ctl
     const record: StageRecord = { stage, key, window, queryIds: [...chosen], targets, runs: [], planned: plan.length, ended: false }
@@ -237,8 +248,41 @@ export function BenchmarkPanel() {
     // result that was judged against it.
     if (stage === 'one') setBench(null)
     publish()
-    setProgress({ stage, done: 0, total: plan.length, next: plan[0] })
+    const stores = targets.filter((t) => t.available)
+    setProgress({
+      stage,
+      done: 0,
+      total: plan.length,
+      next: stage === 'one' ? plan[0] : null,
+      checking: stage === 'fifteen' ? (stores[0]?.dataset ?? null) : null,
+    })
     try {
+      if (stage === 'fifteen') {
+        // The landing check: when each store's newest record landed, so the
+        // window ends where every store holds all of it — or the stage says
+        // why it cannot, and runs nothing else (benchmarkPlan.ts).
+        const read = landingReadWindow(nowMs)
+        const readings: LagReading[] = []
+        record.landing = { read, readings: [], shiftedSeconds: 0, refusal: null }
+        for (const t of stores) {
+          setProgress((p) => (p ? { ...p, checking: t.dataset } : p))
+          const r = await readLanding(t, read, ctl.signal)
+          readings.push(r)
+          record.landing = { ...record.landing, readings: [...readings] }
+          publish()
+          if (r.refused) {
+            latchDenial('benchmark.run', { ...r.refused, seq: denialMark(), origin: 'click' })
+            break
+          }
+        }
+        const choice = chooseWindow(nowMs, readings.length === stores.length ? readings : [...readings, ...unread(stores, readings)])
+        record.landing = { read, readings: [...readings], shiftedSeconds: choice.shiftedSeconds, refusal: choice.refusal }
+        if (choice.refusal) return
+        window = choice.window
+        record.window = window
+        publish()
+        setProgress((p) => (p ? { ...p, checking: null, next: plan[0] } : p))
+      }
       await runPlan(
         plan,
         window,
@@ -252,11 +296,12 @@ export function BenchmarkPanel() {
             latchDenial('benchmark.run', { ...run.refused, seq: denialMark(), origin: 'click' })
           }
         },
-        (next, index) => setProgress((p) => (p ? { ...p, done: index, next } : p)),
+        (next, index) => setProgress((p) => (p ? { ...p, done: index, next, checking: null } : p)),
         ctl.signal,
       )
     } catch (err) {
-      setFailure(err instanceof Error ? err.message : 'The benchmark stopped on an error.')
+      // Stop pressed during the landing check: a stop, not a failure.
+      if (!ctl.signal.aborted) setFailure(err instanceof Error ? err.message : 'The benchmark stopped on an error.')
     } finally {
       if (abortRef.current === ctl) abortRef.current = null
       publish(true)
@@ -356,7 +401,9 @@ export function BenchmarkPanel() {
 
       {progress && (
         <p className="gs-action-note" role="status">
-          {progress.next
+          {progress.checking
+            ? landingProgressWords(progress.checking)
+            : progress.next
             ? progressWords(
                 progress.done,
                 progress.total,
@@ -394,15 +441,15 @@ export function BenchmarkPanel() {
       {dialog === 'fifteen' && probe && (
         <ConfirmDialog
           isOpen
-          title={fifteenTitle(planFor('fifteen', chosen, targets).length)}
-          resources={resourcesFor(planFor('fifteen', chosen, targets), 'fifteen', probe)}
-          costLine={fifteenReason === null ? fifteenCostLine(probe) : fifteenReason}
-          consequences={[CONSEQUENCES.sequential, CONSEQUENCES.warmup, CONSEQUENCES.writesNothing, CONSEQUENCES.stoppable]}
+          title={fifteenTitle(planFor('fifteen', chosen, targets).length + liveTargets.length)}
+          resources={[...landingResources(liveTargets), ...resourcesFor(planFor('fifteen', chosen, targets), 'fifteen', probe)]}
+          costLine={fifteenReason === null ? `${landingCostLine(probe, targets)} ${fifteenCostLine(probe)}` : fifteenReason}
+          consequences={[CONSEQUENCES.landing, CONSEQUENCES.sequential, CONSEQUENCES.warmup, CONSEQUENCES.writesNothing, CONSEQUENCES.stoppable]}
           onCancel={() => setDialog(null)}
           confirm={
             <GatedControl
               write="benchmark.run"
-              label={`Run ${planFor('fifteen', chosen, targets).length} searches`}
+              label={`Run ${planFor('fifteen', chosen, targets).length + liveTargets.length} searches`}
               busyLabel="Starting…"
               unavailable={fifteenReason}
               run={async () => { void start('fifteen') }}
@@ -412,6 +459,23 @@ export function BenchmarkPanel() {
       )}
     </Panel>
   )
+}
+
+/** A stand-in for each store the landing check never reached (it stopped at a refusal). */
+function unread(stores: readonly BenchTarget[], readings: readonly LagReading[]): LagReading[] {
+  return stores
+    .filter((t) => !readings.some((r) => r.targetId === t.id))
+    .map((t) => ({ targetId: t.id, dataset: t.dataset, query: '', jobId: null, newest: null, count: null, cpuSeconds: null, error: 'it was not checked' }))
+}
+
+/** The landing check's searches, one per store, ahead of the stage's own. */
+function landingResources(stores: readonly BenchTarget[]): ConfirmResource[] {
+  return stores.map((t) => ({
+    action: 'create' as const,
+    kind: 'Search job',
+    id: `Landing check — ${t.dataset}`,
+    detail: `one run over the last ${LANDING_READ_SECONDS / 60} minutes, before the window is chosen, reuse off`,
+  }))
 }
 
 /**
@@ -516,15 +580,23 @@ function BenchTable({ bench }: { bench: StageRecord }) {
   const stopped = stageStopped(bench)
   const running = !bench.ended
   const reports = benchReport(bench)
+  const landing = bench.landing ? landingWords(bench.landing) : []
+  const refusal = bench.landing?.refusal ?? null
   return (
     <section className="bm-stage" aria-label={FIFTEEN_HEADING}>
       <h4 className="bm-h">
         {FIFTEEN_HEADING}
         <span className="bm-window">
           {windowWords(bench.window)}
-          <InfoTip text={WINDOW_TIP} />
+          <InfoTip text={FIFTEEN_WINDOW_TIP} />
         </span>
       </h4>
+      {landing.map((line) => (
+        <p key={line} className="gs-action-note">{line}</p>
+      ))}
+      {refusal ? (
+        <p className="sl-note sl-note-warn" role="status">{refusal}</p>
+      ) : (
       <div className="gs-tablewrap">
         <table className="dtable">
           <caption className="sr-only">
@@ -573,6 +645,7 @@ function BenchTable({ bench }: { bench: StageRecord }) {
           ))}
         </table>
       </div>
+      )}
       {bench.runs.some((r) => r.error) && (
         <ul className="bm-errors">
           {bench.runs

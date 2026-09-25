@@ -18,6 +18,7 @@
 // This file is the implementation of that argument, not the argument.
 
 import { LAKE_DATASET } from '../cribl/config'
+import { PACK_PARQUET_DATASET_ID } from '../cribl/pack'
 import type { Phase } from '../cribl/provision'
 import type { CancelResult, HungJob, WatchdogState } from '../cribl/jobWatchdog'
 
@@ -149,6 +150,14 @@ export function indicatorTone(s: WatchdogState): IndicatorTone | null {
   return null
 }
 
+/**
+ * The datasets the watch lists, as the screen names them: the customer's
+ * dataset and its Parquet copy (cribl/jobWatchdog.ts `watchedDatasets`, which
+ * also adds the sample while the app reads it — that one is not named here,
+ * because the sample banner already says the app is reading it).
+ */
+export const WATCHED_WORDS = `${LAKE_DATASET} or ${PACK_PARQUET_DATASET_ID}`
+
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
 /** Minutes, for every sentence that quotes the threshold. */
@@ -157,9 +166,9 @@ export const thresholdMinutes = (s: WatchdogState) => Math.max(1, Math.round(s.t
 /** The sentence the live region carries. See the header on what is NOT here. */
 export function announcementFor(s: WatchdogState): string {
   const minutes = thresholdMinutes(s)
-  if (s.jobs.length === 0) return `No search of ${LAKE_DATASET} is running longer than ${minutes} minutes now.`
+  if (s.jobs.length === 0) return `No search of ${WATCHED_WORDS} is running longer than ${minutes} minutes now.`
   return (
-    `${plural(s.jobs.length, 'search', 'searches')} of ${LAKE_DATASET} ` +
+    `${plural(s.jobs.length, 'search', 'searches')} of ${WATCHED_WORDS} ` +
     `${s.jobs.length === 1 ? 'has' : 'have'} been running for more than ${minutes} minutes.`
   )
 }

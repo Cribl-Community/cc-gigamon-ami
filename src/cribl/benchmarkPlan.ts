@@ -40,7 +40,7 @@
 // decide. No threshold anywhere refuses a run for being expensive.
 
 import { REAL_DATASET, retargetQuery } from '../queries/datasets'
-import { BENCH_PARQUET_DATASET, BENCH_QUERIES, type AnswerCheck, type BenchQuery, type BenchQueryId } from '../queries/benchmark'
+import { BENCH_LANDING_QUERY, BENCH_PARQUET_DATASET, BENCH_QUERIES, type AnswerCheck, type BenchQuery, type BenchQueryId } from '../queries/benchmark'
 import {
   MEASURED_RUNS,
   STORE_WORDS,
@@ -157,6 +157,175 @@ export function stageWindow(stage: Stage, nowMs: number): BenchWindow {
   return { earliest: latest - STAGE_SECONDS[stage], latest }
 }
 
+// ── The landing check (15-minute stage) ────────────────────────────────────
+//
+// "Ending ten minutes ago" assumes every store has landed every record in the
+// window by then. A Parquet copy that is behind — a stalled destination, a
+// backlog, a source that only just started — breaks that assumption silently:
+// it answers with fewer rows, and all the verdict can do is refuse on the row
+// count (or the count's value). So before the 15-minute stage picks its window
+// it asks each store when its newest record is from, with the Lake landing
+// panel's own landing-lag search, and:
+//
+//   * every store covers the usual end → the window is the usual one;
+//   * one does not, but covers an end at most `LANDING_MAX_SHIFT_SECONDS`
+//     earlier → the window moves back, whole minutes, to the latest end every
+//     store covers, and the stage says by how much;
+//   * one cannot be shown to cover even that → the stage runs nothing more and
+//     says which store and why.
+//
+// "Covers" is a judgment, not a measurement: a store whose newest record is at
+// T is taken to hold every record up to T − `LANDING_MARGIN_SECONDS`, because
+// Cribl Lake writes a record when the file holding it closes, and another
+// Worker's file with earlier records may stay open up to 300 s (the longest
+// file-open time a destination here may carry — routing/completeness.ts uses
+// the same figure). Nothing here has measured how late a store's oldest open
+// file can actually be.
+//
+// NOT ON THE ONE-MINUTE STAGE, deliberately: the check reads the last
+// `LANDING_READ_SECONDS` of each store (it must reach back past the window's
+// usual end by the largest move it may make), which is 25 times the one minute
+// that stage reads — the check would cost far more than the stage it guards.
+// A lagging store shows up there as a row or value disagreement, which that
+// stage already reports without naming a winner.
+
+/** The furthest back the window may move before the stage refuses instead. */
+export const LANDING_MAX_SHIFT_SECONDS = 900
+
+/** Held back from a store's newest record for files still being written. */
+export const LANDING_MARGIN_SECONDS = 300
+
+/** How far back the landing check reads, from now. */
+export const LANDING_READ_SECONDS = WINDOW_END_AGO_SECONDS + LANDING_MAX_SHIFT_SECONDS
+
+/** The search the landing check sends to `target`. */
+export function landingQueryFor(target: BenchTarget): string {
+  return retargetQuery(BENCH_LANDING_QUERY, target.dataset)
+}
+
+/**
+ * What the landing check reads: from the earliest end the window may move back
+ * to, up to now. A store with no record in it cannot cover any window the stage
+ * would accept, so reading further back would buy nothing.
+ */
+export function landingReadWindow(nowMs: number): BenchWindow {
+  const usual = stageWindow('fifteen', nowMs)
+  return { earliest: usual.latest - LANDING_MAX_SHIFT_SECONDS, latest: Math.floor(nowMs / 1000) }
+}
+
+export interface LagReading {
+  targetId: string
+  dataset: string
+  /** The text submitted, dataset included. */
+  query: string
+  jobId: string | null
+  /** Epoch seconds of the newest record in the read window; null when none. */
+  newest: number | null
+  /** Records in the read window, as the search counted them. */
+  count: number | null
+  cpuSeconds: number | null
+  error?: string
+  refused?: { method: string; path: string; status: number }
+}
+
+export interface LandingCheck {
+  read: BenchWindow
+  readings: readonly LagReading[]
+  /** How far the window moved back from its usual end, in seconds. */
+  shiftedSeconds: number
+  /** Why the stage ran nothing more, or null. */
+  refusal: string | null
+}
+
+const clock = (epochSeconds: number) =>
+  new Date(epochSeconds * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+
+/** The latest whole-minute end a reading shows its store holds everything up to. */
+export function coveredEnd(r: LagReading): number | null {
+  if (r.error || r.newest === null || !Number.isFinite(r.newest) || !r.count) return null
+  return Math.floor((r.newest - LANDING_MARGIN_SECONDS) / 60) * 60
+}
+
+/**
+ * The 15-minute stage's window, from the landing check: the usual one when
+ * every store covers its end, moved back to the latest end every store covers
+ * when that is at most `LANDING_MAX_SHIFT_SECONDS` earlier, and otherwise a
+ * refusal naming the store. Every reading must be present and read — a check
+ * that did not complete proves nothing.
+ */
+export function chooseWindow(
+  nowMs: number,
+  readings: readonly LagReading[],
+): { window: BenchWindow; shiftedSeconds: number; refusal: string | null } {
+  const usual = stageWindow('fifteen', nowMs)
+  const floor = usual.latest - LANDING_MAX_SHIFT_SECONDS
+  const read = landingReadWindow(nowMs)
+  const refusals: string[] = []
+  let latest = usual.latest
+  for (const r of readings) {
+    if (r.error) {
+      refusals.push(`The landing check on ${r.dataset} did not complete (${r.error}), so whether it holds the whole window cannot be told.`)
+      continue
+    }
+    const end = coveredEnd(r)
+    if (end === null) {
+      refusals.push(`Nothing has landed in ${r.dataset} since ${clock(read.earliest)}, so it holds none of any window this stage would measure.`)
+      continue
+    }
+    if (end < floor) {
+      refusals.push(
+        `${r.dataset}’s newest record is from ${clock(r.newest as number)}. Allowing ${LANDING_MARGIN_SECONDS / 60} minutes for ` +
+          `files still being written, it holds everything only up to ${clock(end)} — more than ` +
+          `${LANDING_MAX_SHIFT_SECONDS / 60} minutes before the window’s usual end, ${clock(usual.latest)}.`,
+      )
+      continue
+    }
+    latest = Math.min(latest, end)
+  }
+  if (readings.length === 0) refusals.push('No store was checked, so no window can be shown to be complete.')
+  if (refusals.length > 0) {
+    return {
+      window: usual,
+      shiftedSeconds: 0,
+      refusal: `${refusals.join(' ')} The 15-minute stage ran nothing else: comparing stores over a window one of them has not finished landing would measure the lag, not the store. Try again later.`,
+    }
+  }
+  return { window: { earliest: latest - STAGE_SECONDS.fifteen, latest }, shiftedSeconds: usual.latest - latest, refusal: null }
+}
+
+/** What the landing check found, in words, for under the 15-minute table. */
+export function landingWords(check: LandingCheck): string[] {
+  const found = check.readings
+    .filter((r) => !r.error)
+    .map((r) =>
+      r.newest !== null && r.count
+        ? `${r.dataset}’s newest record is from ${clock(r.newest)}`
+        : `${r.dataset} has nothing since ${clock(check.read.earliest)}`,
+    )
+  const out: string[] = []
+  if (found.length > 0) out.push(`Landing check: ${found.join('; ')}.`)
+  if (!check.refusal && check.readings.length > 0) {
+    out.push(
+      check.shiftedSeconds > 0
+        ? `The window was moved back ${Math.round(check.shiftedSeconds / 60)} minute${check.shiftedSeconds === 60 ? '' : 's'}, so that every store holds all of it.`
+        : 'Every store holds the whole window, so it was not moved.',
+    )
+  }
+  const done = check.readings.filter((r) => !r.error)
+  const reported = done.filter((r) => r.cpuSeconds !== null)
+  const total = reported.reduce((a, r) => a + (r.cpuSeconds as number), 0)
+  if (done.length > 0) {
+    out.push(
+      reported.length === done.length
+        ? `Work done by the landing check: ${cpuWords(total)}.`
+        : reported.length === 0
+          ? 'Work done by the landing check: not reported.'
+          : `Work done by the landing check: at least ${cpuWords(total)} — Cribl did not report the work of ${done.length - reported.length} of its searches.`,
+    )
+  }
+  return out
+}
+
 // ── The plans ───────────────────────────────────────────────────────────────
 
 export interface PlannedBenchRun {
@@ -242,10 +411,17 @@ export interface StageRecord {
    * progress line.
    */
   ended: boolean
+  /** The 15-minute stage's landing check, once it has begun. */
+  landing?: LandingCheck
 }
 
-/** Ended with runs missing: stopped by a person, a refused submit or an error. */
-export const stageStopped = (r: StageRecord): boolean => r.ended && r.runs.length < r.planned
+/**
+ * Ended with runs missing: stopped by a person, a refused submit or an error.
+ * A stage the landing check refused is not "stopped" — it said why it ran
+ * nothing, and that sentence is what is shown instead.
+ */
+export const stageStopped = (r: StageRecord): boolean =>
+  r.ended && r.runs.length < r.planned && !r.landing?.refusal
 
 const pairName = (r: BenchRun, targets: readonly BenchTarget[]) =>
   `${queryById(r.queryId).label} on ${targets.find((t) => t.id === r.targetId)?.dataset ?? r.targetId}`
@@ -339,6 +515,38 @@ export function fifteenCostLine(probe: StageRecord): string {
     `${cpuWords(p.projectedTotal)} (${creditsWords(p.projectedTotal)}) if work grows in step with the window. That ` +
     'is an assumption, not a measurement.'
   )
+}
+
+/**
+ * The landing check's work, estimated from the one-minute stage: the row count
+ * reads every record in a minute, as the landing check does in its window, so
+ * its measured work × the check's minutes is the same assumption the 15-minute
+ * projection makes. Null when the row count was not in the one-minute stage for
+ * that store, or its work was not reported.
+ */
+export function landingEstimate(probe: StageRecord, targetId: string): number | null {
+  const count = probe.runs.find((r) => r.queryId === 'count' && r.targetId === targetId && !r.error)
+  if (!count || count.cpuSeconds === null) return null
+  return count.cpuSeconds * (LANDING_READ_SECONDS / STAGE_SECONDS.one)
+}
+
+/** The landing check's line in the 15-minute confirmation. */
+export function landingCostLine(probe: StageRecord, targets: readonly BenchTarget[]): string {
+  const stores = live(targets)
+  const est = stores.map((t) => landingEstimate(probe, t.id))
+  const minutes = LANDING_READ_SECONDS / 60
+  const head =
+    `First, ${stores.length === 1 ? 'one landing check reads' : `${stores.length} landing checks — one per store — read`} ` +
+    `the last ${minutes} minutes to find when the newest record landed, and the window moves back up to ` +
+    `${LANDING_MAX_SHIFT_SECONDS / 60} minutes so every store holds all of it.`
+  if (est.every((e) => e !== null)) {
+    const total = est.reduce((a: number, e) => a + (e as number), 0)
+    return (
+      `${head} Expect about ${cpuWords(total)} (${creditsWords(total)}) for ${stores.length === 1 ? 'it' : 'them'} — the row ` +
+      `count’s one-minute work × ${minutes}, the same assumption.`
+    )
+  }
+  return `${head} Their work is not known until they run: the row count was not measured on every store in the one-minute stage.`
 }
 
 // ── The 15-minute report ────────────────────────────────────────────────────

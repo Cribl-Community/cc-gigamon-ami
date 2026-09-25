@@ -25,7 +25,7 @@
 // Nothing here may import a .tsx or anything reaching one — the freeze loads
 // this module under plain Node.
 
-import { PARITY_COUNT_QUERY } from './lakeLanding'
+import { LANDING_LAG_QUERY, PARITY_COUNT_QUERY } from './lakeLanding'
 import { buildTrendQuery } from './tcpHealth'
 import { APP_SRC_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY } from './snapshots'
 import { retargetQuery } from './datasets'
@@ -112,3 +112,16 @@ export const BENCH_QUERIES: readonly BenchQuery[] = Object.freeze([
 export function onParquet(query: string): string {
   return retargetQuery(query, BENCH_PARQUET_DATASET)
 }
+
+/**
+ * The landing check the 15-minute stage makes on each store before it picks its
+ * window: the Lake landing panel's own landing-lag search, imported rather than
+ * retyped, so "how far behind is this store" means the same thing on both
+ * screens. It is pinned `measurement` in the routing table, and the benchmark
+ * submits it `asWritten`, so neither the sample seam nor the router can move it;
+ * the Parquet side is `onParquet(BENCH_LANDING_QUERY)`, the same move every
+ * other search here makes. Only `newest` and `n` are read — `lag_s` rides
+ * along because it is part of the string, and it is not used to choose the
+ * window (the job's own time range is, see cribl/benchmarkPlan.ts).
+ */
+export const BENCH_LANDING_QUERY = LANDING_LAG_QUERY

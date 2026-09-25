@@ -118,8 +118,34 @@
 import { useSyncExternalStore } from 'react'
 import { capi, errText } from './capi'
 import { LAKE_DATASET, activeDataset } from './config'
+import { PACK_PARQUET_DATASET_ID } from './pack'
 import { DEFAULT_CAP_TIERS, capTiersInForce } from './search'
 import { currentUser } from './user'
+
+/**
+ * The datasets whose long-running searches this watch lists, compared with a
+ * job's `datasetIds` by EXACT id — never a prefix or a substring, so
+ * `gigamon_ami` does not catch `gigamon_ami_pq` (or `gigamon_ami_sample`) by
+ * accident, and the reverse cannot happen either.
+ *
+ *   * `gigamon_ami` always: the customer's dataset.
+ *   * `gigamon_ami_pq` always: the onboarding pack's Parquet copy. Nothing in
+ *     the app reads it by default, but the store benchmark times searches of it
+ *     and the query router may one day send a panel there — and a Parquet
+ *     group-by stopped by its running-time cap has been billed for thousands of
+ *     CPU-seconds anyway (cribl/benchmarkPlan.ts's header), so a hung one is
+ *     exactly what this watch is for. Ad-hoc searches of it from the Search UI
+ *     are the same population as ad-hoc searches of `gigamon_ami`.
+ *   * whichever dataset the panels are reading now: on a sample-only install
+ *     every job this app submits reads the sample (cribl/datasetTarget.ts), and
+ *     a hung one of those is this app's own.
+ *
+ * Cancel is unchanged by any of this: it stays the signed-in user's own jobs
+ * only (`cancelHungJob`).
+ */
+export function watchedDatasets(): string[] {
+  return [...new Set([LAKE_DATASET, PACK_PARQUET_DATASET_ID, activeDataset()])]
+}
 
 /**
  * The job list, as a policy object.
@@ -551,10 +577,7 @@ async function pollOnce(): Promise<Partial<WatchdogState>> {
   const over = items
     .map((raw) => toHungJob(raw as ShortJob, now, thresholdMs))
     .filter((j): j is HungJob => j !== null)
-  // The customer's dataset always, and the one the panels are reading now —
-  // on a sample-only install every job this app submits reads the sample
-  // (cribl/datasetTarget.ts), and a hung one of those is this app's own.
-  const watched = new Set([LAKE_DATASET, activeDataset()])
+  const watched = new Set(watchedDatasets())
   const listed = over
     .filter((j) => j.datasetIds.some((d) => watched.has(d)))
     .sort((a, b) => b.elapsedMs - a.elapsedMs)

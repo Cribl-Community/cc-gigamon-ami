@@ -36,6 +36,7 @@ import {
   setHungAfterSeconds,
   subscribeToWatchdog,
   watchdogState as snapshot,
+  watchedDatasets,
 } from './jobWatchdog'
 
 const NOW = 1_789_600_000_000
@@ -236,6 +237,44 @@ describe('which jobs it reports', () => {
     expect(snapshot().otherDatasetsOverThreshold).toBe(1)
   })
 
+  it('lists hung searches of the Parquet copy, gigamon_ami_pq, beside gigamon_ami', async () => {
+    // Added 2026-09-25 (feat/bench-lag-and-pq-watchdog): the store benchmark
+    // times searches of the Parquet copy, and ad-hoc ones reach it from the
+    // Search UI; a hung one had nowhere to show.
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    stub(
+      list([
+        running({ id: 'pq', query: 'dataset="gigamon_ami_pq" | summarize count()', datasetIds: ['gigamon_ami_pq'] }),
+        running({ id: 'real' }),
+        running({ id: 'other', datasetIds: ['cribl_logs'] }),
+      ]),
+    )
+    await checkNow()
+    expect(snapshot().jobs.map((j) => j.id).sort()).toEqual(['pq', 'real'])
+    expect(snapshot().otherDatasetsOverThreshold).toBe(1)
+    expect(watchedDatasets()).toEqual(['gigamon_ami', 'gigamon_ami_pq'])
+  })
+
+  it('matches each watched dataset by its exact id, never by a prefix or a substring', async () => {
+    // `gigamon_ami` is a prefix of `gigamon_ami_pq`, and both are prefixes of
+    // names nobody here owns. Every one of these reads something else.
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    const near = ['gigamon_ami_pq_old', 'gigamon_ami_p', 'gigamon_amipq', 'xgigamon_ami_pq', 'GIGAMON_AMI_PQ', 'gigamon_ami_pq ', 'gigamon', 'gigamon_ami_json']
+    stub(
+      list([
+        ...near.map((d) => running({ id: `near-${d}`, query: `dataset="${d}" | limit 1`, datasetIds: [d] })),
+        // …and the text of a query is never what decides, even when it names the Parquet copy.
+        running({ id: 'textonly', query: 'dataset="cribl_logs" | where msg contains "gigamon_ami_pq"', datasetIds: ['cribl_logs'] }),
+        running({ id: 'pq', datasetIds: ['gigamon_ami_pq'] }),
+      ]),
+    )
+    await checkNow()
+    expect(snapshot().jobs.map((j) => j.id)).toEqual(['pq'])
+    expect(snapshot().otherDatasetsOverThreshold).toBe(near.length + 1)
+  })
+
   it('says whether a job carried this app’s running-time cap', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW)
@@ -421,6 +460,31 @@ describe('cancel', () => {
     expect(result.declined).toBe('not-yours')
     expect(after, 'a cancel left the app for a job it does not own').toEqual([])
     expect(snapshot().jobs, 'the row went as though it had been cancelled').toHaveLength(1)
+  })
+
+  it('keeps Cancel to your own jobs on the Parquet copy too', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    const pq = { datasetIds: ['gigamon_ami_pq'], query: 'dataset="gigamon_ami_pq" | summarize count()' }
+    stub(list([running({ ...pq, user: 'auth0|user06' })]))
+    await checkNow()
+    const theirs = snapshot().jobs[0]
+    expect(theirs.mine).toBe(false)
+    const after = stub(list([running({ ...pq, user: 'auth0|user06' })]))
+    expect((await cancelHungJob(theirs)).declined).toBe('not-yours')
+    expect(after, 'a cancel left the app for a Parquet job it does not own').toEqual([])
+
+    const sent = stub(
+      list([running({ ...pq, user: ME })]),
+      { status: 200, body: { items: [{ id: '1789395843210.fxAzHG', status: 'canceled' }], count: 1 } },
+      list([]),
+    )
+    await checkNow()
+    const mine = snapshot().jobs[0]
+    expect(mine.mine).toBe(true)
+    expect((await cancelHungJob(mine)).ok).toBe(true)
+    expect(sent[1].method).toBe('POST')
+    expect(sent[1].url).toContain('/search/jobs/1789395843210.fxAzHG/cancel')
   })
 
   it('will not cancel a job it cannot show is yours', async () => {
