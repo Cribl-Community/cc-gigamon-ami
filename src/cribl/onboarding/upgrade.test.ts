@@ -74,6 +74,9 @@ interface Opts {
   /** The pack list names this build's version from this read on (1-based):
    *  somebody else upgraded the copy while the run was in flight. */
   currentFrom?: number
+  /** With `http: null` (0.1.0): 0.1.0's own sample DataGen, `in_gno_sample`,
+   *  is in the pack, running (`true`) or stopped (`false`). */
+  sample010?: boolean
 }
 
 const shipped = (id: string) => ({ id, ...structuredClone(SHIPPED[id]) })
@@ -89,7 +92,10 @@ function leader(o: Opts): void {
   const w: World = {
     packs: [{ id: PACK_ID, ...o.copy }],
     inputs: o.http === null
-      ? { in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 } }
+      ? {
+        in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 },
+        ...(o.sample010 === undefined ? {} : { [PACK_0_1_0.inputs.sample]: { id: PACK_0_1_0.inputs.sample, type: 'datagen', disabled: !o.sample010 } }),
+      }
       : { [PACK_HTTP_INPUT_ID]: { ...shipped(PACK_HTTP_INPUT_ID), ...(o.http ?? CONFIGURED) }, [PACK_SAMPLE_INPUT_ID]: shipped(PACK_SAMPLE_INPUT_ID) },
     pending: [],
     committed: [],
@@ -264,9 +270,44 @@ describe('the Upgrade confirmation', () => {
     const own = { ...on, tlsCert: '/opt/certs/gno.crt /opt/certs/gno.key' }
     expect(plan.upgradeReadBack({ http: own, sample: null }, { http: on, sample: null }).reset).toEqual(['its TLS certificate'])
     // A sample that was running and is now stopped is said, and does not block.
-    const s = plan.upgradeReadBack({ http: null, sample: { disabled: false } }, { http: null, sample: { disabled: true } })
+    const s = plan.upgradeReadBack({ http: null, sample: { id: PACK_SAMPLE_INPUT_ID, disabled: false } }, { http: null, sample: { id: PACK_SAMPLE_INPUT_ID, disabled: true } })
     expect(s.reset).toEqual([])
-    expect(s.notes.join(' ')).toContain(PACK_SAMPLE_INPUT_ID)
+    expect(s.notes.join(' ')).toContain(`${PACK_SAMPLE_INPUT_ID} was running and is not now`)
+    // …by the id each side had: 0.1.0's sample before, this build's after.
+    const moved = plan.upgradeReadBack(
+      { http: null, sample: { id: PACK_0_1_0.inputs.sample, disabled: false } },
+      { http: null, sample: { id: PACK_SAMPLE_INPUT_ID, disabled: true } },
+    )
+    expect(moved.notes.join(' ')).toContain(`${PACK_0_1_0.inputs.sample} was running before the upgrade, and ${PACK_SAMPLE_INPUT_ID}`)
+  })
+})
+
+// ── 0.1.0's own sample source ───────────────────────────────────────────────
+
+describe('a 0.1.0 copy whose sample DataGen was running', () => {
+  // 0.1.0's sample source is `in_gno_sample` (PACK_0_1_0), not this build's
+  // `in_gigamon_ami_sample`. The before-state has to be read by the INSTALLED
+  // version's id, or a running 0.1.0 sample reads as "no sample source" and
+  // the upgrade that stops it says nothing.
+  it('is read by 0.1.0’s own id before the upgrade, and the read-back says it is not running now', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, sample010: true })
+    const r = await upgrade()
+    expect(r.prepared.ok).toBe(true)
+    if (!r.prepared.ok) return
+    expect(r.prepared.ctx.before.sample).toEqual({ id: PACK_0_1_0.inputs.sample, disabled: false })
+    expect(r.out?.stopped).toBeNull()
+    const warned = r.steps!.filter((s) => s.key === 'readback' && (s as { warning?: boolean }).warning)
+    expect(warned.map((s) => s.detail).join(' ')).toContain(`${PACK_0_1_0.inputs.sample} was running`)
+    expect(warned.map((s) => s.detail).join(' ')).toContain(PACK_SAMPLE_INPUT_ID)
+    // Said, not blocking: the upgrade is committed and deployed.
+    expect(writeWords()).toEqual(['upgrade', 'commit', 'deploy'])
+  })
+
+  it('stopped before the upgrade: nothing to say', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, sample010: false })
+    const r = await upgrade()
+    expect(r.out?.stopped).toBeNull()
+    expect(r.steps!.some((s) => s.key === 'readback' && (s as { warning?: boolean }).warning)).toBe(false)
   })
 })
 

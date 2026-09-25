@@ -108,6 +108,7 @@ import { capi, groupPath } from './capi'
 import { listDatasets } from './lake'
 import { sameDiff, type DiffRow } from './landing'
 import {
+  PACK_0_1_0,
   PACK_BREAKER_ID,
   PACK_HTTP_INPUT_ID,
   PACK_ID,
@@ -285,8 +286,21 @@ export interface PackState {
   /** Each shipped object, by kind and id. Empty when the pack is not installed. */
   objects: Record<PackObjectKind, Record<string, ResourceState>>
   http: HttpInputState | null
+  /** This build's sample DataGen (`PACK_SAMPLE_INPUT_ID`): what Start and
+   *  Stop sample data change. Null when the installed copy has none by that id. */
   sample: { disabled: boolean } | null
+  /**
+   * The INSTALLED VERSION's own sample DataGen, by that version's id: 0.1.0's
+   * `in_gno_sample` (`PACK_0_1_0`), otherwise `PACK_SAMPLE_INPUT_ID`. What the
+   * upgrade's read-back compares, so a running 0.1.0 sample that the upgrade
+   * stopped is reported rather than read as "no sample source".
+   */
+  installedSample: { id: string; disabled: boolean } | null
 }
+
+/** The sample DataGen's id in a given version of the pack. */
+export const sampleInputIdOf = (version: string | null): string =>
+  version === PACK_0_1_0.version ? PACK_0_1_0.inputs.sample : PACK_SAMPLE_INPUT_ID
 
 const emptyObjects = (): PackState['objects'] => ({ inputs: {}, breakers: {}, pipelines: {}, routes: {}, outputs: {} })
 
@@ -328,7 +342,7 @@ const numberOr = (v: unknown): number | null => {
 export async function readPackState(group: string): Promise<PackState> {
   const base: PackState = {
     error: null, installed: false, version: null, published: false, fromRelease: false, current: false,
-    objects: emptyObjects(), http: null, sample: null,
+    objects: emptyObjects(), http: null, sample: null, installedSample: null,
   }
   const found = await readInstalled(group)
   if ('error' in found) return { ...base, error: found.error }
@@ -379,6 +393,9 @@ export async function readPackState(group: string): Promise<PackState> {
   }
   const sample = byId(PACK_SAMPLE_INPUT_ID)
   if (sample) state.sample = { disabled: sample.disabled === true }
+  const ownId = sampleInputIdOf(version)
+  const own = byId(ownId)
+  if (own) state.installedSample = { id: ownId, disabled: own.disabled === true }
   return state
 }
 

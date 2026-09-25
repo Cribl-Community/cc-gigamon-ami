@@ -707,10 +707,12 @@ export function upgradeObjectChanges(from: string | null): { added: PackObjectRe
 }
 
 /** What the upgrade's read-back compares: the Raw HTTP source (never its
- *  token, only whether one is set) and whether the sample runs. */
+ *  token, only whether one is set) and whether the sample runs — the sample
+ *  by the id the version read has for it (packClient.ts `installedSample`:
+ *  0.1.0's `in_gno_sample` before an upgrade from 0.1.0, this build's after). */
 export interface SourceSnapshot {
   http: { port: number | null; tokenSet: boolean; disabled: boolean; tls: boolean; tlsCert: string | null } | null
-  sample: { disabled: boolean } | null
+  sample: { id: string; disabled: boolean } | null
 }
 
 /**
@@ -742,7 +744,10 @@ export function upgradeReadBack(before: SourceSnapshot, after: SourceSnapshot): 
     }
   }
   if (before.sample && !before.sample.disabled && (after.sample === null || after.sample.disabled)) {
-    notes.push(`${PACK_SAMPLE_INPUT_ID} was running and is not now; start it again with Start sample data if you want it.`)
+    const now = after.sample?.id ?? PACK_SAMPLE_INPUT_ID
+    notes.push(before.sample.id === now
+      ? `${now} was running and is not now; start it again with Start sample data if you want it.`
+      : `${before.sample.id} was running before the upgrade, and ${now}, the sample source that replaces it, is not running; start it with Start sample data if you want it.`)
   }
   return { reset, notes }
 }

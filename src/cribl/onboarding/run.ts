@@ -600,7 +600,7 @@ export async function finishPackRemoval(group: string, io: Pick<RemovalIO, 'onSt
 // reset on the Workers, and the step says so, and who else could.
 
 /** What the read-back compares, off `readPackState`. Never a token. */
-const snapshotOf = (p: PackState): SourceSnapshot => ({ http: p.http, sample: p.sample })
+const snapshotOf = (p: PackState): SourceSnapshot => ({ http: p.http, sample: p.installedSample })
 
 /**
  * The pack's source list could not be read. `readPackState` then reports
