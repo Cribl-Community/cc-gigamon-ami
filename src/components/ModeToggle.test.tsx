@@ -30,8 +30,9 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
+import { resetAccelMode } from '../cribl/accel/mode'
 import { dataMode, registerDataModeWriter, resetDataMode, setDataMode } from '../cribl/dataMode'
 import { ModeToggle } from './ModeToggle'
 import { Panel } from './Panel'
@@ -43,6 +44,7 @@ let root: Root
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   resetDataMode()
+  resetAccelMode()
   resetSnapshotCensus()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -53,7 +55,9 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   resetDataMode()
+  resetAccelMode()
   resetSnapshotCensus()
+  vi.unstubAllGlobals()
 })
 
 function render(children?: React.ReactNode) {
@@ -143,7 +147,7 @@ describe('the Snapshot / Live control', () => {
     expect(stateLine()).toContain('everything on this tab is live')
   })
 
-  it('puts a refused write on screen as text, not in a title', () => {
+  it('puts a refused write on screen as text, not in a title', async () => {
     // GatedControl's rule: the reason a control behaves unexpectedly is never
     // hover-only. `saveAccelPref` answers false on the dev page and wherever the
     // platform names no signed-in user, and the mode still works for the
@@ -151,14 +155,42 @@ describe('the Snapshot / Live control', () => {
     render()
     expect(container.querySelector('.mode-unsaved')).toBeNull()
     act(() => segments()[1].click())
+    // The writer now answers asynchronously (no signed-in user here, so it
+    // refuses without sending anything).
+    await act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
     const line = container.querySelector('.mode-unsaved')
     expect(line?.textContent).toContain('could not be saved')
     expect(line?.getAttribute('title'), 'the reason was hidden behind a hover').toBeNull()
   })
 
+  it('saves a press of Live on a tab with no search panel: the toggle itself registers the writer', async () => {
+    // Guided Setup and AMI Reference mount no useSearch panel. Before
+    // 2026-09-25 the writer was registered only by a panel's subscription, so a
+    // press there was refused at once and nothing was sent. Fresh modules: the
+    // signed-in user and the hydration are module state.
+    vi.stubGlobal('getCriblUser', async () => ({ id: 'u-42', username: 'viewer' }))
+    const calls: Array<{ method: string; path: string }> = []
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const method = (init.method ?? 'GET').toUpperCase()
+      calls.push({ method, path: String(url).slice('/capi'.length) })
+      return new Response('', { status: method === 'PUT' ? 200 : 404 })
+    })
+    vi.resetModules()
+    const { ModeToggle: Toggle } = await import('./ModeToggle')
+    const { DashboardProvider: Provider } = await import('../app/DashboardContext')
+    act(() => root.render(<Provider><Toggle tabName="Guided Setup" /></Provider>)) // the toggle alone, no panel
+    await act(async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0)) })
+    act(() => segments()[1].click())
+    await act(async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0)) })
+    expect(calls.filter((c) => c.method === 'PUT').map((c) => c.path)).toEqual(['/kvstore/accel/prefs/u-42'])
+    expect(container.querySelector('.mode-unsaved'), 'the press was refused').toBeNull()
+  })
+
   it('says nothing about saving when the store took the choice', async () => {
-    registerDataModeWriter(async () => true)
     render()
+    // After mount: the toggle registers the real writer when it subscribes.
+    await act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
+    registerDataModeWriter(async () => true)
     act(() => segments()[1].click())
     await act(async () => { await Promise.resolve() })
     expect(container.querySelector('.mode-unsaved')).toBeNull()

@@ -28,6 +28,7 @@
 
 import { useEffect, useId, useState } from 'react'
 import { setDataMode, useDataMode, useDataModeSave, type DataMode } from '../cribl/dataMode'
+import { useAccelModeHydrated } from '../cribl/accel/mode'
 import { useMountedLiveCost } from '../cribl/jobCost'
 import { PanelInfo } from './PanelInfo'
 import { useSnapshotCensus } from './snapshotCensus'
@@ -54,6 +55,12 @@ export function ModeToggle({ tabName }: { tabName: string }) {
   const mode = useDataMode()
   const save = useDataModeSave()
   const census = useSnapshotCensus()
+  // Subscribing starts the stored-mode read, and with it registers the writer
+  // that saves a press (accel/mode.ts `hydrateAccelMode`). Until 2026-09-25 only
+  // useSearch subscribed, so on a tab with no search panel (Guided Setup, AMI
+  // Reference) a press of Live was refused at once and never sent. A read on
+  // mount, which AGENTS.md allows; the value itself is not needed here.
+  useAccelModeHydrated()
   // What a press of `Live` would actually cost, which is NOT what one
   // auto-refresh tick costs — see modeToggleCopy.ts#livePrice for the eighty-
   // times understatement the tick figure produced on Data Flow.
