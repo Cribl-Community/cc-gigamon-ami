@@ -221,8 +221,16 @@ export function FieldExplorer() {
   // mode either — so a verdict that lands later re-runs a read only when it
   // changes what that read does.
   const known = (v: ServingVerdict | 'pending'): ServingVerdict => (v === 'pending' ? 'unknown' : v)
-  const sampleServing = known(useAccelServing(SAMPLE_ACCEL))
-  const presenceServing = known(useAccelServing(PRESENCE_ACCEL))
+  // A verdict is ASKED FOR only when a read could be served from a stored run —
+  // Snapshot mode, or a picked moment — as useSearch does (`servingAsked`).
+  // Otherwise both reads are live whatever the verdict says, and a verdict that
+  // lands after the first read would still move the key and submit both again:
+  // the default path on a sample install, whose mode reads Live and whose
+  // schedules the sample branch refuses to turn on (verifier, 2026-09-24,
+  // integration defect 1). `null` reads as `unknown`, which keys to nothing.
+  const servingId = (id: AccelId): AccelId | null => (accelOn || moment !== null ? id : null)
+  const sampleServing = known(useAccelServing(servingId(SAMPLE_ACCEL)))
+  const presenceServing = known(useAccelServing(servingId(PRESENCE_ACCEL)))
   // …but the effects KEY on what a verdict makes the read do, never on the
   // verdict (verifier, 2026-09-24, defect 1). Not holding means the verdict
   // usually lands after the first read, as `scheduled` — which changes nothing
@@ -232,10 +240,10 @@ export function FieldExplorer() {
   // When this install last rewrote each query (defect 3): a run that began
   // before it is not read. Keyed through `useReappliedRerun`, which re-runs a
   // read only when the run it is SHOWING predates the write — see useSearch.
-  const sampleAppliedAt = useAccelAppliedAt(SAMPLE_ACCEL)
-  const presenceAppliedAt = useAccelAppliedAt(PRESENCE_ACCEL)
-  const { rerun: sampleRerun, shown: setSampleBegan } = useReappliedRerun(SAMPLE_ACCEL)
-  const { rerun: presenceRerun, shown: setPresenceBegan } = useReappliedRerun(PRESENCE_ACCEL)
+  const sampleAppliedAt = useAccelAppliedAt(servingId(SAMPLE_ACCEL))
+  const presenceAppliedAt = useAccelAppliedAt(servingId(PRESENCE_ACCEL))
+  const { rerun: sampleRerun, shown: setSampleBegan } = useReappliedRerun(servingId(SAMPLE_ACCEL))
+  const { rerun: presenceRerun, shown: setPresenceBegan } = useReappliedRerun(servingId(PRESENCE_ACCEL))
   // This panel's row in the header's census. It is a <Panel> like any other, but
   // it builds its state from readAccelFieldSummaries rather than from useSearch,
   // so the `snapshot` prop is assembled by hand here. Without it the In-feed

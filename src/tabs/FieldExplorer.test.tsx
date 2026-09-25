@@ -32,6 +32,7 @@ import { DashboardProvider, TIME_RANGES, useDashboard, type TimeRange } from '..
 import { accelEntry, accelSavedSearch, type AccelId } from '../cribl/accel/manifest'
 import type { AccelRow } from '../cribl/accel/provision'
 import { publishAccelServing } from '../cribl/accel/serving'
+import { settleDatasetTarget } from '../cribl/datasetTarget'
 import { resetSelectedSnapshot, setSelectedSnapshot } from '../cribl/accel/selection'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import type { FieldSummary } from '../cribl/search'
@@ -542,6 +543,24 @@ describe('a saved-search verdict that lands after the first read', () => {
     await heard({ [SAMPLE]: false })
     expect(submits.length - before).toBe(1)
     expect(liveSampleSubmits()).toHaveLength(1)
+  })
+
+  it('re-runs nothing on a sample install, where both reads were already live', async () => {
+    // Verifier, 2026-09-24 (integration), defect 1. On sample data the mode
+    // reads Live and the sample branch refuses to turn a schedule on, so the
+    // verdict routinely lands as `paused` or `unscheduled` AFTER the first
+    // reads. It changes nothing either read does — they were live already —
+    // and keyed on it, both the 5,000-row sample and the presence count were
+    // submitted a second time. useSearch never asks for a verdict it will not
+    // serve from; this tab now does the same.
+    settleDatasetTarget(true)
+    stub()
+    await render()
+    const before = submits.length
+    expect(before, 'the sample install ran its two live reads').toBe(2)
+    expect(submits.every((s) => s.query.includes('gigamon_ami_sample'))).toBe(true)
+    await heard({ [SAMPLE]: false, [PRESENCE]: false })
+    expect(submits.length - before, 'a verdict about schedules this install does not read re-ran a live read').toBe(0)
   })
 
   it('re-runs the sample once, live, when its query was re-applied after the run on screen began', async () => {
