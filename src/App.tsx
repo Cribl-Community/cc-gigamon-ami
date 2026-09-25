@@ -2,7 +2,7 @@ import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AUTO_REFRESH, TIME_RANGES, WITHHELD_REFRESH_SECONDS, useDashboard } from './app/DashboardContext'
 import { APP_VERSION, IS_INSTALLED } from './cribl/config'
-import { applyTheme, readStoredTheme, storeTheme, type Theme } from './app/theme'
+import { ThemeToggle } from './app/ThemeToggle'
 import { useInflight } from './cribl/inflight'
 import { CPU_SECONDS_PER_CREDIT, useMountedSearchCost } from './cribl/jobCost'
 import { formatCost, formatRecurringCost } from './lib/format'
@@ -25,43 +25,6 @@ function RefreshIcon() {
       <path d="M21 12a9 9 0 1 1-2.64-6.36" />
       <path d="M21 3v6h-6" />
     </svg>
-  )
-}
-
-function SunIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-      <circle cx="12" cy="12" r="4.2" />
-      <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4" />
-    </svg>
-  )
-}
-
-function MoonIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5Z" />
-    </svg>
-  )
-}
-
-function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(readStoredTheme)
-  useEffect(() => {
-    applyTheme(theme)
-    storeTheme(theme)
-  }, [theme])
-  const next = theme === 'dark' ? 'light' : 'dark'
-  return (
-    <button
-      type="button"
-      className="btn btn-icon"
-      onClick={() => setTheme(next)}
-      title={`Switch to ${next} mode`}
-      aria-label={`Switch to ${next} mode`}
-    >
-      {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-    </button>
   )
 }
 

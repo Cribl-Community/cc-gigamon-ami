@@ -32,7 +32,10 @@ if (TRACE) installTrace()
 if (RELAY) startRelay()
 
 // Applied before React mounts so there's no flash of the wrong theme. Defaults
-// to dark (the reference dashboards are dark) unless the user or OS says light.
+// to dark (the reference dashboards are dark) unless the local cache or OS says
+// light. A first guess: where localStorage is not kept (Cribl's sandboxed frame)
+// the viewer's stored choice arrives with the KV preferences document, and
+// ThemeToggle applies it then (src/app/ThemeToggle.tsx).
 applyTheme(readStoredTheme())
 
 // The install-wide search running-time limits, if this install has changed them

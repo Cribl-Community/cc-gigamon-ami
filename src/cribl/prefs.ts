@@ -42,6 +42,17 @@
 // load, which AGENTS.md forbids, and neither key is worth an exception to that:
 // a viewer who already dismissed a banner sees it once more and dismisses it
 // once more, this time somewhere it will survive a new browser.
+//
+// THE THEME LIVES HERE TOO (2026-09-25). It used to be the one client-side
+// exception, kept in localStorage alone, and inside Cribl's sandboxed app frame
+// that store throws or does not survive a reload — so a viewer who chose dark
+// was back on the OS preference every load. It is now a field of this same
+// document, written by the toggle's click and read with the rest. Unlike the
+// banners it keeps a local cache (src/app/theme.ts): localStorage, where it
+// works, is still the first-paint guess, so there is no flash in a browser that
+// keeps it; the stored choice is applied when the document lands, if it
+// differs. The old localStorage key is not migrated into the store, for the
+// reason above.
 
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { getDoc, putDoc } from './kv'
@@ -55,7 +66,17 @@ export interface Prefs {
   tourSeen?: boolean
   /** The "generate dataset intelligence" note has been dismissed. */
   intelPromptDismissed?: boolean
+  /** The theme this viewer last chose with the header toggle. Absent means
+   *  "never chose": the local first guess (localStorage, then the OS) stands.
+   *  Not a flag, so it has its own accessor, `useThemePref`, rather than
+   *  bending usePref's boolean contract. */
+  theme?: 'light' | 'dark'
 }
+
+/** The fields usePref may be handed: the boolean ones. */
+export type PrefFlag = {
+  [K in keyof Prefs]-?: NonNullable<Prefs[K]> extends boolean ? K : never
+}[keyof Prefs]
 
 const key = (userId: string) => `app/prefs/${userId}`
 
@@ -147,17 +168,47 @@ const getSnapshot = () => prefs
  * fail (no user named, dev page, store unreachable) without the click being
  * wrong.
  */
-export function usePref(name: keyof Prefs): [boolean | undefined, (value: boolean) => void] {
+export function usePref(name: PrefFlag): [boolean | undefined, (value: boolean) => void] {
   const doc = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   // In an effect, not during render: the read is a side effect, and this way it
   // starts when something is actually on screen waiting for the answer.
   useEffect(load, [])
-  const set = useCallback((value: boolean) => {
-    // Read from module state rather than from `doc`, so two setters called in
-    // one handler compose instead of the second dropping the first's flag.
-    const next: Prefs = { ...(prefs ?? {}), [name]: value }
-    publish(next)
-    persist(next)
-  }, [name])
+  const set = useCallback((value: boolean) => setField(name, value), [name])
   return [doc === null ? undefined : (doc[name] ?? false), set]
+}
+
+/** One field set by a click: in memory at once, then the whole document to the
+ *  store, chained behind every earlier write. Read from module state rather
+ *  than from a render's `doc`, so two setters called in one handler compose
+ *  instead of the second dropping the first's field. */
+function setField<K extends keyof Prefs>(name: K, value: Prefs[K]): void {
+  const next: Prefs = { ...(prefs ?? {}), [name]: value }
+  publish(next)
+  persist(next)
+}
+
+/**
+ * This viewer's stored theme choice, and a way to record a new one.
+ *
+ * Three answers, like usePref's: `undefined` while the document is still being
+ * read, `null` once it has landed with no choice in it (a viewer who never
+ * pressed the toggle, or one the platform cannot name), and the choice itself.
+ * The caller paints its local first guess until then and adopts a stored choice
+ * that differs when it lands.
+ *
+ * The setter is for the toggle's click and nothing else: the one write is the
+ * viewer choosing. Nothing here copies a localStorage value into the store on
+ * load — that would be a write on load (AGENTS.md). When the store refuses the
+ * PUT (the localhost dev page always does; kv.ts keeps a session-lifetime
+ * shadow of it), the choice still holds for this page and the next load falls
+ * back to the local guess — which is exactly the behaviour before this existed.
+ */
+export function useThemePref(): [Prefs['theme'] | null | undefined, (value: 'light' | 'dark') => void] {
+  const doc = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  useEffect(load, [])
+  const set = useCallback((value: 'light' | 'dark') => setField('theme', value), [])
+  // A stored value that is not one of the two themes is read as no choice,
+  // never repaired: the next click overwrites it.
+  const t = doc?.theme
+  return [doc === null ? undefined : t === 'light' || t === 'dark' ? t : null, set]
 }
