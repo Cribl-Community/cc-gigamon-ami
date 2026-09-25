@@ -48,6 +48,10 @@ import {
   type CommitScope,
 } from '../cribl/provision'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
+import {
+  PACK_BREAKER_ID, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_LAKE_DATASET_ID,
+  PACK_PARQUET_DATASET_ID, PACK_PIPELINE_ID,
+} from '../cribl/pack'
 
 export interface ProvisionConfirmContext {
   group: string
@@ -160,7 +164,7 @@ export function pendingSentence(ctx: ProvisionConfirmContext): string {
  * than retreating to "some configuration files", which would cost the reader
  * the one fact they need: that `inputs.yml` is in the set at all.
  */
-function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
+export function carriesSentence(ctx: ProvisionConfirmContext, verb: string): string {
   const files = ctx.scope?.carries ?? []
   if (files.length === 0) return `The change is committed and deployed to ${ctx.group}.`
   return (
@@ -344,3 +348,46 @@ export const SETUP_FACTS: readonly SetupFact[] = Object.freeze([
       'With nothing pointed at it, the source shows healthy at 0 events per second. The DataGen demo keeps the dashboards populated meanwhile.',
   },
 ])
+
+/**
+ * "What gets created" when the onboarding pack is the onboarding: the pack's
+ * own objects, never the global stack's. Shown only once the pack's release
+ * can be installed (cribl/onboarding/plan.ts `onboardingPath`); until then the
+ * page shows `SETUP_FACTS`, because the global stack is still what a deploy
+ * creates.
+ */
+export const PACK_SETUP_FACTS: readonly SetupFact[] = Object.freeze([
+  {
+    label: `Pack ${PACK_ID} — installed from its release`,
+    tip:
+      'Installed from the release this app version pins, with custom functions refused. Its sources, breaker, pipeline, routes and ' +
+      'destinations live inside the pack, apart from the rest of the group’s configuration.',
+  },
+  {
+    label: `Source ${PACK_HTTP_INPUT_ID} — a new token, shown once`,
+    tip:
+      `Ships switched off with no token. Onboarding picks a free port, generates a token, sets TLS for the group and starts it in one change. ` +
+      `The breaker ${PACK_BREAKER_ID} splits each POSTed JSON array into one event per record.`,
+  },
+  {
+    label: `Pipeline ${PACK_PIPELINE_ID} — same fields as the demo feed`,
+    tip:
+      'Applies the same numeric casts and derived fields (http_server_ms, tcp_reset, subnets, l4_proto, byte and packet totals) as the demo gigamon_ami pipeline, so every dashboard reads the same fields.',
+  },
+  {
+    label: `Every record lands twice: JSON and Parquet`,
+    tip:
+      `Route ${PACK_HTTP_JSON_ROUTE_ID} writes each record to ${PACK_LAKE_DATASET_ID}, which the dashboards read, and passes it on; ` +
+      `route ${PACK_HTTP_PARQUET_ROUTE_ID} writes the same record to ${PACK_PARQUET_DATASET_ID}. Both datasets are created before the pack is installed, and neither is ever deleted by this app.`,
+  },
+  {
+    label: `Cribl-managed groups use ports ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`,
+    tip:
+      `Cribl.Cloud exposes only ${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max} on a managed group, with TLS on Cribl’s certificate. A hybrid group takes any port, but its source starts without TLS until you add a certificate.`,
+  },
+])
+
+/** The "What gets created" list for the onboarding path the page offers. */
+export function setupFacts(mode: 'global' | 'pack'): readonly SetupFact[] {
+  return mode === 'pack' ? PACK_SETUP_FACTS : SETUP_FACTS
+}

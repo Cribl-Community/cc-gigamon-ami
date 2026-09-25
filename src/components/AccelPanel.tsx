@@ -151,6 +151,7 @@ import {
   type RowAction,
 } from './accelPanelCopy'
 import { useWriteGate } from '../cribl/authz'
+import { SETUP_RUN_BUSY, acquireSetupRun, useSetupRunHolder } from '../cribl/setupRunLock'
 import { SEARCH_GROUP, criblUiUrl } from '../cribl/config'
 import { currentUserId } from '../cribl/user'
 import { MANIFEST, type AccelId } from '../cribl/accel/manifest'
@@ -268,6 +269,9 @@ export function AccelPanel() {
   const unverified = !sampleOnly && !realDataConfirmed(target)
   const switchCtx = { sampleOnly, unverified }
 
+  // One Guided Setup run at a time (cribl/setupRunLock.ts): the onboarding
+  // run's last step writes these same saved searches.
+  const lockHolder = useSetupRunHolder()
   const applyGate = useWriteGate('accel.apply')
   const pauseGate = useWriteGate('accel.pause')
   const removeGate = useWriteGate('accel.remove')
@@ -331,8 +335,21 @@ export function AccelPanel() {
   const canApply = plan !== null && plan.willWrite.length > 0 && !sampleOnly && !unverified
   const canRemove = teardown !== null && teardown.willDelete.length > 0
 
-  const applyBlocked = running !== null || loading || applyGate.denied !== null
-  const removeBlocked = running !== null || loading || removeGate.denied !== null
+  const applyBlocked = running !== null || loading || applyGate.denied !== null || lockHolder !== null
+  const removeBlocked = running !== null || loading || removeGate.denied !== null || lockHolder !== null
+  // Why a confirmed write would not run now: this panel's own run, or another
+  // Guided Setup run holding the page's lock.
+  const busyNow = running !== null || lockHolder !== null ? SETUP_RUN_BUSY : null
+
+  /** Take the page's run lock for one confirmed write, or close the dialog and
+   *  say why nothing was written. */
+  const takeLock = (): (() => void) | null => {
+    const unlock = acquireSetupRun('acceleration')
+    if (unlock) return unlock
+    setConfirming(null)
+    pushToast({ kind: 'error', text: `Nothing was written: ${SETUP_RUN_BUSY}` })
+    return null
+  }
 
   /** True when the verdict, read NOW, allows turning schedules on. Otherwise
    *  closes the dialog, says why, and the caller writes nothing. */
@@ -347,6 +364,8 @@ export function AccelPanel() {
   const onApply = async () => {
     // Apply creates every schedule running.
     if (!onOnlyIfReal()) return
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('apply')
     setConfirming(null)
     setSteps([])
@@ -383,11 +402,14 @@ export function AccelPanel() {
     } catch (err) {
       pushToast({ kind: 'error', text: `Acceleration could not be applied: ${err instanceof Error ? err.message : String(err)}` })
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
 
   const onRemove = async () => {
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('remove')
     setConfirming(null)
     setSteps([])
@@ -411,12 +433,15 @@ export function AccelPanel() {
     } catch (err) {
       pushToast({ kind: 'error', text: `Acceleration could not be removed: ${err instanceof Error ? err.message : String(err)}` })
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
 
   const onSchedule = async (id: AccelId, enable: boolean) => {
     if (enable && !onOnlyIfReal()) return
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('schedule')
     setConfirming(null)
     setSteps([])
@@ -436,6 +461,7 @@ export function AccelPanel() {
     } catch (err) {
       pushToast({ kind: 'error', text: `${id} could not be changed: ${err instanceof Error ? err.message : String(err)}` })
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
@@ -443,7 +469,7 @@ export function AccelPanel() {
   // Read from the saved searches as they are — never from a stored preference.
   const readings = state && readError === null ? tabReadings(state) : null
   const master = state && readError === null ? masterReading(state) : null
-  const switchBlocked = running !== null || loading || state === null || readError !== null
+  const switchBlocked = running !== null || lockHolder !== null || loading || state === null || readError !== null
 
   /** A flip. Computes the plan and opens the confirmation; writes nothing.
    *  Which way it goes is `flipPlan`'s decision, from what the switch reads
@@ -464,6 +490,8 @@ export function AccelPanel() {
     // A flip moves schedules one way; only one that turns some ON waits for the
     // verdict. Pausing is what the rule asks for, whatever the answer.
     if (plan.changes.some((c) => c.to) && !onOnlyIfReal()) return
+    const unlock = takeLock()
+    if (!unlock) return
     setRunning('toggle')
     setConfirming(null)
     setSteps([])
@@ -481,6 +509,7 @@ export function AccelPanel() {
     } catch (err) {
       pushToast({ kind: 'error', text: `Acceleration could not be switched: ${err instanceof Error ? err.message : String(err)}` })
     } finally {
+      unlock()
       if (alive.current) setRunning(null)
     }
   }
@@ -641,7 +670,7 @@ export function AccelPanel() {
                       ownerName={owner.name ?? owner.id ?? 'not recorded'}
                       withOwner={withOwner}
                       columns={columns}
-                      blocked={running !== null || loading || pauseGate.denied !== null}
+                      blocked={running !== null || lockHolder !== null || loading || pauseGate.denied !== null}
                       onSchedule={(enable) => setConfirming({ kind: 'schedule', id: row.id, enable })}
                     />
                   )
@@ -804,7 +833,7 @@ export function AccelPanel() {
               write="accel.apply"
               label="Yes, create them"
               busyLabel="Applying…"
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busyNow}
               run={onApply}
             />
           }
@@ -833,7 +862,7 @@ export function AccelPanel() {
               label="Yes, delete them"
               busyLabel="Removing…"
               className="btn btn-danger"
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busyNow}
               run={onRemove}
             />
           }
@@ -854,7 +883,7 @@ export function AccelPanel() {
               write="accel.pause"
               label={planResumes(togglingPlan) ? 'Yes, resume them' : 'Yes, pause them'}
               busyLabel={planResumes(togglingPlan) ? 'Resuming…' : 'Pausing…'}
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busyNow}
               run={() => onToggle(togglingPlan)}
             />
           }
@@ -890,7 +919,7 @@ export function AccelPanel() {
               write="accel.pause"
               label={confirming.enable ? 'Yes, resume it' : 'Yes, pause it'}
               busyLabel={confirming.enable ? 'Resuming…' : 'Pausing…'}
-              unavailable={running !== null ? 'Another run is already in progress.' : null}
+              unavailable={busyNow}
               run={() => onSchedule(confirming.id, confirming.enable)}
             />
           }

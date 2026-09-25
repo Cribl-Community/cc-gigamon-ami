@@ -1295,3 +1295,62 @@ describe('the time a body was applied', () => {
     expect(result.state.rows.find((r) => r.id === PIPELINE)!.bodyAt).toBeGreaterThanOrEqual(t0)
   })
 })
+
+// ── CREATING THE SCHEDULES PAUSED ───────────────────────────────────────────
+// Onboarding always installs acceleration (owner, 2026-09-24), but while only
+// sample data exists every schedule would scan an empty `gigamon_ami` and bill
+// for it. So the run creates them PAUSED, and the master switch turns them on
+// once real data lands. `{ enabled }` governs what a CREATE writes and nothing
+// else: a correction keeps the stored pause state, because Apply is not the
+// control that pauses or resumes (see `applyAcceleration`).
+describe('applyAcceleration { enabled: false } — installed, but paused', () => {
+  const resolved = { lake: LAKE_30 }
+  const PIPELINE = 'gno_pipeline_c1h'
+
+  it('every POST carries schedule.enabled:false, and the bodies are otherwise the running ones', async () => {
+    const paused = stubWorkspace(resolved)
+    await applyAcceleration(() => {}, approvedWrites(await readAccelState()), { enabled: false })
+    const pausedPosts = writes(paused.calls).filter((c) => c.method === 'POST')
+    expect(pausedPosts.map((c) => String(c.body?.id)).sort()).toEqual(MANIFEST.map((e) => e.id).sort())
+    for (const c of pausedPosts) expect((bodyOf(c).schedule as { enabled?: unknown }).enabled, String(c.body?.id)).toBe(false)
+
+    const running = stubWorkspace(resolved)
+    await applyAcceleration(() => {}, approvedWrites(await readAccelState()))
+    const runningPosts = writes(running.calls).filter((c) => c.method === 'POST')
+    for (const c of runningPosts) expect((bodyOf(c).schedule as { enabled?: unknown }).enabled, String(c.body?.id)).toBe(true)
+    const strip = (b: Record<string, unknown>) => ({ ...b, schedule: { ...(b.schedule as object), enabled: null } })
+    const byId = (cs: Call[]) => new Map(cs.map((c) => [String(c.body?.id), strip(bodyOf(c))]))
+    const p = byId(pausedPosts)
+    for (const [id, body] of byId(runningPosts)) {
+      // The stamp carries the app's write time nowhere, so the bodies are equal but for `enabled`.
+      expect(p.get(id), id).toEqual(body)
+    }
+  })
+
+  it('reads them back as paused', async () => {
+    stubWorkspace(resolved)
+    const result = await applyAcceleration(() => {}, undefined, { enabled: false })
+    expect(result.state.rows.every((r) => r.state === 'paused')).toBe(true)
+  })
+
+  it('does not pause a running schedule it corrects — only creates are paused', async () => {
+    const drifted = { ...(await correct(PIPELINE)), query: 'dataset="gigamon_ami" | limit 1' }
+    const { calls } = stubWorkspace({ ...resolved, saved: await allCorrect({ [PIPELINE]: drifted }) })
+    await applyAcceleration(() => {}, approvedWrites(await readAccelState()), { enabled: false })
+    const patch = writes(calls).find((c) => c.method === 'PATCH' && c.path.endsWith(PIPELINE))
+    expect((bodyOf(patch).schedule as { enabled?: unknown }).enabled).toBe(true)
+  })
+
+  // The unresolved-window guard (F1) sits inside applyAcceleration, ahead of
+  // every branch, so it holds for any caller and any `enabled`: the onboarding
+  // run passes `{ enabled }` and no dialog's set can smuggle the Lake entry in.
+  it('still never creates the Lake entry on a window nobody resolved', async () => {
+    const { calls } = stubWorkspace() // the Lake read 404s
+    const forged = { [LAKE]: 'absent' as const }
+    for (const enabled of [false, true]) {
+      const result = await applyAcceleration(() => {}, forged, { enabled })
+      expect(result.steps.find((s) => s.id === LAKE)?.action, String(enabled)).toBe('skipped')
+    }
+    expect(writes(calls).filter((c) => c.body?.id === LAKE || c.path.endsWith(LAKE))).toEqual([])
+  })
+})

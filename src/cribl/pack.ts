@@ -91,8 +91,8 @@ export const PACK_PUBLISHED: boolean = false
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
  * summary prints it. MUST BE SET before any code installs from `PACK_URL`:
- * packClient.ts `installRefusal` refuses to install or upgrade while it is
- * null. That is a record, not a check of the bytes: the Leader downloads
+ * `packRelease` below refuses while it is null, and so does packClient.ts's
+ * `installRefusal`, which is that function bound to these constants. That is a record, not a check of the bytes: the Leader downloads
  * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
  * sees the asset to hash it. Null only while no release exists
  * (`PACK_PUBLISHED` false).
@@ -146,6 +146,58 @@ export function packReleaseUrl(version: string): string {
   return `https://github.com/Cribl-Community/cc-gigamon-ami/releases/download/${packTag(version)}/${packAssetName(version)}`
 }
 
+/** A sha256 as pack-release.yml prints it: 64 lowercase hex characters. */
+const SHA256_SHAPE = /^[0-9a-f]{64}$/
+
+/** The three release facts `packRelease` judges. */
+export interface PackReleaseFacts {
+  published: boolean
+  sha256: string | null
+  version: string
+}
+
+/** The pinned release, and whether this build may install it. */
+export interface PackRelease extends PackReleaseFacts {
+  /** Where the Leader would download it from. */
+  url: string
+  /** Why this build may not install (or upgrade to) it, as a sentence a
+   *  customer can read; null when it may. */
+  refusal: string | null
+  /** `refusal === null`. */
+  installable: boolean
+}
+
+/**
+ * The pinned release and whether this build may install it — pure, so the
+ * Guided Setup page can say why Onboard is refused without importing
+ * packClient.ts (which nothing on screen may reach until its grants are
+ * declared). packClient.ts's `installRefusal` is this, bound to the constants
+ * it imports, so the page and the client cannot give two answers.
+ *
+ * WHAT THIS GUARD IS, AND WHAT IT IS NOT. It refuses while no release of the
+ * version exists (`published`) or while its digest is unrecorded or is not a
+ * sha256 at all: the URL would be a 404, or would name bytes nobody wrote
+ * down. It does NOT compare the downloaded bytes with the digest, because the
+ * app never sees them — the Leader fetches the URL itself and `POST /packs`
+ * has no digest field. After an install the version, the source and one known
+ * object are read back (packClient.ts `verifyInstalled`).
+ *
+ * The argument defaults to this build's constants; tests pass their own.
+ */
+export function packRelease(
+  facts: PackReleaseFacts = { published: PACK_PUBLISHED, sha256: PACK_SHA256, version: PACK_VERSION },
+): PackRelease {
+  const { published, sha256, version } = facts
+  const refusal = !published
+    ? `pack ${version} has not been released, so there is nothing to install yet`
+    : !sha256
+      ? `pack ${version} has no recorded sha256, so this app will not install it`
+      : !SHA256_SHAPE.test(sha256)
+        ? `pack ${version}’s recorded sha256 is not 64 lowercase hex characters, so this app will not install it`
+        : null
+  return Object.freeze({ published, sha256, version, url: packReleaseUrl(version), refusal, installable: refusal === null })
+}
+
 /**
  * EVERY VERSION OF THIS PACK THAT HAS BEEN RELEASED, KEPT BY HAND. The only
  * versions packClient.ts will upgrade from or remove.
@@ -187,8 +239,9 @@ export const PACK_PARQUET_OUTPUT_ID = 'gigamon_ami_parquet_lake'
 export const PACK_SAMPLE_OUTPUT_ID = 'gigamon_ami_sample_lake'
 
 /** The customer's dataset, which every dashboard reads. Outside the pack:
- *  Cribl has no pack-scoped dataset. Guided Setup's `ensureDataset` creates
- *  this one; see `PACK_DATASETS_NOT_CREATED` for the other two. */
+ *  Cribl has no pack-scoped dataset. Guided Setup creates it — its Raw HTTP
+ *  deploy and its onboarding run, both through provision.ts
+ *  `ensureLakeDataset`. */
 export const PACK_LAKE_DATASET_ID = 'gigamon_ami'
 /** The Parquet copy of the same records. Dashboards do not read it (yet). */
 export const PACK_PARQUET_DATASET_ID = 'gigamon_ami_pq'
@@ -200,18 +253,36 @@ export const PACK_PARQUET_DATASET_ID = 'gigamon_ami_pq'
 export const PACK_SAMPLE_DATASET_ID = 'gigamon_ami_sample'
 
 /**
- * The datasets the pack writes to that NO RELEASE OF THIS APP CREATES YET. Only
- * `gigamon_ami` has a creator (provision.ts `ensureDataset`). Until one exists:
- *   - gigamon_ami_pq: the pack's Parquet route ships enabled, so once the HTTP
- *     source is started every Parquet copy is dropped (`onBackpressure: drop`)
- *     with no signal, while gigamon_ami keeps flowing. provision.ts
- *     `PARQUET_DATASET_SPEC` is the body to create it with.
- *   - gigamon_ami_sample: packClient.ts refuses to start the sample source.
- * The pack README ships inside the .crbl and says the same; pack.test.ts fails
- * when a dataset POST is added to src and this list and the README are not
- * changed with it.
+ * The datasets the pack writes to that NO RELEASE OF THIS APP CREATES. EMPTY
+ * since 2026-09-24: Guided Setup's onboarding run (cribl/onboarding/run.ts)
+ * creates gigamon_ami_pq, and gigamon_ami_sample when sample data is ticked,
+ * through provision.ts `ensureLakeDataset` — created when absent, never edited.
+ * *(Until then it listed both, and the pack README said no release created
+ * them.)*
+ *
+ * Kept, so a dataset a future pack writes to before anything creates it has a
+ * place to be recorded. pack.test.ts holds this list, the callers of
+ * `ensureLakeDataset` and the pack README's sentence about who creates what to
+ * one another: a new creator, or a new dataset nothing creates, changes all
+ * three together.
  */
-export const PACK_DATASETS_NOT_CREATED: readonly string[] = Object.freeze([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID])
+export const PACK_DATASETS_NOT_CREATED: readonly string[] = Object.freeze([])
+
+/**
+ * Every object the pack ships, by the kind of list it appears in. Here rather
+ * than in packClient.ts because the onboarding plan's confirmation names each
+ * one, and the plan may not import the client (it is on paths.ts
+ * `UNREACHED_MODULES`). packClient.ts re-exports it.
+ */
+export const PACK_OBJECTS = Object.freeze({
+  inputs: Object.freeze([PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID]),
+  breakers: Object.freeze([PACK_BREAKER_ID]),
+  pipelines: Object.freeze([PACK_PIPELINE_ID]),
+  routes: Object.freeze([PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_SAMPLE_ROUTE_ID]),
+  outputs: Object.freeze([PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID, PACK_SAMPLE_OUTPUT_ID]),
+})
+
+export type PackObjectKind = keyof typeof PACK_OBJECTS
 
 /** The ports a Cribl-managed (Cloud) worker group exposes for a source.
  *  pack.test.ts holds it equal to provision.ts's `CLOUD_PORT_RANGE`. */
@@ -260,7 +331,7 @@ export const PACK_DECISIONS: Readonly<Record<string, string>> = Object.freeze({
   parquet_schema_mode:
     `${PACK_PARQUET_OUTPUT_ID} keeps automaticSchema: true, because on 2026-09-24 an explicit parquetSchema had no observable effect: absent fields got the same "" fill, a field it did not list was still kept, and strings were stored in a column it declared INT64.`,
   parquet_partitions:
-    `${PACK_PARQUET_DATASET_ID} is to be created with no partition fields (nothing creates it yet: PACK_DATASETS_NOT_CREATED), because on 2026-09-24 a protocol partition on Search v2 pruned nothing (a protocol=6 search read the same 63,249 events and 2.69 MB from the partitioned and the flat twin) while costing 172% of the flat twin unfiltered and 197% under other filters.`,
+    `${PACK_PARQUET_DATASET_ID} is created with no partition fields (by the onboarding run, onboarding/plan.ts parquetDatasetSpec), because on 2026-09-24 a protocol partition on Search v2 pruned nothing (a protocol=6 search read the same 63,249 events and 2.69 MB from the partitioned and the flat twin) while costing 172% of the flat twin unfiltered and 197% under other filters.`,
 })
 
 /** One path an event takes through a pack: the shape Data Flow's stack list uses. */

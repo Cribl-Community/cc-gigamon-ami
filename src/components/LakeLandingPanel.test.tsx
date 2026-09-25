@@ -54,6 +54,7 @@ import { DEPLOY_CONSEQUENCES, FLUSH_PRESETS, LANDING_TERMS, retentionChange } fr
 import { LANDING_PROFILE_KEY } from '../cribl/lakeLanding'
 import { LakeLandingPanel } from './LakeLandingPanel'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
+import { SETUP_RUN_BUSY, acquireSetupRun, resetSetupRunLock, setupRunHolder } from '../cribl/setupRunLock'
 // The words and the units, separately from the screen that renders them. Half
 // the assertions in this file never mount anything — see lakeLandingCopy.ts.
 import {
@@ -78,6 +79,7 @@ import {
   sizeSentence,
 } from './lakeLandingCopy'
 import { GuidedSetup } from '../tabs/GuidedSetup'
+import { SETUP_FACTS } from './provisionPanelCopy'
 
 const BASE = '/capi'
 const LAKE = '/products/lake/lakes/default'
@@ -298,6 +300,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
   resetDenials()
+  resetSetupRunLock()
 })
 
 /** Let the environment run: the group read, the profile read, nine independent
@@ -933,6 +936,90 @@ describe('no write without a confirmation', () => {
   })
 })
 
+describe('one Guided Setup run at a time', () => {
+  // The onboarding panels commit and deploy the same group from the same page.
+  it('while another run holds the page’s lock, Apply opens no dialog and writes nothing', async () => {
+    const { calls } = stubWorkspace()
+    await mount()
+    await typeInto(inputLabelled('Retention, in days'), '45')
+    const release = acquireSetupRun('onboarding_pack')!
+    await settle()
+    const apply = controlIn('Retention', 'Apply')
+    expect(apply?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(SETUP_RUN_BUSY)
+    await press(apply)
+    expect(bodyText()).not.toContain('Raise retention on Cribl Lake dataset gigamon_ami')
+    expect(criblWrites(calls)).toEqual([])
+    release()
+  })
+
+  /** The run lock's holder at each request that changes Cribl, as it is sent. */
+  function holdersAtWrites(): Array<string | null> {
+    const inner = globalThis.fetch
+    const held: Array<string | null> = []
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (method !== 'GET' && !String(url).includes('/kvstore')) held.push(setupRunHolder())
+      return inner(url, init)
+    })
+    return held
+  }
+  async function changeFlush() {
+    await press(buttonStarting('Adjust how objects are written'))
+    const balanced = [...document.body.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find((i) => i.value === 'balanced')
+    await press(balanced)
+    await press(buttonNamed('Change…'))
+    await press(buttonNamed('Yes, apply and deploy'))
+  }
+
+  it('a destination change holds the lock through its commit and deploy, and gives it back', async () => {
+    const { calls } = stubWorkspace()
+    const held = holdersAtWrites()
+    await mount()
+    await changeFlush()
+    expect(criblWrites(calls).length).toBe(3)
+    expect(held).toEqual(['lake_landing', 'lake_landing', 'lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+
+  it('a retention change holds it, and gives it back', async () => {
+    const { calls } = stubWorkspace()
+    const held = holdersAtWrites()
+    await mount()
+    await typeInto(inputLabelled('Retention, in days'), '45')
+    await press(controlIn('Retention', 'Apply'))
+    await press(buttonNamed('Yes, raise it'))
+    expect(criblWrites(calls).length).toBe(1)
+    expect(held).toEqual(['lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+
+  it('a description change holds it, and gives it back', async () => {
+    const { calls } = stubWorkspace()
+    const held = holdersAtWrites()
+    await mount()
+    await typeInto(inputLabelled('Dataset description'), 'AMI flows from the lab')
+    await press(controlIn('Description', 'Apply'))
+    await press(buttonNamed('Yes, change it'))
+    expect(criblWrites(calls).length).toBe(1)
+    expect(held).toEqual(['lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+
+  it('the retry of a half-applied run holds it, and gives it back', async () => {
+    const { calls } = stubWorkspace({ status: { 'POST /version/commit': 500 } })
+    await mount()
+    await changeFlush()
+    const held = holdersAtWrites()
+    const before = calls.length
+    await press(buttonNamed('Retry the commit and deploy'))
+    await press(buttonNamed('Yes, commit and deploy'))
+    expect(criblWrites(calls.slice(before)).map((c) => `${c.method} ${c.path}`)).toEqual(['POST /version/commit'])
+    expect(held).toEqual(['lake_landing'])
+    expect(setupRunHolder()).toBeNull()
+  })
+})
+
 describe('the one irreversible edit', () => {
   it('asks for the dataset id and says why a decrease cannot be undone', async () => {
     const { calls } = stubWorkspace()
@@ -1216,5 +1303,17 @@ describe('it is actually on the page', () => {
     expect(anchor, 'the in-page anchor the dataset-absent state links to is not on the page').toBeTruthy()
     // The anchor really wraps the ingest panel, not something else.
     expect(anchor?.querySelector('.panel')).toBeTruthy()
+  })
+
+  it('the page has its heading, and today its facts describe the stack Guided Setup deploys', async () => {
+    stubWorkspace()
+    await mount(<GuidedSetup />)
+    const h2 = [...document.querySelectorAll('h2')].map((h) => h.textContent)
+    expect(h2).toContain('Guided setup')
+    // The pack cannot be installed yet (no release), so the facts are the
+    // global Raw HTTP stack's, exactly as before.
+    const facts = [...document.querySelectorAll('.gs-facts li')].map((li) => li.textContent ?? '')
+    expect(facts).toHaveLength(SETUP_FACTS.length)
+    SETUP_FACTS.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
   })
 })

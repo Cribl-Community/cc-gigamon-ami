@@ -47,7 +47,7 @@ import {
   PACK_HTTP_PLACEHOLDER_PORT, PACK_CLOUD_PORT_RANGE,
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
   PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_DECISIONS, PACK_0_1_0,
-  PACK_DATASETS_NOT_CREATED,
+  PACK_DATASETS_NOT_CREATED, packRelease,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -333,16 +333,61 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
   const uncommented = (s: string) => s.split('\n').filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join('\n')
   const code = sources(SRC).map((p) => ({ p, s: uncommented(readFileSync(p, 'utf8')) }))
 
-  it('the one dataset POST in src is ensureDataset, and its body is gigamon_ami\'s', () => {
-    // A second creator (the onboarding run gaining gigamon_ami_pq) fails this
-    // until PACK_DATASETS_NOT_CREATED and the pack text are changed with it.
+  /**
+   * Every mention of ensureLakeDataset in code that is not its definition, a
+   * direct call (the scan below reads those) or a plain named import: an alias
+   * (`import { ensureLakeDataset as ensure }`, `export { … as … }`) or a call by
+   * reference (`specs.map(ensureLakeDataset)`) would let a second creator in
+   * without an `ensureLakeDataset(` for the call scan to find. String literals
+   * are blanked first — authz.ts and paths.ts name the site in prose.
+   */
+  function bareReferences(files: { p: string; s: string }[]): string[] {
+    const out: string[] = []
+    for (const { p, s } of files) {
+      const noStrings = s.replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+      if (/\bensureLakeDataset\s+as\b/.test(noStrings)) out.push(`${p}: aliased`)
+      const noImports = noStrings.replace(/\bimport\s+(?:type\s+)?\{[^}]*\}\s*from\s*''/g, '')
+      for (const m of noImports.matchAll(/\bensureLakeDataset\b/g)) {
+        const at = m.index ?? 0
+        if (noImports.slice(Math.max(0, at - 9), at) === 'function ') continue
+        if (/^\s*\(/.test(noImports.slice(at + 'ensureLakeDataset'.length))) continue
+        out.push(`${p}: ${noImports.slice(at, at + 40).split('\n')[0]}`)
+      }
+    }
+    return out
+  }
+
+  it('the guard against a second creator sees an alias and a call by reference', () => {
+    expect(bareReferences([{ p: 'x.ts', s: "import { ensureLakeDataset as ensure } from './provision'\nensure(SPEC)" }])).not.toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "import { ensureLakeDataset } from './provision'\nawait Promise.all(specs.map(ensureLakeDataset))" }])).not.toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "export { ensureLakeDataset as ensure } from './provision'" }])).not.toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "import {\n  capi,\n  ensureLakeDataset,\n} from './provision'\nawait ensureLakeDataset(SPEC)" }])).toEqual([])
+    expect(bareReferences([{ p: 'x.ts', s: "  at: 'cribl/provision.ts#ensureLakeDataset',\nexport async function ensureLakeDataset(" }])).toEqual([])
+  })
+
+  it('the one dataset POST in src is ensureLakeDataset, called by Guided Setup’s dataset step and the onboarding run only', () => {
+    // A third creator fails this until PACK_DATASETS_NOT_CREATED and the pack
+    // text are changed with it. The onboarding run's one call takes each spec
+    // onboarding/plan.ts `onboardingDatasets` returns — gigamon_ami, its
+    // Parquet copy and, when ticked, the sample's — and nothing else.
+    // *(Until 2026-09-24 the run did not exist, the only caller created
+    // gigamon_ami, and PACK_DATASETS_NOT_CREATED held the other two.)*
     const posts = code.flatMap(({ p, s }) => [...s.matchAll(/capi\('POST', datasetsPath, (\w+)\)/g)].map((m) => ({ p, body: m[1] })))
     expect(posts).toHaveLength(1)
     expect(posts[0].p.endsWith(join('cribl', 'provision.ts'))).toBe(true)
+    const callers = code.flatMap(({ p, s }) =>
+      [...s.matchAll(/(?<!function )\bensureLakeDataset\(([^\n,]*)/g)].map((m) => ({ p, arg: m[1].trim() })))
+    expect(callers, 'ensureLakeDataset has a new caller: say what it creates in PACK_DATASETS_NOT_CREATED and the pack text').toEqual([
+      { p: expect.stringMatching(/cribl[\\/]onboarding[\\/]run\.ts$/), arg: 'spec)' },
+      { p: expect.stringMatching(/cribl[\\/]provision\.ts$/), arg: 'datasetSpec(ctx.profile) as LakeDatasetSpec' },
+    ])
+    // The run's `spec` is each of onboardingDatasets' specs, and only those.
+    const run = code.find(({ p }) => /cribl[\\/]onboarding[\\/]run\.ts$/.test(p))?.s ?? ''
+    expect(run).toMatch(/const specs = onboardingDatasets\(/)
+    expect(run).toMatch(/for \(const \[i, spec\] of specs\.entries\(\)\) \{\s*const r = await ensureLakeDataset\(spec\)/)
     expect(DATASET_SPEC.id).toBe(PACK_LAKE_DATASET_ID)
-    const uses = code.reduce((n, { s }) => n + (s.match(/\bPARQUET_DATASET_SPEC\b/g)?.length ?? 0), 0)
-    expect(uses, 'PARQUET_DATASET_SPEC is used now: take gigamon_ami_pq out of PACK_DATASETS_NOT_CREATED').toBe(1)
-    expect([...PACK_DATASETS_NOT_CREATED].sort()).toEqual([PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID].sort())
+    expect(bareReferences(code), 'ensureLakeDataset is reached some way the call scan above cannot see').toEqual([])
+    expect([...PACK_DATASETS_NOT_CREATED]).toEqual([])
   })
 
   it('no pack file says the app creates a dataset it does not', () => {
@@ -351,16 +396,24 @@ describe('the pack says which datasets the app creates, and the code agrees', ()
     }
   })
 
-  it('the README names each dataset nothing creates yet, and what happens until something does', () => {
-    const para = text('README.md').split(/\r?\n\r?\n/).find((b) => /No release of the app creates/.test(b)) ?? ''
-    // The sentence itself, not the paragraph: a later clause may name an id too.
-    const which = /No release of the app creates ([^.]*) yet\./.exec(para)?.[1] ?? ''
-    for (const id of PACK_DATASETS_NOT_CREATED) expect(which).toContain(`\`${id}\``)
-    expect(which).not.toContain(`\`${PACK_LAKE_DATASET_ID}\``)
-    expect(para).toMatch(/drops/)
-    expect(para).toMatch(/refuses to start the sample source/)
-    const yml = text('default/outputs.yml')
-    for (const id of PACK_DATASETS_NOT_CREATED) expect(yml).toMatch(new RegExp(`nothing creates[^.]*${id}[^.]*yet`, 's'))
+  it('the README and outputs.yml say the onboarding run creates all three, and what happens while the Parquet copy is missing', () => {
+    // Nothing is left uncreated (PACK_DATASETS_NOT_CREATED is empty), so no
+    // pack file may still say that nothing, or no release, creates one.
+    for (const f of ['README.md', 'default/outputs.yml']) {
+      expect(text(f)).not.toMatch(/nothing creates|No release of the app creates/i)
+    }
+    const readme = text('README.md').replace(/\s+/g, ' ')
+    const creates = /The app's onboarding run creates ([^.]*)\./.exec(readme)?.[1] ?? ''
+    for (const id of [PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID]) expect(creates).toContain(`\`${id}\``)
+    expect(creates).toMatch(/only when sample data is ticked/)
+    expect(creates).toMatch(/never edits or deletes/)
+    const missing = text('README.md').split(/\r?\n\r?\n/).find((b) => /is missing anyway/.test(b)) ?? ''
+    expect(missing).toMatch(/drops/)
+    expect(missing).toMatch(/refuses to start the sample source/)
+    const yml = text('default/outputs.yml').replace(/#\s*/g, '').replace(/\s+/g, ' ')
+    expect(yml).toContain(
+      `onboarding run creates ${PACK_LAKE_DATASET_ID}, ${PACK_PARQUET_DATASET_ID} and (only when sample data is ticked) ${PACK_SAMPLE_DATASET_ID}`,
+    )
   })
 })
 
@@ -663,5 +716,38 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
     expect(guard).toBeLessThan(code.indexOf('pack.mjs build'))
     // A depth-1 checkout has no history for merge-base to walk.
     expect(code).toMatch(/fetch-depth: 0/)
+  })
+})
+
+// Whether this build may install its pinned pack, as a pure answer the UI can
+// read without importing the pack client (which nothing on screen may reach
+// until its grants are declared). packClient.ts's `installRefusal` is this
+// function bound to the constants it imports, so the two cannot disagree.
+describe('packRelease — the pinned release, and why it cannot be installed', () => {
+  it('refuses today: 0.2.0 has no release', () => {
+    const r = packRelease()
+    expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
+    expect(r.refusal).toMatch(/has not been released/)
+    expect(r.installable).toBe(false)
+  })
+
+  it('refuses a release with no sha256, or one that is not 64 lowercase hex characters', () => {
+    expect(packRelease({ published: true, sha256: null, version: '9.9.9' }).refusal).toMatch(/no recorded sha256/)
+    for (const sha of ['x', 'ab'.repeat(31), 'AB'.repeat(32), `${'ab'.repeat(32)} `]) {
+      expect(packRelease({ published: true, sha256: sha, version: '9.9.9' }).refusal, sha).toMatch(/sha256/)
+    }
+  })
+
+  it('opens only on a published version with a well-formed digest, and names that version’s URL', () => {
+    const r = packRelease({ published: true, sha256: 'ab'.repeat(32), version: '9.9.9' })
+    expect(r.refusal).toBeNull()
+    expect(r.installable).toBe(true)
+    expect(r.url).toBe(packReleaseUrl('9.9.9'))
+  })
+
+  it('never says how the gate is built — no internal names in the sentence a customer reads', () => {
+    for (const r of [packRelease(), packRelease({ published: true, sha256: null, version: '9.9.9' })]) {
+      expect(r.refusal).not.toMatch(/PACK_|sha256_shape|packClient|\bspike\b|Phase \d/)
+    }
   })
 })

@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { ProvisionPanel } from './ProvisionPanel'
+import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
 import {
   AUTH_HEADER, ENDPOINT_INCOMPLETE, GROUP_TIP, PROVISION_LEAD, PROVISION_LEAD_TIP, TOKEN_ELSEWHERE, TOKEN_ONCE, UNENCRYPTED_WARNING, deployNote,
 } from './provisionPanelCopy'
@@ -176,6 +177,42 @@ describe('the pending-file list the Guided Setup confirmation names', () => {
 
     expect(bodyText()).toContain(OTHERS_WORK)
     expect(bodyText()).toContain('somebody else’s unfinished work')
+  })
+})
+
+describe('one Guided Setup run at a time', () => {
+  // The onboarding panel on the same page commits and deploys the same group.
+  // While its run holds the page's lock, this panel's Deploy does not open,
+  // and a confirmation already open says why its button will not run.
+  afterEach(() => resetSetupRunLock())
+
+  it('Deploy does not open while another panel’s run holds the lock', async () => {
+    const { calls } = stubLeader()
+    await mount()
+    const release = acquireSetupRun('onboarding_pack')!
+    await settle()
+    const deploy = buttonNamed('Deploy onboarding stack')!
+    expect(deploy.getAttribute('aria-disabled')).toBe('true')
+    const before = calls.length
+    await act(async () => { deploy.click() })
+    await settle()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(calls.slice(before)).toEqual([])
+    release()
+  })
+
+  it('a confirmation opened before the lock was taken cannot run while it is held', async () => {
+    const { calls } = stubLeader()
+    await mount()
+    await act(async () => { buttonNamed('Deploy onboarding stack')!.click() })
+    await settle()
+    const release = acquireSetupRun('onboarding_pack')!
+    await settle()
+    expect(bodyText()).toContain('Another run is already in progress.')
+    await act(async () => { buttonNamed(`Yes, deploy to ${GROUP}`)!.click() })
+    await settle()
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
+    release()
   })
 })
 

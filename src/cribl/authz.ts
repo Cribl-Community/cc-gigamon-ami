@@ -105,7 +105,6 @@ export type WriteId =
   | 'onboarding_pack.install'
   | 'onboarding_pack.upgrade'
   | 'onboarding_pack.remove'
-  | 'onboarding_pack.configure'
 
 export interface GatedWrite {
   surface: WriteSurface
@@ -203,32 +202,40 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
     surface: 'config',
     does: 'changing how objects are written to Cribl Lake, and deploying it',
   },
-  // The onboarding pack's four (cribl/packClient.ts). All `config`: each
+  // The onboarding pack's three (cribl/packClient.ts, cribl/onboarding/run.ts),
+  // each a <GatedControl> in components/OnboardingPanel.tsx. All `config`: each
   // installs, edits or removes objects in a worker group and ends in a commit
-  // and a deploy. The UI is the next slice; until it renders them, each is
-  // `unrendered`, and the module is on paths.ts `UNREACHED_MODULES`.
+  // and a deploy.
+  //
+  // INSTALL IS THE WHOLE ONBOARDING RUN, not only the POST /packs: one Onboard
+  // confirmation creates the Lake datasets, installs the pack, sets its Raw
+  // HTTP source and starts the sample, commits and deploys, and creates the
+  // scheduled searches. So its id is on every one of those write sites below,
+  // and a refusal anywhere in the run latches Onboard, with the path named.
+  //
+  // UPGRADE IS NOT RENDERED YET. Its write, `upgradePack`, is in packUpgrade.ts
+  // on paths.ts `UNREACHED_MODULES`, and its PATCH is not granted; the panel
+  // names the upgrade for an owned copy that is behind, as text, with why it is
+  // not offered. *(Corrected 2026-09-24, `feat/pack-onboarding-4a`: a refused
+  // control rendered it, which is what kept its PATCH granted.)*
+  //
+  // NO `configure` ID. The pack sources' settings outside a run (rotate the
+  // token, move the port, start or stop the sample) have no control yet, and
+  // an id with no control is a promise this table cannot keep — so it was
+  // withdrawn (2026-09-24) rather than left `unrendered` on a reachable module.
+  // It comes back with those controls.
   'onboarding_pack.install': {
     surface: 'config',
-    does: 'installing the Gigamon AMI onboarding pack',
-    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+    does: 'onboarding Gigamon AMI (datasets, pack, scheduled searches)',
   },
   'onboarding_pack.upgrade': {
     surface: 'config',
     does: 'upgrading the Gigamon AMI onboarding pack',
-    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
+    unrendered: 'The in-place upgrade is offered by the slice that reads the Raw HTTP source back after it; until then packUpgrade.ts is unreached and its PATCH ungranted.',
   },
   'onboarding_pack.remove': {
     surface: 'config',
     does: 'removing the Gigamon AMI onboarding pack',
-    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
-  },
-  // ONE ID FOR THE PACK SOURCES' SETTINGS: port, token, TLS, enable and the
-  // sample's opt-in are all the same whole-body PATCH of a pack source, so a
-  // refusal of one is a refusal of all of them.
-  'onboarding_pack.configure': {
-    surface: 'config',
-    does: 'changing the onboarding pack’s sources',
-    unrendered: 'Guided Setup’s pack UI is the next slice; packClient.ts is built ahead of it and nothing on screen reaches it yet.',
   },
 }
 
@@ -262,10 +269,10 @@ export interface WriteSite {
 export const WRITE_SITES: readonly WriteSite[] = [
   // --- Guided Setup: the only customer configuration this app writes --------
   {
-    at: 'cribl/provision.ts#ensureDataset',
-    gates: ['onboarding_stack.apply'],
+    at: 'cribl/provision.ts#ensureLakeDataset',
+    gates: ['onboarding_stack.apply', 'onboarding_pack.install'],
     surface: 'config',
-    why: 'POST creates the Cribl Lake dataset the dashboards read, when the tenant has none.',
+    why: 'POST creates a Cribl Lake dataset when the tenant has none by that id, and never edits one that exists. Two confirmed runs reach it: Guided Setup’s Raw HTTP deploy, creating the gigamon_ami dataset the dashboards read, and the onboarding run, which creates gigamon_ami, the pack’s Parquet copy gigamon_ami_pq and — only when sample data is ticked — gigamon_ami_sample.',
   },
   {
     at: 'cribl/provision.ts#ensureDestination',
@@ -299,13 +306,13 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove', 'onboarding_pack.configure'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove'],
     surface: 'config',
     why: 'PATCH .../deploy restarts the group Workers on the new configuration. Both Guided Setup controls end here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove', 'onboarding_pack.configure'],
+    gates: ['onboarding_stack.apply', 'onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.remove'],
     surface: 'config',
     why: 'POST /version/commit writes a Git commit on the Leader. Both Guided Setup controls end here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
@@ -322,7 +329,7 @@ export const WRITE_SITES: readonly WriteSite[] = [
     why: 'DELETE removes the breaker ruleset in the teardown — only once its source is gone, only when it carries this app’s description, and only when no other source in the group, or in a pack, names it.',
   },
 
-  // --- The onboarding pack (not yet reachable from any screen) -------------
+  // --- The onboarding pack (components/OnboardingPanel.tsx) -----------------
   {
     at: 'cribl/packClient.ts#installPack',
     gates: ['onboarding_pack.install'],
@@ -330,7 +337,7 @@ export const WRITE_SITES: readonly WriteSite[] = [
     why: 'POST /packs installs the pack from its pinned GitHub release into the picked group — refused until that release exists and its sha256 is recorded, and refused when the pack is already there.',
   },
   {
-    at: 'cribl/packClient.ts#upgradePack',
+    at: 'cribl/packUpgrade.ts#upgradePack',
     gates: ['onboarding_pack.upgrade'],
     surface: 'config',
     why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward.',
@@ -343,23 +350,23 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/packClient.ts#patchPackInput',
-    gates: ['onboarding_pack.install', 'onboarding_pack.configure'],
+    gates: ['onboarding_pack.install'],
     surface: 'config',
-    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read in the same call (readLive) with only the port, token, TLS or disabled flag changed — and nothing is sent when that read no longer gives the diff the confirmation showed. Install ends here too: a freshly installed Raw HTTP source is disabled with no token until this sets them.',
+    why: 'PATCH replaces one of the pack’s two sources WHOLESALE, so the body is the live source re-read in the same call (readLive) with only the port, token, TLS or disabled flag changed — and nothing is sent when that read no longer gives the diff the confirmation showed. Reached today only from the onboarding run: a freshly installed Raw HTTP source is disabled with no token until this sets them, and the sample source starts only when sample data is ticked.',
   },
 
   // --- Phase 2 acceleration: the scheduled searches this app owns ----------
   {
     at: 'cribl/accel/provision.ts#createSaved',
-    gates: ['accel.apply'],
+    gates: ['accel.apply', 'onboarding_pack.install'],
     surface: 'config',
-    why: 'POST creates a scheduled saved search in the shared /search/saved namespace. It runs on a cron and bills whether or not anybody opens the panel it feeds, so the confirmation in components/AccelPanel.tsx states the recurring cost before the click.',
+    why: 'POST creates a scheduled saved search in the shared /search/saved namespace. It runs on a cron and bills whether or not anybody opens the panel it feeds, so the confirmation in components/AccelPanel.tsx states the recurring cost before the click. The onboarding run (components/OnboardingPanel.tsx) creates them too, through applyAcceleration, from the one Onboard confirmation that lists each id and states whether it is created running or installed paused.',
   },
   {
     at: 'cribl/accel/provision.ts#patchSaved',
-    gates: ['accel.apply', 'accel.pause'],
+    gates: ['accel.apply', 'accel.pause', 'onboarding_pack.install'],
     surface: 'config',
-    why: 'PATCH replaces a saved search WHOLESALE — A-SP23 measured that an omitted field is a deleted field on this endpoint, which is how a search silently loses its schedule. Three controls end here: Apply, correcting one that has drifted; Pause/Resume in a row, flipping schedule.enabled; and the per-dashboard and master switches, flipping it on exactly the subset their confirmation names (setAccelSchedules), each refused if it changed since the dialog opened.',
+    why: 'PATCH replaces a saved search WHOLESALE — A-SP23 measured that an omitted field is a deleted field on this endpoint, which is how a search silently loses its schedule. Three controls end here: Apply, correcting one that has drifted; Pause/Resume in a row, flipping schedule.enabled; and the per-dashboard and master switches, flipping it on exactly the subset their confirmation names (setAccelSchedules), each refused if it changed since the dialog opened; and the onboarding run, correcting a drifted one exactly as Apply does, from its own confirmation.',
   },
   {
     at: 'cribl/accel/provision.ts#deleteSaved',
@@ -547,9 +554,14 @@ export const denialMark = (): number => seq
  * This function answers "was the thing I just did refused?", and a poll that
  * runs on a timer is not something the person did — see DenialOrigin. It stays
  * in the ledger; it is simply never somebody's click.
+ *
+ * `match` narrows it further, for a caller that latches ANOTHER control's gate
+ * on its behalf and must only do so for a refusal of that control's own write
+ * (the onboarding run's saved-search step and `accel.apply`): a refused read,
+ * or a concurrent request from another panel, is not that write refused.
  */
-export function denialSince(mark: number): Denial | null {
-  return ledger.find((d) => d.seq > mark && d.origin === 'click') ?? null
+export function denialSince(mark: number, match: (d: Denial) => boolean = () => true): Denial | null {
+  return ledger.find((d) => d.seq > mark && d.origin === 'click' && match(d)) ?? null
 }
 
 /** Only for tests: forget everything this page has observed. */
@@ -573,6 +585,12 @@ function emit(): void {
 export function latchDenial(id: WriteId, denial: Denial): void {
   latched.set(id, denial)
   emit()
+}
+
+/** The refusal holding a control closed, for code that is not a component
+ *  (the onboarding run's own tests; a component reads `useWriteGate`). */
+export function latchedDenial(id: WriteId): Denial | null {
+  return latched.get(id) ?? null
 }
 
 /** Open it again — "Try again". The next click attempts for real. */
