@@ -13,7 +13,10 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 import { LAKE_DATASET } from '../cribl/config'
-import { PACK_0_1_0, PACK_ID, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, PACK_ROUTES_FILE } from '../cribl/pack'
+import {
+  PACK_0_1_0, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, PACK_ROUTES_FILE,
+  PACK_SAMPLE_ROUTE_ID, packRouteLabel,
+} from '../cribl/pack'
 import {
   HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DESTINATION_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
   LEGACY_SYSLOG_SOURCE_ID, ROUTE_SPEC,
@@ -21,7 +24,7 @@ import {
 import { LAKE_TOTAL_QUERY, METRICS_QUERY } from './dataFlow'
 import {
   COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
-  SHOWN_INPUTS, SHOWN_OUTPUTS, SHOWN_PIPELINES, STACKS, type StackPath,
+  DESTINATION_COUNTED_PATHS, PIPELINE_COUNTED_PATHS, SHOWN_INPUTS, SHOWN_OUTPUTS, SHOWN_PIPELINES, STACKS, type StackPath,
 } from './stackIds'
 
 type Row = Record<string, string | number | null>
@@ -52,12 +55,23 @@ function run(query: string, rows: readonly Row[]): Record<string, number> {
 
 const NS = 'data_insights'
 
+/** Every path of a stack whose objects live inside the pack. */
+const PACK_PATHS: readonly StackPath[] = STACKS.filter((s) => s.scope === 'pack').flatMap((s) => s.paths)
+
+/**
+ * The label a pipe.* row carries for a pack's pipeline. UNMEASURED (no pipe.*
+ * row appeared for a test pack's pipeline, 2026-09-25), so the model gives it a
+ * label no query could guess: a query that leaned on any spelling of it would
+ * read short here.
+ */
+const unmeasuredPipeLabel = (p: StackPath) => `unmeasured-pack-pipeline:${p.pipeline}`
+
 /**
  * The rows `n` events on a source produce: one intake row, and per path one
  * pipeline pass and one destination write — plus the null-namespace
  * aggregates that sit beside them in cribl_metrics and must never be summed.
  */
-function sourceRows(input: string, paths: readonly StackPath[], n: number, opts: { fromInput?: boolean } = {}): Row[] {
+function sourceRows(input: string, paths: readonly StackPath[], n: number, opts: { fromInput?: boolean; packPipe?: (p: StackPath) => string } = {}): Row[] {
   // `from_input` on a pipeline or destination row is measured on the
   // QuickConnect path only; a ROUTED path may not carry it. `fromInput: false`
   // models that, so a query that leans on it is caught here, not on a tenant.
@@ -68,10 +82,11 @@ function sourceRows(input: string, paths: readonly StackPath[], n: number, opts:
     { metric: 'total.in_events', namespace: null, value: n },
   ]
   for (const p of paths) {
+    const pipe = PACK_PATHS.includes(p) ? (opts.packPipe ?? unmeasuredPipeLabel)(p) : p.pipeline
     rows.push(
-      { metric: 'pipe.in_events', namespace: NS, id: p.pipeline, ...fi, value: n },
-      { metric: 'pipe.out_events', namespace: NS, id: p.pipeline, ...fi, value: n },
-      { metric: 'pipe.out_events', namespace: null, id: p.pipeline, value: n },
+      { metric: 'pipe.in_events', namespace: NS, id: pipe, ...fi, value: n },
+      { metric: 'pipe.out_events', namespace: NS, id: pipe, ...fi, value: n },
+      { metric: 'pipe.out_events', namespace: null, id: pipe, value: n },
       { metric: 'total.out_events', namespace: NS, ...fi, output: p.output, value: n },
       { metric: 'total.out_bytes', namespace: NS, ...fi, output: p.output, value: n * 10 },
       { metric: 'total.out_events', namespace: null, output: p.output, value: n },
@@ -81,7 +96,7 @@ function sourceRows(input: string, paths: readonly StackPath[], n: number, opts:
 }
 
 /** Every source in the list, each sending a different number of events. */
-function everyStackRunning(opts: { fromInput?: boolean } = {}): { rows: Row[]; landed: number } {
+function everyStackRunning(opts: { fromInput?: boolean; packPipe?: (p: StackPath) => string } = {}): { rows: Row[]; landed: number } {
   const byInput = new Map<string, StackPath[]>()
   for (const p of STACKS.flatMap((s) => s.paths)) byInput.set(p.input, [...(byInput.get(p.input) ?? []), p])
   const rows: Row[] = []
@@ -116,11 +131,29 @@ describe('the Data Flow counters count every stack, and each event once', () => 
     expect(run(LAKE_TOTAL_QUERY, rows)).toEqual({ total_events: landed, total_bytes: landed * 10 })
   })
 
+  it('counts the same whatever label a pack pipeline turns out to carry', () => {
+    // A pack pipeline's cribl_metrics label is unmeasured. Whether its rows say
+    // `<packId>.<id>`, the bare id, or nothing this file can guess, the
+    // Processing figure must not move: no pack path is counted by its pipeline.
+    for (const packPipe of [unmeasuredPipeLabel, (p: StackPath) => `${PACK_ID}.${p.pipeline}`, (p: StackPath) => p.pipeline]) {
+      const { rows, landed } = everyStackRunning({ packPipe })
+      expect(run(METRICS_QUERY, rows).pipe_events).toBe(landed)
+    }
+  })
+
+  it('names no pipeline inside a pack', () => {
+    const pipes = new Set([...METRICS_QUERY.matchAll(/\bid=="([^"]+)"/g)].map((x) => x[1]))
+    const global = new Set(STACKS.filter((s) => s.scope === 'global').flatMap((s) => s.paths.map((p) => p.pipeline)))
+    for (const id of pipes) expect(global.has(id), `${id} is not a global pipeline`).toBe(true)
+    for (const p of PACK_PATHS) expect(COUNTED_PATHS.includes(p) ? DESTINATION_COUNTED_PATHS : [p]).toContain(p)
+    expect(PIPELINE_COUNTED_PATHS.filter((p) => PACK_PATHS.includes(p))).toEqual([])
+  })
+
   it('holds the Lake card to gigamon_ami: a Parquet copy of every event does not double it', () => {
-    const json = COUNTED_PATHS.find((p) => p.route === 'gigamon_ami_http_to_json')!
+    const json = COUNTED_PATHS.find((p) => p.route === packRouteLabel(PACK_HTTP_JSON_ROUTE_ID))!
     const all = STACKS.flatMap((s) => s.paths)
-    const parquet = all.find((p) => p.route === 'gigamon_ami_http_to_parquet')!
-    const sample = all.find((p) => p.route === 'gigamon_ami_sample')!
+    const parquet = all.find((p) => p.route === packRouteLabel(PACK_HTTP_PARQUET_ROUTE_ID))!
+    const sample = all.find((p) => p.route === packRouteLabel(PACK_SAMPLE_ROUTE_ID))!
     expect(parquet.dataset).toBe('gigamon_ami_pq')
     const rows = [
       ...sourceRows(json.input, [json, parquet], 500),
@@ -140,7 +173,10 @@ describe('the Data Flow counters count every stack, and each event once', () => 
 
   it('names no destination that writes another dataset', () => {
     const outputs = [...LAKE_TOTAL_QUERY.matchAll(/output=="([^"]+)"/g)].map((x) => x[1])
-    expect(new Set(outputs)).toEqual(new Set(['cribl_lake:gigamon_lake', 'cribl_lake:out_gno_lake', 'cribl_lake:gigamon_ami_json_lake']))
+    // Inside a pack a destination's label carries the pack id (measured 2026-09-25).
+    expect(new Set(outputs)).toEqual(new Set([
+      'cribl_lake:gigamon_lake', 'cribl_lake:cc-network-gigamon-ami.out_gno_lake', 'cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake',
+    ]))
     for (const p of STACKS.flatMap((s) => s.paths).filter((x) => x.dataset !== COUNTED_DATASET)) {
       expect(LAKE_TOTAL_QUERY).not.toContain(`"${p.output}"`)
     }
@@ -202,27 +238,30 @@ describe('the stack list', () => {
     expect(STACKS.filter((s) => s.status === 'pending' || /PENDING/.test(s.key))).toEqual([])
   })
 
-  it('names the pack 0.2.0 objects the pack YAML defines, type prefix included', () => {
+  it('names the pack 0.2.x objects the pack YAML defines, by their in-pack metric labels, type prefix included', () => {
     const dir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'packs', PACK_ID)
     const yml = (rel: string) => parse(readFileSync(join(dir, rel), 'utf8'))
     const inputs = yml('default/inputs.yml').inputs as Record<string, { type: string }>
     const outputs = yml('default/outputs.yml').outputs as Record<string, { type: string }>
     const routes = yml(PACK_ROUTES_FILE).routes as { id: string; filter: string; pipeline: string; output: string }[]
-    const pack = STACKS.find((s) => s.key === 'pack-0.2.0')!
-    // Every route the YAML defines is a path here, and nothing else is.
-    expect(pack.paths.map((p) => p.route).sort()).toEqual(routes.map((r) => r.id).sort())
+    const pack = STACKS.find((s) => s.key === 'pack-0.2')!
+    // Every route the YAML defines is a path here, and nothing else is. Inside a
+    // pack cribl_metrics names a route `<packId>.<id>`, a source
+    // `<type>:<packId>.<id>` and a destination `<type>:<packId>.<id>`
+    // (measured 2026-09-25); the route filter spells the source the same way.
+    expect(pack.paths.map((p) => p.route).sort()).toEqual(routes.map((r) => `${PACK_ID}.${r.id}`).sort())
     for (const p of pack.paths) {
-      const r = routes.find((x) => x.id === p.route)!
-      const inputId = Object.keys(inputs).find((id) => r.filter === `__inputId=='${inputs[id].type}:${id}'`)!
+      const r = routes.find((x) => `${PACK_ID}.${x.id}` === p.route)!
+      const inputId = Object.keys(inputs).find((id) => r.filter === `__inputId=='${inputs[id].type}:${PACK_ID}.${id}'`)!
       expect(inputId).toBeDefined()
-      expect(p.input).toBe(`${inputs[inputId].type}:${inputId}`)
+      expect(p.input).toBe(`${inputs[inputId].type}:${PACK_ID}.${inputId}`)
       expect(p.pipeline).toBe(r.pipeline)
-      expect(p.output).toBe(`${outputs[r.output].type}:${r.output}`)
+      expect(p.output).toBe(`${outputs[r.output].type}:${PACK_ID}.${r.output}`)
     }
   })
 
   it('does not call the pack released before its release exists', () => {
-    const pack = STACKS.find((s) => s.key === 'pack-0.2.0')!
+    const pack = STACKS.find((s) => s.key === 'pack-0.2')!
     expect(pack.status === 'released').toBe(PACK_PUBLISHED)
   })
 

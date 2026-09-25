@@ -27,11 +27,11 @@
     "src/tabs/DataFlow.tsx": {
       "lake": {
         "from": "({ window: LAKE_DEFAULT_WINDOW, storedBytes: null, storedAsOf: null, error: null })",
-        "value": "4 keys · sha256 51087b976a0cd15f"
+        "value": "4 keys · sha256 08bbd72f7a0004e7"
       },
       "s": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "7 entries · sha256 5a66a92fd4de64de"
+        "value": "7 entries · sha256 2c4f2fc22158b13b"
       }
     },
     "src/tabs/DnsHealth.tsx": {
@@ -203,8 +203,8 @@
     },
     "src/queries/dataFlow.ts": {
       "LAKE_HELD_QUERY": "dataset=\"gigamon_ami\" | summarize total_events=count()",
-      "LAKE_TOTAL_QUERY": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0))",
-      "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"http_raw:in_gigamon_http\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gigamon_http_normalize\") or (id==\"gno_syslog\"))) or (metric==\"total.out_events\" and (output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "LAKE_TOTAL_QUERY": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0))",
+      "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"http_raw:in_gigamon_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gigamon_http_normalize\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
       "VOLUME_AGGS": "events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "VOLUME_QUERY": "dataset=\"gigamon_ami\" | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
     },
@@ -296,10 +296,10 @@
     },
     "src/queries/lakeWindow.ts": {
       "LAKE_DEFAULT_DAYS": "number · sha256 624b60c58c9d8bfb",
-      "LAKE_DEFAULT_WINDOW": "5 keys · sha256 3913d6f6e673278f",
+      "LAKE_DEFAULT_WINDOW": "5 keys · sha256 b0fdb2990fd2c65d",
       "lakeWindow(cribl_metrics retention unknown — direct count)": "{\"retentionDays\":30,\"metricsRetentionDays\":null,\"method\":\"count\",\"query\":\"dataset=\\\"gigamon_ami\\\" | summarize total_events=count()\",\"earliest\":\"-30d\"}",
       "lakeWindow(dataset retention unknown — no window)": "null",
-      "lakeWindow(retention fits cribl_metrics — write counters)": "{\"retentionDays\":30,\"metricsRetentionDays\":30,\"method\":\"write-counters\",\"query\":\"dataset=\\\"cribl_metrics\\\" | summarize total_events=sum(iif(metric==\\\"total.out_events\\\" and namespace==\\\"data_insights\\\" and (output==\\\"cribl_lake:gigamon_lake\\\" or output==\\\"cribl_lake:out_gno_lake\\\" or output==\\\"cribl_lake:gigamon_ami_json_lake\\\"), value, 0)), total_bytes=sum(iif(metric==\\\"total.out_bytes\\\" and namespace==\\\"data_insights\\\" and (output==\\\"cribl_lake:gigamon_lake\\\" or output==\\\"cribl_lake:out_gno_lake\\\" or output==\\\"cribl_lake:gigamon_ami_json_lake\\\"), value, 0))\",\"earliest\":\"-30d\"}",
+      "lakeWindow(retention fits cribl_metrics — write counters)": "{\"retentionDays\":30,\"metricsRetentionDays\":30,\"method\":\"write-counters\",\"query\":\"dataset=\\\"cribl_metrics\\\" | summarize total_events=sum(iif(metric==\\\"total.out_events\\\" and namespace==\\\"data_insights\\\" and (output==\\\"cribl_lake:gigamon_lake\\\" or output==\\\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\\\" or output==\\\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\\\"), value, 0)), total_bytes=sum(iif(metric==\\\"total.out_bytes\\\" and namespace==\\\"data_insights\\\" and (output==\\\"cribl_lake:gigamon_lake\\\" or output==\\\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\\\" or output==\\\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\\\"), value, 0))\",\"earliest\":\"-30d\"}",
       "lakeWindow(retention past cribl_metrics — direct count)": "{\"retentionDays\":365,\"metricsRetentionDays\":30,\"method\":\"count\",\"query\":\"dataset=\\\"gigamon_ami\\\" | summarize total_events=count()\",\"earliest\":\"-365d\"}",
       "windowDays(\"-18m\")": "null",
       "windowDays(\"-30d\")": "30",
@@ -342,20 +342,20 @@
     "src/queries/stackIds.ts": {
       "COUNTED_DATASET": "gigamon_ami",
       "COUNTED_DESTINATIONS_PROSE": "The write counters add up only the destinations that write gigamon_ami: gigamon_lake, plus the onboarding pack's once it is installed. A copy written to any other dataset is not counted.",
-      "COUNTED_INPUTS": "5 entries · sha256 d2e3218c4a56ccc8",
-      "COUNTED_OUTPUTS": "3 entries · sha256 dd9c36a8165ba095",
-      "COUNTED_PATHS": "5 entries · sha256 b4a674be55b193a3",
-      "COUNTED_PIPELINES_PROSE": "The Processing figure adds up the pipelines on those paths: gigamon_ami, gigamon_syslog and gigamon_http_normalize, plus the onboarding pack's once it is installed. Each event is counted once.",
+      "COUNTED_INPUTS": "5 entries · sha256 9ffb238db29521b5",
+      "COUNTED_OUTPUTS": "3 entries · sha256 47c1f2bf3eaf997e",
+      "COUNTED_PATHS": "5 entries · sha256 ee87d73490131b0d",
+      "COUNTED_PIPELINES_PROSE": "The Processing figure adds up the pipelines on those paths: gigamon_ami, gigamon_syslog and gigamon_http_normalize, plus the onboarding pack's once it is installed, counted as what its destination writes to gigamon_ami. Each event is counted once.",
       "COUNTED_SOURCES_PROSE": "The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, in_gigamon_syslog and in_gigamon_http, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
-      "DESTINATION_COUNTED_PATHS": "1 entries · sha256 8f84e60c22a3dc9e",
+      "DESTINATION_COUNTED_PATHS": "2 entries · sha256 876dd99cf6920ab7",
       "METRIC_ALIASES": "0 entries · sha256 4f53cda18c2baa0c",
-      "PIPELINE_COUNTED_PATHS": "4 entries · sha256 2e4cd02fe91fdac4",
+      "PIPELINE_COUNTED_PATHS": "3 entries · sha256 62dc4b06225c25eb",
       "SHARED_OUTPUTS": "1 entries · sha256 0b4cf50502e30a48",
-      "SHARED_PIPELINES": "1 entries · sha256 883a3f23a879507e",
+      "SHARED_PIPELINES": "0 entries · sha256 4f53cda18c2baa0c",
       "SHOWN_INPUTS": "3 entries · sha256 0f4282fa42b75950",
       "SHOWN_OUTPUTS": "1 entries · sha256 4e9df7934ccf10f3",
       "SHOWN_PIPELINES": "3 entries · sha256 9b2c86df06da2443",
-      "STACKS": "5 entries · sha256 afd3070015714ee8"
+      "STACKS": "5 entries · sha256 5941ae20482d80d0"
     },
     "src/queries/tcpHealth.ts": {
       "HEAT_METRIC_AGGS": "dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count)",
@@ -680,7 +680,7 @@
         "met": {
           "ref": "METRICS_QUERY",
           "shape": "query",
-          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"http_raw:in_gigamon_http\" or input==\"syslog:in_gno_syslog\" or input==\"http_raw:in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gigamon_http_normalize\") or (id==\"gno_syslog\"))) or (metric==\"total.out_events\" and (output==\"cribl_lake:gigamon_ami_json_lake\"))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:in_gigamon_syslog\" or input==\"http_raw:in_gigamon_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon_syslog\") or (id==\"gigamon_http_normalize\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
           "options": "{ accel: PIPELINE_ACCEL, accelEnabled }",
           "optionsValue": {
             "accel": "gno_pipeline_c1h"
@@ -689,7 +689,7 @@
         "lakeTotal": {
           "ref": "lakeRead.query",
           "shape": "query",
-          "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:out_gno_lake\" or output==\"cribl_lake:gigamon_ami_json_lake\"), value, 0))",
+          "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0))",
           "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, asWritten: true, }",
           "optionsValue": {
             "earliest": "-30d",
@@ -729,7 +729,7 @@
         },
         "PanelInfo · s.purpose · pipeline": {
           "ref": "s.purpose",
-          "about": "Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly. The Processing figure adds up the pipelines on those paths: gigamon_ami, gigamon_syslog and gigamon_http_normalize, plus the onboarding pack's once it is installed. Each event is counted once.",
+          "about": "Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly. The Processing figure adds up the pipelines on those paths: gigamon_ami, gigamon_syslog and gigamon_http_normalize, plus the onboarding pack's once it is installed, counted as what its destination writes to gigamon_ami. Each event is counted once.",
           "aboutHeading": "What this stage does",
           "links": [
             "Pipeline editor → /stream/m/default/pipelines/gigamon_ami"

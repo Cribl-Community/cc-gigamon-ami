@@ -22,9 +22,14 @@
 # *_to_parquet route into anything but a Parquet destination (and any other
 # route into one). src/cribl/pack.test.ts compares each route here whole.
 #
-# UNMEASURED: the value of __inputId for an input inside a pack. The filters
-# below assume it is `<type>:<id>`, as it is for a global input. The proof
-# install has to confirm it; a wrong filter drops the data silently.
+# INSIDE A PACK, __inputId IS `<type>:<packId>.<inputId>` (measured 2026-09-25
+# on a Cribl.Cloud Leader: a DataGen `dg_asis` in a test pack
+# `cc-network-gigamon-ami-dgtest` stamped
+# `datagen:cc-network-gigamon-ami-dgtest.dg_asis` on every event). 0.2.0's
+# filters used the global form `<type>:<inputId>`, which never matches inside a
+# pack, so with no catch-all it dropped every event of both sources. 0.2.1 names
+# its inputs as `<type>:cc-network-gigamon-ami.<inputId>`, and `npm run
+# pack:check` refuses the global form.
 id: default
 groups: {}
 comments: []
@@ -33,7 +38,7 @@ routes:
     name: gigamon_ami_http_to_json
     final: false
     disabled: false
-    filter: __inputId=='http_raw:in_gigamon_ami_http'
+    filter: __inputId=='http_raw:cc-network-gigamon-ami.in_gigamon_ami_http'
     pipeline: gigamon_ami_normalize
     output: gigamon_ami_json_lake
     description: Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami)
@@ -43,7 +48,7 @@ routes:
     name: gigamon_ami_http_to_parquet
     final: true
     disabled: false
-    filter: __inputId=='http_raw:in_gigamon_ami_http'
+    filter: __inputId=='http_raw:cc-network-gigamon-ami.in_gigamon_ami_http'
     pipeline: gigamon_ami_normalize
     output: gigamon_ami_parquet_lake
     description: Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami_pq, Parquet)
@@ -53,7 +58,7 @@ routes:
     name: gigamon_ami_sample
     final: true
     disabled: false
-    filter: __inputId=='datagen:in_gigamon_ami_sample'
+    filter: __inputId=='datagen:cc-network-gigamon-ami.in_gigamon_ami_sample'
     pipeline: gigamon_ami_normalize
     output: gigamon_ami_sample_lake
     description: Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)

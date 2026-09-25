@@ -28,7 +28,9 @@
 //   - sample data must have no way into gigamon_ami (or its Parquet copy) that
 //     the route checks do not see: no input may carry QuickConnect
 //     `connections`, every input must send to routes, no route may carry an
-//     output expression, every route filter names exactly one pack input, a
+//     output expression, every route filter names exactly one pack input in
+//     the in-pack form __inputId=='<type>:<packId>.<id>' (measured 2026-09-25;
+//     the global form <type>:<id> never matches inside a pack), a
 //     DataGen route may write only the sample dataset, and only a DataGen
 //     route may write it.
 //   - each Lake destination writes one of the pack's three datasets in that
@@ -116,6 +118,22 @@ const PARQUET_ROUTE_SUFFIX = '_to_parquet'
 const BREAKERS_FILE = 'default/breakers.yml'
 /** The only output type this pack ships. Anything else can forward elsewhere. */
 const OUTPUT_TYPES = new Set(['cribl_lake'])
+/**
+ * A route filter naming exactly one input of THIS pack. Inside a pack an
+ * event's `__inputId` is `<type>:<packId>.<inputId>` — measured 2026-09-25 on a
+ * Cribl.Cloud Leader: a DataGen `dg_asis` in pack `cc-network-gigamon-ami-dgtest`
+ * stamped `datagen:cc-network-gigamon-ami-dgtest.dg_asis` on every event. Pack
+ * 0.2.0 shipped the global form `<type>:<inputId>`, which never matches inside a
+ * pack, so with no catch-all route it dropped every event of both its sources.
+ */
+const PACK_FILTER = new RegExp(`^__inputId=='([a-z_]+):${PACK_NAME.replace(/[-.]/g, '\\$&')}\\.([A-Za-z0-9_-]+)'$`)
+/** The global form, refused by name: it is the 0.2.0 bug. */
+const BARE_FILTER = /^__inputId=='([a-z_]+):([A-Za-z0-9_-]+)'$/
+/** `{ type, id }` of the one pack input a route filter names, or null. */
+function routeFilterInput(filter) {
+  const m = PACK_FILTER.exec(String(filter))
+  return m ? { type: m[1], id: m[2] } : null
+}
 /** The word that marks an undecided placeholder (src/cribl/pack.ts `PACK_PENDING`). */
 const PENDING = /\bPENDING\b/
 
@@ -489,10 +507,15 @@ export function checkPack(dir, { expectVersion = null } = {}) {
     // Exactly one pack input per route. A catch-all (`true`) or any other
     // expression would let a route take events this file cannot see, which is
     // how sample data could meet the customer's destination.
-    const m = /^__inputId=='([a-z_]+):([A-Za-z0-9_-]+)'$/.exec(String(route?.filter))
-    if (!m) errors.push(`${where}: filter must be __inputId=='<type>:<id>' naming one input of this pack, not ${JSON.stringify(route?.filter)}`)
-    else if (inputs[m[2]]?.type !== m[1]) errors.push(`${where}: filter names input ${m[1]}:${m[2]}, which default/inputs.yml does not define`)
-    const from = m ? inputs[m[2]] : undefined
+    const m = routeFilterInput(route?.filter)
+    if (!m) {
+      errors.push(
+        BARE_FILTER.test(String(route?.filter))
+          ? `${where}: filter ${JSON.stringify(route?.filter)} names the input as a global one; inside a pack __inputId is '<type>:${PACK_NAME}.<id>' (measured 2026-09-25), so this filter never matches and the route drops every event`
+          : `${where}: filter must be __inputId=='<type>:${PACK_NAME}.<id>' naming one input of this pack, not ${JSON.stringify(route?.filter)}`,
+      )
+    } else if (inputs[m.id]?.type !== m.type) errors.push(`${where}: filter names input ${m.type}:${PACK_NAME}.${m.id}, which default/inputs.yml does not define`)
+    const from = m ? inputs[m.id] : undefined
     const lake = lakeOf(route?.output)
     const isSampleRoute = from?.type === 'datagen'
     if (isSampleRoute && lake && lake.destPath !== SAMPLE_DATASET) {
@@ -510,10 +533,10 @@ export function checkPack(dir, { expectVersion = null } = {}) {
   // input is final, so its events go nowhere past this pack's routes.
   const byInput = new Map()
   for (const route of routes) {
-    const m = /^__inputId=='([a-z_]+):([A-Za-z0-9_-]+)'$/.exec(String(route?.filter))
+    const m = routeFilterInput(route?.filter)
     if (!m) continue
-    if (!byInput.has(m[2])) byInput.set(m[2], [])
-    byInput.get(m[2]).push(route)
+    if (!byInput.has(m.id)) byInput.set(m.id, [])
+    byInput.get(m.id).push(route)
   }
   for (const [input, list] of byInput) {
     list.forEach((route, i) => {

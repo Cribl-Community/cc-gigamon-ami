@@ -28,6 +28,12 @@ Parquet route still runs once the HTTP source is started, and its destination dr
 it cannot write, with no error shown: `gigamon_ami` keeps flowing, and `gigamon_ami_pq` stays
 empty. Guided Setup refuses to start the sample source until `gigamon_ami_sample` exists.
 
+**Each route names its source as `<type>:cc-network-gigamon-ami.<id>`**, for example
+`__inputId=='http_raw:cc-network-gigamon-ami.in_gigamon_ami_http'`. Inside a pack an event's
+`__inputId` carries the pack id before the source id; this was measured on a Cribl.Cloud Leader on
+2026-09-25. A filter in the global form, `http_raw:in_gigamon_ami_http`, never matches inside a
+pack, and `npm run pack:check` refuses one.
+
 Object names say what each object does. The `gno_` prefix is reserved for the app's acceleration
 schedules, and `npm run pack:check` refuses a pack object that carries it.
 
@@ -81,8 +87,6 @@ one event per second each.
 
 These are left for the proof install on a real Leader:
 
-- **The value of `__inputId` for an input inside a pack.** The route filters assume `<type>:<id>`,
-  as for a global input. A wrong filter drops the data silently.
 - **Where a pack keeps event breakers.** This pack puts them in `default/breakers.yml`, the global
   file's path without `cribl/`, as for every other pack file. Another Cribl Community pack does the
   same, but no pack breaker has yet been read back from a Leader.
@@ -103,4 +107,6 @@ These are left for the proof install on a real Leader:
 The pack is released on its own, from a `gigamon-pack-v<version>` tag, as a GitHub release asset
 named `cc-network-gigamon-ami-<version>.crbl`. The version is in this directory's `package.json`
 and is independent of the app's version. Version 0.1.0 received Syslog. From 0.2.0 on, the pack
-receives Raw HTTP only.
+receives Raw HTTP only. **Version 0.2.0 delivers nothing**: its route filters used the global form
+of `__inputId`, which never matches inside a pack, so it dropped every event from both its sources.
+Version 0.2.1 fixes the filters and changes nothing else.
