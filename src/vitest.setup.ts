@@ -9,7 +9,7 @@
 // Imported DYNAMICALLY, inside the hook: a static import here would load
 // read.ts before a test file's `vi.mock` of one of its dependencies was
 // registered, and that test would silently run against the real module.
-import { beforeEach } from 'vitest'
+import { afterAll, afterEach, beforeEach, expect } from 'vitest'
 
 // THE HTML "CLICK IN PROGRESS" FLAG, which happy-dom does not implement.
 //
@@ -38,6 +38,42 @@ if (typeof HTMLElement !== 'undefined') {
       clicking.delete(this)
     }
   }
+}
+
+// NO NETWORK. A DOM test's `fetch` is refused unless the test stubbed it.
+//
+// happy-dom's own `fetch` opens a real socket to its page origin
+// (localhost:3000). A test never means to reach it — every test that fetches
+// installs a stub — so a call that gets here is a stub missing or already
+// taken away, and it used to show up only when a window's teardown aborted the
+// socket and printed a `DOMException [AbortError]` beside a green run (a panel's
+// cost re-read, three seconds after sampleData.test.tsx had removed its stub).
+// Now the call is refused at once and recorded; the test it happened in fails,
+// and one that lands between tests fails the next test's setup or the file's
+// last hook. One made after that last hook is still refused — no socket, nothing
+// on stderr — but there is nothing left for it to fail.
+// `vi.stubGlobal('fetch', …)` still wins, and `vi.unstubAllGlobals()` puts this
+// back. src/harness.test.tsx holds it.
+if (typeof window !== 'undefined') {
+  const record: string[] = []
+  ;(globalThis as { __unstubbedFetches?: string[] }).__unstubbedFetches = record
+  const refuse = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    record.push(url)
+    throw new TypeError(`fetch that no test stubbed: ${url}`)
+  }
+  globalThis.fetch = refuse as typeof fetch
+  const check = (when: string) => {
+    const seen = record.splice(0)
+    expect(seen, `fetch that no test stubbed, ${when}`).toEqual([])
+  }
+  beforeEach(() => check('after the previous test had finished'))
+  afterEach(() => check('in this test'))
+  afterAll(async () => {
+    // One turn first, so a call the last test queued lands while this listens.
+    await new Promise((r) => setTimeout(r, 0))
+    check('after the last test in this file')
+  })
 }
 
 beforeEach(async () => {

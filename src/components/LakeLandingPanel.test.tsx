@@ -47,7 +47,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetDenials } from '../cribl/authz'
 import { DashboardProvider } from '../app/DashboardContext'
 import { DEPLOY_CONSEQUENCES, FLUSH_PRESETS, LANDING_TERMS, retentionChange } from '../cribl/landing'
@@ -280,28 +280,48 @@ let container: HTMLDivElement
 let root: Root
 
 /**
- * Every `console.error` a test caused, as the text it would have printed.
+ * Every `console.error` this file caused, as the text it would have printed.
  *
- * NOTHING HERE IS EXPECTED TO LOG AN ERROR, so any entry fails the test that
- * caused it. This file passed for a while with a stack overflow printed to
- * stderr by nine of its tests — React catches an error thrown from an event
- * handler, reports it, and carries on, so the assertions after the click still
- * ran against a page that had half-handled it. A green run with a thrown
- * handler in it is not a green run. The calls still reach the real console, so
- * the failure comes with the message beside it.
+ * NOTHING HERE IS EXPECTED TO LOG AN ERROR, so any entry fails a test. This file
+ * passed for a while with a stack overflow printed to stderr by nine of its
+ * tests — React catches an error thrown from an event handler, reports it, and
+ * carries on, so the assertions after the click still ran against a page that
+ * had half-handled it. The calls still reach the real console, so the failure
+ * comes with the message beside it.
+ *
+ * Installed once for the file, by assignment rather than `vi.spyOn`, so the
+ * `vi.restoreAllMocks()` in each teardown does not take it away: an error a test
+ * leaves behind (a promise that settles after unmount) is still recorded, and
+ * fails the next test's setup, or the file's last hook when there is no next
+ * test. A spy made per test lost those, and when a teardown threw before its
+ * restore, the next test's spy wrapped the old one and called itself.
  */
-let consoleErrors: string[] = []
+const consoleErrors: string[] = []
+const realConsoleError = console.error
+const expectNoConsoleErrors = (when: string) =>
+  expect(consoleErrors.splice(0), `an error was logged ${when}`).toEqual([])
+
+beforeAll(() => {
+  console.error = (...args: unknown[]) => {
+    consoleErrors.push(args.map((a) => (a instanceof Error ? `${a.name}: ${a.message}` : String(a))).join(' '))
+    realConsoleError.apply(console, args)
+  }
+})
+
+afterAll(async () => {
+  // One turn of the event loop first, so an error the last test queued (a
+  // settled promise, a zero-delay timer) lands while this is still listening.
+  // One queued further out than that reaches the real console and fails nothing.
+  await new Promise((r) => setTimeout(r, 0))
+  console.error = realConsoleError
+  expectNoConsoleErrors('after the last test in this file')
+})
 
 beforeEach(() => {
+  expectNoConsoleErrors('after the previous test had finished')
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  consoleErrors = []
-  const realError = console.error.bind(console)
-  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-    consoleErrors.push(args.map((a) => (a instanceof Error ? `${a.name}: ${a.message}` : String(a))).join(' '))
-    realError(...args)
-  })
   resetDenials()
   container = document.createElement('div')
   // Capra's Modal portals out of this element and marks it `inert`, so the
@@ -312,16 +332,20 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  act(() => root.unmount())
-  container.remove()
-  document.body.innerHTML = ''
-  vi.unstubAllGlobals()
-  vi.restoreAllMocks()
-  vi.useRealTimers()
-  resetDenials()
-  resetSetupRunLock()
-  // Last, so a failure here still leaves the next test a clean page.
-  expect(consoleErrors, 'this test logged an error it did not expect').toEqual([])
+  // In a finally, so a teardown that throws still leaves the next test its
+  // globals, its timers and an unheld run lock.
+  try {
+    act(() => root.unmount())
+  } finally {
+    container.remove()
+    document.body.innerHTML = ''
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+    resetDenials()
+    resetSetupRunLock()
+  }
+  expectNoConsoleErrors('in this test')
 })
 
 /** Let the environment run: the group read, the profile read, nine independent

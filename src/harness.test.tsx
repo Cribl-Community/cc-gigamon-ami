@@ -66,3 +66,26 @@ describe('the click-in-progress flag', () => {
     })
   })
 })
+
+describe('fetch that no test stubbed', () => {
+  /** What src/vitest.setup.ts records for each such call, cleared here so this
+   *  file's deliberate call does not fail its own teardown. */
+  const unstubbed = () => (globalThis as { __unstubbedFetches?: string[] }).__unstubbedFetches
+
+  it('is refused without reaching the network, and recorded by URL', async () => {
+    // happy-dom's own fetch would open a real socket to its page origin. When
+    // a test left one in flight, the window's teardown aborted it and printed
+    // a DOMException [AbortError] beside a green run.
+    await expect(fetch('/capi/m/default_search/search/jobs/x/metrics')).rejects.toThrow(/no test stubbed/)
+    expect(unstubbed()).toEqual(['/capi/m/default_search/search/jobs/x/metrics'])
+    unstubbed()!.length = 0
+  })
+
+  it('reaches a stub a test installs, and the refusal again once it is removed', async () => {
+    vi.stubGlobal('fetch', async () => new Response('ok'))
+    await expect((await fetch('/a')).text()).resolves.toBe('ok')
+    vi.unstubAllGlobals()
+    await expect(fetch('/b')).rejects.toThrow(/no test stubbed/)
+    unstubbed()!.length = 0
+  })
+})
