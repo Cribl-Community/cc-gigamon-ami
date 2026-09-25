@@ -90,10 +90,11 @@ import { capi, errText, groupPath, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
 import { appendLog } from './kv'
 import {
-  DEFAULT_PROFILE, datasetSpec, destinationSpec, sameDiff,
+  DEFAULT_PROFILE, datasetSpec, destinationSpec, pathFilterRows, sameDiff,
   type DiffRow, type LandingProfile,
 } from './landing'
 import { listInputs, listPackInputs, type StreamInput } from './lake'
+import { PACK_PARQUET_DATASET_ID } from './pack'
 import { loadCommitMemory } from './setupMemory'
 
 /** The Raw HTTP source Gigamon AMX POSTs to. Global (not pack) ids, and each is
@@ -400,6 +401,41 @@ export function suggestPort(managed: boolean, used: readonly number[] | null): n
  * `id`, so for this object the spec IS the create body.
  */
 export const DATASET_SPEC = datasetSpec(DEFAULT_PROFILE)
+
+/**
+ * The Cribl Lake dataset the onboarding pack's Parquet destination writes to
+ * (pack.ts `PACK_PARQUET_DATASET_ID`), as its create body.
+ *
+ * NOTHING CREATES IT YET (pack.ts `PACK_DATASETS_NOT_CREATED`). A pack cannot
+ * hold a dataset, so the app must, and the place is the onboarding run: beside
+ * `ensureDataset`, created when absent and never edited. THE GATE IS THE HTTP
+ * SOURCE'S `enable` (packClient.ts), not the routes: the pack's routes ship
+ * enabled (default/pipelines/route.yml), so the first event after the source
+ * starts is routed to this dataset. When the create step is built, `enable`
+ * should refuse while this dataset is absent, as `sample` does for its own.
+ * Until then the Parquet destination drops (`onBackpressure: drop`) every copy
+ * with no signal, and gigamon_ami keeps flowing. That refusal is not added
+ * before the create step: with nothing to create the dataset, it would refuse
+ * every start, and stop gigamon_ami too, which the drop exists to protect.
+ *
+ * NO PARTITIONS, AND THE KEY IS ABSENT rather than `[]`: `acceleratedFields` is
+ * honoured only when a dataset is created, so this body is the whole of that
+ * decision (pack.ts `PACK_DECISIONS.parquet_partitions`). The other settings
+ * are gigamon_ami's own defaults: its retention, and the v2 reader. The reader
+ * gets the Parquet row alone, since this dataset has never held a JSON object.
+ * Not built with `datasetSpec`: that is gigamon_ami's body, whose Parquet case
+ * keeps a JSON row for the history written before a conversion.
+ */
+export const PARQUET_DATASET_SPEC = Object.freeze({
+  id: PACK_PARQUET_DATASET_ID,
+  description: 'Gigamon Application Metadata Intelligence (AMI) flow records, Parquet copy',
+  retentionPeriodInDays: DEFAULT_PROFILE.retentionDays,
+  format: 'parquet' as const,
+  searchConfig: Object.freeze({
+    searchVersion: 'v2' as const,
+    pathFilters: Object.freeze(pathFilterRows(['parquet']).map((r) => Object.freeze(r))),
+  }),
+})
 
 /**
  * The Cribl Lake destination body for a profile.

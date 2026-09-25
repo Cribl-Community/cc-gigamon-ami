@@ -18,8 +18,13 @@ Parquet copy in `gigamon_ami_pq`.
 | Destination | `gigamon_ami_parquet_lake` | Cribl Lake → `gigamon_ami_pq` (Parquet). Drops events rather than blocking under backpressure, so it can never stop the JSON copy. |
 | Destination | `gigamon_ami_sample_lake` | Cribl Lake → `gigamon_ami_sample` (JSON) |
 
-No dataset is part of the pack, because Cribl has no pack-scoped dataset. The app creates them, and
-removing the pack deletes none of them.
+No dataset is part of the pack, because Cribl has no pack-scoped dataset, and removing the pack
+deletes none of them. Guided Setup's onboarding run creates `gigamon_ami`.
+
+**No release of the app creates `gigamon_ami_pq` or `gigamon_ami_sample` yet.** Until one does, the
+Parquet route still runs once the HTTP source is started, and its destination drops every event
+it cannot write, with no error shown: `gigamon_ami` keeps flowing, and `gigamon_ami_pq` stays
+empty. Guided Setup refuses to start the sample source until `gigamon_ami_sample` exists.
 
 Object names say what each object does. The `gno_` prefix is reserved for the app's acceleration
 schedules, and `npm run pack:check` refuses a pack object that carries it.
@@ -43,17 +48,18 @@ worker group exposes. TLS ships in the form a Cribl-managed group needs: Cribl's
 group Guided Setup turns TLS off. It then tells you the traffic is unencrypted until you add a
 certificate.
 
-## Undecided: PENDING
+## Decided on 2026-09-24
 
-These are placeholders and not decisions. The pack must not be released while they are open. A
-release build (`scripts/pack.mjs build --expect-version`, which the release workflow runs) refuses any
-pack file that says PENDING, and so do the app's tests on a release tag.
+Both settings below were placeholders until owner-approved measurements settled them.
 
-- **PENDING: the Parquet schema mode.** `gigamon_ami_parquet_lake` ships `automaticSchema: true`.
-  Whether it stays automatic or becomes an explicit schema waits on a schema-change test and an
-  owner decision.
-- **PENDING: the partition fields of `gigamon_ami_pq`.** A Lake dataset's layout is fixed when it
-  is created, and the app creates this one, so this has to be decided before that happens.
+- **The Parquet schema mode is automatic.** `gigamon_ami_parquet_lake` ships
+  `automaticSchema: true`. An explicit schema had no effect that could be observed: absent fields
+  got the same `""` fill, a field the schema did not list was still kept, and strings were stored in
+  a column the schema declared `INT64`.
+- **`gigamon_ami_pq` is to be created with no partition fields.** A Lake dataset's layout is fixed
+  when it is created, and nothing creates this one yet (see above). A partition on `protocol` pruned nothing on Search v2: a
+  `protocol=6` search read the same 63,249 events and 2.69 MB from the partitioned copy as from the
+  flat one. It also cost 172% of the flat copy with no filter, and 197% with other filters.
 
 ## Sample data
 
