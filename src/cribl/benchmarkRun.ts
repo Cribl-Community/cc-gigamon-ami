@@ -35,7 +35,17 @@ import { capi } from './capi'
 import { SearchRequestError, runSearch } from './search'
 import { isDenial } from './authz'
 import { JOBS_PATH, runMeta } from './accel/status'
-import { canonicalAnswer, queryById, queryFor, type BenchRun, type BenchWindow, type PlannedBenchRun } from './benchmarkPlan'
+import {
+  canonicalAnswer,
+  landingQueryFor,
+  queryById,
+  queryFor,
+  type BenchRun,
+  type BenchWindow,
+  type LagReading,
+  type PlannedBenchRun,
+} from './benchmarkPlan'
+import type { BenchTarget } from './benchmark'
 
 /** How long to wait before reading the work meter a second time. */
 export const WORK_RETRY_MS = 3_000
@@ -143,6 +153,49 @@ export async function runOne(p: PlannedBenchRun, window: BenchWindow, signal?: A
   const clientMs = now() - t0
   const [serverMs, cpuSeconds] = await Promise.all([serverTime(jobId, signal), readWork(jobId, signal)])
   return { ...base, jobId, serverMs, clientMs, cpuSeconds, rows, ...(answer !== undefined ? { answer } : {}) }
+}
+
+const finiteNumber = (v: unknown): number | null => {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
+  return typeof n === 'number' && Number.isFinite(n) ? n : null
+}
+
+/**
+ * The 15-minute stage's landing check on one store: the Lake landing panel's
+ * landing-lag search, over `read` (absolute), `asWritten` and reuse off like
+ * every run here. Only `newest` and `n` are read; an empty window answers no row
+ * at all, which is read as "nothing landed", never as zero lag. A failed search
+ * is a result, carrying Cribl's sentence; an abort is rethrown so the stage stops.
+ */
+export async function readLanding(target: BenchTarget, read: BenchWindow, signal?: AbortSignal): Promise<LagReading> {
+  const query = landingQueryFor(target)
+  const base = { targetId: target.id, dataset: target.dataset, query }
+  let jobId: string
+  let newest: number | null = null
+  let count: number | null = 0
+  try {
+    const res = await runSearch(query, { earliest: read.earliest, latest: read.latest, reuse: false, asWritten: true, signal })
+    jobId = res.jobId
+    const row = (res.rows[0] ?? null) as Record<string, unknown> | null
+    if (row) {
+      newest = finiteNumber(row.newest)
+      count = finiteNumber(row.n)
+    }
+  } catch (err) {
+    if (isAbort(err, signal)) throw err
+    const refused = refusedSubmit(err)
+    return {
+      ...base,
+      jobId: null,
+      newest: null,
+      count: null,
+      cpuSeconds: null,
+      error: err instanceof Error ? err.message : 'The search failed.',
+      ...(refused ? { refused } : {}),
+    }
+  }
+  const cpuSeconds = await readWork(jobId, signal)
+  return { ...base, jobId, newest, count, cpuSeconds }
 }
 
 /**

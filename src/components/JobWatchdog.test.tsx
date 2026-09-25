@@ -446,6 +446,9 @@ describe('announcements', () => {
     const said = announcementFor(state({ jobs: [hung()], idSetSeq: 1 }))
     expect(said).toContain('1 search')
     expect(said).not.toContain('User 06')
+    // It names both datasets the watch lists, the Parquet copy included.
+    expect(said).toContain('of gigamon_ami or gigamon_ami_pq')
+    expect(announcementFor(state({ jobs: [] }))).toContain('No search of gigamon_ami or gigamon_ami_pq')
   })
 })
 

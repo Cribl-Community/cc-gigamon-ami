@@ -54,6 +54,13 @@ export const WINDOW_TIP =
   'An absolute window on whole minutes, ending ten minutes ago, so every store has landed every record in it. Every run ' +
   'of a stage reads the same window.'
 
+export const FIFTEEN_WINDOW_TIP =
+  'An absolute window on whole minutes, ending ten minutes ago — or earlier, when a store’s newest record is earlier ' +
+  'than that. Before the stage, each store is asked when its newest record is from; the window ends no later than ' +
+  'five minutes before the oldest of those, so files still being written are left out, and it moves back at most 15 ' +
+  'minutes. The newest record cannot show a gap earlier in the window: a store missing records there shows up only ' +
+  'as a row or value disagreement. Every run of the stage reads the same window.'
+
 export const COLUMN_TIPS = Object.freeze({
   rows:
     'Rows the search produced. Stores that return different numbers of rows did not answer the same question, so no ' +
@@ -79,6 +86,9 @@ export const CONSEQUENCES = Object.freeze({
   writesNothing: 'Writes nothing: no configuration, no saved search, nothing stored by this app.',
   stoppable: 'Stop, or leaving this page, cancels the search that is running.',
   warmup: 'The first run of each search on each store is a warm-up and is not reported.',
+  landing:
+    'If a store’s newest record is earlier than the window’s usual end, the window moves back to end five minutes before it; if ' +
+    'that would take more than 15 minutes, nothing after the landing check runs, and the reason is shown.',
 })
 
 export const STOPPED_NOTE = 'Stopped before every run finished. Nothing is inferred from the runs that did not happen.'
@@ -112,4 +122,8 @@ export function disagreeWords(label: string): string {
 
 export function valuesDisagreeWords(label: string): string {
   return `${label}: the stores returned the same number of rows but different values over this minute, so they did not answer the same question.`
+}
+
+export function landingProgressWords(dataset: string): string {
+  return `Checking when the newest record landed in ${dataset}…`
 }

@@ -1,8 +1,8 @@
 // The store benchmark's network half, against a stubbed Cribl: what one run
 // submits, what it reads back, and that a plan never has two searches in flight.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { runOne, runPlan, WORK_RETRY_MS } from './benchmarkRun'
-import { benchPlan, benchTargets, canonicalAnswer, PARQUET_DATASET, probePlan, stageWindow } from './benchmarkPlan'
+import { readLanding, runOne, runPlan, WORK_RETRY_MS } from './benchmarkRun'
+import { benchPlan, benchTargets, canonicalAnswer, landingReadWindow, PARQUET_DATASET, probePlan, stageWindow } from './benchmarkPlan'
 import { setQueryRouter } from './search'
 import type { LakeDataset, ReadResult } from './lake'
 
@@ -61,6 +61,8 @@ beforeEach(() => {
     const m = /\/search\/jobs\/([^/?]+)(?:\/([a-z-]+))?/.exec(u)
     if (m) {
       const [, id, kind] = m
+      // An aborted run is cancelled on the server.
+      if (kind === 'cancel') return res(200, { items: [{ id, status: 'canceled' }] })
       if (kind === 'status') {
         if (failNext) {
           failNext = false
@@ -96,6 +98,46 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
   setQueryRouter(null)
+})
+
+describe('the landing check', () => {
+  const READ = landingReadWindow(Date.UTC(2026, 8, 25, 14, 0))
+
+  it('submits the landing-lag search on the store named, over the absolute read window, as written, reuse off', async () => {
+    setQueryRouter((q) => q.replace(`dataset="${PARQUET_DATASET}"`, 'dataset="gigamon_ami"'))
+    results = () => ({ total: 1, rows: [{ newest: 1_790_000_000, n: 42, lag_s: 12 }] })
+    const r = await readLanding(TARGETS[1], READ)
+    expect(submits).toHaveLength(1)
+    expect(submits[0].query).toContain(`dataset="${PARQUET_DATASET}" | summarize newest=max(_time), n=count()`)
+    expect(submits[0].query).not.toContain('allow_previous_results')
+    expect(submits[0].earliest).toBe(READ.earliest)
+    expect(submits[0].latest).toBe(READ.latest)
+    expect(r).toMatchObject({ dataset: PARQUET_DATASET, newest: 1_790_000_000, count: 42, cpuSeconds: 3.5, jobId: 'job-1' })
+    expect(r.error).toBeUndefined()
+  })
+
+  it('reads an empty window as nothing landed, never as zero lag', async () => {
+    results = () => ({ total: 0, rows: [] })
+    const r = await readLanding(TARGETS[0], READ)
+    expect(r.newest).toBeNull()
+    expect(r.error).toBeUndefined()
+  })
+
+  it('returns a failed search as a result carrying Cribl’s sentence, and a refused submit as refused', async () => {
+    failNext = true
+    const failed = await readLanding(TARGETS[0], READ)
+    expect(failed.error).toBeTruthy()
+    expect(failed.newest).toBeNull()
+    submitStatus = 403
+    const refused = await readLanding(TARGETS[0], READ)
+    expect(refused.refused).toMatchObject({ method: 'POST', status: 403 })
+  })
+
+  it('rethrows an abort so the stage stops', async () => {
+    const ctl = new AbortController()
+    ctl.abort()
+    await expect(readLanding(TARGETS[0], READ, ctl.signal)).rejects.toThrow()
+  })
 })
 
 describe('one run', () => {
