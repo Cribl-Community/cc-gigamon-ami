@@ -38,7 +38,7 @@ import {
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
-  removePackIrreversible, sampleVolumeWords, storageCostWords,
+  nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
 } from '../../components/onboardingCopy'
 import { approvedWrites, type AccelState, type ApprovedWrites } from '../accel/provision'
 import { estimateScheduleSetCost } from '../accel/estimate'
@@ -49,7 +49,7 @@ import {
   PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
   PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, type PackObjectKind, type PackRelease,
 } from '../pack'
-import { DATASET_SPEC, PARQUET_DATASET_SPEC, tlsFor, type CommitScope, type LakeDatasetSpec } from '../provision'
+import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, tlsFor, type CommitScope, type LakeDatasetSpec } from '../provision'
 
 // ── Datasets ────────────────────────────────────────────────────────────────
 
@@ -189,6 +189,27 @@ export function expectedConfigureDiff(hosting: 'managed' | 'hybrid', port: numbe
   return rows
 }
 
+/**
+ * Whether two diffs make the same WRITES: the same keys, each set to the same
+ * value. Where each key started is left out, on purpose, and only for one use:
+ * a fresh install's dialog shows `expectedConfigureDiff`, predicted from the
+ * shipped `inputs.yml`, and the source it is compared with afterwards is the
+ * Leader's installed copy of that file. A Leader that spells "nothing there"
+ * its own way (an empty token list, no `disabled` key) moves a `before` and
+ * nothing the run sends; one that installed another value for a key the run
+ * would not otherwise set (a port, a TLS block) adds or drops a row, and is
+ * refused. Everywhere else a source's diff is held exactly (landing.ts
+ * `sameDiff`).
+ */
+export function sameWrites(a: readonly DiffRow[], b: readonly DiffRow[]): boolean {
+  if (a.length !== b.length) return false
+  const byKey = new Map(b.map((r) => [r.key, r]))
+  return a.every((r) => {
+    const other = byKey.get(r.key)
+    return other !== undefined && sameValue(r.after, other.after)
+  })
+}
+
 /** Starting the sample DataGen, as its diff: the one key it changes. */
 export const SAMPLE_START_DIFF: readonly DiffRow[] = Object.freeze([
   Object.freeze({ key: 'disabled', kind: 'changed' as const, before: true, after: false }),
@@ -300,6 +321,9 @@ export interface StepContext {
   /** Whether the pack is already installed and current in the group. An older
    *  copy is not onboarded over: Upgrade is offered instead. */
   packInstalled: boolean
+  /** Whether the run commits and deploys the group (`OnboardingDialog.deploys`).
+   *  Absent is true. */
+  deploys?: boolean
 }
 
 /** The run's steps, in the order they run. The run is strictly sequential. */
@@ -312,8 +336,8 @@ export function onboardingSteps(ctx: StepContext): OnboardingStep[] {
   if (!ctx.packInstalled) steps.push({ key: 'pack', what: `Install ${PACK_ID}`, onFailure: 'stop' })
   steps.push({ key: 'http_input', what: `Configure and start ${PACK_HTTP_INPUT_ID}`, onFailure: 'stop' })
   if (ctx.sample) steps.push({ key: 'sample_input', what: `Start ${PACK_SAMPLE_INPUT_ID}`, onFailure: 'continue' })
+  if (ctx.deploys !== false) steps.push({ key: 'commit_deploy', what: 'Commit and deploy', onFailure: 'stop' })
   steps.push(
-    { key: 'commit_deploy', what: 'Commit and deploy', onFailure: 'stop' },
     { key: 'acceleration', what: 'Create the scheduled searches', onFailure: 'continue' },
     { key: 'recheck', what: 'Read everything back', onFailure: 'continue' },
   )
@@ -362,6 +386,14 @@ export interface OnboardingDialog {
   consequences: string[]
   undo: string
   steps: OnboardingStep[]
+  /**
+   * Whether the run commits and deploys the group. False only when it changes
+   * nothing there (no install, no source to write) and none of the pack's own
+   * files are already uncommitted: the dialog then names no deploy and says
+   * nothing is committed, and the run skips the step rather than deploying a
+   * group it did not change.
+   */
+  deploys: boolean
   accelMode: AccelMode
   /** The saved-search writes the dialog named — passed back to the run. */
   approvedAccel: ApprovedWrites
@@ -448,14 +480,22 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
         : 'started, keeping its auth token, port and TLS as they are',
     })
   }
+  // The sample source is named only when there is something to change on it:
+  // one already running reads back an empty diff, and the run writes nothing.
   let sampleDiff: readonly DiffRow[] = []
   if (ctx.sample) {
     sampleDiff = ctx.liveSampleDiff ?? SAMPLE_START_DIFF
-    resources.push({ action: 'replace', kind: 'Source', id: PACK_SAMPLE_INPUT_ID, group, detail: `started, writing only to ${PACK_SAMPLE_DATASET_ID}` })
+    if (sampleDiff.length > 0) {
+      resources.push({ action: 'replace', kind: 'Source', id: PACK_SAMPLE_INPUT_ID, group, detail: `started, writing only to ${PACK_SAMPLE_DATASET_ID}` })
+    }
   }
 
-  // 7. The deploy.
-  resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
+  // 7. The deploy, only when the run changes the group or commits the pack's
+  // own files somebody left uncommitted (the commit's scope says which). A Git
+  // status nobody could read is not "nothing pending", so that one deploys.
+  const groupWrites = !ctx.packInstalled || httpAction !== 'none' || sampleDiff.length > 0
+  const deploys = groupWrites || ctx.scope === null || ctx.scope.unknown || ctx.scope.alreadyDirty.length > 0
+  if (deploys) resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
 
   // 8. The scheduled searches. A CREATE is marked with the mode it is created
   // in; a correction (`replace`) keeps the pause state Cribl holds for it
@@ -483,11 +523,15 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
   const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
   const undeployedLine = undeployedSentence(commitCtx)
   const consequences = [
-    carriesSentence(commitCtx, 'change'),
-    pendingSentence(commitCtx),
-    ...(undeployedLine ? [undeployedLine] : []),
-    ...DEPLOY_CONSEQUENCES,
-    HTTP_RESTART_PRECAUTION,
+    ...(deploys
+      ? [
+          carriesSentence(commitCtx, 'change'),
+          pendingSentence(commitCtx),
+          ...(undeployedLine ? [undeployedLine] : []),
+          ...DEPLOY_CONSEQUENCES,
+          HTTP_RESTART_PRECAUTION,
+        ]
+      : [nothingToDeploySentence(group)]),
     ...(ctx.globalStackPresent ? [globalStackSentence(group)] : []),
     ...(mode === 'running' && !realDataSeen(ctx.target) ? [emptyRealDatasetSentence()] : []),
     ...lakeUnresolved.map((id) => lakeEntryNotCreatedSentence(id)),
@@ -502,7 +546,8 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
     costLine,
     consequences,
     undo: ONBOARDING_UNDO,
-    steps: onboardingSteps({ sample: ctx.sample, packInstalled: ctx.packInstalled }),
+    steps: onboardingSteps({ sample: ctx.sample, packInstalled: ctx.packInstalled, deploys }),
+    deploys,
     accelMode: mode,
     approvedAccel,
     approvedHttp: [...httpDiff],

@@ -553,9 +553,14 @@ export const denialMark = (): number => seq
  * This function answers "was the thing I just did refused?", and a poll that
  * runs on a timer is not something the person did — see DenialOrigin. It stays
  * in the ledger; it is simply never somebody's click.
+ *
+ * `match` narrows it further, for a caller that latches ANOTHER control's gate
+ * on its behalf and must only do so for a refusal of that control's own write
+ * (the onboarding run's saved-search step and `accel.apply`): a refused read,
+ * or a concurrent request from another panel, is not that write refused.
  */
-export function denialSince(mark: number): Denial | null {
-  return ledger.find((d) => d.seq > mark && d.origin === 'click') ?? null
+export function denialSince(mark: number, match: (d: Denial) => boolean = () => true): Denial | null {
+  return ledger.find((d) => d.seq > mark && d.origin === 'click' && match(d)) ?? null
 }
 
 /** Only for tests: forget everything this page has observed. */

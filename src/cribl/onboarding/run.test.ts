@@ -20,8 +20,16 @@
 //      current}: the commit's files are the pack's alone, and the objects the
 //      dialog names are the objects written;
 //   6. every step's stop-or-continue;
-//   7. a source that moved sends nothing; moved hosting or a taken port at
-//      step 0 means zero writes; a changed acceleration mode refuses step 6;
+//   5. …and where a row could be named and not written (a sample source
+//      already running, a group with nothing left to change), it is not named:
+//      no source row, no deploy, no commit;
+//   7. a source that moved sends nothing; at step 0, moved hosting, a taken
+//      port, gigamon_ami's retention, the source's planned action, a pack
+//      uninstalled, replaced or installed since, and a dataset that appeared or
+//      disappeared each mean zero writes; a changed acceleration mode refuses
+//      step 6; a Lake window that moved is read again, not taken from cache;
+//      a fresh install's source is held to what the dialog said it would SET,
+//      so a Leader's spelling of an empty field does not stop it;
 //   8. unticked sample: no sample dataset POST and no sample PATCH;
 //   9. sample-only creates every schedule paused, an unresolved window creates
 //      no Lake entry, and nothing reads `$vt_results`;
@@ -79,6 +87,11 @@ interface Opts {
   nothingToCommit?: boolean
   /** Saved searches are stored enabled whatever the POST said. */
   savedIgnoresPaused?: boolean
+  /** The group's own source list answers this status instead of 200. */
+  groupInputsStatus?: number
+  /** What the Leader makes of the shipped Raw HTTP source when it installs the
+   *  pack: keys set (an `undefined` value removes the key). */
+  installMaterialises?: Record<string, unknown>
 }
 
 let calls: Call[] = []
@@ -111,6 +124,8 @@ function makeWorld(o: Opts) {
     kv: new Map<string, string>(),
     committed: [] as string[][],
     jobs: [] as string[],
+    /** Set mid-run to refuse the saved-search LIST (a read). */
+    savedListStatus: 0,
     shipped,
   }
   return w
@@ -163,7 +178,9 @@ function leader(o: Opts = {}): void {
     }
 
     // The group's sources and packs.
-    if (at('GET', `/m/${GROUP}/system/inputs`)) return reply(200, { items: w.groupInputs })
+    if (at('GET', `/m/${GROUP}/system/inputs`)) {
+      return o.groupInputsStatus ? reply(o.groupInputsStatus, { message: 'refused' }) : reply(200, { items: w.groupInputs })
+    }
     if (at('GET', `/m/${GROUP}/packs`)) {
       const listed = fail.verify && w.packs.length ? w.packs.map((p) => ({ ...p, source: 'https://elsewhere.example.com/x.crbl' })) : w.packs
       return reply(200, { items: listed })
@@ -171,7 +188,12 @@ function leader(o: Opts = {}): void {
     if (at('POST', `/m/${GROUP}/packs`)) {
       if (fail.packPost) return reply(fail.packPost, { message: 'the Leader could not fetch the release' })
       w.packs = [{ id: PACK_ID, version: PACK_VERSION, source: (body as { source: string }).source }]
-      w.packInputs = { [PACK_HTTP_INPUT_ID]: w.shipped(PACK_HTTP_INPUT_ID), [PACK_SAMPLE_INPUT_ID]: w.shipped(PACK_SAMPLE_INPUT_ID) }
+      const http: Record<string, unknown> = w.shipped(PACK_HTTP_INPUT_ID)
+      for (const [k, v] of Object.entries(o.installMaterialises ?? {})) {
+        if (v === undefined) delete http[k]
+        else http[k] = v
+      }
+      w.packInputs = { [PACK_HTTP_INPUT_ID]: http, [PACK_SAMPLE_INPUT_ID]: w.shipped(PACK_SAMPLE_INPUT_ID) }
       w.pending.push(`groups/${GROUP}/default/${PACK_ID}/package.json`)
       return reply(200, { items: [{ id: PACK_ID }] })
     }
@@ -220,7 +242,10 @@ function leader(o: Opts = {}): void {
     if (at('PATCH', `/products/stream/groups/${GROUP}/deploy`)) return reply(fail.deploy ?? 200, fail.deploy ? { message: 'deploy refused' } : { items: [] })
 
     // Saved searches.
-    if (at('GET', SAVED)) return reply(200, { items: [...w.saved.values()], count: w.saved.size, totalCount: w.saved.size })
+    if (at('GET', SAVED)) {
+      if (w.savedListStatus) return reply(w.savedListStatus, { message: 'Forbidden' })
+      return reply(200, { items: [...w.saved.values()], count: w.saved.size, totalCount: w.saved.size })
+    }
     if (at('POST', SAVED)) {
       if (fail.savedPost) return reply(fail.savedPost, { message: 'Not authorized or licensed to perform this action.' })
       const b = body as Record<string, unknown>
@@ -240,6 +265,19 @@ function leader(o: Opts = {}): void {
   })
 }
 
+/** Run `then` once, right after the first call that `match`es has been answered
+ *  — somebody else acting on the Leader while a run is under way. */
+function afterCall(match: (c: Call) => boolean, then: () => void): void {
+  const inner = globalThis.fetch
+  let done = false
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const r = await inner(url, init)
+    const c = calls[calls.length - 1]
+    if (!done && match(c)) { done = true; then() }
+    return r
+  })
+}
+
 /** Writes to customer configuration: everything but GETs and this app's own store. */
 const writes = () => calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))
 const kvPuts = () => calls.filter((c) => c.method === 'PUT' && c.path.startsWith('/kvstore'))
@@ -252,6 +290,9 @@ type Target = typeof import('../datasetTarget')
  *  constants), or with pack.ts as it is today. */
 async function load(opts: { published?: boolean } = {}): Promise<{ run: Run; plan: Plan; dt: Target }> {
   vi.resetModules()
+  // The run generates its token itself; the tests know it by fixing the
+  // generator, rather than through a hook on the run's own interface.
+  vi.doMock('../provision', async (orig) => ({ ...(await orig<typeof import('../provision')>()), generateToken: () => TOKEN }))
   if (opts.published === false) vi.doUnmock('../pack')
   else {
     vi.doMock('../pack', async (orig) => ({
@@ -291,7 +332,6 @@ async function onboard(
     onToken: (token, afterError) => tokens.push({ token, afterError }),
     record: async (hash, message) => { records.push({ hash, message }) },
     target: () => dt.datasetTarget(),
-    token: () => TOKEN,
   })
   return { steps: out.steps, stopped: out.stopped, tokens, records, dialog }
 }
@@ -300,6 +340,7 @@ beforeEach(() => { calls = [] })
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.doUnmock('../pack')
+  vi.doUnmock('../provision')
   vi.resetModules()
   delete window.__CRIBL_SEARCH_ORIGIN
 })
@@ -362,6 +403,36 @@ describe('5. the run, in order, and only what the dialog named', () => {
     }
   }
 
+  // The four cases above write every row they name. These are the ones where a
+  // row could be named and not written: a sample source already running, and a
+  // group the run has nothing left to change in.
+  const RUNNING_HTTP = { disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] }
+  const ALL_DATASETS = [...REAL_DATA, { id: PACK_PARQUET_DATASET_ID, format: 'parquet' }, { id: PACK_SAMPLE_DATASET_ID }]
+
+  for (const sample of [false, true]) {
+    it(`nothing left to change in the group (sample ${sample ? 'ticked, already running' : 'unticked'}): no source row, no deploy row, no commit or deploy`, async () => {
+      leader({ datasets: ALL_DATASETS, installed: { http: RUNNING_HTTP, sample: { disabled: false } } })
+      const r = await onboard({ sample, target: 'has-data' })
+      expect(r.stopped).toBeNull()
+      expect(r.dialog.resources.some((x) => x.id === PACK_SAMPLE_INPUT_ID)).toBe(false)
+      expect(r.dialog.resources.some((x) => x.action === 'deploy')).toBe(false)
+      expect(r.dialog.diff).toEqual([])
+      expect(writeWords()).toEqual(['saved'])
+      const named = new Set(r.dialog.resources.map((x) => x.id))
+      const written = new Set(writes().map((c) => (c.body as { id: string }).id))
+      expect([...written].sort()).toEqual([...named].sort())
+      expect(r.steps.find((s) => s.key === 'commit')).toMatchObject({ action: 'skipped' })
+    })
+  }
+
+  it('nothing of this run to change, but the pack’s own files are uncommitted: the deploy is named, and done', async () => {
+    leader({ datasets: ALL_DATASETS, installed: { http: RUNNING_HTTP, sample: { disabled: false } } })
+    world.pending.push(`groups/${GROUP}/local/${PACK_ID}/inputs.yml`)
+    const r = await onboard({ target: 'has-data' })
+    expect(r.dialog.resources.some((x) => x.action === 'deploy')).toBe(true)
+    expect(writeWords()).toEqual(['commit', 'deploy', 'saved'])
+  })
+
   it('creates each dataset with the body the plan gives it, and gigamon_ami when it is absent', async () => {
     leader({ datasets: [] })
     const { plan } = await load()
@@ -410,6 +481,37 @@ describe('4. the token is handed over once, and written into one request only', 
     expect(r.tokens).toEqual([{ token: TOKEN, afterError: true }])
     expect(r.steps.some((s) => s.key === 'http_input' && s.warning)).toBe(true)
     expect(JSON.stringify(r.steps)).not.toContain(TOKEN)
+  })
+
+  // A fresh install's diff is PREDICTED from inputs.yml; the installed source is
+  // what the Leader made of that file. What the run sends is held to what the
+  // dialog showed it would SET, key for key and value for value — not to the
+  // Leader's spelling of "nothing there yet".
+  it('fresh install, the Leader wrote an empty token list into the source: the token is still set', async () => {
+    leader({ datasets: REAL_DATA, installMaterialises: { authTokensExt: [] } })
+    const r = await onboard()
+    expect(r.stopped).toBeNull()
+    expect(r.tokens).toEqual([{ token: TOKEN, afterError: false }])
+  })
+
+  it('fresh install, the Leader dropped `disabled` from the source: it is still configured and started', async () => {
+    leader({ datasets: REAL_DATA, installMaterialises: { disabled: undefined } })
+    const r = await onboard()
+    expect(r.stopped).toBeNull()
+    const patch = writes().find((c) => c.path === HTTP_INPUT)
+    expect(patch, 'the source was not written').toBeDefined()
+    expect((patch!.body as { disabled?: boolean }).disabled).toBe(false)
+  })
+
+  it('fresh install, the installed source would need a write the dialog never showed: nothing is sent', async () => {
+    // The dialog (port 20005, the shipped one) showed no port row; the Leader
+    // installed the source on another port, so the PATCH would also move it.
+    leader({ datasets: REAL_DATA, installMaterialises: { port: 20009 } })
+    const r = await onboard({ port: 20005 })
+    expect(r.dialog.approvedHttp.some((row) => row.key === 'port')).toBe(false)
+    expect(r.stopped?.key).toBe('http_input')
+    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
+    expect(r.tokens).toEqual([])
   })
 
   it('a source that already has a token is started, not rotated: no new token', async () => {
@@ -515,6 +617,20 @@ describe('6. the failure matrix', () => {
     expect(authz.latchedDenial('accel.apply')).toMatchObject({ method: 'POST', path: SAVED, status: 403 })
     expect(r.steps.some((s) => s.key === 'acceleration' && s.action === 'error')).toBe(true)
   })
+
+  it('a refused READ during the saved-search step does not latch Acceleration’s Apply', async () => {
+    leader({ datasets: REAL_DATA })
+    // From the commit on, the saved-search LIST is refused: step 6's re-read
+    // fails and writes nothing. Nothing that writes a saved search was refused,
+    // so Apply — a write — is not closed on this app's behalf.
+    afterCall((c) => c.method === 'POST' && c.path === '/version/commit', () => { world.savedListStatus = 403 })
+    const r = await onboard({ target: 'has-data' })
+    const authz = await import('../authz')
+    expect(calls.some((c) => c.method === 'GET' && c.path === SAVED)).toBe(true)
+    expect(calls.some((c) => c.method === 'POST' && c.path === SAVED)).toBe(false)
+    expect(authz.latchedDenial('accel.apply')).toBeNull()
+    expect(r.steps.some((s) => s.key === 'acceleration' && s.action === 'skipped')).toBe(true)
+  })
 })
 
 // ── 7. What was shown is what is written ────────────────────────────────────
@@ -570,6 +686,96 @@ describe('7. anything that moved after the dialog', () => {
     expect(writes()).toEqual([])
   })
 
+  it('gigamon_ami’s retention changed: zero writes', async () => {
+    leader({ datasets: REAL_DATA })
+    const r = await onboard({
+      between: () => { world.datasets.get(PACK_LAKE_DATASET_ID)!.retentionPeriodInDays = 60 },
+    })
+    expect(r.stopped?.detail).toMatch(new RegExp(`${PACK_LAKE_DATASET_ID}’s retention is now 60 days`))
+    expect(writes()).toEqual([])
+  })
+
+  it('the Raw HTTP source was given a token since: what step 3 would do changed, zero writes', async () => {
+    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
+    const r = await onboard({
+      between: () => { world.packInputs[PACK_HTTP_INPUT_ID].authTokensExt = [{ token: 'e'.repeat(64), authType: 'manual' }] },
+    })
+    expect(r.stopped?.detail).toMatch(new RegExp(`${PACK_HTTP_INPUT_ID} changed: it would now be started`))
+    expect(writes()).toEqual([])
+  })
+
+  it('the pack was uninstalled since: zero writes, so nothing is created ahead of a step that would 404', async () => {
+    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
+    const r = await onboard({
+      between: () => { world.packs = []; world.packInputs = {} },
+    })
+    expect(r.stopped?.detail).toMatch(new RegExp(`${PACK_ID} is no longer installed`))
+    expect(writes()).toEqual([])
+  })
+
+  it('the pack was replaced by another version since: zero writes', async () => {
+    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
+    const r = await onboard({
+      between: () => { world.packs = [{ id: PACK_ID, version: '0.1.0', source: packReleaseUrl('0.1.0') }] },
+    })
+    expect(r.stopped?.detail).toMatch(/0\.1\.0 is installed now, not this app’s current release/)
+    expect(writes()).toEqual([])
+  })
+
+  it('a dataset that disappeared since: zero writes', async () => {
+    leader({ datasets: [...REAL_DATA, { id: PACK_PARQUET_DATASET_ID, format: 'parquet' }] })
+    const r = await onboard({
+      between: () => { world.datasets.delete(PACK_PARQUET_DATASET_ID) },
+    })
+    expect(r.stopped?.detail).toMatch(new RegExp(`${PACK_PARQUET_DATASET_ID} no longer exists`))
+    expect(writes()).toEqual([])
+  })
+
+  it('a token given to the source DURING the run: step 3 sends nothing, and no token is handed over', async () => {
+    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
+    // After step 0 read the source and before step 3 reads it again, somebody
+    // else sets a token of their own.
+    afterCall((c) => c.method === 'POST' && c.path === DATASETS, () => {
+      world.packInputs[PACK_HTTP_INPUT_ID].authTokensExt = [{ token: 'e'.repeat(64), authType: 'manual' }]
+    })
+    const r = await onboard()
+    expect(r.stopped?.key).toBe('http_input')
+    expect(r.stopped?.detail).toMatch(/changed after this change was shown/)
+    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
+    // The source now has A token — somebody else's. The one this run generated
+    // was never sent, so it must not be shown as the one this app set.
+    expect(r.tokens).toEqual([])
+  })
+
+  it('the sample source moved after the dialog: it is not started over what was shown', async () => {
+    leader({
+      datasets: [...REAL_DATA, { id: PACK_PARQUET_DATASET_ID, format: 'parquet' }, { id: PACK_SAMPLE_DATASET_ID }],
+      installed: { http: tokenless, sample: { disabled: true } },
+    })
+    const r = await onboard({
+      sample: true, target: 'has-data',
+      between: () => { delete world.packInputs[PACK_SAMPLE_INPUT_ID].disabled },
+    })
+    expect(r.dialog.approvedSample).toEqual([{ key: 'disabled', kind: 'changed', before: true, after: false }])
+    expect(writes().some((c) => c.path === SAMPLE_INPUT)).toBe(false)
+    expect(r.steps.find((s) => s.key === 'sample_input')?.detail).toMatch(/changed after this change was shown/)
+  })
+
+  it('the Lake window moved after the dialog: the Lake entry is built from a fresh read, not the cached one', async () => {
+    leader({ datasets: [...REAL_DATA, { id: 'cribl_metrics', retention: 30 }] })
+    const r = await onboard({
+      target: 'has-data',
+      // gigamon_ami's 30 days now outlive cribl_metrics' 7, so the write
+      // counters no longer cover it and the entry has to count the dataset.
+      between: () => { world.datasets.get('cribl_metrics')!.retentionPeriodInDays = 7 },
+    })
+    expect(r.stopped).toBeNull()
+    const lake = calls.find((c) => c.method === 'POST' && c.path === SAVED && (c.body as { id: string }).id === LAKE_ENTRY)
+    expect(lake, 'the Lake entry was not created').toBeDefined()
+    expect(JSON.stringify(lake!.body)).not.toContain('cribl_metrics')
+    expect(JSON.stringify(lake!.body)).toContain('count()')
+  })
+
   it('what the app knows about the data changed: the scheduled searches are refused, everything else ran', async () => {
     leader({ datasets: REAL_DATA })
     const r = await onboard({ target: 'has-data', runTarget: 'real-empty' })
@@ -578,6 +784,35 @@ describe('7. anything that moved after the dialog', () => {
     expect(s?.action).toBe('refused')
     expect(calls.some((c) => c.path === SAVED && c.method === 'POST')).toBe(false)
     expect(writeWords()).toContain('deploy')
+  })
+})
+
+// ── The reads the dialog is built from ──────────────────────────────────────
+
+describe('prepareOnboarding refuses what the run could not honour', () => {
+  const prepare = async () => {
+    const { run, dt } = await load()
+    dt.settleDatasetTarget(false, 'has-data')
+    return run.prepareOnboarding(GROUP, { sample: false, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false })
+  }
+
+  it('an installed copy that is not this app’s current release: no dialog, and nothing sent', async () => {
+    leader({ datasets: REAL_DATA, otherCopy: { version: '0.1.0', source: packReleaseUrl('0.1.0') } })
+    const r = await prepare()
+    expect(r.ok).toBe(false)
+    expect(r.ok ? '' : r.why).toMatch(/0\.1\.0/)
+    expect(writes()).toEqual([])
+  })
+
+  it('a group whose own sources could not be read is said to hold the Raw HTTP stack', async () => {
+    leader({
+      datasets: REAL_DATA,
+      installed: { http: { disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] } },
+      groupInputsStatus: 500,
+    })
+    const r = await prepare()
+    if (!r.ok) throw new Error(r.why)
+    expect(r.ctx.globalStackPresent).toBe(true)
   })
 })
 
@@ -662,7 +897,7 @@ describe('10. while no release is recorded', () => {
     const today = await load({ published: false })
     calls = []
     const out = await today.run.runOnboarding(prepared.ctx, dialog, {
-      onStep: () => {}, onToken: () => {}, record: async () => {}, target: () => today.dt.datasetTarget(), token: () => TOKEN,
+      onStep: () => {}, onToken: () => {}, record: async () => {}, target: () => today.dt.datasetTarget(),
     })
     expect(out.stopped?.key).toBe('precheck')
     expect(writes()).toEqual([])
@@ -722,4 +957,8 @@ describe('11. Remove pack', () => {
 // in a POST is honoured (the run reads back and warns, which is asserted only
 // as far as the fake reports what it stored), how long the Leader takes to
 // fetch the release, and anything about focus or layout — this is not a DOM
-// test.
+// test. Nor what a real Leader makes of the installed Raw HTTP source: the fake
+// installs `inputs.yml` word for word unless a test says otherwise, and
+// `sameWrites` lets a different `before` through and refuses a different write,
+// but which of the two a real install produces is only seen in a Live Preview
+// run against a published release.

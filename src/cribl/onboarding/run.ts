@@ -33,7 +33,7 @@
 
 import { appendLog } from '../kv'
 import { denialMark, denialSince, latchDenial } from '../authz'
-import { applyAcceleration, readAccelState, type AccelState, type AccelStep } from '../accel/provision'
+import { SAVED_PATH, applyAcceleration, readAccelState, type AccelState, type AccelStep } from '../accel/provision'
 import { publishAccelServing } from '../accel/serving'
 import { reconsiderDatasetTarget, type DatasetTarget } from '../datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../lake'
@@ -52,7 +52,7 @@ import {
 } from '../provision'
 import { installedRefusal } from '../../components/onboardingCopy'
 import {
-  SAMPLE_START_DIFF, accelMode, httpActionOf, jsonRetentionFor, onboardingDatasets, type HttpAction,
+  SAMPLE_START_DIFF, accelMode, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites, type HttpAction,
   type OnboardingDialog, type OnboardingDialogContext,
 } from './plan'
 import type { DiffRow } from '../landing'
@@ -91,8 +91,6 @@ export interface OnboardingIO {
   record: (hash: string, message: string) => Promise<unknown>
   /** The dataset verdict now, for step 6's re-check of the mode. */
   target: () => DatasetTarget
-  /** Tests only: the token to use instead of a generated one. */
-  token?: () => string
 }
 
 const LABELS: Record<string, string> = {
@@ -380,8 +378,19 @@ export async function runOnboarding(ctx: OnboardingDialogContext, dialog: Onboar
   // 3. The Raw HTTP source.
   const action: HttpAction = ctx.httpAction ?? 'configure'
   if (action === 'configure') {
-    const token = (io.token ?? generateToken)()
-    const r = await configureHttpInput(g, { port: ctx.port, token, hosting: ctx.hosting }, dialog.approvedHttp)
+    const token = generateToken()
+    const change = { port: ctx.port, token, hosting: ctx.hosting }
+    // On a fresh install the dialog's diff was predicted from the shipped file,
+    // and the source is now the Leader's installed copy of it. The write is
+    // held to what the dialog said it would SET (`sameWrites`); when that
+    // holds, the diff read now is the one approved, so packClient still sends
+    // nothing if the source moves between this read and its own.
+    let approved = dialog.approvedHttp
+    if (!ctx.packInstalled) {
+      const now = await previewPackInput(g, { kind: 'configure', ...change })
+      if (now.ok && sameWrites(now.diff, dialog.approvedHttp)) approved = now.diff
+    }
+    const r = await configureHttpInput(g, change, approved)
     if (r.action === 'updated') {
       wrote = true
       step(fromPack(r))
@@ -423,12 +432,18 @@ export async function runOnboarding(ctx: OnboardingDialogContext, dialog: Onboar
   }
 
   // 5. Commit and deploy. A commit that fails or is incomplete deploys
-  // nothing; either failure means no scheduled searches.
-  const committed = await commitAndDeployPack(g, onboardMessage(g), { wrote, record: io.record }, (r) => { step(fromCommit(r)) })
-  const broken = committed.find((r) => r.action === 'error')
-  if (broken) {
-    step({ key: 'acceleration', label: labelOf('acceleration'), action: 'skipped', detail: 'not installed, because the commit or deploy did not complete' })
-    return finish(steps.find((s) => s.key === broken.key && s.action === 'error') ?? null)
+  // nothing; either failure means no scheduled searches. A dialog that named
+  // no deploy (the run changes nothing in the group) gets none, unless a write
+  // happened after all, which is never left uncommitted.
+  if (!dialog.deploys && !wrote) {
+    step({ key: 'commit', label: labelOf('commit'), action: 'skipped', detail: `nothing in ${g} changed, so nothing was committed or deployed` })
+  } else {
+    const committed = await commitAndDeployPack(g, onboardMessage(g), { wrote, record: io.record }, (r) => { step(fromCommit(r)) })
+    const broken = committed.find((r) => r.action === 'error')
+    if (broken) {
+      step({ key: 'acceleration', label: labelOf('acceleration'), action: 'skipped', detail: 'not installed, because the commit or deploy did not complete' })
+      return finish(steps.find((s) => s.key === broken.key && s.action === 'error') ?? null)
+    }
   }
 
   // 6. Acceleration, always — in the mode the dialog stated, or not at all.
@@ -440,12 +455,19 @@ export async function runOnboarding(ctx: OnboardingDialogContext, dialog: Onboar
         `and what this app knows about ${PACK_LAKE_DATASET_ID}'s data has changed since. Install them from Acceleration.`,
     })
   } else {
-    // gigamon_ami may have been created a moment ago; its retention decides the
-    // Lake entry's window, so the cached read is dropped first.
+    // The Lake entry's window comes from the Lake API's retentions, read once
+    // and cached for the session. Step 0 re-checked gigamon_ami's, but not
+    // cribl_metrics' (which picks the counting method), and the cache can be
+    // older than the dialog. Dropped first, so the entry is built from now.
+    // (A gigamon_ami this run created had no window in the dialog, so its
+    // entry is not approved at all.)
     forgetLakeFacts()
     const mark = denialMark()
     const res = await applyAcceleration(() => {}, dialog.approvedAccel, { enabled: mode === 'running' })
-    const refused = denialSince(mark)
+    // Only a refused saved-search WRITE closes Apply, which is that write. A
+    // refused read inside the step (the saved-search list) or another panel's
+    // request in the same moment is not the thing Apply would be refused.
+    const refused = denialSince(mark, (d) => d.method !== 'GET' && (d.path === SAVED_PATH || d.path.startsWith(`${SAVED_PATH}/`)))
     if (refused) latchDenial('accel.apply', refused)
     for (const s of accelSteps(res.steps, ctx, mode)) step(s)
     publishAccelServing(res.state)

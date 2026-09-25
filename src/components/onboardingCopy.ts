@@ -77,6 +77,10 @@ export const lakeEntryNotCreatedSentence = (id: string): string =>
   `Scheduled search ${id} is not created: the dataset’s retention could not be read, so this app does not know which window it ` +
   'should read. Apply creates it in Acceleration once the retention can be read.'
 
+/** When the run changes nothing in the group: no commit, no deploy. */
+export const nothingToDeploySentence = (group: string): string =>
+  `Nothing in ${group} changes, so nothing is committed or deployed and its Worker Processes are not restarted.`
+
 /** What happens when a step fails. */
 export const ONBOARDING_FAILURE_PROMISE =
   'The steps run in order, and the run stops at the first failure that later steps depend on. Nothing already done is undone; ' +

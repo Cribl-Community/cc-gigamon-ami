@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ONBOARDING_RETENTION_DAYS, SAMPLE_DATASET_SPEC, SAMPLE_FEED, SAMPLE_START_DIFF, SHIPPED_HTTP_INPUT,
   accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingPath, onboardingSteps,
-  packObjectsOf, packRemovalDialog, parquetDatasetSpec, sampleVolume, type OnboardingDialogContext,
+  packObjectsOf, packRemovalDialog, parquetDatasetSpec, sampleVolume, sameWrites, type OnboardingDialogContext,
 } from './plan'
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
@@ -137,6 +137,25 @@ describe('the Raw HTTP source’s fresh-install before→after', () => {
 })
 
 // ── The datasets ────────────────────────────────────────────────────────────
+
+describe('sameWrites — a fresh install held to what it sets', () => {
+  const expected = expectedConfigureDiff('managed', 20007)
+
+  it('the same keys set to the same values, whatever each started as', () => {
+    const installed = expected.map((r) => (r.key === 'authTokensExt' ? { ...r, kind: 'changed' as const, before: 'no token' } : r))
+    expect(sameWrites(installed, expected)).toBe(true)
+  })
+
+  it('a key set to another value is not the same write', () => {
+    const other = expected.map((r) => (r.key === 'port' ? { ...r, after: 20008 } : r))
+    expect(sameWrites(other, expected)).toBe(false)
+  })
+
+  it('a key more or fewer is not the same write', () => {
+    expect(sameWrites(expected.slice(1), expected)).toBe(false)
+    expect(sameWrites([...expected.slice(1), { key: 'host', kind: 'changed', before: '0.0.0.0', after: '127.0.0.1' }], expected)).toBe(false)
+  })
+})
 
 describe('the datasets the run creates', () => {
   it('gigamon_ami_pq: Parquet, no partitions, gigamon_ami’s retention or 30 days', () => {
