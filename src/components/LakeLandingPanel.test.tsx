@@ -78,6 +78,7 @@ import {
   sizeSentence,
 } from './lakeLandingCopy'
 import { GuidedSetup } from '../tabs/GuidedSetup'
+import { SETUP_FACTS } from './provisionPanelCopy'
 
 const BASE = '/capi'
 const LAKE = '/products/lake/lakes/default'
@@ -1216,5 +1217,17 @@ describe('it is actually on the page', () => {
     expect(anchor, 'the in-page anchor the dataset-absent state links to is not on the page').toBeTruthy()
     // The anchor really wraps the ingest panel, not something else.
     expect(anchor?.querySelector('.panel')).toBeTruthy()
+  })
+
+  it('the page has its heading, and today its facts describe the stack Guided Setup deploys', async () => {
+    stubWorkspace()
+    await mount(<GuidedSetup />)
+    const h2 = [...document.querySelectorAll('h2')].map((h) => h.textContent)
+    expect(h2).toContain('Guided setup')
+    // The pack cannot be installed yet (no release), so the facts are the
+    // global Raw HTTP stack's, exactly as before.
+    const facts = [...document.querySelectorAll('.gs-facts li')].map((li) => li.textContent ?? '')
+    expect(facts).toHaveLength(SETUP_FACTS.length)
+    SETUP_FACTS.forEach((f, i) => expect(facts[i].startsWith(f.label), f.label).toBe(true))
   })
 })

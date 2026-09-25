@@ -23,11 +23,23 @@ import { Panel } from '../components/Panel'
 import { ProvisionPanel } from '../components/ProvisionPanel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
 import { InfoTip } from '../components/InfoTip'
-import { SETUP_FACTS } from '../components/provisionPanelCopy'
+import { setupFacts } from '../components/provisionPanelCopy'
+import { onboardingPath } from '../cribl/onboarding/plan'
+import { packRelease } from '../cribl/pack'
 
 export function GuidedSetup() {
+  // Which onboarding the page offers decides which objects "What gets created"
+  // names: the pack's once its release can be installed, the global Raw HTTP
+  // stack's until then. Pure: `packRelease()` reads this build's constants and
+  // no presence is needed to pick the list.
+  const facts = setupFacts(onboardingPath(packRelease(), null).mode)
   return (
     <div className="tab">
+      {/* The page's heading, as every other tab has one. No sub-line: each
+          panel below carries its own one-line lead. */}
+      <div className="tab-intro">
+        <h2 className="tab-h">Guided setup</h2>
+      </div>
       {/* The wrapper exists for one reason: <LakeLandingPanel>'s dataset-absent
           state has to point somewhere, and the four-section shell that would
           have given it a `/setup/ingest` route was withdrawn on 2026-09-17
@@ -40,10 +52,11 @@ export function GuidedSetup() {
       </div>
 
       {/* Five short labels, each with its explanation behind an ⓘ. The words
-          are provisionPanelCopy.ts's, beside the rest of this stack's copy. */}
+          are provisionPanelCopy.ts's, beside the rest of this stack's copy,
+          and which five follows the onboarding path above. */}
       <Panel title="What gets created & things to know">
         <ul className="gs-facts">
-          {SETUP_FACTS.map((fact) => (
+          {facts.map((fact) => (
             <li key={fact.label}>
               {fact.label}
               <InfoTip text={fact.tip} />
