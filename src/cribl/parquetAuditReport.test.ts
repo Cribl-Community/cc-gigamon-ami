@@ -365,7 +365,10 @@ describe('scripts/parquet-audit.mjs', () => {
       expect(r.stdout).toContain('1. 8.0b numeric-only census 2026-09-25T11:35:00Z → 2026-09-25T11:50:00Z')
       expect(r.stdout).not.toContain('2. ')
       expect(r.stdout).toContain('Sentinels re-read, billing nothing')
-      expect(r.stdout).toContain('Expected at least ≈341 CPU-s')
+      // An unmeasured shape: an estimate, never presented as a floor.
+      expect(r.stdout).toContain('Estimate ≈341 CPU-s for an UNMEASURED shape: neither a floor nor a bound')
+      expect(r.stdout).not.toContain('Expected at least')
+      expect(r.stdout).not.toContain('This is a floor')
       expect(r.stdout).toContain('Nothing submitted.')
     } finally {
       rmSync(dir, { recursive: true, force: true })

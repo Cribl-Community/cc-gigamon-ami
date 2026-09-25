@@ -184,8 +184,12 @@ export function auditCostEstimate(
       windows.sentinel.length
         ? `8.0c sentinels, ${windows.sentinel.length} × ${minutes(windows.sentinel[0])} min: ≈${r(sentinel)} CPU-s.`
         : '8.0c sentinels: none submitted.',
-      `Expected at least ≈${r(total)} CPU-s — a floor from one measured run. Budget ≈${r(total * COST_MARGIN)} CPU-s (${COST_MARGIN}×); that is not a bound either.`,
-      'This is a floor, not a bound: the census now makes four gettype calls per field where the measured run made three, another feed or hour can bill more, the running-time cap limits wall time only, and Cribl has no CPU cap. A query stopped by the cap is billed for what it used.',
+      mode === 'wide'
+        ? `Expected at least ≈${r(total)} CPU-s — a floor from one measured run. Budget ≈${r(total * COST_MARGIN)} CPU-s (${COST_MARGIN}×); that is not a bound either.`
+        : `Estimate ≈${r(total)} CPU-s for an UNMEASURED shape: neither a floor nor a bound. Per-field scaling drops the per-row scan cost that does not shrink with fewer fields (pushing the true cost up) and the density counts this mode does not run (pushing the scaled figure up). Budget ≈${r(total * COST_MARGIN)} CPU-s (${COST_MARGIN}×).`,
+      mode === 'wide'
+        ? 'This is a floor, not a bound: the census now makes four gettype calls per field where the measured run made three, another feed or hour can bill more, the running-time cap limits wall time only, and Cribl has no CPU cap. A query stopped by the cap is billed for what it used.'
+        : 'Not a bound: another feed or hour can bill more, the running-time cap limits wall time only, and Cribl has no CPU cap. A query stopped by the cap is billed for what it used. This run measures the narrow shape for next time.',
     ],
   }
 }
