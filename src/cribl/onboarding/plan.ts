@@ -688,7 +688,8 @@ export interface PackObjectRef {
 /**
  * What an in-place upgrade from `from` to this build's version does to the
  * pack's objects, by id: the ones only the new version has (added), the ones
- * both carry (replaced by the new version's copy), and the ones only the
+ * both carry (the new version's shipped copy, under any settings the tenant
+ * changed after install, which the upgrade keeps — measured 2026-09-25), and the ones only the
  * installed version has (dropped). The installed version's ids come from
  * `packObjectsOf` — 0.1.0's from its published record, never the current ids.
  *
@@ -798,7 +799,7 @@ export function packUpgradeDialog(ctx: UpgradeDialogContext): UpgradeDialog {
     detail: `${from} → ${to} from ${ctx.release.url}, with custom functions refused`,
   }]
   for (const o of added) resources.push({ action: 'create', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `new in ${to}` })
-  for (const o of kept) resources.push({ action: 'replace', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `replaced by ${to}’s copy` })
+  for (const o of kept) resources.push({ action: 'replace', kind: OBJECT_KIND[o.kind], id: o.id, group, detail: `${to}’s shipped copy; settings changed after install are kept` })
   resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
 
   const droppedInputs = dropped.filter((o) => o.kind === 'inputs').map((o) => o.id)

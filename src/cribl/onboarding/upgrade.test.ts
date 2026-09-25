@@ -355,6 +355,22 @@ describe('refused before anything is sent', () => {
     expect(writes()).toEqual([])
   })
 
+  it('from 0.2.0: an object both versions ship is the new shipped copy, under settings the tenant kept — never "replaced"', async () => {
+    leader({ copy: { version: '0.2.0', source: packReleaseUrl('0.2.0') } })
+    const { run, plan } = await load()
+    const prepared = await run.prepareUpgrade(GROUP, { undeployed: null, undeployedChecking: false })
+    if (!prepared.ok) throw new Error(prepared.why)
+    const d = plan.packUpgradeDialog(prepared.ctx)
+    // 0.2.0 and this build ship the same ids, so every object is a kept row.
+    const kept = d.resources.filter((r) => r.action === 'replace' && r.kind !== 'Pack')
+    expect(kept.map((r) => r.id)).toContain(PACK_HTTP_INPUT_ID)
+    for (const r of kept) {
+      // Measured: an in-place upgrade keeps the pack's local/ settings.
+      expect(r.detail, r.id).toBe(`${PACK_VERSION}’s shipped copy; settings changed after install are kept`)
+      expect(r.detail, r.id).not.toMatch(/replaced by/)
+    }
+  })
+
   it('a run handed a dialog anyway, in a build with no release: step 0 re-reads the release, zero writes', async () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null })
     const { run: published, plan } = await load()

@@ -30,7 +30,7 @@
 // port, the token — which it is only while the pinned pack release cannot be
 // installed (onboarding/plan.ts `onboardingPath`). Since 2026-09-25 this build
 // pins the released 0.2.1, and there the panel is Remove-only (pinned in
-// OnboardingPanel.test.tsx and OnboardingPanel.published.test.tsx). The full
+// OnboardingPanel.test.tsx and OnboardingPanel.test.tsx (its "10. this build, as it ships" block)). The full
 // panel comes back in any build that pins a version before its release, so
 // pack.ts's release constants are moved back here, explicitly, and the first
 // test below checks that premise held.

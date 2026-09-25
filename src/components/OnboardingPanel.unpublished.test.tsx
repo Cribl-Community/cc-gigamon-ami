@@ -4,7 +4,7 @@
 // file used to swap nothing; 0.2.1 is released now, so the constants are moved
 // back below, explicitly, as the next build that bumps `PACK_VERSION` will
 // ship them until its tag is pushed. The published build's own behaviour is
-// OnboardingPanel.published.test.tsx. *(Corrected 2026-09-25,
+// OnboardingPanel.test.tsx (its "10. this build, as it ships" block). *(Corrected 2026-09-25,
 // `feat/pack-flip-021`.)* The refusal is what is pinned:
 //   * Onboard is aria-disabled, with the release's own sentence as visible text
 //     it points at, and pressing it opens nothing and sends nothing;
