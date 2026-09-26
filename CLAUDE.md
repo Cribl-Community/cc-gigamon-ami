@@ -87,21 +87,28 @@ verification gates."*
 Versioning happens in `npm run package`: it runs the tests, bumps the version in `package.json`
 (patch by default; `-- --minor`, `-- --major`, or `-- --version X.Y.Z`), writes a versioned `.tgz`
 to `build/`, prunes to the newest `KEEP_BUNDLES` (default 5), and refreshes `build/<name>-latest.tgz`.
-A release's bundle is built in CI by `release.yml` on a `v*` tag, not locally, so the committed
-`build/cc-gigamon-ami-latest.tgz` is whatever was last packaged by hand; take a release's own bundles
+**Nothing in `build/` is tracked** (`.gitignore` ignores the whole folder: the app's `.tgz` files
+and the pack's `build/packs/*.crbl`; `src/fetchRelease.test.ts` fails on a `!build/…` exception), so
+a local `build/cc-gigamon-ami-latest.tgz` is whatever was last packaged or fetched on that machine.
+A release's bundle is built in CI by `release.yml` on a `v*` tag, not locally; take a release's own bundles
 with `npm run release:fetch` (`scripts/fetch-release.mjs`), which picks the newest `vX.Y.Z` release
 (or `-- --tag vX.Y.Z`), downloads both `.tgz` assets with the gh CLI to a temporary directory, reads
 each one's `./package.json`, prints its version and author, and copies them into `build/` only when
 both carry the tag's version (`src/fetchRelease.test.ts` covers it with a fake gh and no network).
 A `-staging` tag is downloaded and checked but never written into `build/`, because its bundles carry
 the production version number. The copy is staged as `.<name>.part` files and renamed into place, the
-tracked latest alias first; a failed copy leaves `build/` as it was, and a failed rename (a file held
+latest alias first (its name carries no version, so a stale one is the one nobody can tell is stale); a failed copy leaves `build/` as it was, and a failed rename (a file held
 open on Windows) is a line naming what was and was not replaced, never a thrown error. *(Corrected
 2026-09-25, `chore/release-fetch-and-doc-drift`, after review: a staging tag overwrote the tracked
 alias, and the two bundles were copied straight over their targets, so a failure between them left
 a new versioned bundle beside the stale alias.)*
 *(Added 2026-09-25, `chore/release-fetch-and-doc-drift`, after a hand upload of the stale local
 bundle installed 1.0.20 while 1.1.1 was released.)*
+*(Corrected 2026-09-25, `chore/untrack-build-bundles`, owner decision that day: this said "the
+committed `build/cc-gigamon-ami-latest.tgz` is whatever was last packaged by hand" and that the
+fetch renamed "the tracked latest alias first"; `.gitignore` excepted that one file from `build/*`.
+It is no longer tracked, and `npm run package` still writes the versioned bundle and the alias
+locally.)*
 
 ## Runtime environments (critical)
 

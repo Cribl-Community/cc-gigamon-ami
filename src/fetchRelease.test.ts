@@ -316,7 +316,7 @@ describe('fetchRelease: build/ and the temporary directory', () => {
     }
   })
 
-  it('puts the tracked latest alias in first, and names what was and was not replaced when a rename fails', async () => {
+  it('puts the latest alias in first, and names what was and was not replaced when a rename fails', async () => {
     const first = staleBuild()
     const r1 = await fetchRelease({ gh: gh(good()), buildDir: first, tmp: tempDir, fs: failing('rename', `${join(first, 'cc-gigamon-ami-latest.tgz')}`) })
     expect(r1.code).toBe(1)
@@ -340,5 +340,15 @@ describe('the wiring', () => {
     for (const wf of ['ci.yml', 'release.yml', 'pack-release.yml']) {
       expect(readFileSync(join(root, '.github', 'workflows', wf), 'utf8'), wf).not.toContain('release:fetch')
     }
+  })
+
+  // Owner decision 2026-09-25: no bundle in build/ is tracked. A release's own
+  // bundles come from its GitHub release; a tracked alias was only ever the
+  // last hand-packaged build, and was once uploaded in place of the release.
+  it('leaves build/ wholly ignored, with no tracked alias let back in', () => {
+    const root = join(import.meta.dirname, '..')
+    const lines = readFileSync(join(root, '.gitignore'), 'utf8').split(/\r?\n/).map((l) => l.trim())
+    expect(lines).toContain('build/')
+    expect(lines.filter((l) => /^!\/?build\//.test(l))).toEqual([])
   })
 })
