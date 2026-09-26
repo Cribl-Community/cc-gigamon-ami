@@ -269,3 +269,56 @@ describe('compareGrouped — a top-N panel, JSON against Parquet', () => {
     expect(compareGrouped(json, json, { ...SPEC, n: 1 }).verdict).toBe('unexercised')
   })
 })
+
+describe('compareGrouped — the distinct-count slack (owner decision 2026-09-25)', () => {
+  // `users` is a dcount, `n` a count(): both small, so the ordinary ±1 % allows
+  // less than one of either.
+  const SPEC: GroupedSpec = { keys: ['app'], rank: 'n', n: 3, columns: { n: 'count', users: 'count' }, distinct: ['users'] }
+  const row = (app: string, n: number, users: number): Row => ({ app, n, users })
+  const base = [row('a', 50, 12), row('b', 40, 9), row('c', 30, 7), row('d', 2, 1)]
+  const withUsers = (key: string, users: number) => base.map((r) => (r.app === key ? { ...r, users } : r))
+
+  it('passes a distinct count one higher or one lower on Parquet', () => {
+    expect(compareGrouped(base, withUsers('a', 13), SPEC).verdict).toBe('pass')
+    expect(compareGrouped(base, withUsers('a', 11), SPEC).verdict).toBe('pass')
+    expect(compareGrouped(withUsers('a', 13), base, SPEC).verdict).toBe('pass')
+  })
+
+  it('fails a distinct count two apart, and says it was allowed 1', () => {
+    const r = compareGrouped(base, withUsers('a', 14), SPEC)
+    expect(r.verdict).toBe('fail')
+    expect(r.differs).toEqual([{ key: '"a"', column: 'users', json: 12, parquet: 14, allowed: 1 }])
+    expect(compareGrouped(base, withUsers('b', 7), SPEC).verdict).toBe('fail')
+  })
+
+  it('gives the slack only to the distinct-count columns: a count() one off on a small count still fails', () => {
+    const pq = base.map((r) => (r.app === 'c' ? { ...r, n: 31 } : r))
+    const r = compareGrouped(base, pq, SPEC)
+    expect(r.verdict).toBe('fail')
+    expect(r.differs).toEqual([{ key: '"c"', column: 'n', json: 30, parquet: 31, allowed: 0.3 }])
+    // The same column named as a distinct count would have been allowed it.
+    expect(compareGrouped(base, pq, { ...SPEC, distinct: ['users', 'n'] }).verdict).toBe('pass')
+    // With no `distinct` list at all, a dcount column keeps the ordinary rule.
+    expect(compareGrouped(base, withUsers('a', 13), { ...SPEC, distinct: undefined }).verdict).toBe('fail')
+  })
+
+  it('never makes a distinct count tighter than the ordinary rule: 1,000 allows 10', () => {
+    const big = [row('a', 50, 1000), row('b', 40, 9), row('c', 30, 7)]
+    expect(compareGrouped(big, [row('a', 50, 1010), row('b', 40, 9), row('c', 30, 7)], SPEC).verdict).toBe('pass')
+    expect(compareGrouped(big, [row('a', 50, 1011), row('b', 40, 9), row('c', 30, 7)], SPEC).verdict).toBe('fail')
+  })
+
+  it('does not excuse a key’s place in a top N ranked by a distinct count that moved by one', () => {
+    // Ranked by `users`: JSON's top 2 is a, b; on Parquet b reads one lower and c
+    // one higher, so c takes b's place. Each figure is within its slack; the
+    // ranking is not, and rule 2 fails it.
+    const RANKED: GroupedSpec = { keys: ['app'], rank: 'users', n: 2, columns: { users: 'count' }, distinct: ['users'] }
+    const json = [row('a', 1, 20), row('b', 1, 10), row('c', 1, 9)]
+    const pq = [row('a', 1, 20), row('b', 1, 9), row('c', 1, 10)]
+    const r = compareGrouped(json, pq, RANKED)
+    expect(r.differs).toEqual([])
+    expect(r.onlyJson).toEqual(['"b"'])
+    expect(r.onlyParquet).toEqual(['"c"'])
+    expect(r.verdict).toBe('fail')
+  })
+})

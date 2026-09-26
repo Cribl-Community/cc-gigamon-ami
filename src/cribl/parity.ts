@@ -32,6 +32,8 @@
 //      never been read. The check below still classifies `dcount` as C and
 //      still expects +1 (`NULL_CLASSES.C`, `CLASS_DETECTS`); that changes with
 //      the first real Parquet parity run (design §4 8.0e), not in a comment.
+//      Since 2026-09-25 no comparison here can see that +1 anyway: see THE
+//      DISTINCT-COUNT SLACK.
 //      The JSON +1 itself is a separate, existing correctness question (design
 //      §6), not a Parquet one.
 //   D  `b=*` read ≈2× the JSON value for one STRING field in the lab (proof
@@ -93,6 +95,29 @@
 // counts the null bucket) — and the class C sentence says it could not be seen
 // rather than calling that a pass.
 //
+// ── THE DISTINCT-COUNT SLACK (owner decision 2026-09-25) ────────────────────
+// A figure computed by `dcount()`, `dcountif()` or `count_distinct()` may differ
+// between JSON and Parquet by ONE distinct value, in either direction, and
+// still agree: it is allowed max(the count rule above, `DCOUNT_SLACK`). The
+// reason is that `dcount` is approximate (measured 2026-09-23), and JSON has
+// read one higher than Parquet on the same data, so a ±1 there says nothing a
+// dashboard reader could act on. A difference of 2 on a figure the count rule
+// allows less than 2 still fails. Only the distinct-count figure itself gets
+// this: every other figure keeps `TOLERANCE` and THE COUNT SLACK exactly, a
+// `count()` one record off on a small count still fails, and in a top N a
+// key's PLACE — ranked by a distinct count or not — is judged as before; the
+// slack reaches only the comparison of the figure (`compareGrouped` rule 4).
+// `isDistinctCount` decides which figures, from the aggregate's own text.
+//
+// What it costs: class C's failure mode is exactly one extra distinct value
+// (`CLASS_DETECTS`), so a ±1 slack hides it on every figure, at any size and
+// any drift. Class C in `compareParity` is therefore never `pass` — at best
+// `unexercised`, with the figures named as agreeing inside a slack the failure
+// fits in — and a run with nothing else wrong is `partial`. That is the
+// decision's price, said rather than hidden: a +1 from Parquet's "" and a +1
+// from the estimate cannot be told apart in one figure. A difference of 2 or
+// more on a small distinct count still fails class C.
+//
 // ── THE EXTREMES UNDER DRIFT ────────────────────────────────────────────────
 // A min or a max is set by ONE record, so the records the control says one
 // side lacks can move it any distance: ±5 % means nothing to a single row at the
@@ -113,13 +138,14 @@
 //   bare count, within 0.2 % over "comparable" six-minute windows of two
 //   datasets fed by one generator. ±1 % and ±5 % are judgement.
 // * The +1 the check expects for class C (kept in code until the first real
-//   Parquet run; the table above infers C is parity-neutral) is outside ±1 %
-//   only while the distinct count is under 100 (1/100 = 1 %). On a larger count
-//   it is inside the tolerance and invisible, and the class sentence says so
-//   rather than implying otherwise.
+//   Parquet run; the table above infers C is parity-neutral) is invisible on
+//   every figure: a distinct count is always allowed one distinct value (THE
+//   DISTINCT-COUNT SLACK), and the class sentence says so rather than implying
+//   otherwise. *(Corrected 2026-09-25, `feat/parity-dcount-tolerance`: this
+//   said it was outside ±1 % while the distinct count was under 100.)*
 // * `dcount()` is approximate (≈ ±0.5 % at ~10k distinct values, exact at a few
 //   hundred — measured 2026-09-23), which is part of why C is not compared
-//   exactly.
+//   exactly. See THE DISTINCT-COUNT SLACK below.
 // * Class C's only tile figure, `resolvers=dcount(dns_host)`, reads only
 //   `app_name="dns"` rows. If every DNS row carries `dns_host`, Parquet has no
 //   absent value there to turn into "", and its agreement shows nothing about
@@ -161,6 +187,23 @@ export const NULL_CLASSES: Readonly<Record<NullClass, { pattern: string; underPa
 })
 
 export const CLASS_ORDER: readonly NullClass[] = Object.freeze(['A', 'B', 'C', 'D', 'E'])
+
+/**
+ * The absolute difference a distinct-count figure is always allowed (owner
+ * decision 2026-09-25: `dcount` is approximate) — see THE DISTINCT-COUNT SLACK.
+ */
+export const DCOUNT_SLACK = 1
+
+const DISTINCT_COUNT_RE = /^(dcount|dcountif|count_distinct|count_distinctif)\s*\(/
+
+/**
+ * Whether an aggregate's figure is a distinct count, and so gets `DCOUNT_SLACK`.
+ * Anchored, like `classify`: a distinct count wrapped in another call
+ * (`round(dcount(x)/2)`) is some other figure, and keeps the ordinary rule.
+ */
+export function isDistinctCount(expr: string): boolean {
+  return DISTINCT_COUNT_RE.test(expr.trim())
+}
 
 /**
  * The allowed relative difference, by kind of aggregate.
@@ -345,6 +388,8 @@ export interface ParityColumn {
   role: 'control' | 'classed' | 'unaffected'
   kind: 'count' | 'distribution'
   tolerance: number
+  /** A distinct count (`isDistinctCount`): allowed at least `DCOUNT_SLACK`. */
+  distinct: boolean
   protects: string
 }
 
@@ -365,6 +410,7 @@ export function parityColumns(checks: readonly ParityCheck[] = PARITY_CHECKS): P
         role: check.control === name ? 'control' : classes.length ? 'classed' : 'unaffected',
         kind,
         tolerance: TOLERANCE[kind],
+        distinct: isDistinctCount(expr),
         protects,
       } satisfies ParityColumn
     })
@@ -453,12 +499,19 @@ export interface ColumnResult extends ParityColumn {
 /**
  * The absolute difference a figure is allowed: its own tolerance, and — for a
  * count — at least the whole records the control's own `drift` says one side
- * holds and the other does not. See THE COUNT SLACK in the header.
+ * holds and the other does not. See THE COUNT SLACK in the header. A distinct
+ * count (`distinct`) is allowed at least `DCOUNT_SLACK` on top of that rule,
+ * never less than it: see THE DISTINCT-COUNT SLACK.
  */
-export function allowedDifference(col: Pick<ParityColumn, 'kind' | 'tolerance'>, expected: number, drift: number): number {
+export function allowedDifference(
+  col: Pick<ParityColumn, 'kind' | 'tolerance'> & { distinct?: boolean },
+  expected: number,
+  drift: number,
+): number {
   const byTolerance = col.tolerance * Math.abs(expected)
   if (col.kind !== 'count') return byTolerance
-  return Math.max(byTolerance, Math.ceil(Math.abs(expected) * drift), drift > 0 ? 1 : 0)
+  const byCount = Math.max(byTolerance, Math.ceil(Math.abs(expected) * drift), drift > 0 ? 1 : 0)
+  return col.distinct ? Math.max(byCount, DCOUNT_SLACK) : byCount
 }
 
 const EXTREME_RE = /^(min|max)\(/
@@ -596,8 +649,8 @@ function sees(cls: NullClass, c: ColumnResult): boolean {
 /** A limit on what a class's pass can mean, whatever the run's figures. */
 const CLASS_LIMIT: Partial<Record<NullClass, string>> = {
   C:
-    `A difference of one distinct value is outside ${pct(TOLERANCE.count)} only while the count is under 100, and not at all ` +
-    `when the control itself drifted. The "Distinct resolvers" figure reads only app_name="dns" rows: if every one of them ` +
+    `A difference of one distinct value is always allowed, because a distinct count is approximate, so this check cannot ` +
+    `see the one extra value it looks for; a difference of two or more on a small count still fails. The "Distinct resolvers" figure reads only app_name="dns" rows: if every one of them ` +
     `carries dns_host, Parquet has no empty value to add there and its agreement shows nothing about this class.`,
 }
 
@@ -1100,8 +1153,11 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
 //   4. Every key in either side's top N that both sides hold — tied keys
 //      included — has every compared figure held within `TOLERANCE`, counts
 //      widened by the control's own drift, as `allowedDifference` does for a
-//      scalar figure. A tie on one side says nothing about the other side's
-//      figure for the same key.
+//      scalar figure, and a distinct count (`spec.distinct`) allowed at least
+//      `DCOUNT_SLACK` (owner decision 2026-09-25). A tie on one side says
+//      nothing about the other side's figure for the same key, and the slack
+//      says nothing about rule 2: a key pushed out of a top N ranked by a
+//      distinct count that moved by one still fails there.
 //   5. `pass` needs at least one compared key tied on neither side; a check
 //      whose every compared key was tied is `unexercised`, since the ranking
 //      itself was never tested.
@@ -1128,6 +1184,12 @@ export interface GroupedSpec {
   n: number
   /** The figures compared per key, and what kind of aggregate each is. */
   columns: Readonly<Record<string, 'count' | 'distribution'>>
+  /**
+   * The count columns that are distinct counts (`isDistinctCount`): each figure
+   * is allowed at least `DCOUNT_SLACK`. The ranking is not — a key's place in
+   * the top N is judged by rule 2 whatever column ranks it.
+   */
+  distinct?: readonly string[]
 }
 
 export interface GroupedDifference {
@@ -1225,7 +1287,7 @@ export function compareGrouped(jsonRows: readonly Row[], parquetRows: readonly R
         if (!same) differs.push({ key, column, json: a, parquet: b, allowed: null })
         continue
       }
-      const allowed = allowedDifference({ kind, tolerance: TOLERANCE[kind] }, a, drift)
+      const allowed = allowedDifference({ kind, tolerance: TOLERANCE[kind], distinct: spec.distinct?.includes(column) ?? false }, a, drift)
       if (Math.abs(b - a) > allowed) differs.push({ key, column, json: a, parquet: b, allowed })
     }
   }

@@ -86,8 +86,8 @@ describe('querySpec', () => {
       spec: {
         keys: ['http_code', 'bin_time_1m'],
         aggregates: [
-          { name: 'n', expr: 'count()', kind: 'count' },
-          { name: 'p', expr: 'percentile(x,95)', kind: 'distribution' },
+          { name: 'n', expr: 'count()', kind: 'count', distinct: false },
+          { name: 'p', expr: 'percentile(x,95)', kind: 'distribution', distinct: false },
         ],
         order: { column: 'n', dir: 'desc' },
         limit: 12,
@@ -149,6 +149,47 @@ describe('compareQueryRows', () => {
     // 3 % apart: outside the 1 % count tolerance with no drift, inside it once the control drifted 5 %.
     expect(compareQueryRows(q, [{ events: 10_000 }], [{ events: 10_300 }], 0).verdict).toBe('fail')
     expect(compareQueryRows(q, [{ events: 10_000 }], [{ events: 10_300 }], 0.05).verdict).toBe('pass')
+  })
+})
+
+describe('compareQueryRows and a distinct count (owner decision 2026-09-25)', () => {
+  const SCALAR = 'dataset="gigamon_ami" app_name="dns" | summarize total=count(), resolvers=dcount(dns_host)'
+  const TOP = 'dataset="gigamon_ami" app_name=* | summarize flows=count(), users=count_distinct(src_ip) by app_name | sort by flows desc | limit 3'
+
+  it('marks exactly the dcount/dcountif/count_distinct aggregates as distinct counts', () => {
+    const spec = querySpec('dataset="gigamon_ami" | summarize a=count(), b=dcount(x), c=dcountif(x, y=="1"), d=count_distinct(x), e=sum(x), f=countif(x=="1")')
+    expect(spec.ok && spec.spec.aggregates.map((a) => [a.name, a.distinct])).toEqual([
+      ['a', false], ['b', true], ['c', true], ['d', true], ['e', false], ['f', false],
+    ])
+  })
+
+  it('passes a scalar dcount one off either way, and fails it two off', () => {
+    expect(compareQueryRows(SCALAR, [{ total: 5000, resolvers: 12 }], [{ total: 5000, resolvers: 11 }]).verdict).toBe('pass')
+    expect(compareQueryRows(SCALAR, [{ total: 5000, resolvers: 12 }], [{ total: 5000, resolvers: 13 }]).verdict).toBe('pass')
+    const c = compareQueryRows(SCALAR, [{ total: 5000, resolvers: 12 }], [{ total: 5000, resolvers: 14 }])
+    expect(c.verdict).toBe('fail')
+    expect(c.report?.differs).toEqual([{ key: '', column: 'resolvers', json: 12, parquet: 14, allowed: 1 }])
+    expect(c.grouped?.distinct).toEqual(['resolvers'])
+  })
+
+  it('gives it to the distinct-count column only, inside a top N too: a count() one off on a small count fails', () => {
+    const j = [{ app_name: 'dns', flows: 90, users: 12 }, { app_name: 'http', flows: 50, users: 30 }, { app_name: 'ssh', flows: 20, users: 4 }]
+    const usersOff = j.map((r) => (r.app_name === 'ssh' ? { ...r, users: 5 } : r))
+    expect(compareQueryRows(TOP, j, usersOff).verdict).toBe('pass')
+    const flowsOff = j.map((r) => (r.app_name === 'ssh' ? { ...r, flows: 21 } : r))
+    const c = compareQueryRows(TOP, j, flowsOff)
+    expect(c.verdict).toBe('fail')
+    expect(c.report?.differs.map((d) => `${d.key}.${d.column}`)).toEqual(['"ssh".flows'])
+  })
+
+  it('does not excuse a key’s place in a top N its distinct count ranks, when the count moved by one', () => {
+    const RANKED = 'dataset="gigamon_ami" app_name=* | summarize users=dcount(src_ip) by app_name | sort by users desc | limit 2'
+    const j = [{ app_name: 'dns', users: 20 }, { app_name: 'http', users: 10 }, { app_name: 'ssh', users: 9 }]
+    const p = [{ app_name: 'dns', users: 20 }, { app_name: 'http', users: 9 }, { app_name: 'ssh', users: 10 }]
+    const c = compareQueryRows(RANKED, j, p)
+    expect(c.report?.differs).toEqual([])
+    expect(c.verdict).toBe('fail')
+    expect(c.report?.onlyJson).toEqual(['"http"'])
   })
 })
 

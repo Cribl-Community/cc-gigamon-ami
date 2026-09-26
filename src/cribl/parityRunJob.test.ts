@@ -238,6 +238,29 @@ describe('a parity run against a fake transport', () => {
     expect(b.report.evidence).toEqual({})
   })
 
+  it('passes a distinct count one off on Parquet, and fails it two off (owner decision 2026-09-25)', async () => {
+    // dns.overall is eligible under the filled type table; its `resolvers` is
+    // `dcount(dns_host)` and its reply-code figures are counts.
+    const windows = parityRunWindows(NOW)
+    const plan = planEntries({ only: ['dns.overall'] })
+    expect(plan.selected.map((e) => e.id)).toEqual(['dns.overall'])
+    const answer = (resolvers: number, sf = 30) => (_q: string, pq: boolean): Row[] => [{ total: 5000, sf, resolvers: pq ? resolvers : 12 }]
+
+    const offByOne = run({ rows: answer(11) }, windows, plan)
+    const a = write(await offByOne.result, offByOne.plan, windows)
+    expect(a.report.entries[0].perWindow.map((p) => p.verdict)).toEqual(['pass', 'pass', 'pass'])
+    expect(a.report.evidence['dns.overall']).toBeTruthy()
+
+    const offByTwo = run({ rows: answer(14) }, windows, plan)
+    const b = write(await offByTwo.result, offByTwo.plan, windows)
+    expect(b.report.entries[0]).toMatchObject({ verdict: 'failed', evidence: null })
+
+    // A count one off in the same row keeps the ordinary rule, and fails.
+    const countOff = run({ rows: (_q, pq) => [{ total: 5000, sf: pq ? 31 : 30, resolvers: 12 }] }, windows, plan)
+    const c = write(await countOff.result, countOff.plan, windows)
+    expect(c.report.entries[0]).toMatchObject({ verdict: 'failed', evidence: null })
+  })
+
   it('does not compare a read cut short of the job\'s totalEventCount', async () => {
     const windows = parityRunWindows(NOW)
     const { plan, result } = run({ total: (q) => (q === CODES_SUBMITTED ? 5000 : undefined) }, windows)

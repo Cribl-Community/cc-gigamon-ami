@@ -78,6 +78,12 @@
 //     except a limit with no descending sort that was REACHED on either side:
 //     which rows came back is then arbitrary, and the window is incomparable;
 //   * a scalar summarize is one group with no key;
+//   * a figure its aggregate computes with `dcount`, `dcountif` or
+//     `count_distinct` may differ by one distinct value either way and agree
+//     (owner decision 2026-09-25, parity.ts THE DISTINCT-COUNT SLACK:
+//     `dcount` is approximate) — that figure only: every other column keeps
+//     the ordinary rule, and a top N's membership is judged as before even
+//     when a distinct count ranks it;
 //   * a figure that is TEXT on either side (e.g. `max(ssl_issuer)`) is held to
 //     exact equality, absent and "" different — `compareGrouped` reads only
 //     numbers;
@@ -104,6 +110,7 @@ import {
   PARITY_CHECKS,
   compareColumn,
   compareGrouped,
+  isDistinctCount,
   keyOf,
   parityColumns,
   retarget,
@@ -183,7 +190,8 @@ export type AggregateKind = 'count' | 'distribution'
 
 export interface QuerySpec {
   keys: string[]
-  aggregates: { name: string; expr: string; kind: AggregateKind }[]
+  /** `distinct`: a `dcount`/`dcountif`/`count_distinct` figure (`isDistinctCount`), allowed `DCOUNT_SLACK`. */
+  aggregates: { name: string; expr: string; kind: AggregateKind; distinct: boolean }[]
   order: { column: string; dir: 'asc' | 'desc' } | null
   limit: number | null
 }
@@ -241,7 +249,7 @@ export function querySpec(query: string): SpecResult {
     const expr = part.slice(eq + 1).trim()
     const kind: AggregateKind | null = COUNT_RE.test(expr) ? 'count' : DISTRIBUTION_RE.test(expr) ? 'distribution' : null
     if (!kind) return { ok: false, why: `an aggregate it cannot classify as a count or a distribution, "${part}"` }
-    aggregates.push({ name, expr, kind })
+    aggregates.push({ name, expr, kind, distinct: isDistinctCount(expr) })
   }
   if (!aggregates.length) return { ok: false, why: 'its summarize names no aggregate' }
 
@@ -364,7 +372,11 @@ export function compareQueryRows(query: string, jsonRows: readonly Row[] | null,
     }
     grouped = { keys: spec.keys, rank: spec.aggregates[0].name, n: all, columns: {} }
   }
-  grouped = { ...grouped, columns: Object.fromEntries(spec.aggregates.map((a) => [a.name, a.kind])) }
+  grouped = {
+    ...grouped,
+    columns: Object.fromEntries(spec.aggregates.map((a) => [a.name, a.kind])),
+    distinct: spec.aggregates.filter((a) => a.distinct).map((a) => a.name),
+  }
   const report = compareGrouped(jsonRows, parquetRows, grouped, drift)
 
   // A top N submitted at the raised limit (`comparisonText`): a key one side

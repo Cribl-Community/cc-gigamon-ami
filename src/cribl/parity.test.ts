@@ -156,13 +156,16 @@ describe('what a parity run submits', () => {
 // ── The baseline ────────────────────────────────────────────────────────────
 
 describe('a migration that changed nothing', () => {
-  it('passes every class, and says so over the window it compared', () => {
+  it('passes every class but C, and says so over the window it compared', () => {
     const r = compareParity(agreeing(), WINDOW, DATASETS)
     expect(r.comparable).toBe(true)
-    expect(r.verdict).toBe('pass')
-    for (const c of r.classes) expect(c.verdict, c.cls).toBe('pass')
+    // Class C's failure is one distinct value, and every distinct count is
+    // allowed one (owner decision 2026-09-25), so C is never seen to pass.
+    expect(r.verdict).toBe('partial')
+    for (const c of r.classes) expect(c.verdict, c.cls).toBe(c.cls === 'C' ? 'unexercised' : 'pass')
     expect(r.sentence).toContain('gigamon_ami_pq')
     expect(r.sentence).toContain('2026-09-23 10:00:00–10:06:00 UTC')
+    expect(r.sentence).toMatch(/on 4 of 5 classes; class C was not exercised/)
   })
 })
 
@@ -204,30 +207,46 @@ describe('class B — count(f)', () => {
 })
 
 describe('class C — dcount(f)', () => {
-  it('passes when the distinct count agrees', () => {
-    expect(verdicts(agreeing()).C).toBe('pass')
+  // Owner decision 2026-09-25: a distinct count may differ by one either way
+  // and agree, because dcount is approximate (parity.ts, THE DISTINCT-COUNT
+  // SLACK). One extra distinct value is exactly class C's failure, so the
+  // class is never seen to pass.
+  it('is not exercised, never a pass, even when the distinct count agrees exactly', () => {
+    expect(verdicts(agreeing()).C).toBe('unexercised')
   })
-  it('fails on the one extra distinct value "" adds to a small count', () => {
-    const r = compareParity(withParquet(agreeing(), 'dns', { resolvers: 13 }), WINDOW, DATASETS)
+  it('agrees at one distinct value either way on a small count, and fails at two', () => {
+    const resolvers = (rows: Rows) =>
+      compareParity(rows, WINDOW, DATASETS).classes.find((x) => x.cls === 'C')!.columns.find((c) => c.column === 'resolvers')!
+    expect(resolvers(withParquet(agreeing(), 'dns', { resolvers: 13 }))).toMatchObject({ verdict: 'agrees', allowed: 1 })
+    expect(resolvers(withParquet(agreeing(), 'dns', { resolvers: 11 }))).toMatchObject({ verdict: 'agrees', allowed: 1 })
+    expect(verdicts(withParquet(agreeing(), 'dns', { resolvers: 13 })).C).toBe('unexercised')
+    const r = compareParity(withParquet(agreeing(), 'dns', { resolvers: 14 }), WINDOW, DATASETS)
     const c = r.classes.find((x) => x.cls === 'C')!
     expect(c.verdict).toBe('fail')
     expect(c.sentence).toContain('"Distinct resolvers" tile')
+    expect(verdicts(withParquet(agreeing(), 'dns', { resolvers: 10 })).C).toBe('fail')
   })
-  it('cannot see +1 on a count of 100 or more, so a run with no smaller figure is not exercised, not a pass', () => {
-    // web-kpi.hosts is 1,000 in the baseline: +1 there is inside ±1 % already.
-    const rows = withParquet(withJson(agreeing(), 'dns', { resolvers: 500 }), 'dns', { resolvers: 501 })
-    const r = compareParity(rows, WINDOW, DATASETS)
-    const c = r.classes.find((x) => x.cls === 'C')!
+  it('gives the slack to the distinct counts only: a count() one off on a small count still fails', () => {
+    expect(col('dns', 'resolvers').distinct).toBe(true)
+    expect(col('web-kpi', 'hosts').distinct).toBe(true)
+    expect(col('findings', 'f2').distinct).toBe(false)
+    expect(col('dns', 'sf').distinct).toBe(false)
+    const f2 = col('findings', 'f2')
+    expect(compareColumn(f2, { f2: 12 }, { f2: 13 }).verdict).toBe('differs')
+    expect(compareColumn(f2, { f2: 12 }, { f2: 13 }).allowed).toBeCloseTo(0.12, 9)
+    expect(verdicts(withParquet(withJson(agreeing(), 'findings', { f2: 12 }), 'findings', { f2: 13 })).B).toBe('fail')
+  })
+  it('never makes a distinct count stricter than the count rule: 500 allows 5', () => {
+    const rows = withParquet(withJson(agreeing(), 'dns', { resolvers: 500 }), 'dns', { resolvers: 505 })
+    const c = compareParity(rows, WINDOW, DATASETS).classes.find((x) => x.cls === 'C')!
     expect(c.verdict).toBe('unexercised')
-    expect(c.sentence).toMatch(/only while the count is under 100/)
-    expect(r.verdict).toBe('partial')
+    expect(c.sentence).toMatch(/one distinct value is always allowed/)
+    expect(verdicts(withParquet(withJson(agreeing(), 'dns', { resolvers: 500 }), 'dns', { resolvers: 506 })).C).toBe('fail')
   })
-  it('says in its pass sentence that the resolvers figure reads only DNS rows', () => {
+  it('says in its sentence that the resolvers figure reads only DNS rows', () => {
     const c = compareParity(agreeing(), WINDOW, DATASETS).classes.find((x) => x.cls === 'C')!
-    expect(c.verdict).toBe('pass')
     expect(c.sentence).toMatch(/reads only app_name="dns" rows/)
-    // The 1,000-host figure agreed, but inside a slack +1 fits in: named, not counted.
-    expect(c.sentence).toMatch(/1 more agreed only inside a slack/)
+    expect(c.sentence).toMatch(/2 of 2 figures agreed, but each was allowed a difference the failure could hide inside/)
   })
 })
 
@@ -414,7 +433,7 @@ describe('figures outside the five classes', () => {
   it('are compared and counted: a SERVFAIL count gone to 0 fails the run and names its tile', () => {
     expect(col('dns', 'sf').role).toBe('unaffected')
     const r = compareParity(withParquet(agreeing(), 'dns', { sf: 0, nx: 0 }), WINDOW, DATASETS)
-    for (const c of r.classes) expect(c.verdict, c.cls).toBe('pass')
+    for (const c of r.classes) expect(c.verdict, c.cls).toBe(c.cls === 'C' ? 'unexercised' : 'pass')
     expect(r.verdict).toBe('fail')
     expect(r.sentence).toMatch(/2 figures outside the five null classes changed/)
     expect(r.sentence).toContain('"SERVFAIL / error rate" tile (SERVFAIL): 1,000 on gigamon_ami, 0 on gigamon_ami_pq')
@@ -443,7 +462,10 @@ describe('a check that did not run', () => {
     expect(d.sentence).not.toMatch(/empty or zero/)
     expect(r.verdict).toBe('incomplete')
     expect(r.sentence).toMatch(/class D was not judged/)
-    expect(r.sentence).not.toMatch(/nothing to compare|not exercised/)
+    // Class C is not exercised on every run (the distinct-count slack); D is not
+    // run, and is not called "not exercised".
+    expect(r.sentence).toMatch(/Class C was also not exercised/)
+    expect(r.sentence).not.toMatch(/nothing to compare|D was also not exercised/)
   })
   it('is "not run", not a Parquet difference, when only the Parquet side has no row', () => {
     const rows: Rows = { ...agreeing(), security: { json: agreeing().security.json, parquet: null } }
@@ -469,7 +491,7 @@ describe('a check that did not run', () => {
     for (const check of ['host-presence', 'code-presence']) rows = withParquet(withJson(rows, check, { n: 0 }), check, { n: 0 })
     const r = compareParity(rows, WINDOW, DATASETS, [...PARITY_CHECKS, bare])
     expect(r.verdict).toBe('incomplete')
-    expect(r.sentence).toMatch(/so figures outside the five classes were not judged\. Class D was also not exercised/)
+    expect(r.sentence).toMatch(/so figures outside the five classes were not judged\. Class C, D was also not exercised/)
   })
   it('is still said when the run failed for another reason', () => {
     const rows: Rows = withParquet(withJson(agreeing(), 'security', { c_T1572: 18 }), 'security', { c_T1572: 43_338 })
@@ -513,7 +535,7 @@ describe('a class with nothing to compare', () => {
     const r = compareParity(rows, WINDOW, DATASETS)
     expect(r.classes.find((c) => c.cls === 'D')!.verdict).toBe('unexercised')
     expect(r.verdict).toBe('partial')
-    expect(r.sentence).toMatch(/class D was not exercised/)
+    expect(r.sentence).toMatch(/class C, D was not exercised/)
   })
 })
 
