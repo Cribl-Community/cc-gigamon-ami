@@ -32,7 +32,7 @@ import {
   PACK_VERSION,
   type PackObjectKind,
 } from './pack'
-import { packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackState } from './packClient'
+import { compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackState } from './packClient'
 import { packObjectsOf } from './onboarding/plan'
 import {
   HTTP_BREAKER_ID,
@@ -104,6 +104,26 @@ export const PREFLIGHT_DATASETS: readonly string[] = Object.freeze([
  * drop every event, so the preflight refuses them by name.
  */
 export const NON_DELIVERING_VERSIONS: readonly string[] = Object.freeze(['0.1.0', '0.2.0'])
+
+/**
+ * What an owned, delivering copy older than this build's pin still lacks, by
+ * installed version — the reason its blocker gives. Owner decision 2026-09-25
+ * (`fix/preflight-block-021`): the cutover waits for `PACK_VERSION`, because
+ * only 0.2.2 drops `_raw` from the Parquet copy and the owner wants no Parquet
+ * row with `_raw` from the cutover on. Any owned published version older than
+ * the pin blocks (`olderThanPin`); a version with no entry here gets the
+ * generic sentence. 0.1.0 and 0.2.0 keep their own sentence (above).
+ */
+export const OLDER_VERSION_GAPS: Readonly<Record<string, string>> = Object.freeze({
+  '0.2.1': `keeps _raw on every row of its Parquet copy (${PACK_PARQUET_DATASET_ID}), which 0.2.2’s Parquet pipeline removes`,
+})
+
+/** An owned (both ownership signals) copy older than this build's pin, that is
+ *  not already refused by name as non-delivering. */
+export function olderThanPin(p: Pick<PackState, 'version' | 'published' | 'fromRelease'>): boolean {
+  return !!p.version && p.published && p.fromRelease &&
+    !NON_DELIVERING_VERSIONS.includes(p.version) && compareVersions(p.version, PACK_VERSION) < 0
+}
 
 export type DatasetFact =
   | { id: string; state: 'present'; format: string | null; sizeBytes: number | null; metricsDate: string | null }
@@ -288,7 +308,20 @@ export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
     }
     if (p.version && NON_DELIVERING_VERSIONS.includes(p.version)) {
       blockers.push(`${PACK_ID} ${p.version} delivers nothing from a Raw HTTP POST (its routes never match inside a pack). Upgrade it in Guided Setup first.`)
+    } else if (olderThanPin(p)) {
+      const gap = OLDER_VERSION_GAPS[p.version as string]
+      blockers.push(
+        `${PACK_ID} ${p.version} is installed; this build pins ${PACK_VERSION}` + (gap ? `, and ${p.version} ${gap}` : '') +
+          `. Upgrade it to ${PACK_VERSION} from Guided Setup’s onboarding panel (Upgrade) before pointing AMX at it` +
+          (f.pinned.refusal ? ` (Upgrade is not offered yet: ${f.pinned.refusal})` : '') + '.',
+      )
     } else if (!p.current && p.published && p.fromRelease) {
+      // Owned and not older, yet not current: a version newer than this build's
+      // pin that this build also lists as published. The real readers cannot
+      // produce it (a version newer than the pin is not on PACK_PUBLISHED_VERSIONS,
+      // so it reads unpublished and is blocked above as not this app's); this
+      // branch is kept as it was before the 0.2.1 decision.
+
       warnings.push(
         `${PACK_ID} ${p.version} is installed; this build pins ${PACK_VERSION}. It delivers, but Upgrade is offered in Guided Setup` +
           (f.pinned.refusal ? ` (not yet: ${f.pinned.refusal})` : '') + '.',

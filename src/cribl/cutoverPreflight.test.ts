@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PreflightRefusal, readOnlyFetch, refusalOf, searchOriginFromDevPage } from '../../scripts/cutover-preflight-fetch.mjs'
 import {
   LIVE_READERS,
+  NON_DELIVERING_VERSIONS,
   gatherPreflight,
   preflightReport,
   preflightVerdict,
@@ -24,8 +25,8 @@ import {
   type PreflightReaders,
 } from './cutoverPreflight'
 import type { LakeDataset } from './lake'
-import { PACK_ID, PACK_OBJECTS, PACK_VERSION, packReleaseUrl } from './pack'
-import type { PackState } from './packClient'
+import { PACK_ID, PACK_OBJECTS, PACK_PUBLISHED_VERSIONS, PACK_VERSION, packReleaseUrl } from './pack'
+import { compareVersions, type PackState } from './packClient'
 import { API_CALLS } from './paths'
 
 const ROOT = join(__dirname, '..', '..')
@@ -324,16 +325,53 @@ describe('the verdict', () => {
     expect(verdict.blockers.join('\n')).toMatch(words)
   })
 
-  it('warns, and does not block, on an owned 0.2.1 that is behind', async () => {
-    const { verdict } = await verdictWith({
-      readPackState: async () => {
-        const s = packState({ version: '0.2.1', current: false })
-        s.objects.pipelines.gigamon_ami_normalize_parquet = 'absent'
-        return s
-      },
-    })
+  // Owner decision 2026-09-25 (`fix/preflight-block-021`): an owned copy older
+  // than the pin blocks. One case per published version older than PACK_VERSION,
+  // read off the list itself, so a new pin brings its predecessors in by itself.
+  const esc = (v: string) => v.replace(/\./g, '\\.')
+  const older = PACK_PUBLISHED_VERSIONS.filter((v) => compareVersions(v, PACK_VERSION) < 0)
+  it('has the older published versions to check (else the table below is empty)', () => {
+    expect(older).toEqual(expect.arrayContaining(['0.1.0', '0.2.0', '0.2.1']))
+  })
+  it.each(older)('blocks on an owned %s, which is older than the pin', async (version) => {
+    const { verdict } = await verdictWith({ readPackState: async () => packState({ version, current: false }) })
+    expect(verdict.ready).toBe(false)
+    expect(verdict.target).toBeNull()
+    const text = verdict.blockers.join('\n')
+    if (NON_DELIVERING_VERSIONS.includes(version)) {
+      // Their own sentence, and not the older-than-pin one as well.
+      expect(text).toMatch(new RegExp(`${esc(version)} delivers nothing`))
+      expect(text).not.toMatch(/this build pins/)
+    } else {
+      expect(text).toMatch(new RegExp(`${esc(version)} is installed; this build pins ${esc(PACK_VERSION)}`))
+      expect(text).toMatch(new RegExp(`Upgrade it to ${esc(PACK_VERSION)} from Guided Setup’s onboarding panel \\(Upgrade\\)`))
+    }
+    expect(verdict.warnings.join('\n')).not.toMatch(/this build pins/)
+  })
+
+  it('says why an owned 0.2.1 blocks: its Parquet copy keeps _raw', async () => {
+    const { verdict } = await verdictWith({ readPackState: async () => packState({ version: '0.2.1', current: false }) })
+    expect(verdict.blockers.join('\n')).toMatch(/0\.2\.1 keeps _raw on every row of its Parquet copy \(gigamon_ami_pq\)/)
+  })
+
+  it('says why Upgrade is not offered when this build’s pin cannot be installed', async () => {
+    const facts = await gatherPreflight('default', readers({ readPackState: async () => packState({ version: '0.2.1', current: false }) }))
+    const verdict = preflightVerdict({ ...facts, pinned: { ...facts.pinned, refusal: 'no release yet' } })
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/Upgrade is not offered yet: no release yet/)
+  })
+
+  it('leaves a version newer than the pin as it was: the readers call it unpublished, which blocks as not this app’s', async () => {
+    const { verdict } = await verdictWith({ readPackState: async () => packState({ version: '9.0.0', published: false, current: false }) })
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/9\.0\.0 is not this app’s: this app did not publish that version/)
+    expect(verdict.blockers.join('\n')).not.toMatch(/Upgrade it to/)
+  })
+
+  it('leaves an owned version newer than the pin, which the real readers cannot report, as the warning it was', async () => {
+    const { verdict } = await verdictWith({ readPackState: async () => packState({ version: '9.0.0', current: false }) })
     expect(verdict.ready).toBe(true)
-    expect(verdict.warnings.join('\n')).toMatch(/0\.2\.1 is installed; this build pins/)
+    expect(verdict.warnings.join('\n')).toMatch(/9\.0\.0 is installed; this build pins/)
   })
 
   it('warns, and does not block, when HEAD is ahead and every commit in between was read and none touches the group', async () => {
