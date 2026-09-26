@@ -51,12 +51,14 @@
 
 import { SEARCH_GROUP } from './config'
 import {
+  PACK_0_1_0,
   PACK_BREAKER_ID,
   PACK_HTTP_INPUT_ID,
   PACK_ID,
   PACK_JSON_OUTPUT_ID,
   PACK_PARQUET_DATASET_ID,
   PACK_SAMPLE_DATASET_ID,
+  PACK_ROUTE_TABLE_ID,
   PACK_SAMPLE_INPUT_ID,
 } from './pack'
 import {
@@ -486,7 +488,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/packs/${PACK_ID}`,
     scope: 'product',
     site: 'packUpgrade.ts upgradePack',
-    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins, from Guided Setup's Upgrade confirmation — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. The pack's Raw HTTP source is read back afterwards, and nothing is committed or deployed when its port, token, TLS or state was reset.`,
+    why: `Upgrade the installed '${PACK_ID}' in place to the version this app build pins, from Guided Setup's Upgrade confirmation — only from a version this app published and installed from its own release, and never downward. Custom functions stay refused. The pack's Raw HTTP source is read back afterwards, and nothing is committed or deployed when its port, token, TLS or state was reset, or when the pack’s route table read back is not the one the new version ships.`,
   },
   {
     method: 'DELETE',
@@ -521,8 +523,8 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: `/m/:gid/p/${PACK_ID}/routes`,
     scope: 'product',
-    site: 'packClient.ts readPackState',
-    why: 'Ask whether the pack’s three routes are installed — the two that send HTTP data to the JSON and Parquet datasets, and the sample’s — and, from the same read, which pipeline each route runs, so the cutover preflight can tell whether the Parquet copy is written without _raw. Read only.',
+    site: 'packClient.ts readPackRouteTable (also readPackState)',
+    why: 'Read the pack’s route table: whether its three routes are installed — the two that send HTTP data to the JSON and Parquet datasets, and the sample’s — whether the table is the one the installed version ships, which an upgrade does not replace when the table was changed after install, and which pipeline each route runs, so the cutover preflight can tell whether the Parquet copy is written without _raw. Read again after an upgrade, and before and after the route table is put back. Read only.',
   },
   {
     method: 'GET',
@@ -565,6 +567,77 @@ export const API_CALLS: readonly ApiCall[] = [
     scope: 'product',
     site: 'packClient.ts patchPackInput',
     why: `Start or stop the pack’s sample DataGen, an opt-in: it writes synthetic flows to ${PACK_SAMPLE_DATASET_ID}, never to the customer’s dataset. Only its \`disabled\` flag changes.`,
+  },
+  // ── The onboarding pack's clean-up after an upgrade (src/cribl/packCleanup.ts)
+  // Measured 2026-09-26 on a Leader (pack.ts's header, M1–M6): an in-place
+  // upgrade keeps an edited route table whole and leaves the old version's
+  // changed sources and destinations behind. One PATCH of the pack's one route
+  // table, and a DELETE and a read-back GET per leftover, each by its own exact
+  // id (owner decision, 2026-09-26: no `:id`, so no grant covers a tenant's own
+  // object). No pipeline DELETE: inside a pack it answers 200 and removes
+  // nothing.
+  {
+    method: 'PATCH',
+    path: `/m/:gid/p/${PACK_ID}/routes/${PACK_ROUTE_TABLE_ID}`,
+    scope: 'product',
+    site: 'packCleanup.ts restorePackRoutes',
+    why: `Put back the route table the installed version of the pack ships, from Guided Setup's "Restore the pack's routes and remove leftovers" confirmation, which shows the route ids before and after. The body is the table as read, with only its routes replaced, because a PATCH resets what it omits; only the one table '${PACK_ROUTE_TABLE_ID}', only on this app's own current copy of the pack.`,
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_0_1_0.inputs.syslog}`,
+    scope: 'product',
+    site: 'packCleanup.ts readLeftoverRequest',
+    why: `Read back the ${PACK_0_1_0.inputs.syslog} source 0.1.0 of the pack shipped, after the clean-up deleted it, to tell "gone" from "still present". Read only; this exact id, and nothing else in the pack.`,
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_0_1_0.inputs.syslog}`,
+    scope: 'product',
+    site: 'packCleanup.ts deleteLeftoverRequest',
+    why: `Delete the ${PACK_0_1_0.inputs.syslog} source that 0.1.0 of the pack shipped and later versions do not — left behind in the pack by an in-place upgrade — from Guided Setup's "Restore the pack's routes and remove leftovers" confirmation, which names it by id. Only on this app's own current copy of the pack, and only this exact id: never a tenant's own object.`,
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_0_1_0.inputs.sample}`,
+    scope: 'product',
+    site: 'packCleanup.ts readLeftoverRequest',
+    why: `Read back the ${PACK_0_1_0.inputs.sample} sample source 0.1.0 of the pack shipped, after the clean-up deleted it, to tell "gone" from "still present". Read only; this exact id, and nothing else in the pack.`,
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/p/${PACK_ID}/system/inputs/${PACK_0_1_0.inputs.sample}`,
+    scope: 'product',
+    site: 'packCleanup.ts deleteLeftoverRequest',
+    why: `Delete the ${PACK_0_1_0.inputs.sample} sample source that 0.1.0 of the pack shipped and later versions do not — left behind in the pack by an in-place upgrade — from Guided Setup's "Restore the pack's routes and remove leftovers" confirmation, which names it by id. Only on this app's own current copy of the pack, and only this exact id: never a tenant's own object.`,
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_0_1_0.outputs.lake}`,
+    scope: 'product',
+    site: 'packCleanup.ts readLeftoverRequest',
+    why: `Read back the ${PACK_0_1_0.outputs.lake} Cribl Lake destination 0.1.0 of the pack shipped, after the clean-up deleted it, to tell "gone" from "still present". Read only; this exact id, and nothing else in the pack.`,
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_0_1_0.outputs.lake}`,
+    scope: 'product',
+    site: 'packCleanup.ts deleteLeftoverRequest',
+    why: `Delete the ${PACK_0_1_0.outputs.lake} Cribl Lake destination that 0.1.0 of the pack shipped and later versions do not — left behind in the pack by an in-place upgrade — from Guided Setup's "Restore the pack's routes and remove leftovers" confirmation, which names it by id. Only on this app's own current copy of the pack, and only this exact id: never a tenant's own object. Only once no route names it.`,
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_0_1_0.outputs.sample}`,
+    scope: 'product',
+    site: 'packCleanup.ts readLeftoverRequest',
+    why: `Read back the ${PACK_0_1_0.outputs.sample} sample Cribl Lake destination 0.1.0 of the pack shipped, after the clean-up deleted it, to tell "gone" from "still present". Read only; this exact id, and nothing else in the pack.`,
+  },
+  {
+    method: 'DELETE',
+    path: `/m/:gid/p/${PACK_ID}/system/outputs/${PACK_0_1_0.outputs.sample}`,
+    scope: 'product',
+    site: 'packCleanup.ts deleteLeftoverRequest',
+    why: `Delete the ${PACK_0_1_0.outputs.sample} sample Cribl Lake destination that 0.1.0 of the pack shipped and later versions do not — left behind in the pack by an in-place upgrade — from Guided Setup's "Restore the pack's routes and remove leftovers" confirmation, which names it by id. Only on this app's own current copy of the pack, and only this exact id: never a tenant's own object. Only once no route names it.`,
   },
   // ── Guided Setup: the global stacks earlier releases created ─────────────
   // Read, and removed from the confirmed Remove. Nothing creates or edits them

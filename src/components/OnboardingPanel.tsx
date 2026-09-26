@@ -19,6 +19,13 @@
 // whose DELETE landed and whose commit did not leaves the pack gone and its
 // removal in no commit; "Finish removing the pack" commits and deploys it
 // (`finishRemovalDialog`, `finishPackRemoval`), from Git's own pending list.
+// "Restore the pack's routes and remove leftovers" is offered for this app's
+// current copy when its own lists show a route table that is not the one the
+// version ships, or a source or destination an earlier version shipped — what
+// an in-place upgrade leaves behind (measured 2026-09-26 on a Leader; pack.ts's
+// header). It opens `cleanupDialog` and runs `runPackCleanup`: the table PATCHed
+// back, each leftover deleted and read back, then the commit and deploy, under
+// the run lock; refused while the pack's own manifest is uncommitted.
 //
 // THE ONLY ONBOARDING (owner decision, 2026-09-25). The panel always renders,
 // holds the page's one worker-group picker, and is how this app onboards,
@@ -53,7 +60,7 @@ import { StatusPill, type StatusState } from './StatusPill'
 import { pushToast } from './Toast'
 import { useSetupGroup } from './useSetupGroup'
 import {
-  NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
+  CLEANUP_LABEL, CLEANUP_TIP, cleanupNote, NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
   PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_START_REFUSAL, SAMPLE_TIP, SOURCE_SETTINGS_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR,
   TOKEN_UNDEPLOYED,
   UPGRADE_TIP, accelStatusWords, datasetWords, finishRemovalNote, httpStatusWords, installedRefusal, onboardLabel,
@@ -67,13 +74,13 @@ import { IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
-  finishRemovalDialog, httpActionOf, onboardingDialog, packRemovalDialog, packUpgradeDialog, sourceChangeDialog,
-  type FinishRemovalDialog, type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog, type SourceChange,
+  cleanupBlockedBy, cleanupDialog, cleanupFindings, cleanupOffered, finishRemovalDialog, httpActionOf, onboardingDialog, packRemovalDialog,
+  packUpgradeDialog, sourceChangeDialog, type CleanupDialog, type CleanupDialogContext, type FinishRemovalDialog, type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog, type SourceChange,
   type SourceChangeContext, type SourceChangeDialog, type UpgradeDialog, type UpgradeDialogContext,
 } from '../cribl/onboarding/plan'
 import {
-  finishPackRemoval, prepareOnboarding, prepareSourceChange, prepareUpgrade, runOnboarding, runPackRemoval, runPackUpgrade,
-  runSourceChange, type RunStep,
+  finishPackRemoval, manifestPendingRefusal, prepareCleanup, prepareOnboarding, prepareSourceChange, prepareUpgrade, runOnboarding,
+  runPackCleanup, runPackRemoval, runPackUpgrade, runSourceChange, type RunStep,
 } from '../cribl/onboarding/run'
 import { PACK_HTTP_INPUT_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_VERSION } from '../cribl/pack'
 import {
@@ -99,6 +106,10 @@ interface PanelRead {
   /** The pack's files Git reports uncommitted while the pack is NOT installed:
    *  a removal whose commit failed. Empty otherwise. */
   stranded: string[]
+  /** Why a write that commits every pending file of the pack's is refused now
+   *  (run.ts `manifestPendingRefusal`: the pack's own manifest uncommitted, or
+   *  Git's status unread), or null. */
+  held: string | null
 }
 
 interface UndeployedAtOpen { known: boolean; hash: string | null }
@@ -135,6 +146,8 @@ export function OnboardingPanel() {
   const removeGate = useWriteGate('onboarding_pack.remove')
   const upgradeGate = useWriteGate('onboarding_pack.upgrade')
   const configureGate = useWriteGate('onboarding_pack.configure')
+  const cleanupGate = useWriteGate('onboarding_pack.cleanup')
+  const cleanupRefusalId = useId()
   const refusalId = useId()
   const upgradeRefusalId = useId()
   const startRefusalId = useId()
@@ -145,18 +158,19 @@ export function OnboardingPanel() {
   const [portText, setPortText] = useState('')
   // "Also send sample data": UNTICKED by default, and never remembered.
   const [sample, setSample] = useState(false)
-  const [confirming, setConfirming] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | null>(null)
+  const [confirming, setConfirming] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | 'cleanup' | null>(null)
   const [onboard, setOnboard] = useState<{ ctx: OnboardingDialogContext; dialog: OnboardingDialog } | null>(null)
   const [removal, setRemoval] = useState<RemovalDialog | null>(null)
   const [finishing, setFinishing] = useState<FinishRemovalDialog | null>(null)
   const [upgrading, setUpgrading] = useState<{ ctx: UpgradeDialogContext; dialog: UpgradeDialog } | null>(null)
   const [sourceChange, setSourceChange] = useState<{ ctx: SourceChangeContext; dialog: SourceChangeDialog } | null>(null)
+  const [cleaning, setCleaning] = useState<{ ctx: CleanupDialogContext; dialog: CleanupDialog } | null>(null)
   // The Raw HTTP source's next port, for Move port: offered free, never
   // overwritten while somebody types.
   const [movePortText, setMovePortText] = useState('')
   const [openErr, setOpenErr] = useState<string | null>(null)
   const [opening, setOpening] = useState(false)
-  const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | null>(null)
+  const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | 'cleanup' | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, RunStep[]>>({})
   const [token, setToken] = useState<{ group: string; value: string; afterError: boolean; undeployed?: boolean } | null>(null)
   const [copied, setCopied] = useState<'url' | 'token' | null>(null)
@@ -191,7 +205,8 @@ export function OnboardingPanel() {
       if (!current()) return
       const rec = groupsNow.outcome === 'ok' ? groupsNow.value?.find((x) => x.id === group) : undefined
       const hosting: Hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
-      setRead({ pack, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel, stranded })
+      const held = pack.installed ? manifestPendingRefusal(group, pending) : null
+      setRead({ pack, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel, stranded, held })
       // Offer a free port, but never overwrite one somebody is typing.
       setPortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
       setMovePortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
@@ -262,6 +277,16 @@ export function OnboardingPanel() {
   const sampleDatasetKnownAbsent = read !== null && read.datasets !== null &&
     !read.datasets.some((d) => d.id === PACK_SAMPLE_DATASET_ID && d.deletionStartedAt === null)
   const startRefusal = sampleNow?.disabled && sampleDatasetKnownAbsent ? SAMPLE_START_REFUSAL : null
+
+  // Restore the pack's routes and remove leftovers: this app's current copy,
+  // when its own lists show something to put right. Refused, visibly, while a
+  // commit of the pack's pending files would carry an uncommitted upgrade, and
+  // while a list is unreadable or the table is one this app never writes.
+  const findings = owned && pack ? cleanupFindings(pack) : null
+  const showCleanup = cleanupOffered(findings)
+  const cleanupWhy = !showCleanup ? null : read?.held ?? cleanupBlockedBy(findings)
+  const cleanupRefusal = cleanupWhy ? `${CLEANUP_LABEL} is not available: ${cleanupWhy}.` : null
+  const cleanupBlocked = cleanupRefusal !== null || busy !== null || cleanupGate.denied !== null || opening || loading
 
   const openOnboard = async () => {
     if (onboardBlocked) return
@@ -521,6 +546,52 @@ export function OnboardingPanel() {
     }
   }
 
+  const openCleanup = async () => {
+    if (cleanupBlocked) return
+    const mine = seq.current
+    setOpening(true)
+    setOpenErr(null)
+    try {
+      const r = await prepareCleanup(group, { undeployed: pendingNow.current.hash, undeployedChecking: !pendingNow.current.known })
+      if (mine !== seq.current) return
+      if (!r.ok) {
+        setOpenErr(`The confirmation did not open: ${r.why}.`)
+        return
+      }
+      setCleaning({ ctx: r.ctx, dialog: cleanupDialog(r.ctx) })
+      setConfirming('cleanup')
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  // Reached only from the "Yes" inside the clean-up confirmation.
+  const onCleanup = async () => {
+    const shown = cleaning
+    if (!shown) return
+    const gid = shown.ctx.group
+    const unlock = acquireSetupRun('onboarding_pack')
+    setConfirming(null)
+    if (!unlock) {
+      setOpenErr(`Nothing was written: ${SETUP_RUN_BUSY}`)
+      return
+    }
+    setRunning('cleanup')
+    setOutcomes((prev) => ({ ...prev, [gid]: [] }))
+    try {
+      const out = await runPackCleanup(shown.ctx, shown.dialog, { onStep: (s) => appendStep(gid, s), record: record(gid) })
+      pushToast(out.stopped
+        ? { kind: 'error', text: `${CLEANUP_LABEL} stopped at “${out.stopped.label}”. The step list says what was done.` }
+        : { kind: 'done', text: `Restored the pack’s routes and removed its leftovers in ${gid}.` })
+      await refresh()
+    } catch (e) {
+      appendStep(gid, { key: 'run', label: CLEANUP_LABEL, action: 'error', detail: (e as Error).message })
+    } finally {
+      setRunning(null)
+      unlock()
+    }
+  }
+
   const steps = outcomes[group] ?? []
   const shownToken = token?.group === group ? token : null
   const http = pack?.http ?? null
@@ -728,6 +799,29 @@ export function OnboardingPanel() {
                 <GateNote write="onboarding_pack.configure" />
               </div>
             )}
+            {showCleanup && (
+              <>
+                <p className="gs-action-note gs-action-warn">
+                  {cleanupNote({
+                    version: findings.version,
+                    routes: findings.routes.state,
+                    leftovers: findings.sources.length + findings.destinations.length,
+                  })}
+                  <InfoTip text={CLEANUP_TIP} />
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => void openCleanup()}
+                  aria-disabled={cleanupBlocked || undefined}
+                  aria-describedby={cleanupRefusal ? cleanupRefusalId : undefined}
+                >
+                  {running === 'cleanup' ? 'Restoring…' : CLEANUP_LABEL}
+                </button>
+                {cleanupRefusal && <p id={cleanupRefusalId} className="gs-action-note">{cleanupRefusal}</p>}
+                <GateNote write="onboarding_pack.cleanup" />
+              </>
+            )}
             {owned && (
               <>
                 <button
@@ -851,6 +945,25 @@ export function OnboardingPanel() {
               busyLabel="Working…"
               unavailable={busy}
               run={onSource}
+            />
+          }
+        />
+
+        <ConfirmDialog
+          isOpen={confirming === 'cleanup' && cleaning !== null}
+          title={cleaning?.dialog.title ?? ''}
+          resources={cleaning?.dialog.resources ?? []}
+          diff={cleaning?.dialog.diff.length ? cleaning.dialog.diff : undefined}
+          consequences={cleaning?.dialog.consequences}
+          undo={cleaning?.dialog.undo}
+          onCancel={() => setConfirming(null)}
+          confirm={
+            <GatedControl
+              write="onboarding_pack.cleanup"
+              label={`Yes, restore and remove in ${cleaning?.ctx.group ?? group}`}
+              busyLabel="Restoring…"
+              unavailable={busy}
+              run={onCleanup}
             />
           }
         />

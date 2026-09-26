@@ -325,6 +325,7 @@ function packState(over: Partial<PackState> = {}): PackState {
     installedSample: { id: 'in_gigamon_ami_sample', disabled: true },
     routeTable: shippedRoutes(),
     outputTable: shippedOutputs(),
+    listed: null,
     ...over,
   }
 }

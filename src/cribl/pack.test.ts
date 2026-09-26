@@ -54,6 +54,7 @@ import {
   SAMPLE_ORIGIN_FIELD, SAMPLE_ORIGIN_VALUE, REPLACED_BY_PACK, KEPT_BESIDE_PACK,
   PACK_SHA256, PACK_PUBLISHED, PACK_PUBLISHED_VERSIONS, packReleaseUrl, PACK_ROUTES_FILE, PACK_BREAKERS_FILE, PACK_PENDING, PACK_DECISIONS, PACK_0_1_0,
   PACK_DATASETS_NOT_CREATED, packRelease, packInputFilter, packInputLabel, packOutputLabel, packRouteLabel,
+  PACK_ROUTES, PACK_ROUTE_TABLE_ID, routeTableMatches,
 } from './pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -651,6 +652,16 @@ describe('pack ids', () => {
     expect([...PACK_OBJECTS.pipelines].sort()).toEqual(pipelineDirs().sort())
     expect([...PACK_OBJECTS.routes]).toEqual(routes.map((r) => r.id))
     expect([...PACK_OBJECTS.outputs].sort()).toEqual(Object.keys(outputs).sort())
+  })
+
+  it('PACK_ROUTES is route.yml\'s routes, row for row and whole, under the table id route.yml names', () => {
+    // What the upgrade's read-back compares with and the restore PATCHes back
+    // (measured 2026-09-26: an edited table survives an upgrade whole).
+    expect(JSON.parse(JSON.stringify(PACK_ROUTES))).toEqual(routes)
+    expect(yml(PACK_ROUTES_FILE).id).toBe(PACK_ROUTE_TABLE_ID)
+    expect(PACK_ROUTE_TABLE_ID).toBe('default')
+    expect(routeTableMatches({ tables: 1, id: 'default', routes: routes as Obj[], raw: {} })).toBe(true)
+    expect(Object.isFrozen(PACK_ROUTES)).toBe(true)
   })
 
   it('PACK_0_2_1_OBJECTS is what 0.2.0 and 0.2.1 shipped: this build\'s objects without the Parquet pipeline', () => {

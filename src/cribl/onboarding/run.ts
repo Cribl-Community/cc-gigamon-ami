@@ -31,7 +31,10 @@
 // and the Workers still hold the old one.
 //
 // ── A HELD UPGRADE STAYS HELD ───────────────────────────────────────────────
-// `runPackUpgrade` commits nothing when the upgrade reset the Raw HTTP source.
+// `runPackUpgrade` commits nothing when the upgrade reset the Raw HTTP source,
+// or when the pack's route table read back is not the one the new version
+// ships (an edited table survives an upgrade whole — measured 2026-09-26; see
+// pack.ts's header, M1).
 // Every source change commits all of the pack's pending files, so while the
 // pack's manifest is uncommitted, none of them opens or runs
 // (`manifestPendingRefusal`) — otherwise this app's own Stop sample data would
@@ -39,8 +42,8 @@
 // read as "this version has no Raw HTTP source" (`sourcesUnreadable`).
 //
 // ── NOTHING HERE RUNS ON ITS OWN ────────────────────────────────────────────
-// `runOnboarding`, `runPackRemoval`, `finishPackRemoval`, `runPackUpgrade` and
-// `runSourceChange` are reached from a confirmed click in
+// `runOnboarding`, `runPackRemoval`, `finishPackRemoval`, `runPackUpgrade`,
+// `runSourceChange` and `runPackCleanup` are reached from a confirmed click in
 // components/OnboardingPanel.tsx and from nowhere else; the panel holds the
 // page's run lock (../setupRunLock.ts) around each.
 
@@ -52,9 +55,10 @@ import { reconsiderDatasetTarget, type DatasetTarget } from '../datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../lake'
 import { forgetLakeFacts } from '../lakeWindowRead'
 import {
-  PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID,
-  PACK_VERSION,
+  PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_ROUTE_TABLE_ID, PACK_SAMPLE_DATASET_ID,
+  PACK_SAMPLE_INPUT_ID, PACK_VERSION, routeTableMatches, routeTableRestorable,
 } from '../pack'
+import { deleteLeftover, restorePackRoutes, type CleanupStep } from '../packCleanup'
 import {
   commitAndDeployPack, compareVersions, configureHttpInput, enableHttpInput, installPack, packCommitScope, portsOfOthers,
   previewPackInput, readPackState, removePack, sampleInputIdOf, setHttpToken, setSampleEnabled, setSourcePort, thisPackRelease,
@@ -66,11 +70,12 @@ import {
   pendingConfigPaths, portProblem, sameValue, type LakeDatasetStep, type StepResult,
 } from '../provision'
 import {
-  ROTATE_FAILED, installedRefusal, packManifestPendingSentence, packPendingUnknownSentence, upgradeHeldSentence, upgradeResetSentence,
+  ROTATE_FAILED, cleanupHeldSentence, installedRefusal, packManifestPendingSentence, packPendingUnknownSentence,
+  routeTableShapeWords, upgradeHeldSentence, upgradeResetSentence, upgradeRoutesKeptSentence, upgradeRouteTableShapeSentence,
 } from '../../components/onboardingCopy'
 import {
-  SAMPLE_START_DIFF, accelMode, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites, upgradeReadBack, type HttpAction,
-  type OnboardingDialog, type OnboardingDialogContext, type SourceChange, type SourceChangeContext, type SourceChangeDialog,
+  SAMPLE_START_DIFF, accelMode, cleanupBlockedBy, cleanupFindings, cleanupOffered, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites,
+  upgradeReadBack, type CleanupDialog, type CleanupDialogContext, type CleanupFindings, type HttpAction, type OnboardingDialog, type OnboardingDialogContext, type SourceChange, type SourceChangeContext, type SourceChangeDialog,
   type SourceSnapshot, type UpgradeDialog, type UpgradeDialogContext,
 } from './plan'
 import type { DiffRow } from '../landing'
@@ -125,6 +130,10 @@ const LABELS: Record<string, string> = {
   acceleration: 'Scheduled searches',
   recheck: 'Read back',
   readback: `Raw HTTP source ${PACK_HTTP_INPUT_ID} read back`,
+  routes_readback: `Route table ${PACK_ROUTE_TABLE_ID} read back`,
+  routes: `Route table ${PACK_ROUTE_TABLE_ID}`,
+  input: 'Leftover source',
+  output: 'Leftover destination',
 }
 
 const labelOf = (key: string): string => LABELS[key] ?? key
@@ -733,7 +742,34 @@ export async function runPackUpgrade(ctx: UpgradeDialogContext, _dialog: Upgrade
   })
   for (const note of rb.notes) step({ key: 'readback', label: labelOf('readback'), action: 'exists', warning: true, detail: note })
 
-  // 3. Commit the pack's files, then deploy.
+  // 3. The routes, read back. An edited route table survives an in-place
+  // upgrade WHOLE (measured 2026-09-26 on the workspace Leader, a scratch copy
+  // of this pack, 0.1.0 -> 0.2.2: the table read back held 0.1.0's two rows and
+  // none of 0.2.2's three — pack.ts's header, M1), so the new version's routes
+  // are not in use. Committing that would deploy a pack that routes as it did
+  // before the upgrade, so nothing is committed, and the step points at the
+  // restore. A table that cannot be read is never taken for the shipped one.
+  const routes = after.listed?.routes ?? 'unreadable'
+  if (routes === 'unreadable') {
+    return finish(step({
+      key: 'routes_readback', label: labelOf('routes_readback'), action: 'error',
+      detail: upgradeHeldSentence(g, 'the pack’s route table could not be read back after it'),
+    }), after)
+  }
+  // A table this app never writes — none, several, or under another id — is
+  // not a kept edit the restore can put right, so it is not said to be one.
+  if (!routeTableMatches(routes) && !routeTableRestorable(routes)) {
+    return finish(step({
+      key: 'routes_readback', label: labelOf('routes_readback'), action: 'error',
+      detail: upgradeRouteTableShapeSentence(g, routeTableShapeWords(routes.tables, routes.id, PACK_ROUTE_TABLE_ID)),
+    }), after)
+  }
+  if (!routeTableMatches(routes)) {
+    return finish(step({ key: 'routes_readback', label: labelOf('routes_readback'), action: 'error', detail: upgradeRoutesKeptSentence(g, PACK_VERSION) }), after)
+  }
+  step({ key: 'routes_readback', label: labelOf('routes_readback'), action: 'exists', detail: `the routes ${PACK_VERSION} ships` })
+
+  // 4. Commit the pack's files, then deploy.
   const committed = await commitAndDeployPack(g, upgradeMessage(g, ctx.from), { wrote: true, record: io.record }, (r) => { step(fromCommit(r)) })
   const broken = committed.find((r) => r.action === 'error')
   if (broken) return finish(steps.find((s) => s.key === broken.key && s.action === 'error') ?? null, after)
@@ -774,7 +810,7 @@ const ownedCopy = (p: PackState): boolean => !p.error && p.installed && p.publis
  * and all, which is exactly what holding it was for. Git's status unread is
  * refused too: the held upgrade cannot be ruled out.
  */
-function manifestPendingRefusal(group: string, pending: readonly string[] | null): string | null {
+export function manifestPendingRefusal(group: string, pending: readonly string[] | null): string | null {
   if (pending === null) return packPendingUnknownSentence(group)
   const held = pending.find((f) => f.includes(`groups/${group}/`) && f.endsWith(`/${PACK_ID}/package.json`))
   return held ? packManifestPendingSentence(group, held) : null
@@ -890,4 +926,155 @@ export async function runSourceChange(ctx: SourceChangeContext, dialog: SourceCh
     if (token !== null) io.onToken(token, !ended || broken !== undefined)
   }
   return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
+}
+
+// ── Restore the pack's routes and remove leftovers ──────────────────────────
+//
+// What an in-place upgrade leaves behind, and what puts it right, measured on
+// 2026-09-26 (pack.ts's header, M1–M6; one Leader, one scratch pack): the old
+// route table kept whole, sources and destinations the old version shipped
+// still listed, pipelines that no DELETE removes. The findings are plan.ts
+// `cleanupFindings` (pure, from `readPackState`); the writes are packCleanup.ts.
+//
+// ORDER, AND WHAT A FAILED STEP DOES. The routes first: a destination a route
+// still names answers 409 (M4), so the destinations are deleted only once the
+// table no longer names them — after a restore that answered and read back, or
+// when the table already was the shipped one. A failed routes step skips the
+// destinations and still deletes the sources (a source deletes whatever the
+// routes say, M3). Any failed step: the rest that can still run do, and NOTHING
+// is committed or deployed, and the step says so — a commit would put a half
+// clean-up on the Workers.
+
+/** Why the clean-up may not open or run now — or, when it may, what it found. */
+function cleanupRefusal(pack: PackState, group: string, pending: readonly string[] | null): string | CleanupFindings {
+  if (pack.error) return pack.error
+  if (!pack.installed) return `${PACK_ID} is not installed in ${group}`
+  if (!ownedCopy(pack) || !pack.current) return `the pack in ${group} is not this app’s current release, installed from its own release`
+  const held = manifestPendingRefusal(group, pending)
+  if (held) return held
+  const f = cleanupFindings(pack)
+  if (f === null) return `the pack in ${group} could not be read`
+  const blocked = cleanupBlockedBy(f)
+  if (blocked) return blocked
+  if (!cleanupOffered(f)) return 'nothing to restore or remove: the routes are the ones this version ships, and nothing is left over'
+  return f
+}
+
+/** The reads its confirmation is built from — GETs only. Refused while the
+ *  pack's own manifest is uncommitted (`manifestPendingRefusal`), as every
+ *  other pack write that commits the pack's pending files is. */
+export async function prepareCleanup(
+  group: string,
+  opts: { undeployed: string | null; undeployedChecking: boolean },
+): Promise<{ ok: true; ctx: CleanupDialogContext } | { ok: false; why: string }> {
+  const [pack, pending] = await Promise.all([readPackState(group), pendingConfigPaths().catch(() => null)])
+  const found = cleanupRefusal(pack, group, pending)
+  if (typeof found === 'string') return { ok: false, why: found }
+  return {
+    ok: true,
+    ctx: { group, findings: found, scope: packCommitScope(group, pending), undeployed: opts.undeployed, undeployedChecking: opts.undeployedChecking },
+  }
+}
+
+/** What the confirmation showed, as the run compares it: the table's rows by
+ *  their routing — every field the PATCH rewrites, not only the ids, so an
+ *  edit to a filter or pipeline saved after the dialog opened reads as moved —
+ *  (or its state), and each id to delete. */
+const shownOf = (f: CleanupFindings) => ({
+  routes: f.routes.state === 'differs' ? f.routes.rows.map((r) => JSON.stringify(r)) : f.routes.state,
+  sources: f.sources.map((o) => o.id),
+  destinations: f.destinations.map((o) => o.id),
+})
+
+const fromCleanup = (c: CleanupStep): RunStep => ({
+  key: c.key, label: c.key === 'routes' ? labelOf('routes') : `${labelOf(c.key)} ${c.id}`, action: c.action,
+  ...(c.detail ? { detail: c.detail } : {}),
+})
+
+export const cleanupMessage = (group: string): string =>
+  `Gigamon AMI: restore pack ${PACK_ID} routes and remove leftovers in ${group}`
+
+/**
+ * The clean-up, strictly in order, from the "Yes" inside its confirmation:
+ * re-read (anything moved from what the dialog showed, or the pack's own
+ * manifest uncommitted: nothing written), the route table, each leftover
+ * source, each leftover destination, then the pack's files committed and
+ * deployed — only when every step succeeded.
+ */
+export async function runPackCleanup(ctx: CleanupDialogContext, dialog: CleanupDialog, io: Pick<RemovalIO, 'onStep' | 'record'>): Promise<RunOutcome> {
+  const steps: RunStep[] = []
+  const step = (s: RunStep): RunStep => {
+    steps.push(s)
+    io.onStep(s)
+    return s
+  }
+  const finish = (stopped: RunStep | null, pack: PackState | null = null): RunOutcome => {
+    void appendLog('gigamon', {
+      action: 'onboarding_pack.cleaned',
+      group: ctx.group,
+      outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
+      steps: steps.map((s) => `${s.key}:${s.action}`),
+    })
+    return { steps, stopped, pack }
+  }
+  const g = ctx.group
+
+  // 0. Nothing moved since the confirmation.
+  const [now, pending] = await Promise.all([readPackState(g), pendingConfigPaths().catch(() => null)])
+  const found = cleanupRefusal(now, g, pending)
+  const moved = typeof found === 'string'
+    ? found
+    : sameValue(shownOf(found), shownOf(ctx.findings)) ? null : 'the pack’s routes or its leftovers changed'
+  if (moved) {
+    return finish(step({
+      key: 'precheck', label: labelOf('precheck'), action: 'error',
+      detail: `Nothing was written, because this changed after the confirmation was shown: ${moved}. Look again, and confirm again.`,
+    }))
+  }
+  step({ key: 'precheck', label: labelOf('precheck'), action: 'exists', detail: 'what the confirmation showed still holds' })
+
+  // `wrote` is whether this run changed a FILE of the pack's, which after a
+  // change makes "nothing of the pack's to commit" an error. Only the route
+  // PATCH is known to: the Leader keeps the restored table as the pack's local
+  // route file (M6). A deleted leftover may have had no file at all — the
+  // Leader lists objects an earlier version shipped that were never overridden
+  // (M2: stale Leader state) — so a delete does not count; one that did remove
+  // a local file shows in Git's pending files and is committed all the same.
+  let wrote = false
+  let failed: RunStep | null = null
+  const took = (c: CleanupStep): void => {
+    const s = step(fromCleanup(c))
+    if (c.key === 'routes' && c.action === 'updated') wrote = true
+    if (c.action === 'error' && failed === null) failed = s
+  }
+
+  // 1. The route table, when the dialog said it would be put back.
+  const before = dialog.approved.routesBefore
+  let routesClear = before === null
+  if (before !== null) {
+    const r = await restorePackRoutes(g, before)
+    took(r)
+    routesClear = r.action !== 'error'
+  }
+
+  // 2. Each leftover source, then each leftover destination — the
+  // destinations only once no route names them.
+  for (const id of dialog.approved.sources) took(await deleteLeftover(g, 'inputs', id))
+  for (const id of dialog.approved.destinations) {
+    if (!routesClear) {
+      step({ key: 'output', label: `${labelOf('output')} ${id}`, action: 'skipped', detail: 'not deleted, because the routes were not restored and may still name it' })
+      continue
+    }
+    took(await deleteLeftover(g, 'outputs', id))
+  }
+
+  // 3. Commit and deploy — only when every step succeeded.
+  if (failed !== null) {
+    step({ key: 'commit', label: labelOf('commit'), action: 'skipped', detail: cleanupHeldSentence(g) })
+    return finish(failed, await readPackState(g))
+  }
+  const committed = await commitAndDeployPack(g, cleanupMessage(g), { wrote, record: io.record }, (r) => { step(fromCommit(r)) })
+  const broken = committed.find((r) => r.action === 'error')
+  if (broken) return finish(steps.find((s) => s.key === broken.key && s.action === 'error') ?? null)
+  return finish(null, await readPackState(g))
 }

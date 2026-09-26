@@ -22,14 +22,18 @@
 //     before the dialog, at the run, and after the PATCH (nothing committed);
 //   * a group's own TLS certificate put back to the pack's is a reset;
 //   * a copy that became current before the PATCH, and a PATCH whose version
-//     did not move, commit nothing (the second says so in a held step).
+//     did not move, commit nothing (the second says so in a held step);
+//   * after the PATCH the pack's route table is read back too, and when it is
+//     not the one the new version ships — an edited table the upgrade kept
+//     whole, as measured on a Leader on 2026-09-26 — or cannot be read,
+//     NOTHING is committed or deployed, and the step points at the restore.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'yaml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_PARQUET_PIPELINE_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packRelease, packReleaseUrl } from '../pack'
+import { PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_ID, PACK_OBJECTS, PACK_PARQUET_PIPELINE_ID, PACK_ROUTES, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packRelease, packReleaseUrl } from '../pack'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const SHIPPED = (parse(readFileSync(join(ROOT, 'packs', PACK_ID, 'default', 'inputs.yml'), 'utf8')) as {
@@ -53,6 +57,8 @@ let calls: Call[] = []
 interface World {
   packs: Array<Record<string, unknown>>
   inputs: Record<string, Record<string, unknown>>
+  /** The pack's one route table, as `GET /p/<pack>/routes` answers it. */
+  routes: Record<string, unknown>
   pending: string[]
   committed: string[][]
 }
@@ -78,7 +84,23 @@ interface Opts {
   /** With `http: null` (0.1.0): 0.1.0's own sample DataGen, `in_gno_sample`,
    *  is in the pack, running (`true`) or stopped (`false`). */
   sample010?: boolean
+  /** What the upgrade does to the pack's route table: `shipped` (the default)
+   *  puts the new version's in place; `kept` keeps the table from before, as a
+   *  Leader does with one changed after install; `unreadable` makes the
+   *  table's list answer 503 after the upgrade. */
+  routesAfter?: 'shipped' | 'kept' | 'unreadable' | 'none'
 }
+
+/** 0.1.0's route table as it shipped — what an edited copy kept through an
+ *  upgrade looked like on the Leader (two rows, none of the new version's). */
+const TABLE_010 = {
+  id: 'default', groups: {}, comments: [],
+  routes: [
+    { id: 'gno_syslog', name: 'gno_syslog', final: true, disabled: false, filter: "__inputId=='syslog:in_gno_syslog'", pipeline: 'gno_syslog', output: 'out_gno_lake' },
+    { id: 'gno_sample', name: 'gno_sample', final: true, disabled: false, filter: "__inputId=='datagen:in_gno_sample'", pipeline: 'gno_sample', output: 'out_gno_sample_lake' },
+  ],
+}
+const TABLE_SHIPPED = () => ({ id: 'default', groups: {}, comments: [], routes: structuredClone(PACK_ROUTES) })
 
 const shipped = (id: string) => ({ id, ...structuredClone(SHIPPED[id]) })
 const CONFIGURED = { disabled: false, port: 20007, authTokensExt: [{ token: OLD_TOKEN, authType: 'manual' }] }
@@ -98,12 +120,14 @@ function leader(o: Opts): void {
         ...(o.sample010 === undefined ? {} : { [PACK_0_1_0.inputs.sample]: { id: PACK_0_1_0.inputs.sample, type: 'datagen', disabled: !o.sample010 } }),
       }
       : { [PACK_HTTP_INPUT_ID]: { ...shipped(PACK_HTTP_INPUT_ID), ...(o.http ?? CONFIGURED) }, [PACK_SAMPLE_INPUT_ID]: shipped(PACK_SAMPLE_INPUT_ID) },
+    routes: o.copy.version === '0.1.0' ? structuredClone(TABLE_010) : TABLE_SHIPPED(),
     pending: [],
     committed: [],
   }
   world = w
   let inputReads = 0
   let packReads = 0
+  let upgraded = false
   window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -135,8 +159,15 @@ function leader(o: Opts): void {
             : shipped(PACK_HTTP_INPUT_ID),
         [PACK_SAMPLE_INPUT_ID]: shipped(PACK_SAMPLE_INPUT_ID),
       }
+      if ((o.routesAfter ?? 'shipped') === 'shipped') w.routes = TABLE_SHIPPED()
+      upgraded = true
       w.pending.push(`groups/${GROUP}/default/${PACK_ID}/package.json`)
       return reply(200, { items: [{ id: PACK_ID }] })
+    }
+    if (at('GET', `${P}/routes`)) {
+      if (upgraded && o.routesAfter === 'unreadable') return reply(503, { message: 'unavailable' })
+      if (upgraded && o.routesAfter === 'none') return reply(200, { items: [] })
+      return reply(200, { items: [w.routes] })
     }
     if (at('GET', `${P}/system/inputs`)) {
       inputReads++
@@ -287,7 +318,12 @@ describe('the Upgrade confirmation', () => {
     expect(said).toContain(`${PACK_VERSION} no longer ships in_gno_syslog, in_gno_sample, gno_syslog, gno_sample`)
     expect(said).toContain('out_gno_lake')
     expect(said).toContain('stays in the pack’s local settings, left over')
-    expect(said).toContain('This upgrade does not remove leftovers.')
+    expect(said).toContain('This upgrade does not remove leftovers; Restore the pack’s routes and remove leftovers')
+    // An edited route table survives an upgrade whole: said plainly, and what
+    // the run does about it.
+    expect(said).toContain('A route table changed after install does survive an upgrade, whole')
+    expect(said).toMatch(/routes back too, and if they are not the new version’s it commits and deploys nothing/)
+    expect(said).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
     // The sources it no longer ships: they stop listening only if unchanged.
     expect(said).toContain('After the deploy, in_gno_syslog, in_gno_sample stop listening — unless one was changed after install')
     expect(d.undo).toMatch(/does not downgrade/)
@@ -516,6 +552,64 @@ describe('the run', () => {
     const held = r.steps?.find((s) => s.key === 'readback' && s.action === 'error')
     expect(held?.detail).toContain('Nothing was committed or deployed')
     expect(held?.detail).toContain('the upgrade could not be checked')
+  })
+
+  it('the pack kept its edited route table through the upgrade: NO commit and NO deploy, and the step points at the restore', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, routesAfter: 'kept' })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+    const said = r.out?.stopped?.detail ?? ''
+    expect(said).toContain('Nothing was committed or deployed')
+    expect(said).toContain('the pack kept an edited route table from before the upgrade')
+    expect(said).toContain(`${PACK_VERSION}’s routes are not in use`)
+    expect(said).toContain('Restore the pack’s routes and remove leftovers')
+    expect(r.records).toEqual([])
+    // The upgrade's own read of the table was made after the PATCH.
+    const patchAt = calls.findIndex((c) => c.method === 'PATCH')
+    expect(calls.slice(patchAt).some((c) => c.method === 'GET' && c.path === `${P}/routes`)).toBe(true)
+  })
+
+  it('a configured copy whose table was kept (from a version that shipped these ids): held too', async () => {
+    leader({ copy: { version: MID, source: packReleaseUrl(MID) }, upgrade: 'keeps', routesAfter: 'kept' })
+    world.routes = { ...TABLE_SHIPPED(), routes: TABLE_SHIPPED().routes.slice(0, 2) }
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+  })
+
+  it('a kept 0.2.1 table — the same three ids, the Parquet route still on gigamon_ami_normalize — is held too', async () => {
+    leader({ copy: { version: MID, source: packReleaseUrl(MID) }, upgrade: 'keeps', routesAfter: 'kept' })
+    const t = TABLE_SHIPPED()
+    world.routes = { ...t, routes: t.routes.map((r, i) => (i === 1 ? { ...r, pipeline: 'gigamon_ami_normalize' } : r)) }
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+    expect(r.out?.stopped?.detail).toContain('the pack kept an edited route table')
+  })
+
+  it('the held step never tells the admin to deploy the kept routes', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, routesAfter: 'kept' })
+    const said = (await upgrade()).out?.stopped?.detail ?? ''
+    expect(said).toContain(`commit ${GROUP} there without deploying it`)
+    expect(said).not.toMatch(/commit and deploy \S+ there/)
+  })
+
+  it('no route table after the upgrade: held, and said as what it is — not as a kept edit the restore can put right', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, routesAfter: 'none' })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+    expect(r.out?.stopped?.detail).toContain('Nothing was committed or deployed, because the pack answered no route table')
+    expect(r.out?.stopped?.detail).not.toContain('kept an edited route table')
+  })
+
+  it('the route table cannot be read back after the upgrade: nothing committed or deployed, said', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, routesAfter: 'unreadable' })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+    expect(r.out?.stopped?.detail).toContain('Nothing was committed or deployed, because the pack’s route table could not be read back')
   })
 
   it('the Raw HTTP source changed after the dialog: zero writes, because the read-back would compare against the wrong "before"', async () => {

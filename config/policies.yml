@@ -402,8 +402,10 @@ policies:
   # afterwards and nothing is committed or deployed if its settings were reset.
   - object: '/m/:gid/packs/cc-network-gigamon-ami'
     actions: ['PATCH', 'DELETE']
-  # The pack's objects, read for the status Guided Setup shows, and never
-  # written: its event breaker ruleset, pipeline, routes and destinations.
+  # The pack's objects, read for the status Guided Setup shows: its event
+  # breaker ruleset, pipelines, route table and destinations. These lists are
+  # never written; the route table is PATCHed only by its own id, and a
+  # leftover destination DELETEd only by its own id, further down.
   - object: '/m/:gid/p/cc-network-gigamon-ami/lib/breakers/gigamon_ami_http_json_array'
     actions: ['GET']
   - object: '/m/:gid/p/cc-network-gigamon-ami/pipelines'
@@ -429,6 +431,26 @@ policies:
     actions: ['GET', 'PATCH']
   - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gigamon_ami_sample'
     actions: ['GET', 'PATCH']
+  # Guided Setup's "Restore the pack's routes and remove leftovers", from its
+  # own confirmation, only on this app's current copy of the pack. An in-place
+  # upgrade keeps a route table that was changed after install, whole, so the
+  # new version's routes are not used; PATCH puts back the one table the
+  # installed version ships ("default"), the body being the table as read with
+  # only its routes replaced. The upgrade also leaves behind sources and
+  # destinations the old version shipped: each is DELETEd by its own exact id —
+  # never an `:id`, so no tenant's own object is covered — and read back by GET.
+  # Destinations only once no route names them. No pipeline is deleted: inside
+  # a pack that DELETE answers and removes nothing.
+  - object: '/m/:gid/p/cc-network-gigamon-ami/routes/default'
+    actions: ['PATCH']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gno_syslog'
+    actions: ['GET', 'DELETE']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gno_sample'
+    actions: ['GET', 'DELETE']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/outputs/out_gno_lake'
+    actions: ['GET', 'DELETE']
+  - object: '/m/:gid/p/cc-network-gigamon-ami/system/outputs/out_gno_sample_lake'
+    actions: ['GET', 'DELETE']
   # The global Raw HTTP source an earlier release of Guided Setup created for
   # Gigamon AMX to POST to. GET so Guided Setup can show it and Remove can name
   # it; DELETE is the teardown, and only ever of this source. Nothing creates or

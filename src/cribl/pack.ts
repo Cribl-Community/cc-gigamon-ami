@@ -107,10 +107,44 @@
 //     (Cribl's documented behaviour), never measured here. The proof install
 //     must read a gigamon_ami row with _raw and a gigamon_ami_pq row without.
 //   - that an in-place upgrade from 0.2.1 puts the Parquet route on the new
-//     pipeline. The route table ships in default/; a tenant who edited the
-//     pack's routes has a local/ copy, which the upgrade keeps (measured for
-//     sources, 2026-09-25), so that tenant's Parquet route would still run
-//     gigamon_ami_normalize. This app never writes the pack's routes.
+//     pipeline, for a tenant who never edited the pack's routes. For one who
+//     did, it is measured now, and the answer is no — see "AN EDITED ROUTE
+//     TABLE" below. *(Corrected 2026-09-26, `feat/pack-leftovers-routes`: this
+//     said a kept local/ route table was measured only for sources, and "This
+//     app never writes the pack's routes".)*
+//
+// ── AN EDITED ROUTE TABLE SURVIVES AN UPGRADE WHOLE (measured 2026-09-26) ───
+//
+// Measured on the workspace Leader, on a scratch copy of this pack: 0.1.0
+// installed from its release URL, its `in_gno_syslog`, pipeline `gno_syslog`,
+// destination `out_gno_lake` and route table overridden, then upgraded in place
+// to 0.2.2 (`PATCH /packs/:id` → 200, version 0.2.2). One Leader, one scratch
+// pack:
+//   (M1) the edited route table survives WHOLE: `GET /p/<pack>/routes` answered
+//        table "default" with 0.1.0's two rows and none of 0.2.2's three, so
+//        the pack delivered nothing (0.1.0's filters never match in a pack);
+//   (M2) the pack's lists show orphans: inputs `in_gno_syslog` (overridden);
+//        pipelines `gno_syslog` AND `gno_sample`; outputs `out_gno_lake` AND
+//        `out_gno_sample_lake` (the two `*_sample` ones never overridden and
+//        with no file behind them — the Leader's own stale state);
+//   (M3) `DELETE /p/<pack>/system/inputs/in_gno_syslog` → 200, then GET 404;
+//   (M4) `DELETE …/system/outputs/out_gno_lake` → 409 "Cannot delete output
+//        since it is being referenced by the route 'gno_syslog'" while the old
+//        table stands; after the table was restored → 200 and GET 404; the
+//        same for `out_gno_sample_lake`;
+//   (M5) `DELETE …/pipelines/gno_syslog` → 200 every time (three tries, before
+//        and after restoring the routes), and GET still 200 and still listed;
+//        the same for `gno_sample`. A pipeline DELETE in a pack does not work,
+//        so this app never sends one and never claims to remove one;
+//   (M6) `DELETE …/routes/default` → 500 "Request delete:/routes not supported
+//        by Packs"; `PATCH …/routes/default` with the whole table object and
+//        `routes` = this pack's shipped rows (`PACK_ROUTES`) → 200, and routing
+//        restored. The local route override file remains, so a LATER upgrade
+//        keeps this table too.
+// So `PACK_ROUTES` and `PACK_ROUTE_TABLE_ID` below are what the upgrade's
+// read-back compares against (onboarding/run.ts `runPackUpgrade`) and what
+// Guided Setup's "Restore the pack's routes and remove leftovers" PATCHes back
+// (packCleanup.ts), and `routeTableMatches` is the one comparison both use.
 
 /** The pack's id on the Leader. Never starts with `v` — see the tag note below. */
 export const PACK_ID = 'cc-network-gigamon-ami'
@@ -457,6 +491,173 @@ export const packRouteLabel = (routeId: string): string => `${PACK_ID}.${routeId
 /** The route filter that selects one of this pack's own sources. The pack's
  *  default/pipelines/route.yml spells exactly this; pack.test.ts holds it. */
 export const packInputFilter = (type: string, inputId: string): string => `__inputId=='${packInputLabel(type, inputId)}'`
+
+// ── The route table the pack ships ──────────────────────────────────────────
+
+/**
+ * The id of the pack's one routing table. MEASURED 2026-09-26 (see the header,
+ * M1 and M6): `GET /p/<pack>/routes` answers one table with this id, and
+ * `PATCH /p/<pack>/routes/default` with the whole table is the only write that
+ * puts a table back (a DELETE answers 500 inside a pack). The route file's own
+ * `id:` says the same; pack.test.ts holds the two equal. A live table under any
+ * other id is refused, never PATCHed at another path.
+ */
+export const PACK_ROUTE_TABLE_ID = 'default'
+
+/** One route of the pack's table, as default/pipelines/route.yml ships it. */
+export interface PackRoute {
+  readonly id: string
+  readonly name: string
+  readonly final: boolean
+  readonly disabled: boolean
+  readonly filter: string
+  readonly pipeline: string
+  readonly output: string
+  readonly description: string
+  readonly clones: readonly unknown[]
+  readonly enableOutputExpression: boolean
+}
+
+/**
+ * THE ROUTES THIS VERSION SHIPS, row for row, in order: default/pipelines/
+ * route.yml's `routes`, which pack.test.ts holds this equal to whole. What the
+ * upgrade's read-back compares the live table with, and the `routes` the
+ * restore PATCHes back (M6 in the header).
+ */
+export const PACK_ROUTES: readonly PackRoute[] = Object.freeze([
+  Object.freeze({
+    id: PACK_HTTP_JSON_ROUTE_ID, name: PACK_HTTP_JSON_ROUTE_ID, final: false, disabled: false,
+    filter: packInputFilter('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: PACK_JSON_OUTPUT_ID,
+    description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami)', clones: Object.freeze([]), enableOutputExpression: false,
+  }),
+  Object.freeze({
+    id: PACK_HTTP_PARQUET_ROUTE_ID, name: PACK_HTTP_PARQUET_ROUTE_ID, final: true, disabled: false,
+    filter: packInputFilter('http_raw', PACK_HTTP_INPUT_ID), pipeline: PACK_PARQUET_PIPELINE_ID, output: PACK_PARQUET_OUTPUT_ID,
+    description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami_pq, Parquet)', clones: Object.freeze([]), enableOutputExpression: false,
+  }),
+  Object.freeze({
+    id: PACK_SAMPLE_ROUTE_ID, name: PACK_SAMPLE_ROUTE_ID, final: true, disabled: false,
+    filter: packInputFilter('datagen', PACK_SAMPLE_INPUT_ID), pipeline: PACK_PIPELINE_ID, output: PACK_SAMPLE_OUTPUT_ID,
+    description: 'Gigamon AMI sample data → Cribl Lake (gigamon_ami_sample)', clones: Object.freeze([]), enableOutputExpression: false,
+  }),
+])
+
+/**
+ * One routing table as a pack's `GET /p/<pack>/routes` reports it. `tables` is
+ * how many tables the list held; `id` and `routes` are the first one's, and
+ * `raw` is that table whole — what a restore PATCHes back with only `routes`
+ * changed, because a Cribl PATCH resets the fields it omits.
+ */
+export interface PackRouteTableRead {
+  readonly tables: number
+  readonly id: string | null
+  readonly routes: readonly Readonly<Record<string, unknown>>[]
+  readonly raw: Readonly<Record<string, unknown>> | null
+}
+
+/**
+ * What the pack's own lists name, by id — read, never assumed. `'unreadable'`
+ * when that GET failed or came back in a shape nobody can read: never an empty
+ * list, because "nothing is left over" is a claim, and a refused read is not
+ * evidence for it.
+ */
+export interface PackListing {
+  readonly inputs: readonly string[] | 'unreadable'
+  readonly pipelines: readonly string[] | 'unreadable'
+  readonly outputs: readonly string[] | 'unreadable'
+  readonly routes: PackRouteTableRead | 'unreadable'
+}
+
+/**
+ * A route's routing, as far as routing goes: which events it takes, where they
+ * go, whether they stop there — each field in one canonical spelling, so a
+ * Leader that serialises a default the route file leaves out reads the same as
+ * the file. A description or a name is not compared.
+ *
+ * Absent keys read as Cribl's defaults: a route is final unless it says not,
+ * enabled, has the filter `true`, no output expression and no clones. An output
+ * expression is compared only while `enableOutputExpression` is on (it routes
+ * nothing otherwise), and `""` is no expression. A clone that is an empty
+ * object — the Cribl UI stores `clones: [{}]` for "no clones" — is no clone.
+ *
+ * NOT MEASURED: no GET of an unedited, installed 0.2.2 route table is recorded
+ * in this repo (M1 and M6 above are an edited table and its restore). These
+ * spellings are the ones the route file and Cribl's defaults imply; pack.test.ts
+ * and onboarding/cleanup.test.ts hold that plausible echoes of them — an empty
+ * `outputExpression`, `clones: [{}]`, explicit defaults — still read as the
+ * shipped table. A Leader that echoes some other field differently would hold
+ * every upgrade; the restore's read-back would then say the table is still not
+ * the shipped one, which is the evidence to record.
+ */
+export interface RouteRouting {
+  readonly id: string | null
+  readonly filter: string
+  readonly pipeline: string | null
+  readonly output: string | null
+  readonly final: boolean
+  readonly disabled: boolean
+  readonly enableOutputExpression: boolean
+  readonly outputExpression: string | null
+  readonly clones: readonly unknown[]
+}
+
+/** The routing fields a confirmation shows per route, in the order it shows them
+ *  (the id is shown first, on its own row). */
+export const ROUTE_ROUTING_FIELDS = Object.freeze([
+  'filter', 'pipeline', 'output', 'final', 'disabled', 'enableOutputExpression', 'outputExpression', 'clones',
+] as const)
+
+const isEmptyObject = (x: unknown): boolean =>
+  !!x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x as object).length === 0
+
+/** One route's routing in its canonical spelling — see `RouteRouting`. */
+export function routeRoutingOf(r: Readonly<Record<string, unknown>>): RouteRouting {
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+  const bool = (v: unknown, dflt: boolean): boolean => (typeof v === 'boolean' ? v : dflt)
+  const enableOutputExpression = bool(r.enableOutputExpression, false)
+  const expr = str(r.outputExpression)
+  return {
+    id: routeIdOf(r),
+    filter: str(r.filter) ?? 'true',
+    pipeline: str(r.pipeline),
+    output: str(r.output),
+    final: bool(r.final, true),
+    disabled: bool(r.disabled, false),
+    enableOutputExpression,
+    outputExpression: enableOutputExpression && expr !== null && expr !== '' ? expr : null,
+    clones: Array.isArray(r.clones) ? r.clones.filter((c) => !isEmptyObject(c)) : [],
+  }
+}
+
+/** A route's routing as one comparable string: what the upgrade's read-back,
+ *  the restore's confirmation and its moved-check compare. */
+export const routeFingerprint = (r: Readonly<Record<string, unknown>>): string => JSON.stringify(routeRoutingOf(r))
+
+/**
+ * Whether a table is one this app can write back at all: the one table, under
+ * `PACK_ROUTE_TABLE_ID`, read whole. Anything else — no table, two tables, a
+ * table under another id — is never PATCHed (packCleanup.ts), so it is said as
+ * what it is, never offered as something the restore would put right.
+ */
+export const routeTableRestorable = (table: PackRouteTableRead): boolean =>
+  table.tables === 1 && table.id === PACK_ROUTE_TABLE_ID && table.raw !== null
+
+/**
+ * Whether a live route table routes exactly as this version ships it: the one
+ * table, `PACK_ROUTE_TABLE_ID`, with `PACK_ROUTES`' rows in their order, each
+ * taking the same events to the same pipeline and destination. Anything else —
+ * 0.1.0's two rows kept through an upgrade (M1), an edited filter, a fourth
+ * route, no table — is not the shipped table.
+ */
+export function routeTableMatches(table: PackRouteTableRead, shipped: readonly PackRoute[] = PACK_ROUTES): boolean {
+  if (table.tables !== 1 || table.id !== PACK_ROUTE_TABLE_ID) return false
+  if (table.routes.length !== shipped.length) return false
+  return table.routes.every((r, i) => routeFingerprint(r) === routeFingerprint(shipped[i] as unknown as Record<string, unknown>))
+}
+
+/** A route's id as a live table spells it (`id`, else `name`), or null. */
+export const routeIdOf = (r: Readonly<Record<string, unknown>>): string | null =>
+  typeof r.id === 'string' ? r.id : typeof r.name === 'string' ? r.name : null
 
 /** One path an event takes through a pack: the shape Data Flow's stack list uses. */
 export interface PackPath {

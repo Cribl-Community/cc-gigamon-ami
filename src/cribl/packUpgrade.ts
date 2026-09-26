@@ -16,7 +16,10 @@
 //
 // This function checks the release, ownership and direction, and the version
 // and source afterwards (`verifyInstalled`); what an upgrade does to settings
-// made after install is the run's to check, not this function's.
+// made after install is the run's to check, not this function's — the Raw
+// HTTP source, and, since 2026-09-26, the pack's route table, which an upgrade
+// keeps whole when it was changed after install (measured that day on a
+// Leader; pack.ts's header, M1).
 
 import { capi, groupPath } from './capi'
 import { PACK_ID, PACK_URL, PACK_VERSION } from './pack'

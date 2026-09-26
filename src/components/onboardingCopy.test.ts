@@ -41,6 +41,17 @@ function everything(): string[] {
         packManifestPendingSentence: [['g1', 'groups/g1/default/cc-network-gigamon-ami/package.json']],
         movePortSentence: [[20007, 20008], [null, 20008]],
         movePortUndo: [[20007], [null]],
+        upgradeRoutesKeptSentence: [['g1', '0.2.2']],
+        cleanupNote: [
+          [{ version: '0.2.2', routes: 'differs', leftovers: 2 }], [{ version: '0.2.2', routes: 'matches', leftovers: 1 }],
+          [{ version: '0.2.2', routes: 'differs', leftovers: 0 }], [{ version: '0.2.2', routes: 'unrestorable', leftovers: 1 }],
+          [{ version: '0.2.2', routes: 'unreadable', leftovers: 0 }],
+        ],
+        upgradeRouteTableShapeSentence: [['g1', 'the pack answered no route table']],
+        routeTableShapeWords: [[0, null, 'default'], [2, 'default', 'default'], [1, 'main', 'default']],
+        cleanupUnreadableSentence: [[['inputs', 'routes']]],
+        cleanupUnrestorableSentence: [['the pack answered no route table', 'default']],
+        cleanupPipelinesSentence: [[['gno_syslog']], [['gno_syslog', 'gno_sample']]],
       }[name] ?? [['g1']]
       for (const args of tries) {
         const r = fn(...args)

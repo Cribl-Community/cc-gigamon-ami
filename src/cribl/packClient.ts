@@ -22,6 +22,11 @@
 // module was on paths.ts `UNREACHED_MODULES`, built a slice ahead of its UI,
 // with its grants deliberately withheld.)*
 //
+// The clean-up after an upgrade — the route table PATCHed back, leftover
+// sources and destinations deleted — is packCleanup.ts, gated by
+// `onboarding_pack.cleanup`; it reads the table through `readPackRouteTable`
+// here. *(Added 2026-09-26, `feat/pack-leftovers-routes`.)*
+//
 // The in-place upgrade is NOT here: it is packUpgrade.ts, split out so that its
 // PATCH was not granted before a control could send it. Upgrade is offered now
 // (onboarding/run.ts `runPackUpgrade`, which reads the Raw HTTP source back),
@@ -116,7 +121,9 @@ import {
   PACK_HTTP_INPUT_ID,
   PACK_ID,
   PACK_OBJECTS,
+  type PackListing,
   type PackObjectKind,
+  type PackRouteTableRead,
   PACK_PUBLISHED,
   PACK_PUBLISHED_VERSIONS,
   PACK_SAMPLE_DATASET_ID,
@@ -300,6 +307,14 @@ export interface PackState {
    */
   installedSample: { id: string; disabled: boolean } | null
   /**
+   * What the pack's own lists name — every source, pipeline and destination id,
+   * and its route table as read — so the onboarding plan can find what an
+   * upgrade left behind and a route table it kept (plan.ts `cleanupFindings`).
+   * A list whose GET failed is `'unreadable'`, never empty. Null when the pack
+   * is not installed, or its list could not be read.
+   */
+  listed: PackListing | null
+  /**
    * The pack's routing table as the Leader returns it — each route's output,
    * pipeline and whether it is on — from the same `GET …/p/<pack>/routes` that
    * `objects.routes` is read from. Null when the pack is not installed or the
@@ -368,17 +383,40 @@ function routeTablesOf(status: number, body: unknown): object[] | null {
   return known.length ? known : null
 }
 
-/** Route ids in a routing-table list: one table, its routes inside it. */
-function routeIdsOf(status: number, body: unknown): string[] | null {
-  const tables = routeTablesOf(status, body)
-  if (tables === null) return null
-  return tables.flatMap((t) => {
-    const routes = t && typeof t === 'object' ? (t as { routes?: unknown }).routes : undefined
-    return Array.isArray(routes)
-      ? routes.map((x) => (x && typeof x === 'object' ? ((x as { id?: unknown }).id ?? (x as { name?: unknown }).name) : undefined))
-          .filter((x): x is string => typeof x === 'string')
-      : []
-  })
+/**
+ * A pack's routing-table list, as `PackRouteTableRead`: how many tables, and
+ * the first one whole. Null when it could not be read — a status other than
+ * 200, or a body with no table list, or a table whose `routes` is not a list.
+ * MEASURED 2026-09-26 (pack.ts header, M1): a pack answers ONE table, "default".
+ */
+function routeTableOf(status: number, body: unknown): PackRouteTableRead | null {
+  if (status !== 200) return null
+  const tables = (body as { items?: unknown })?.items
+  if (!Array.isArray(tables)) return null
+  const first = tables[0]
+  if (first === undefined) return { tables: 0, id: null, routes: [], raw: null }
+  if (!first || typeof first !== 'object') return null
+  const raw = first as Record<string, unknown>
+  if (!Array.isArray(raw.routes)) return null
+  const routes = (raw.routes as unknown[]).filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
+  return { tables: tables.length, id: typeof raw.id === 'string' ? raw.id : null, routes, raw }
+}
+
+/** Route ids across a routing-table read, `id` else `name`. */
+function routeIdsOf(table: PackRouteTableRead | null): string[] | null {
+  if (table === null) return null
+  return table.routes.map((r) => (typeof r.id === 'string' ? r.id : typeof r.name === 'string' ? r.name : null))
+    .filter((x): x is string => x !== null)
+}
+
+/**
+ * The pack's route table, read whole — GET only, the same read `readPackState`
+ * makes. `'unreadable'` when the read failed. Exported for packCleanup.ts,
+ * which PATCHes the table back and reads it again afterwards.
+ */
+export async function readPackRouteTable(group: string): Promise<PackRouteTableRead | 'unreadable'> {
+  const r = await capi('GET', packPath(group, '/routes'))
+  return routeTableOf(r.status, r.body) ?? 'unreadable'
 }
 
 const strOr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
@@ -446,7 +484,7 @@ const numberOr = (v: unknown): number | null => {
 export async function readPackState(group: string): Promise<PackState> {
   const base: PackState = {
     error: null, installed: false, version: null, published: false, fromRelease: false, current: false,
-    objects: emptyObjects(), http: null, sample: null, installedSample: null, routeTable: null, outputTable: null,
+    objects: emptyObjects(), http: null, sample: null, installedSample: null, routeTable: null, outputTable: null, listed: null,
   }
   const found = await readInstalled(group)
   if ('error' in found) return { ...base, error: found.error }
@@ -462,6 +500,9 @@ export async function readPackState(group: string): Promise<PackState> {
     current: version === PACK_VERSION && published && fromRelease,
   }
 
+  // One GET of the route table, read two ways: whole, for the clean-up and the
+  // upgrade's read-back (`routeTableOf`), and per route, for the cutover
+  // preflight's Parquet check (`packRoutesOf`).
   const [inputs, breaker, pipelines, routes, outputs] = await Promise.all([
     capi('GET', packPath(group, '/system/inputs')),
     capi('GET', packPath(group, `/lib/breakers/${PACK_BREAKER_ID}`)),
@@ -469,18 +510,25 @@ export async function readPackState(group: string): Promise<PackState> {
     capi('GET', packPath(group, '/routes')),
     capi('GET', packPath(group, '/system/outputs')),
   ])
+  const routeTable = routeTableOf(routes.status, routes.body) ?? 'unreadable'
   const inputIds = idsOf(inputs.status, inputs.body)
   for (const id of PACK_OBJECTS.inputs) state.objects.inputs[id] = stateIn(inputIds, id)
   state.objects.breakers[PACK_BREAKER_ID] =
     breaker.status === 200 ? 'present' : breaker.status === 404 ? 'absent' : 'unreadable'
   const pipelineIds = idsOf(pipelines.status, pipelines.body)
   for (const id of PACK_OBJECTS.pipelines) state.objects.pipelines[id] = stateIn(pipelineIds, id)
-  const routeIds = routeIdsOf(routes.status, routes.body)
+  const routeIds = routeIdsOf(routeTable === 'unreadable' ? null : routeTable)
   for (const id of PACK_OBJECTS.routes) state.objects.routes[id] = stateIn(routeIds, id)
   state.routeTable = packRoutesOf(routes.status, routes.body)
   const outputIds = idsOf(outputs.status, outputs.body)
   for (const id of PACK_OBJECTS.outputs) state.objects.outputs[id] = stateIn(outputIds, id)
   state.outputTable = packOutputsOf(outputs.status, outputs.body)
+  state.listed = {
+    inputs: inputIds ?? 'unreadable',
+    pipelines: pipelineIds ?? 'unreadable',
+    outputs: outputIds ?? 'unreadable',
+    routes: routeTable,
+  }
 
   const list = inputs.status === 200 ? ((inputs.body as { items?: unknown })?.items as unknown[] | undefined) ?? [] : []
   const byId = (id: string) =>

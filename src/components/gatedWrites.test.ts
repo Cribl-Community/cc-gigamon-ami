@@ -292,7 +292,9 @@ describe('the onboarding pack’s controls (Guided Setup’s onboarding panel)',
     // Upgrade's write (cribl/packUpgrade.ts) is reachable now, and the pack
     // sources' own settings (rotate the token, move the port, start or stop the
     // sample) have their controls, so no pack id is unrendered.
-    expect(pack.sort()).toEqual(['onboarding_pack.configure', 'onboarding_pack.install', 'onboarding_pack.remove', 'onboarding_pack.upgrade'])
+    // "Restore the pack's routes and remove leftovers" is rendered too (added
+    // 2026-09-26, `feat/pack-leftovers-routes`).
+    expect(pack.sort()).toEqual(['onboarding_pack.cleanup', 'onboarding_pack.configure', 'onboarding_pack.install', 'onboarding_pack.remove', 'onboarding_pack.upgrade'])
     const rendered = new Set(controls.declared)
     for (const id of pack) {
       expect(rendered.has(id), `${id} has no <GatedControl>`).toBe(true)
@@ -307,12 +309,15 @@ describe('the onboarding pack’s controls (Guided Setup’s onboarding panel)',
       'cribl/accel/provision.ts#createSaved', 'cribl/accel/provision.ts#patchSaved',
       'cribl/provision.ts#commitAndDeploy', 'cribl/provision.ts#deployGroup',
     ]) expect(gatesOf(at), at).toContain('onboarding_pack.install')
-    for (const id of ['onboarding_pack.remove', 'onboarding_pack.upgrade', 'onboarding_pack.configure'] as const) {
+    for (const id of ['onboarding_pack.remove', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.cleanup'] as const) {
       for (const at of ['cribl/provision.ts#commitAndDeploy', 'cribl/provision.ts#deployGroup']) expect(gatesOf(at), `${at} ${id}`).toContain(id)
     }
     expect(gatesOf('cribl/packClient.ts#removePack')).toEqual(['onboarding_pack.remove'])
     expect(gatesOf('cribl/packUpgrade.ts#upgradePack')).toEqual(['onboarding_pack.upgrade'])
     expect(gatesOf('cribl/packClient.ts#patchPackInput')).toEqual(['onboarding_pack.install', 'onboarding_pack.configure'])
+    // The clean-up's two writes, and nothing else, are its own.
+    expect(gatesOf('cribl/packCleanup.ts#restorePackRoutes')).toEqual(['onboarding_pack.cleanup'])
+    expect(gatesOf('cribl/packCleanup.ts#deleteLeftoverRequest')).toEqual(['onboarding_pack.cleanup'])
     expect(GATED_WRITES['onboarding_pack.install'].does).toBe('onboarding Gigamon AMI (datasets, pack, scheduled searches)')
   })
 })

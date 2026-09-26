@@ -27,7 +27,11 @@
 //   the pack sources' own settings — Rotate token (the new token shown once),
 //   Move port, Start and Stop sample data (Start refused until its dataset
 //   exists) — each from its own confirmation, and none of them on load;
-//   and the Raw HTTP stack's panel steps aside once the pack onboards.
+//   and the Raw HTTP stack's panel steps aside once the pack onboards;
+//   "Restore the pack's routes and remove leftovers": shown only when the
+//   pack's own lists show a kept route table or a leftover, its dialog names
+//   each change, and a confirmed run PATCHes the table, deletes each leftover
+//   and commits and deploys; refused while the pack's manifest is uncommitted.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -35,7 +39,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { resetDenials } from '../cribl/authz'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
-import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packReleaseUrl } from '../cribl/pack'
+import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS, PACK_PARQUET_DATASET_ID, PACK_ROUTES, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, PACK_URL, PACK_VERSION, packReleaseUrl } from '../cribl/pack'
 import { thisPackRelease } from '../cribl/packClient'
 import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
 import { OnboardingPanel } from './OnboardingPanel'
@@ -58,7 +62,27 @@ interface Call { method: string; path: string; body: unknown }
 let calls: Call[] = []
 /** The fake Leader's uncommitted files — a test may add to them. */
 let heldManifest: string[] = []
-let fake: { packs: Record<string, Array<Record<string, unknown>>>; inputs: Record<string, Record<string, Record<string, unknown>>>; failHttp: boolean; globalHttp: boolean }
+let fake: {
+  packs: Record<string, Array<Record<string, unknown>>>
+  inputs: Record<string, Record<string, Record<string, unknown>>>
+  /** Each group's pack route table, and its pipeline and destination ids. */
+  routes: Record<string, Record<string, unknown>>
+  pipelines: Record<string, string[]>
+  outputs: Record<string, string[]>
+  failHttp: boolean
+  globalHttp: boolean
+}
+
+/** The table a pack of this build ships, as a Leader answers it. */
+const shippedTable = () => ({ id: 'default', groups: {}, comments: [], routes: structuredClone(PACK_ROUTES) })
+/** 0.1.0's two rows, kept whole through an upgrade (measured on a Leader). */
+const keptTable = () => ({
+  id: 'default', groups: {}, comments: [],
+  routes: [
+    { id: 'gno_syslog', final: true, filter: "__inputId=='syslog:in_gno_syslog'", pipeline: 'gno_syslog', output: 'out_gno_lake' },
+    { id: 'gno_sample', final: true, filter: "__inputId=='datagen:in_gno_sample'", pipeline: 'gno_sample', output: 'out_gno_sample_lake' },
+  ],
+})
 
 const shippedHttp = () => ({
   id: PACK_HTTP_INPUT_ID, type: 'http_raw', disabled: true, host: '0.0.0.0', port: 20005,
@@ -88,6 +112,9 @@ function leader(o: {
   sampleOn?: boolean
   /** gigamon_ami_sample exists. */
   sampleDataset?: boolean
+  /** The current copy still holds what an upgrade from 0.1.0 left: 0.1.0's
+   *  route table, its syslog source, both its destinations and pipelines. */
+  leftovers?: boolean
 } = {}) {
   let failCommit = o.failCommitOnce ?? false
   calls = []
@@ -109,9 +136,13 @@ function leader(o: {
       lab: [],
     },
     inputs: {
-      default: o.v010 ? { in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 } } : o.installed ? installedInputs() : {},
+      default: o.v010 ? { in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 } }
+        : o.installed ? { ...installedInputs(), ...(o.leftovers ? { in_gno_syslog: { id: 'in_gno_syslog', type: 'syslog', port: 20003 } } : {}) } : {},
       lab: {},
     },
+    routes: { default: o.leftovers || o.v010 ? keptTable() : shippedTable(), lab: shippedTable() },
+    pipelines: { default: [...PACK_OBJECTS.pipelines, ...(o.leftovers ? ['gno_syslog', 'gno_sample'] : [])], lab: [...PACK_OBJECTS.pipelines] },
+    outputs: { default: [...PACK_OBJECTS.outputs, ...(o.leftovers ? ['out_gno_lake', 'out_gno_sample_lake'] : [])], lab: [...PACK_OBJECTS.outputs] },
     failHttp: o.failHttp ?? false,
     globalHttp: o.globalHttp ?? false,
   }
@@ -163,6 +194,7 @@ function leader(o: {
       if (at('PATCH', `/m/${g}/packs/${PACK_ID}`)) {
         fake.packs[g] = [{ id: PACK_ID, version: PACK_VERSION, source: (body as { source: string }).source }]
         fake.inputs[g] = { [PACK_HTTP_INPUT_ID]: shippedHttp(), [PACK_SAMPLE_INPUT_ID]: shippedSample() }
+        fake.routes[g] = shippedTable()
         pending.push(`groups/${g}/default/${PACK_ID}/package.json`)
         return reply(200, { items: [{ id: PACK_ID }] })
       }
@@ -173,6 +205,36 @@ function leader(o: {
         return reply(200, { items: [] })
       }
       if (at('GET', `${P}/system/inputs`)) return reply(200, { items: Object.values(fake.inputs[g]) })
+      if (fake.packs[g].length) {
+        if (at('GET', `${P}/routes`)) return reply(200, { items: [fake.routes[g]] })
+        if (at('GET', `${P}/pipelines`)) return reply(200, { items: fake.pipelines[g].map((id) => ({ id })) })
+        if (at('GET', `${P}/system/outputs`)) return reply(200, { items: fake.outputs[g].map((id) => ({ id })) })
+        if (at('PATCH', `${P}/routes/default`)) {
+          fake.routes[g] = body as Record<string, unknown>
+          pending.push(`groups/${g}/local/${PACK_ID}/pipelines/route.yml`)
+          return reply(200, { items: [body] })
+        }
+        for (const id of ['in_gno_syslog', 'in_gno_sample']) {
+          if (at('GET', `${P}/system/inputs/${id}`)) return fake.inputs[g][id] ? reply(200, { items: [fake.inputs[g][id]] }) : reply(404, {})
+          if (at('DELETE', `${P}/system/inputs/${id}`)) {
+            if (!fake.inputs[g][id]) return reply(404, {})
+            delete fake.inputs[g][id]
+            pending.push(`groups/${g}/local/${PACK_ID}/inputs.yml`)
+            return reply(200, { items: [] })
+          }
+        }
+        for (const id of ['out_gno_lake', 'out_gno_sample_lake']) {
+          if (at('GET', `${P}/system/outputs/${id}`)) return fake.outputs[g].includes(id) ? reply(200, { items: [{ id }] }) : reply(404, {})
+          if (at('DELETE', `${P}/system/outputs/${id}`)) {
+            if (!fake.outputs[g].includes(id)) return reply(404, {})
+            const named = ((fake.routes[g].routes ?? []) as Array<{ id: string; output: string }>).find((r) => r.output === id)
+            if (named) return reply(409, { message: `Cannot delete output since it is being referenced by the route '${named.id}'` })
+            fake.outputs[g] = fake.outputs[g].filter((x) => x !== id)
+            pending.push(`groups/${g}/local/${PACK_ID}/outputs.yml`)
+            return reply(200, { items: [] })
+          }
+        }
+      }
       for (const id of [PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID]) {
         if (at('GET', `${P}/system/inputs/${id}`)) {
           const it = fake.inputs[g][id]
@@ -612,6 +674,99 @@ describe('11. Upgrade', () => {
     leader({ installed: true })
     await mount()
     expect(buttonNamed(`Upgrade to ${PACK_VERSION}`)).toBeUndefined()
+  })
+})
+
+// ── Restore the pack's routes and remove leftovers ──────────────────────────
+
+describe('Restore the pack’s routes and remove leftovers', () => {
+  const LABEL = 'Restore the pack’s routes and remove leftovers'
+
+  it('is not shown for a current copy with the shipped routes and nothing left over', async () => {
+    leader({ installed: true, configured: true })
+    await mount()
+    expect(buttonNamed(LABEL)).toBeUndefined()
+    expect(writes()).toEqual([])
+  })
+
+  it('is shown when an upgrade left 0.1.0’s table and objects; its dialog names each change, and cancelling writes nothing', async () => {
+    leader({ installed: true, configured: true, leftovers: true })
+    await mount()
+    const button = buttonNamed(LABEL)
+    expect(button?.getAttribute('aria-disabled')).toBeNull()
+    expect(bodyText()).toContain(`The pack’s route table is not the one ${PACK_VERSION} ships`)
+    await press(button)
+    const text = dialogText()
+    expect(text).toContain('Restore the pack’s routes and remove leftovers in default')
+    // The table, before → after, by route id.
+    for (const id of ['gno_syslog', 'gno_sample', ...PACK_ROUTES.map((r) => r.id)]) expect(text, id).toContain(id)
+    // Each delete by kind and id, and which version shipped it.
+    for (const id of ['in_gno_syslog', 'out_gno_lake', 'out_gno_sample_lake']) expect(text, id).toContain(id)
+    expect(text).toContain('left over from 0.1.0')
+    // The pipelines are named, never deleted.
+    expect(text).toContain('gno_syslog, gno_sample stay listed by Cribl, unused by any route once the routes are restored')
+    expect(text).toContain('No Cribl Lake dataset is touched')
+    await press(buttonNamed('Cancel'))
+    expect(writes()).toEqual([])
+  })
+
+  it('confirmed: the table first, then the source, then each destination, then the commit and deploy', async () => {
+    leader({ installed: true, configured: true, leftovers: true })
+    await mount()
+    await press(buttonNamed(LABEL))
+    await press(buttonNamed('Yes, restore and remove in default'), 40)
+    expect(writes().map((c) => `${c.method} ${c.path}`)).toEqual([
+      `PATCH /m/default/p/${PACK_ID}/routes/default`,
+      `DELETE /m/default/p/${PACK_ID}/system/inputs/in_gno_syslog`,
+      `DELETE /m/default/p/${PACK_ID}/system/outputs/out_gno_lake`,
+      `DELETE /m/default/p/${PACK_ID}/system/outputs/out_gno_sample_lake`,
+      'POST /version/commit',
+      'PATCH /products/stream/groups/default/deploy',
+    ])
+    // The whole table went back, with only its routes replaced.
+    const patch = writes()[0].body as Record<string, unknown>
+    expect(patch).toMatchObject({ id: 'default', groups: {}, comments: [] })
+    expect(patch.routes).toEqual(JSON.parse(JSON.stringify(PACK_ROUTES)))
+    // No pipeline DELETE is ever sent.
+    expect(calls.some((c) => c.method === 'DELETE' && c.path.includes('/pipelines/'))).toBe(false)
+    expect(toasts.at(-1)?.kind).toBe('done')
+    // Read again: nothing left to restore or remove.
+    expect(buttonNamed(LABEL)).toBeUndefined()
+  })
+
+  it('refused, visibly, while the pack’s own manifest is uncommitted — an upgrade nobody committed', async () => {
+    leader({ installed: true, configured: true, leftovers: true })
+    heldManifest.push(`groups/default/default/${PACK_ID}/package.json`)
+    await mount()
+    const button = buttonNamed(LABEL)
+    expect(button?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(`${LABEL} is not available:`)
+    expect(bodyText()).toContain('package.json in default is uncommitted')
+    await press(button)
+    expect(dialog()).toBeNull()
+    expect(writes()).toEqual([])
+  })
+
+  it('a route table this app never writes (another id): shown, refused with its reason, and nothing opens or is written', async () => {
+    leader({ installed: true, configured: true, leftovers: true })
+    fake.routes.default = { ...keptTable(), id: 'main' }
+    await mount()
+    const button = buttonNamed(LABEL)
+    expect(button?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(`${LABEL} is not available: the pack’s route table is “main”`)
+    await press(button)
+    expect(dialog()).toBeNull()
+    expect(writes()).toEqual([])
+  })
+
+  it('the manifest became uncommitted while the dialog was open: Yes writes nothing', async () => {
+    leader({ installed: true, configured: true, leftovers: true })
+    await mount()
+    await press(buttonNamed(LABEL))
+    heldManifest.push(`groups/default/default/${PACK_ID}/package.json`)
+    await press(buttonNamed('Yes, restore and remove in default'), 40)
+    expect(writes()).toEqual([])
+    expect(bodyText()).toContain('Nothing was written')
   })
 })
 

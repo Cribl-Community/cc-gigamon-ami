@@ -148,13 +148,19 @@ export function installedRefusal(p: { version: string | null; published: boolean
 /** Behind the ⓘ beside Upgrade. */
 export const UPGRADE_TIP =
   'Upgrades the pack in place from the GitHub release this app pins, with custom functions refused. The confirmation lists what ' +
-  'the new version adds, and what it no longer ships. The pack’s Raw HTTP source is read back after the upgrade, and nothing is committed or deployed ' +
-  'if its port, auth token or state was reset.'
+  'the new version adds, and what it no longer ships. The pack’s Raw HTTP source and its routes are read back after the upgrade, and nothing is committed or deployed ' +
+  'if the source’s port, auth token or state was reset, or the routes are not the new version’s.'
+
+/** The name of the action that puts the pack's shipped routes back and
+ *  deletes what an earlier version left behind. */
+export const CLEANUP_LABEL = 'Restore the pack’s routes and remove leftovers'
 
 /** The plain statement every Upgrade confirmation carries. */
 export const UPGRADE_UNVERIFIED =
   'Settings made after install — the Raw HTTP source’s port, auth token, TLS and whether it is on — have not been verified to survive an ' +
-  'upgrade. This app reads the source back after upgrading, and if any of them was reset it commits and deploys nothing and says so.'
+  'upgrade. This app reads the source back after upgrading, and if any of them was reset it commits and deploys nothing and says so. ' +
+  'A route table changed after install does survive an upgrade, whole: the new version’s routes are then not used. This app reads the ' +
+  `routes back too, and if they are not the new version’s it commits and deploys nothing; ${CLEANUP_LABEL} puts them back.`
 
 /** When the installed version has no Raw HTTP source of its own (0.1.0). */
 export const upgradeNewSourceSentence = (): string =>
@@ -171,7 +177,8 @@ export const upgradeNewSourceSentence = (): string =>
 export const upgradeDroppedSentence = (to: string, ids: readonly string[]): string =>
   `${to} no longer ships ${ids.join(', ')}. The upgrade takes ${ids.length === 1 ? 'it' : 'them'} out of the pack’s shipped settings, ` +
   `but ${ids.length === 1 ? 'if you changed it' : 'any of them you changed'} after install — a port, say, or switching it on — ` +
-  `${ids.length === 1 ? 'it stays' : 'stays'} in the pack’s local settings, left over and unused by ${to}’s routes. This upgrade does not remove leftovers.`
+  `${ids.length === 1 ? 'it stays' : 'stays'} in the pack’s local settings, left over and unused by ${to}’s routes. This upgrade does not remove leftovers; ` +
+  `${CLEANUP_LABEL}, offered once the upgrade is committed, deletes a leftover source or destination.`
 
 /** The sources the new version no longer ships: where their senders must go. */
 export const upgradeDroppedSourcesSentence = (ids: readonly string[]): string => {
@@ -188,6 +195,39 @@ export const upgradeResetSentence = (group: string, what: readonly string[]): st
   `Nothing was committed or deployed, because the upgrade reset ${what.join(', ')} on ${PACK_HTTP_INPUT_ID}. The upgrade is in ` +
   `${group}’s configuration but uncommitted, and another admin’s commit and deploy of ${group} would push the reset to its Workers. ` +
   `Set ${what.length === 1 ? 'it' : 'them'} again in Cribl before anyone commits and deploys ${group}.`
+
+/**
+ * The step that stops an upgrade whose route table is not the new version's:
+ * the pack kept an edited table from before (measured on a Leader: an edited
+ * table survives an in-place upgrade whole). The restore is refused while the
+ * upgrade's own files are uncommitted, so this says so, rather than pointing at
+ * a control that would refuse — and it says to COMMIT without deploying, never
+ * to deploy: a deploy now would put the kept routes on the Workers, which is
+ * what holding the commit was for. The restore's own deploy then carries both.
+ */
+export const upgradeRoutesKeptSentence = (group: string, to: string): string =>
+  `Nothing was committed or deployed, because the pack kept an edited route table from before the upgrade, so ${to}’s routes are ` +
+  `not in use. The upgrade is in ${group}’s configuration but uncommitted. ` +
+  `${CLEANUP_LABEL}, on this panel, puts ${to}’s routes back once the upgrade is committed: check the pack in Cribl and commit ` +
+  `${group} there without deploying it — a deploy now would put the kept routes on its Workers — then use it here, which commits the ` +
+  `restored routes and deploys both.`
+
+/**
+ * The step that stops an upgrade whose route table is not one table under the
+ * id this app writes (none, several, or another id): it is not a kept edit the
+ * restore can put right, and the restore never writes such a table.
+ */
+export const upgradeRouteTableShapeSentence = (group: string, words: string): string =>
+  `Nothing was committed or deployed, because ${words}. The upgrade is in ${group}’s configuration but uncommitted, and another ` +
+  `admin’s commit and deploy of ${group} would push it as it is. Check the pack’s routes in Cribl before anyone commits and deploys ${group}.`
+
+/** What a route table that is not one table under `id` is, in words. */
+export const routeTableShapeWords = (tables: number, id: string | null, expected: string): string =>
+  tables === 0
+    ? 'the pack answered no route table'
+    : tables > 1
+      ? `the pack answered ${tables} route tables, not the one table “${expected}”`
+      : `the pack’s route table is “${id ?? 'unnamed'}”, not “${expected}”, the one table this app writes`
 
 /** The step that stops an upgrade after its PATCH, for any other reason. */
 export const upgradeHeldSentence = (group: string, because: string): string =>
@@ -349,6 +389,60 @@ export function finishRemovalSentence(group: string, files: readonly string[]): 
 
 export const FINISH_REMOVAL_UNDO =
   'Onboard, on this tab, installs the pack again, with a new auth token.'
+
+// ── Restore the pack's routes and remove leftovers ──────────────────────────
+
+/** The line beside the action, saying what was found. */
+export function cleanupNote(f: { version: string; routes: 'matches' | 'differs' | 'unrestorable' | 'unreadable'; leftovers: number }): string {
+  const parts = [
+    ...(f.routes === 'differs' ? [`the pack’s route table is not the one ${f.version} ships, so its routes are not in use`] : []),
+    ...(f.routes === 'unrestorable' ? [`the pack’s routes are not the one table ${f.version} ships`] : []),
+    ...(f.routes === 'unreadable' ? ['the pack’s route table could not be read'] : []),
+    ...(f.leftovers > 0 ? [`${f.leftovers === 1 ? 'a source or destination' : 'sources or destinations'} an earlier version shipped ${f.leftovers === 1 ? 'is' : 'are'} still in the pack`] : []),
+  ]
+  const text = parts.join(', and ')
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`
+}
+
+/** Behind the ⓘ beside the action. */
+export const CLEANUP_TIP =
+  'An in-place upgrade keeps a route table changed after install, whole, so the new version’s routes are not used; and it keeps ' +
+  'sources and destinations the old version shipped, left over. This puts back the routes this version ships, then deletes the ' +
+  'leftover sources and destinations, then commits the pack’s files and deploys. Cribl keeps listing a leftover pipeline, which ' +
+  'this app cannot remove; no route uses it once the routes are restored.'
+
+/** The leftover pipelines, which are named and never deleted. */
+export const cleanupPipelinesSentence = (ids: readonly string[]): string =>
+  `${ids.join(', ')} ${ids.length === 1 ? 'stays' : 'stay'} listed by Cribl, unused by any route once the routes are restored: ` +
+  `Cribl does not remove a pipeline from a pack, so this app sends no delete for ${ids.length === 1 ? 'it' : 'them'}.`
+
+export const CLEANUP_NO_LAKE =
+  'No Cribl Lake dataset is touched, and no data in one.'
+
+export const CLEANUP_ROUTES_KEPT_LOCAL =
+  'Cribl keeps the restored table as the pack’s own local routes, so a later upgrade keeps it as it is; this app reads the routes back ' +
+  'after every upgrade and says when they need restoring again.'
+
+export const CLEANUP_FAILURE_PROMISE =
+  'The routes go first, and each destination is deleted only after the routes no longer name it. If a step fails, the deletes it does ' +
+  'not affect still run, and nothing is committed or deployed; the step list says what changed.'
+
+export const cleanupUndo = (group: string): string =>
+  `What was committed in ${group} before — the route table and the objects deleted, where they had been committed — is in its Git ` +
+  `history; an object Cribl listed with no committed file behind it cannot be put back from there. This app does not put any of them back.`
+
+/** Why the action is shown but may not open: a list it could not read. */
+export const cleanupUnreadableSentence = (what: readonly string[]): string =>
+  `the pack’s ${what.join(', ')} could not be read, so this app cannot tell what is left over or whether the routes are the shipped ones`
+
+/** Why the action is shown but may not open: a table it never writes. */
+export const cleanupUnrestorableSentence = (words: string, expected: string): string =>
+  `${words}; this app only ever writes the one table “${expected}”, so check the pack’s routes in Cribl`
+
+/** The step that stops the clean-up before its commit, after a failed step. */
+export const cleanupHeldSentence = (group: string): string =>
+  `Nothing was committed or deployed, because a step failed. What did change is in ${group}’s configuration but uncommitted, and ` +
+  `another admin’s commit and deploy of ${group} would push it as it is. Check the pack in Cribl, then run this again.`
 
 // ── The Raw HTTP stack's panel, when the pack onboards ──────────────────────
 
