@@ -33,6 +33,7 @@ function packState(over: Partial<PackState>): PackState {
     http: { disabled: false, port: 20005, tokenSet: true, tls: true, tlsCert: 'cloud' },
     sample: { disabled: true }, installedSample: { id: 'in_gigamon_ami_sample', disabled: true },
     routeTable: [{ id: 'gigamon_ami_http_to_parquet', output: PACK_PARQUET_OUTPUT_ID, pipeline: PACK_PARQUET_PIPELINE_ID, disabled: false, final: true, outputExpression: false }],
+    outputTable: [{ id: PACK_PARQUET_OUTPUT_ID, type: 'cribl_lake', dataset: 'gigamon_ami_pq' }],
     ...over,
   }
 }
