@@ -113,6 +113,15 @@ export const NON_DELIVERING_VERSIONS: readonly string[] = Object.freeze(['0.1.0'
  * row with `_raw` from the cutover on. Any owned published version older than
  * the pin blocks (`olderThanPin`); a version with no entry here gets the
  * generic sentence. 0.1.0 and 0.2.0 keep their own sentence (above).
+ *
+ * The gate is on the installed VERSION only, a proxy for the goal: the
+ * preflight never reads which pipeline the pack's Parquet route runs. A tenant
+ * who edited the pack's routes keeps a `local/` route table across an upgrade
+ * (unmeasured for routes), so a current 0.2.2 whose Parquet route still names
+ * `gigamon_ami_normalize` would read Ready while `gigamon_ami_pq` keeps getting
+ * `_raw`. Still open for the owner: whether an owned older version with no
+ * entry here should block while this build's pin cannot be installed (Upgrade
+ * is then refused, so nothing clears the blocker until the flip).
  */
 export const OLDER_VERSION_GAPS: Readonly<Record<string, string>> = Object.freeze({
   '0.2.1': `keeps _raw on every row of its Parquet copy (${PACK_PARQUET_DATASET_ID}), which 0.2.2’s Parquet pipeline removes`,

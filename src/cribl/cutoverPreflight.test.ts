@@ -361,6 +361,15 @@ describe('the verdict', () => {
     expect(verdict.blockers.join('\n')).toMatch(/Upgrade is not offered yet: no release yet/)
   })
 
+  it('does not tell a foreign copy of an older version to Upgrade: Guided Setup refuses that', async () => {
+    const { verdict } = await verdictWith({ readPackState: async () => packState({ version: '0.2.1', current: false, fromRelease: false }) })
+    expect(verdict.ready).toBe(false)
+    const text = verdict.blockers.join('\n')
+    expect(text).toMatch(/0\.2\.1 is not this app’s/)
+    expect(text).not.toMatch(/Upgrade it to/)
+    expect(text).not.toMatch(/this build pins/)
+  })
+
   it('leaves a version newer than the pin as it was: the readers call it unpublished, which blocks as not this app’s', async () => {
     const { verdict } = await verdictWith({ readPackState: async () => packState({ version: '9.0.0', published: false, current: false }) })
     expect(verdict.ready).toBe(false)
