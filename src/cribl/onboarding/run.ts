@@ -56,7 +56,7 @@ import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../lake
 import { forgetLakeFacts } from '../lakeWindowRead'
 import {
   PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_ROUTE_TABLE_ID, PACK_SAMPLE_DATASET_ID,
-  PACK_SAMPLE_INPUT_ID, PACK_VERSION, routeTableMatches,
+  PACK_SAMPLE_INPUT_ID, PACK_VERSION, routeTableMatches, routeTableRestorable,
 } from '../pack'
 import { deleteLeftover, restorePackRoutes, type CleanupStep } from '../packCleanup'
 import {
@@ -71,10 +71,10 @@ import {
 } from '../provision'
 import {
   ROTATE_FAILED, cleanupHeldSentence, installedRefusal, packManifestPendingSentence, packPendingUnknownSentence,
-  upgradeHeldSentence, upgradeResetSentence, upgradeRoutesKeptSentence,
+  routeTableShapeWords, upgradeHeldSentence, upgradeResetSentence, upgradeRoutesKeptSentence, upgradeRouteTableShapeSentence,
 } from '../../components/onboardingCopy'
 import {
-  SAMPLE_START_DIFF, accelMode, cleanupFindings, cleanupOffered, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites,
+  SAMPLE_START_DIFF, accelMode, cleanupBlockedBy, cleanupFindings, cleanupOffered, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites,
   upgradeReadBack, type CleanupDialog, type CleanupDialogContext, type CleanupFindings, type HttpAction, type OnboardingDialog, type OnboardingDialogContext, type SourceChange, type SourceChangeContext, type SourceChangeDialog,
   type SourceSnapshot, type UpgradeDialog, type UpgradeDialogContext,
 } from './plan'
@@ -756,6 +756,14 @@ export async function runPackUpgrade(ctx: UpgradeDialogContext, _dialog: Upgrade
       detail: upgradeHeldSentence(g, 'the pack’s route table could not be read back after it'),
     }), after)
   }
+  // A table this app never writes — none, several, or under another id — is
+  // not a kept edit the restore can put right, so it is not said to be one.
+  if (!routeTableMatches(routes) && !routeTableRestorable(routes)) {
+    return finish(step({
+      key: 'routes_readback', label: labelOf('routes_readback'), action: 'error',
+      detail: upgradeRouteTableShapeSentence(g, routeTableShapeWords(routes.tables, routes.id, PACK_ROUTE_TABLE_ID)),
+    }), after)
+  }
   if (!routeTableMatches(routes)) {
     return finish(step({ key: 'routes_readback', label: labelOf('routes_readback'), action: 'error', detail: upgradeRoutesKeptSentence(g, PACK_VERSION) }), after)
   }
@@ -946,7 +954,8 @@ function cleanupRefusal(pack: PackState, group: string, pending: readonly string
   if (held) return held
   const f = cleanupFindings(pack)
   if (f === null) return `the pack in ${group} could not be read`
-  if (f.unreadable.length) return `the pack’s ${f.unreadable.join(', ')} could not be read, so this app cannot tell what is left over`
+  const blocked = cleanupBlockedBy(f)
+  if (blocked) return blocked
   if (!cleanupOffered(f)) return 'nothing to restore or remove: the routes are the ones this version ships, and nothing is left over'
   return f
 }
@@ -967,10 +976,12 @@ export async function prepareCleanup(
   }
 }
 
-/** What the confirmation showed, as the run compares it: the table's ids (or
- *  its state), and each id to delete. */
+/** What the confirmation showed, as the run compares it: the table's rows by
+ *  their routing — every field the PATCH rewrites, not only the ids, so an
+ *  edit to a filter or pipeline saved after the dialog opened reads as moved —
+ *  (or its state), and each id to delete. */
 const shownOf = (f: CleanupFindings) => ({
-  routes: f.routes.state === 'differs' ? f.routes.before : f.routes.state,
+  routes: f.routes.state === 'differs' ? f.routes.rows.map((r) => JSON.stringify(r)) : f.routes.state,
   sources: f.sources.map((o) => o.id),
   destinations: f.destinations.map((o) => o.id),
 })
@@ -1022,11 +1033,18 @@ export async function runPackCleanup(ctx: CleanupDialogContext, dialog: CleanupD
   }
   step({ key: 'precheck', label: labelOf('precheck'), action: 'exists', detail: 'what the confirmation showed still holds' })
 
+  // `wrote` is whether this run changed a FILE of the pack's, which after a
+  // change makes "nothing of the pack's to commit" an error. Only the route
+  // PATCH is known to: the Leader keeps the restored table as the pack's local
+  // route file (M6). A deleted leftover may have had no file at all — the
+  // Leader lists objects an earlier version shipped that were never overridden
+  // (M2: stale Leader state) — so a delete does not count; one that did remove
+  // a local file shows in Git's pending files and is committed all the same.
   let wrote = false
   let failed: RunStep | null = null
   const took = (c: CleanupStep): void => {
     const s = step(fromCleanup(c))
-    if (c.action === 'updated' || c.action === 'deleted') wrote = true
+    if (c.key === 'routes' && c.action === 'updated') wrote = true
     if (c.action === 'error' && failed === null) failed = s
   }
 

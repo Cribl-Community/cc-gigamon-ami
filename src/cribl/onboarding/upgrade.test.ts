@@ -88,7 +88,7 @@ interface Opts {
    *  puts the new version's in place; `kept` keeps the table from before, as a
    *  Leader does with one changed after install; `unreadable` makes the
    *  table's list answer 503 after the upgrade. */
-  routesAfter?: 'shipped' | 'kept' | 'unreadable'
+  routesAfter?: 'shipped' | 'kept' | 'unreadable' | 'none'
 }
 
 /** 0.1.0's route table as it shipped — what an edited copy kept through an
@@ -166,6 +166,7 @@ function leader(o: Opts): void {
     }
     if (at('GET', `${P}/routes`)) {
       if (upgraded && o.routesAfter === 'unreadable') return reply(503, { message: 'unavailable' })
+      if (upgraded && o.routesAfter === 'none') return reply(200, { items: [] })
       return reply(200, { items: [w.routes] })
     }
     if (at('GET', `${P}/system/inputs`)) {
@@ -575,6 +576,32 @@ describe('the run', () => {
     const r = await upgrade()
     expect(writeWords()).toEqual(['upgrade'])
     expect(r.out?.stopped?.key).toBe('routes_readback')
+  })
+
+  it('a kept 0.2.1 table — the same three ids, the Parquet route still on gigamon_ami_normalize — is held too', async () => {
+    leader({ copy: { version: MID, source: packReleaseUrl(MID) }, upgrade: 'keeps', routesAfter: 'kept' })
+    const t = TABLE_SHIPPED()
+    world.routes = { ...t, routes: t.routes.map((r, i) => (i === 1 ? { ...r, pipeline: 'gigamon_ami_normalize' } : r)) }
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+    expect(r.out?.stopped?.detail).toContain('the pack kept an edited route table')
+  })
+
+  it('the held step never tells the admin to deploy the kept routes', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, routesAfter: 'kept' })
+    const said = (await upgrade()).out?.stopped?.detail ?? ''
+    expect(said).toContain(`commit ${GROUP} there without deploying it`)
+    expect(said).not.toMatch(/commit and deploy \S+ there/)
+  })
+
+  it('no route table after the upgrade: held, and said as what it is — not as a kept edit the restore can put right', async () => {
+    leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') }, http: null, routesAfter: 'none' })
+    const r = await upgrade()
+    expect(writeWords()).toEqual(['upgrade'])
+    expect(r.out?.stopped?.key).toBe('routes_readback')
+    expect(r.out?.stopped?.detail).toContain('Nothing was committed or deployed, because the pack answered no route table')
+    expect(r.out?.stopped?.detail).not.toContain('kept an edited route table')
   })
 
   it('the route table cannot be read back after the upgrade: nothing committed or deployed, said', async () => {

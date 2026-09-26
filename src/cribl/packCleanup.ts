@@ -28,8 +28,8 @@
 // — a path built from a variable would read as `:x` and be refused. Which ids
 // are leftovers at all is pure (onboarding/plan.ts `leftoverCandidates`, from
 // the published versions' records); `DELETABLE_LEFTOVERS` is what this module
-// can send, and plan.test.ts holds the two equal, so a release that drops
-// another object fails until its call and its exact grant are added.
+// can send, and onboarding/cleanup.test.ts holds the two equal, so a release
+// that drops another object fails until its call and its exact grant are added.
 //
 // ── WHO REACHES THIS ────────────────────────────────────────────────────────
 // onboarding/run.ts `runPackCleanup`, from the "Yes" inside Guided Setup's
@@ -38,13 +38,13 @@
 // load, render or a timer.
 
 import { capi, type ApiResp } from './capi'
-import { PACK_0_1_0, PACK_ROUTES, PACK_ROUTE_TABLE_ID, routeIdOf, routeTableMatches } from './pack'
+import { PACK_0_1_0, PACK_ROUTES, PACK_ROUTE_TABLE_ID, routeFingerprint, routeIdOf, routeTableMatches, routeTableRestorable } from './pack'
 import { packPath, readPackRouteTable } from './packClient'
 import { sameValue, scrubbedErrText } from './provision'
 
 // 0.1.0's objects that 0.2.x no longer ships (PACK_0_1_0, pinned whole by
-// pack.test.ts; packCleanup.test.ts holds these equal to it). Literals, so each
-// call below names its path in text.
+// pack.test.ts; onboarding/cleanup.test.ts holds these equal to it). Literals,
+// so each call below names its path in text.
 const LEFTOVER_SYSLOG_INPUT = 'in_gno_syslog'
 const LEFTOVER_SAMPLE_INPUT = 'in_gno_sample'
 const LEFTOVER_LAKE_OUTPUT = 'out_gno_lake'
@@ -78,16 +78,19 @@ export interface CleanupStep {
 
 /**
  * Put the route table this version ships back: read the table, and — only when
- * it is the one table, `PACK_ROUTE_TABLE_ID`, and its route ids are still
- * `before` (what the confirmation showed) — PATCH it whole with `routes` =
- * `PACK_ROUTES`, then read it back and require the shipped table. A table that
- * moved, or answers under another id, is refused and nothing is sent.
+ * it is the one table, `PACK_ROUTE_TABLE_ID`, and its rows still route exactly
+ * as `before` says (each row's `routeFingerprint`: id, filter, pipeline,
+ * output, final, disabled, output expression and clones — what the
+ * confirmation showed, and everything this PATCH rewrites) — PATCH it whole
+ * with `routes` = `PACK_ROUTES`, then read it back and require the shipped
+ * table. A table that moved, or answers under another id, is refused and
+ * nothing is sent.
  */
-export async function restorePackRoutes(group: string, before: readonly (string | null)[]): Promise<CleanupStep> {
+export async function restorePackRoutes(group: string, before: readonly string[]): Promise<CleanupStep> {
   const id = PACK_ROUTE_TABLE_ID
   const now = await readPackRouteTable(group)
   if (now === 'unreadable') return { key: 'routes', id, action: 'error', detail: 'not changed — the pack’s route table could not be read' }
-  if (now.tables !== 1 || now.id !== PACK_ROUTE_TABLE_ID || now.raw === null) {
+  if (!routeTableRestorable(now) || now.raw === null) {
     return {
       key: 'routes', id, action: 'error',
       detail: `not changed — the pack answered ${now.tables} route table${now.tables === 1 ? '' : 's'}${now.id ? `, “${now.id}”` : ''}, ` +
@@ -95,7 +98,7 @@ export async function restorePackRoutes(group: string, before: readonly (string 
     }
   }
   const ids = now.routes.map(routeIdOf)
-  if (!sameValue(ids, [...before])) {
+  if (!sameValue(now.routes.map(routeFingerprint), [...before])) {
     return {
       key: 'routes', id, action: 'error',
       detail: `not changed — the route table changed after the confirmation was shown (it now lists ${ids.map((x) => x ?? 'an unnamed route').join(', ') || 'no route'})`,

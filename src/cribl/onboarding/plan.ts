@@ -38,7 +38,8 @@ import {
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
-  CLEANUP_FAILURE_PROMISE, CLEANUP_NO_LAKE, CLEANUP_ROUTES_KEPT_LOCAL, cleanupPipelinesSentence, cleanupUndo,
+  CLEANUP_FAILURE_PROMISE, CLEANUP_NO_LAKE, CLEANUP_ROUTES_KEPT_LOCAL, cleanupPipelinesSentence, cleanupUndo, cleanupUnreadableSentence,
+  cleanupUnrestorableSentence, routeTableShapeWords,
   FINISH_REMOVAL_UNDO, finishRemovalSentence, nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
   ROTATE_EXPORTER, ROTATE_UNDO, SAMPLE_START_UNDO, SAMPLE_STOP_KEEPS, SAMPLE_STOP_UNDO, UPGRADE_UNVERIFIED, movePortSentence, movePortUndo,
   upgradeDroppedSentence, upgradeDroppedSourcesSentence, upgradeNewSourceSentence, upgradeUndo,
@@ -51,7 +52,8 @@ import { DEFAULT_PROFILE, DEPLOY_CONSEQUENCES, datasetSpec, type DiffRow } from 
 import {
   PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
   PACK_PARQUET_DATASET_ID, PACK_PUBLISHED_VERSIONS, PACK_ROUTES, PACK_ROUTE_TABLE_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID,
-  routeIdOf, routeTableMatches, type PackListing, type PackObjectKind, type PackRelease,
+  ROUTE_ROUTING_FIELDS, routeRoutingOf, routeTableMatches, routeTableRestorable, type PackListing, type PackObjectKind, type PackRelease,
+  type RouteRouting,
 } from '../pack'
 import { tlsFor } from '../packSpecs'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, type CommitScope, type LakeDatasetSpec } from '../provision'
@@ -977,8 +979,19 @@ export function leftoverCandidates(installed: string | null): PackLeftover[] {
 export interface CleanupFindings {
   /** The installed version, whose shipped routes are the target. */
   version: string
-  /** `differs` carries the live table's route ids, in order, as read. */
-  routes: { state: 'matches' } | { state: 'differs'; before: (string | null)[] } | { state: 'unreadable' }
+  /**
+   * `differs` carries the live table's rows, in order, each as its routing
+   * (`routeRoutingOf`) — every field the restore's PATCH rewrites, not only the
+   * ids, so a kept table with the shipped ids and an edited filter is shown as
+   * changing, and an edit made after the confirmation opened reads as moved.
+   * `unrestorable` is a table this app never writes (none, several, or under
+   * another id): named, never offered as something the restore puts right.
+   */
+  routes:
+    | { state: 'matches' }
+    | { state: 'differs'; rows: RouteRouting[] }
+    | { state: 'unrestorable'; tables: number; id: string | null }
+    | { state: 'unreadable' }
   /** Leftover sources and destinations, by the pack's own lists: deleted. */
   sources: PackLeftover[]
   destinations: PackLeftover[]
@@ -1017,17 +1030,45 @@ export function cleanupFindings(p: { current: boolean; version: string | null; l
   if (listed.routes === 'unreadable') {
     unreadable.push('routes')
     routes = { state: 'unreadable' }
+  } else if (routeTableMatches(listed.routes)) {
+    routes = { state: 'matches' }
+  } else if (!routeTableRestorable(listed.routes)) {
+    routes = { state: 'unrestorable', tables: listed.routes.tables, id: listed.routes.id }
   } else {
-    routes = routeTableMatches(listed.routes) ? { state: 'matches' } : { state: 'differs', before: listed.routes.routes.map(routeIdOf) }
+    routes = { state: 'differs', rows: listed.routes.routes.map(routeRoutingOf) }
   }
   return { version, routes, sources, destinations, pipelines, unreadable }
 }
 
 /** Whether "Restore the pack's routes and remove leftovers" is shown: the route
- *  table is known not to be the shipped one, or a leftover source or
- *  destination is listed. Leftover pipelines alone are not: nothing removes them. */
+ *  table is not known to be the shipped one, or a leftover source or
+ *  destination is listed. Leftover pipelines alone are not: nothing removes them.
+ *  Shown is not runnable: `cleanupBlockedBy` says when it may not open. */
 export const cleanupOffered = (f: CleanupFindings | null): f is CleanupFindings =>
-  f !== null && (f.routes.state === 'differs' || f.sources.length > 0 || f.destinations.length > 0)
+  f !== null && (f.routes.state !== 'matches' || f.sources.length > 0 || f.destinations.length > 0)
+
+/**
+ * Why the clean-up, though shown, may not open — pure, so the panel says it
+ * beside the control and the run refuses on the same words: a list that could
+ * not be read (nothing can be told apart from a refusal), or a route table this
+ * app never writes (none, several, or under another id), which the restore
+ * would refuse — a dialog that could never do its main step, and would still
+ * delete the sources, is not offered. Null when it may open.
+ */
+export function cleanupBlockedBy(f: CleanupFindings): string | null {
+  if (f.unreadable.length) return cleanupUnreadableSentence(f.unreadable)
+  if (f.routes.state === 'unrestorable') {
+    return cleanupUnrestorableSentence(routeTableShapeWords(f.routes.tables, f.routes.id, PACK_ROUTE_TABLE_ID), PACK_ROUTE_TABLE_ID)
+  }
+  return null
+}
+
+/** How one routing value prints in the confirmation's before → after. */
+function routingWords(r: RouteRouting, field: (typeof ROUTE_ROUTING_FIELDS)[number]): string | null {
+  const v = r[field]
+  if (v === null) return null
+  return typeof v === 'string' ? v : JSON.stringify(v)
+}
 
 /** Everything the clean-up's confirmation is built from — read before it opens. */
 export interface CleanupDialogContext {
@@ -1044,14 +1085,17 @@ export interface CleanupDialog {
   diff: DiffEntry[]
   consequences: string[]
   undo: string
-  /** What the dialog showed, handed back to the run: the table's route ids
-   *  (null when the routes are not changed) and each id to delete. */
-  approved: { routesBefore: (string | null)[] | null; sources: string[]; destinations: string[] }
+  /** What the dialog showed, handed back to the run: the table's rows as
+   *  their routing fingerprints (`routeFingerprint`; null when the routes are
+   *  not changed) and each id to delete. */
+  approved: { routesBefore: string[] | null; sources: string[]; destinations: string[] }
 }
 
 /**
  * The one confirmation for the clean-up: the route table's before → after, by
- * route id and position; each leftover source, then each leftover destination,
+ * position — each row's id, then every routing field the PATCH changes (filter,
+ * pipeline, output, final, disabled, output expression, clones), so a kept
+ * table with the shipped ids shows what the write really rewrites; each leftover source, then each leftover destination,
  * as a delete row naming the version that shipped it; the deploy. Then, in
  * words: the leftover pipelines Cribl keeps listing, that no Lake data is
  * touched, that the restored table stays a local setting, what a failed step
@@ -1061,19 +1105,29 @@ export function cleanupDialog(ctx: CleanupDialogContext): CleanupDialog {
   const { group, findings: f } = ctx
   const resources: ConfirmResource[] = []
   const diff: DiffEntry[] = []
-  const shipped = PACK_ROUTES.map((r) => r.id)
-  const routesBefore = f.routes.state === 'differs' ? f.routes.before : null
-  if (routesBefore !== null) {
+  const shipped = PACK_ROUTES.map((r) => routeRoutingOf(r as unknown as Record<string, unknown>))
+  const rowsBefore = f.routes.state === 'differs' ? f.routes.rows : null
+  if (rowsBefore !== null) {
     resources.push({
       action: 'replace', kind: 'Route table', id: PACK_ROUTE_TABLE_ID, group,
-      detail: `in pack ${PACK_ID}: the ${routesBefore.length} route${routesBefore.length === 1 ? '' : 's'} it holds now → the ${shipped.length} routes ${f.version} ships`,
+      detail: `in pack ${PACK_ID}: the ${rowsBefore.length} route${rowsBefore.length === 1 ? '' : 's'} it holds now → the ${shipped.length} routes ${f.version} ships`,
     })
-    for (let i = 0; i < Math.max(routesBefore.length, shipped.length); i++) {
+    for (let i = 0; i < Math.max(rowsBefore.length, shipped.length); i++) {
+      const b = rowsBefore[i] as RouteRouting | undefined
+      const a = shipped[i] as RouteRouting | undefined
       diff.push({
         resourceId: PACK_ROUTE_TABLE_ID, key: `routes[${i}].id`,
-        before: i < routesBefore.length ? (routesBefore[i] ?? '(no id)') : null,
-        after: shipped[i] ?? null,
+        before: b === undefined ? null : (b.id ?? '(no id)'),
+        after: a?.id ?? null,
       })
+      // Every routing field that moves, row for row. A row only one side has
+      // is its id alone: the whole route is added or removed.
+      if (b === undefined || a === undefined) continue
+      for (const field of ROUTE_ROUTING_FIELDS) {
+        const before = routingWords(b, field)
+        const after = routingWords(a, field)
+        if (before !== after) diff.push({ resourceId: PACK_ROUTE_TABLE_ID, key: `routes[${i}].${field}`, before, after })
+      }
     }
   }
   const from = (o: PackLeftover) => `left over from ${o.shippedBy.join(', ')}, in pack ${PACK_ID}`
@@ -1092,7 +1146,7 @@ export function cleanupDialog(ctx: CleanupDialogContext): CleanupDialog {
     consequences: [
       ...(f.pipelines.length ? [cleanupPipelinesSentence(f.pipelines.map((o) => o.id))] : []),
       CLEANUP_NO_LAKE,
-      ...(routesBefore !== null ? [CLEANUP_ROUTES_KEPT_LOCAL] : []),
+      ...(rowsBefore !== null ? [CLEANUP_ROUTES_KEPT_LOCAL] : []),
       CLEANUP_FAILURE_PROMISE,
       carriesSentence(commitCtx, 'change'),
       pendingSentence(commitCtx),
@@ -1101,6 +1155,10 @@ export function cleanupDialog(ctx: CleanupDialogContext): CleanupDialog {
       HTTP_RESTART_PRECAUTION,
     ],
     undo: cleanupUndo(group),
-    approved: { routesBefore, sources: f.sources.map((o) => o.id), destinations: f.destinations.map((o) => o.id) },
+    approved: {
+      routesBefore: rowsBefore === null ? null : rowsBefore.map((r) => JSON.stringify(r)),
+      sources: f.sources.map((o) => o.id),
+      destinations: f.destinations.map((o) => o.id),
+    },
   }
 }

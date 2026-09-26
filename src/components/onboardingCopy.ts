@@ -201,13 +201,33 @@ export const upgradeResetSentence = (group: string, what: readonly string[]): st
  * the pack kept an edited table from before (measured on a Leader: an edited
  * table survives an in-place upgrade whole). The restore is refused while the
  * upgrade's own files are uncommitted, so this says so, rather than pointing at
- * a control that would refuse.
+ * a control that would refuse — and it says to COMMIT without deploying, never
+ * to deploy: a deploy now would put the kept routes on the Workers, which is
+ * what holding the commit was for. The restore's own deploy then carries both.
  */
 export const upgradeRoutesKeptSentence = (group: string, to: string): string =>
   `Nothing was committed or deployed, because the pack kept an edited route table from before the upgrade, so ${to}’s routes are ` +
   `not in use. The upgrade is in ${group}’s configuration but uncommitted. ` +
-  `${CLEANUP_LABEL}, on this panel, puts ${to}’s routes back; it is offered once the upgrade is committed, so check the pack in Cribl ` +
-  `and commit and deploy ${group} there first.`
+  `${CLEANUP_LABEL}, on this panel, puts ${to}’s routes back once the upgrade is committed: check the pack in Cribl and commit ` +
+  `${group} there without deploying it — a deploy now would put the kept routes on its Workers — then use it here, which commits the ` +
+  `restored routes and deploys both.`
+
+/**
+ * The step that stops an upgrade whose route table is not one table under the
+ * id this app writes (none, several, or another id): it is not a kept edit the
+ * restore can put right, and the restore never writes such a table.
+ */
+export const upgradeRouteTableShapeSentence = (group: string, words: string): string =>
+  `Nothing was committed or deployed, because ${words}. The upgrade is in ${group}’s configuration but uncommitted, and another ` +
+  `admin’s commit and deploy of ${group} would push it as it is. Check the pack’s routes in Cribl before anyone commits and deploys ${group}.`
+
+/** What a route table that is not one table under `id` is, in words. */
+export const routeTableShapeWords = (tables: number, id: string | null, expected: string): string =>
+  tables === 0
+    ? 'the pack answered no route table'
+    : tables > 1
+      ? `the pack answered ${tables} route tables, not the one table “${expected}”`
+      : `the pack’s route table is “${id ?? 'unnamed'}”, not “${expected}”, the one table this app writes`
 
 /** The step that stops an upgrade after its PATCH, for any other reason. */
 export const upgradeHeldSentence = (group: string, because: string): string =>
@@ -373,9 +393,11 @@ export const FINISH_REMOVAL_UNDO =
 // ── Restore the pack's routes and remove leftovers ──────────────────────────
 
 /** The line beside the action, saying what was found. */
-export function cleanupNote(f: { version: string; routesDiffer: boolean; leftovers: number }): string {
+export function cleanupNote(f: { version: string; routes: 'matches' | 'differs' | 'unrestorable' | 'unreadable'; leftovers: number }): string {
   const parts = [
-    ...(f.routesDiffer ? [`the pack’s route table is not the one ${f.version} ships, so its routes are not in use`] : []),
+    ...(f.routes === 'differs' ? [`the pack’s route table is not the one ${f.version} ships, so its routes are not in use`] : []),
+    ...(f.routes === 'unrestorable' ? [`the pack’s routes are not the one table ${f.version} ships`] : []),
+    ...(f.routes === 'unreadable' ? ['the pack’s route table could not be read'] : []),
     ...(f.leftovers > 0 ? [`${f.leftovers === 1 ? 'a source or destination' : 'sources or destinations'} an earlier version shipped ${f.leftovers === 1 ? 'is' : 'are'} still in the pack`] : []),
   ]
   const text = parts.join(', and ')
@@ -406,7 +428,16 @@ export const CLEANUP_FAILURE_PROMISE =
   'not affect still run, and nothing is committed or deployed; the step list says what changed.'
 
 export const cleanupUndo = (group: string): string =>
-  `The route table as it was, and what was deleted, are in ${group}’s Git history; this app does not put them back.`
+  `What was committed in ${group} before — the route table and the objects deleted, where they had been committed — is in its Git ` +
+  `history; an object Cribl listed with no committed file behind it cannot be put back from there. This app does not put any of them back.`
+
+/** Why the action is shown but may not open: a list it could not read. */
+export const cleanupUnreadableSentence = (what: readonly string[]): string =>
+  `the pack’s ${what.join(', ')} could not be read, so this app cannot tell what is left over or whether the routes are the shipped ones`
+
+/** Why the action is shown but may not open: a table it never writes. */
+export const cleanupUnrestorableSentence = (words: string, expected: string): string =>
+  `${words}; this app only ever writes the one table “${expected}”, so check the pack’s routes in Cribl`
 
 /** The step that stops the clean-up before its commit, after a failed step. */
 export const cleanupHeldSentence = (group: string): string =>

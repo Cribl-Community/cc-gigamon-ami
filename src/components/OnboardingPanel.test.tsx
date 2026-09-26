@@ -747,6 +747,18 @@ describe('Restore the pack’s routes and remove leftovers', () => {
     expect(writes()).toEqual([])
   })
 
+  it('a route table this app never writes (another id): shown, refused with its reason, and nothing opens or is written', async () => {
+    leader({ installed: true, configured: true, leftovers: true })
+    fake.routes.default = { ...keptTable(), id: 'main' }
+    await mount()
+    const button = buttonNamed(LABEL)
+    expect(button?.getAttribute('aria-disabled')).toBe('true')
+    expect(bodyText()).toContain(`${LABEL} is not available: the pack’s route table is “main”`)
+    await press(button)
+    expect(dialog()).toBeNull()
+    expect(writes()).toEqual([])
+  })
+
   it('the manifest became uncommitted while the dialog was open: Yes writes nothing', async () => {
     leader({ installed: true, configured: true, leftovers: true })
     await mount()

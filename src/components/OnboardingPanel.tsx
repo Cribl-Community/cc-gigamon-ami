@@ -74,7 +74,7 @@ import { IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
-  cleanupDialog, cleanupFindings, cleanupOffered, finishRemovalDialog, httpActionOf, onboardingDialog, packRemovalDialog,
+  cleanupBlockedBy, cleanupDialog, cleanupFindings, cleanupOffered, finishRemovalDialog, httpActionOf, onboardingDialog, packRemovalDialog,
   packUpgradeDialog, sourceChangeDialog, type CleanupDialog, type CleanupDialogContext, type FinishRemovalDialog, type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog, type SourceChange,
   type SourceChangeContext, type SourceChangeDialog, type UpgradeDialog, type UpgradeDialogContext,
 } from '../cribl/onboarding/plan'
@@ -280,10 +280,12 @@ export function OnboardingPanel() {
 
   // Restore the pack's routes and remove leftovers: this app's current copy,
   // when its own lists show something to put right. Refused, visibly, while a
-  // commit of the pack's pending files would carry an uncommitted upgrade.
+  // commit of the pack's pending files would carry an uncommitted upgrade, and
+  // while a list is unreadable or the table is one this app never writes.
   const findings = owned && pack ? cleanupFindings(pack) : null
   const showCleanup = cleanupOffered(findings)
-  const cleanupRefusal = showCleanup && read?.held ? `${CLEANUP_LABEL} is not available: ${read.held}.` : null
+  const cleanupWhy = !showCleanup ? null : read?.held ?? cleanupBlockedBy(findings)
+  const cleanupRefusal = cleanupWhy ? `${CLEANUP_LABEL} is not available: ${cleanupWhy}.` : null
   const cleanupBlocked = cleanupRefusal !== null || busy !== null || cleanupGate.denied !== null || opening || loading
 
   const openOnboard = async () => {
@@ -802,7 +804,7 @@ export function OnboardingPanel() {
                 <p className="gs-action-note gs-action-warn">
                   {cleanupNote({
                     version: findings.version,
-                    routesDiffer: findings.routes.state === 'differs',
+                    routes: findings.routes.state,
                     leftovers: findings.sources.length + findings.destinations.length,
                   })}
                   <InfoTip text={CLEANUP_TIP} />

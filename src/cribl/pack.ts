@@ -568,23 +568,79 @@ export interface PackListing {
   readonly routes: PackRouteTableRead | 'unreadable'
 }
 
-/** A route's routing, as far as routing goes: which events it takes, where
- *  they go, whether they stop there. A description or a name is not compared.
- *  Absent keys read as Cribl's defaults (a route is final unless it says not;
- *  enabled; no output expression; no clones). */
-function routing(r: Readonly<Record<string, unknown>>): string {
-  return JSON.stringify([
-    r.id ?? r.name ?? null,
-    r.filter ?? 'true',
-    r.pipeline ?? null,
-    r.output ?? null,
-    r.final ?? true,
-    r.disabled ?? false,
-    r.enableOutputExpression ?? false,
-    r.outputExpression ?? null,
-    Array.isArray(r.clones) ? r.clones : [],
-  ])
+/**
+ * A route's routing, as far as routing goes: which events it takes, where they
+ * go, whether they stop there — each field in one canonical spelling, so a
+ * Leader that serialises a default the route file leaves out reads the same as
+ * the file. A description or a name is not compared.
+ *
+ * Absent keys read as Cribl's defaults: a route is final unless it says not,
+ * enabled, has the filter `true`, no output expression and no clones. An output
+ * expression is compared only while `enableOutputExpression` is on (it routes
+ * nothing otherwise), and `""` is no expression. A clone that is an empty
+ * object — the Cribl UI stores `clones: [{}]` for "no clones" — is no clone.
+ *
+ * NOT MEASURED: no GET of an unedited, installed 0.2.2 route table is recorded
+ * in this repo (M1 and M6 above are an edited table and its restore). These
+ * spellings are the ones the route file and Cribl's defaults imply; pack.test.ts
+ * and onboarding/cleanup.test.ts hold that plausible echoes of them — an empty
+ * `outputExpression`, `clones: [{}]`, explicit defaults — still read as the
+ * shipped table. A Leader that echoes some other field differently would hold
+ * every upgrade; the restore's read-back would then say the table is still not
+ * the shipped one, which is the evidence to record.
+ */
+export interface RouteRouting {
+  readonly id: string | null
+  readonly filter: string
+  readonly pipeline: string | null
+  readonly output: string | null
+  readonly final: boolean
+  readonly disabled: boolean
+  readonly enableOutputExpression: boolean
+  readonly outputExpression: string | null
+  readonly clones: readonly unknown[]
 }
+
+/** The routing fields a confirmation shows per route, in the order it shows them
+ *  (the id is shown first, on its own row). */
+export const ROUTE_ROUTING_FIELDS = Object.freeze([
+  'filter', 'pipeline', 'output', 'final', 'disabled', 'enableOutputExpression', 'outputExpression', 'clones',
+] as const)
+
+const isEmptyObject = (x: unknown): boolean =>
+  !!x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x as object).length === 0
+
+/** One route's routing in its canonical spelling — see `RouteRouting`. */
+export function routeRoutingOf(r: Readonly<Record<string, unknown>>): RouteRouting {
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+  const bool = (v: unknown, dflt: boolean): boolean => (typeof v === 'boolean' ? v : dflt)
+  const enableOutputExpression = bool(r.enableOutputExpression, false)
+  const expr = str(r.outputExpression)
+  return {
+    id: routeIdOf(r),
+    filter: str(r.filter) ?? 'true',
+    pipeline: str(r.pipeline),
+    output: str(r.output),
+    final: bool(r.final, true),
+    disabled: bool(r.disabled, false),
+    enableOutputExpression,
+    outputExpression: enableOutputExpression && expr !== null && expr !== '' ? expr : null,
+    clones: Array.isArray(r.clones) ? r.clones.filter((c) => !isEmptyObject(c)) : [],
+  }
+}
+
+/** A route's routing as one comparable string: what the upgrade's read-back,
+ *  the restore's confirmation and its moved-check compare. */
+export const routeFingerprint = (r: Readonly<Record<string, unknown>>): string => JSON.stringify(routeRoutingOf(r))
+
+/**
+ * Whether a table is one this app can write back at all: the one table, under
+ * `PACK_ROUTE_TABLE_ID`, read whole. Anything else — no table, two tables, a
+ * table under another id — is never PATCHed (packCleanup.ts), so it is said as
+ * what it is, never offered as something the restore would put right.
+ */
+export const routeTableRestorable = (table: PackRouteTableRead): boolean =>
+  table.tables === 1 && table.id === PACK_ROUTE_TABLE_ID && table.raw !== null
 
 /**
  * Whether a live route table routes exactly as this version ships it: the one
@@ -596,7 +652,7 @@ function routing(r: Readonly<Record<string, unknown>>): string {
 export function routeTableMatches(table: PackRouteTableRead, shipped: readonly PackRoute[] = PACK_ROUTES): boolean {
   if (table.tables !== 1 || table.id !== PACK_ROUTE_TABLE_ID) return false
   if (table.routes.length !== shipped.length) return false
-  return table.routes.every((r, i) => routing(r) === routing(shipped[i] as unknown as Record<string, unknown>))
+  return table.routes.every((r, i) => routeFingerprint(r) === routeFingerprint(shipped[i] as unknown as Record<string, unknown>))
 }
 
 /** A route's id as a live table spells it (`id`, else `name`), or null. */
