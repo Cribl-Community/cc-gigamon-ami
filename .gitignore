@@ -12,11 +12,12 @@ dist
 dist-ssr
 *.local
 
-# Packaged app archives — regenerable via `npm run package`.
-# Ignore everything except the stable "latest" alias, which the package
-# script refreshes to point at the newest build (version is inside the tgz).
-build/*
-!build/cc-gigamon-ami-latest.tgz
+# Generated bundles, none of them tracked: the app's .tgz files (written by
+# `npm run package`, or taken from a release by `npm run release:fetch`) and
+# the onboarding pack's .crbl under build/packs/ (`npm run pack:build`).
+# Releases are built in CI (release.yml, pack-release.yml) and attached to the
+# GitHub release, which is where a release's own bundle is taken from.
+/build/
 
 # Cribl pack layout for Git install (generated; committed only onto release tags by CI)
 /static/

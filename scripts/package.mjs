@@ -86,8 +86,10 @@ await Promise.all([pipeline(stdout, createWriteStream(tgzPath)), closePromise]);
 
 // Keep build/ tidy: retain the newest N versioned bundles (rollback window),
 // prune older ones, and refresh a stable "<name>-latest.tgz" alias that always
-// points at the newest build. Only "-latest.tgz" is tracked in git (see
-// .gitignore); the versioned window is a local convenience. Override N with
+// points at the newest build. Nothing in build/ is tracked in git (see
+// .gitignore): a release's own bundles are built by release.yml and taken with
+// `npm run release:fetch`, so the window and the alias are a local
+// convenience. Override N with
 // KEEP_BUNDLES, e.g. `KEEP_BUNDLES=10 npm run package`.
 const keepCount = Math.max(1, Number(process.env.KEEP_BUNDLES) || 5);
 const appName = packageInfo.name || 'app';

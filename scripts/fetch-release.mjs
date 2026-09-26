@@ -4,9 +4,10 @@
 // WHY THIS EXISTS. Releases are built in CI: a `v*` tag runs
 // .github/workflows/release.yml, which runs `npm run package` there and attaches
 // `cc-gigamon-ami-<version>.tgz` and `cc-gigamon-ami-latest.tgz` to the GitHub
-// release. The local build/ folder is NOT refreshed by that, so its tracked
-// `cc-gigamon-ami-latest.tgz` is whatever someone last packaged by hand — on
-// 2026-09-25 a hand upload of it installed 1.0.20 while 1.1.1 was released.
+// release. The local build/ folder is NOT refreshed by that (nothing in build/
+// is tracked in git), so a local `cc-gigamon-ami-latest.tgz` is whatever was
+// last packaged or fetched on that machine — on 2026-09-25 a hand upload of
+// one installed 1.0.20 while 1.1.1 was released.
 // This downloads the release's own two bundles instead, and reads the version
 // out of each before it trusts it.
 //
@@ -26,10 +27,10 @@
 //     another app, or carries a version other than the tag's (the tag less its
 //     `v` and any `-staging`, as release.yml computes it);
 //   * only when both pass does it copy them into build/, replacing
-//     `cc-gigamon-ami-latest.tgz` (the one tracked file there). Both are first
+//     `cc-gigamon-ami-latest.tgz`. Both are first
 //     copied beside their targets as `.<name>.part`; a failed copy removes the
 //     parts and leaves build/ as it was. Only then is each renamed into place,
-//     the tracked latest alias first; a rename that fails (a file held open on
+//     the latest alias first; a rename that fails (a file held open on
 //     Windows) stops, and the lines name which files were and were not
 //     replaced. Every failure is a line and exit 1, never a thrown error, and
 //     the temporary directory is removed either way.
@@ -268,13 +269,14 @@ export async function fetchRelease({ tag = null, gh = runGh, buildDir = BUILD_DI
 
 /**
  * Copy the checked bundles into build/: each to a `.part` beside its target,
- * then each renamed into place, the tracked latest alias first. Never throws.
+ * then each renamed into place, the latest alias first. Never throws.
  * @returns {{ code: number, lines: string[] }}
  */
 function placeInBuild({ dir, buildDir, names, fs, tag }) {
   const out = []
   const part = (n) => join(buildDir, `.${n}.part`)
-  // The latest alias is the one tracked file, so it goes in first.
+  // The latest alias goes in first: its name carries no version, so a stale one
+  // is the file nobody can tell is stale, and the one a hand upload picks up.
   const order = [...names].sort((a, b) => Number(b.endsWith('-latest.tgz')) - Number(a.endsWith('-latest.tgz')))
   const clearParts = () => { for (const n of order) try { fs.rm(part(n)) } catch { /* reported by the caller's line */ } }
   try {
