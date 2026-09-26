@@ -192,7 +192,11 @@ export const PARITY_FINDINGS_QUERY = FINDINGS_QUERY
 // in cribl/parity.ts; the window is still not part of any of these strings.
 //
 // C and D were NOT measured when this was written (2026-09-23); these queries
-// are how they get measured. ≈100 billable CPU-s each on the demo feed, so the
+// are how they get measured. *(Corrected 2026-09-25, `feat/parity-dcount-tolerance`:
+// since the distinct-count slack — a distinct count may differ by one, owner
+// decision, cribl/parity.ts — PARITY_DNS_QUERY cannot see class C's +1 at all;
+// class C reads at best unexercised. A difference of two or more on a small
+// distinct count still fails.)* ≈100 billable CPU-s each on the demo feed, so the
 // five below add ≈500 per side to a full parity run.
 
 /**
