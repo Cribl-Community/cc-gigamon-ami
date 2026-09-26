@@ -929,6 +929,22 @@ async function deployGroup(group: string, hash: string): Promise<ApiResp> {
   return capi('PATCH', `/master/groups/${group}/deploy`, body)
 }
 
+/**
+ * Whether two commit hashes name the same commit. The group record's
+ * `configVersion` is Git's ABBREVIATED hash — measured 2026-09-26 on a
+ * Cribl.Cloud Leader: `default` ran `e4396f3` while `/version` named HEAD
+ * `e4396f3c8d3bd766c54d04ee944d02b10c05c83f` — so an exact comparison read a
+ * group that runs HEAD as behind it. A prefix of at least 7 hex characters
+ * (Git's shortest default abbreviation) matches; a shorter one matches only an
+ * identical hash.
+ */
+export function sameCommit(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false
+  if (a.toLowerCase() === b.toLowerCase()) return true
+  const [short, long] = a.length <= b.length ? [a.toLowerCase(), b.toLowerCase()] : [b.toLowerCase(), a.toLowerCase()]
+  return short.length >= 7 && long.startsWith(short)
+}
+
 /** The commit a group's workers are actually running, or null when it cannot be
  *  read — which is not the same as "none", and is never reported as one. */
 async function deployedVersion(group: string): Promise<string | null> {
@@ -1064,7 +1080,7 @@ async function filesInCommit(commit: string): Promise<string[] | null> {
  * `pendingDeploy` must not make.
  */
 function commitsAfter(items: CommitRef[], deployed: string, head: string): string[] | null {
-  const d = items.findIndex((c) => c.hash === deployed)
+  const d = items.findIndex((c) => sameCommit(c.hash, deployed))
   const h = items.findIndex((c) => c.hash === head)
   if (d < 0 || h < 0 || d === h) return null
   // Either order the page comes in: the range is what lies between the two,
@@ -1105,7 +1121,7 @@ async function readDeployRange(group: string): Promise<DeployRange> {
   const head = history?.[headIndex(history)]?.hash
   if (!deployed) return { kind: 'unreadable', detail: `the commit ${group} is running (its group record’s configVersion) could not be read` }
   if (!history || !head) return { kind: 'unreadable', detail: 'the Leader’s commit history could not be read' }
-  if (deployed === head) return { kind: 'current', head }
+  if (sameCommit(deployed, head)) return { kind: 'current', head }
   return { kind: 'behind', deployed, head, history }
 }
 
@@ -1231,7 +1247,7 @@ export async function pendingDeploy(group: string = DEFAULT_STREAM_GROUP): Promi
 async function historyReaching(first: CommitRef[], deployed: string): Promise<CommitRef[] | null> {
   let history = first
   let page = first
-  for (let n = 1; !history.some((c) => c.hash === deployed); n++) {
+  for (let n = 1; !history.some((c) => sameCommit(c.hash, deployed)); n++) {
     if (n >= HISTORY_PAGES || page.length < HISTORY_PAGE) return null
     const more = await commitHistory(n * HISTORY_PAGE)
     if (!more) return null

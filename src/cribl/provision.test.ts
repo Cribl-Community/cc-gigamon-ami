@@ -47,7 +47,7 @@ import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './
 import {
   commitMatchingAndDeploy, commitScope, pendingConfigPaths, pendingDeploy, removeOnboardingStack, scrubbedErrText, tokensOf,
   removeDirtyRefusal, removeDirtyVerdict, type RemoveDirtyInputs,
-  undeployedHead, versionFilePaths,
+  undeployedHead, versionFilePaths, deployState, sameCommit,
   FILES_READ_CONCURRENCY, HISTORY_PAGE, HISTORY_PAGES,
   portProblem, portsInUse, postUrl, suggestPort, hostingOf, isCriblCloudHost,
   DATASET_SPEC, HTTP_BREAKER_DESCRIPTION,
@@ -722,6 +722,43 @@ describe('versionFilePaths', () => {
     expect(versionFilePaths({ items: [{ count: 2, items: [{ file: 'groups/default/x.yml' }] }] })).toBe(null)
     // A count of zero with nothing in it is an honest empty commit.
     expect(versionFilePaths({ items: [{ count: 0, items: [] }], count: 1 })).toEqual([])
+  })
+})
+
+describe('a short configVersion names the same commit as the full hash', () => {
+  // Measured 2026-09-26 on a Cribl.Cloud Leader: the group record said
+  // configVersion "e4396f3" while /version named HEAD by its full 40-character
+  // hash, and the exact comparison read the group as behind its own commit.
+  const SHORT_HEAD = HEAD.slice(0, 7)
+  const SHORT_DEPLOYED = DEPLOYED.slice(0, 7)
+  const OURS = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+
+  it('matches a prefix of 7 or more characters, either way round, and nothing shorter', () => {
+    expect(sameCommit(SHORT_HEAD, HEAD)).toBe(true)
+    expect(sameCommit(HEAD, SHORT_HEAD)).toBe(true)
+    expect(sameCommit(HEAD, HEAD)).toBe(true)
+    expect(sameCommit(HEAD.slice(0, 6), HEAD)).toBe(false)
+    expect(sameCommit('aaa111', 'aaa111')).toBe(true)
+    expect(sameCommit(SHORT_DEPLOYED, HEAD)).toBe(false)
+    expect(sameCommit(SHORT_HEAD.toUpperCase(), HEAD)).toBe(true)
+    expect(sameCommit('', HEAD)).toBe(false)
+    expect(sameCommit(null, HEAD)).toBe(false)
+  })
+
+  it('reads a group running HEAD, named short, as current — no pending deploy, no stranded commit', async () => {
+    stubLeader({ configVersion: SHORT_HEAD, history: [{ hash: HEAD, refs: 'HEAD -> main', files: [] }] })
+    expect(await deployState(GROUP)).toEqual({ state: 'current', head: HEAD })
+    expect(await undeployedHead(GROUP)).toBeNull()
+    expect(await pendingDeploy(GROUP)).toBeNull()
+  })
+
+  it('still finds the range behind a short configVersion, and proves a commit that touches the group', async () => {
+    stubLeader({
+      configVersion: SHORT_DEPLOYED,
+      history: [{ hash: HEAD, refs: 'HEAD -> main', files: [OURS] }, { hash: DEPLOYED, files: [] }],
+    })
+    expect(await deployState(GROUP)).toMatchObject({ state: 'behind', head: HEAD, proof: 'touches' })
+    expect(await pendingDeploy(GROUP)).toBe(HEAD)
   })
 })
 
