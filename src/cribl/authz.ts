@@ -105,6 +105,7 @@ export type WriteId =
   | 'onboarding_pack.upgrade'
   | 'onboarding_pack.configure'
   | 'onboarding_pack.remove'
+  | 'onboarding_pack.cleanup'
   | 'benchmark.run'
 
 export interface GatedWrite {
@@ -241,6 +242,16 @@ export const GATED_WRITES: Record<WriteId, GatedWrite> = {
     surface: 'config',
     does: 'removing the Gigamon AMI onboarding pack',
   },
+  // CLEANUP is "Restore the pack's routes and remove leftovers": after an
+  // in-place upgrade kept an edited route table whole, or left sources and
+  // destinations an earlier version shipped (measured 2026-09-26 on a Leader),
+  // one PATCH of the pack's whole route table and one DELETE per leftover, each
+  // by its own exact path, then the commit and deploy. *(Added 2026-09-26,
+  // `feat/pack-leftovers-routes`.)*
+  'onboarding_pack.cleanup': {
+    surface: 'config',
+    does: 'restoring the Gigamon AMI pack’s routes and removing its leftover settings',
+  },
   // Guided Setup's store benchmark. A `search` write like hung_job.cancel: it
   // starts the signed-in user's own search jobs and creates no configuration.
   // A person confirms it, because it runs up to dozens of full scans in a row
@@ -301,13 +312,13 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
+    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove', 'onboarding_pack.cleanup'],
     surface: 'config',
     why: 'PATCH .../deploy restarts the group Workers on the new configuration. Guided Setup’s Remove of the global stacks ends here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove'],
+    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove', 'onboarding_pack.cleanup'],
     surface: 'config',
     why: 'POST /version/commit writes a Git commit on the Leader. Guided Setup’s Remove of the global stacks ends here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
@@ -335,13 +346,25 @@ export const WRITE_SITES: readonly WriteSite[] = [
     at: 'cribl/packUpgrade.ts#upgradePack',
     gates: ['onboarding_pack.upgrade'],
     surface: 'config',
-    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward. From the Upgrade confirmation, which lists what the new version adds and what it no longer ships (a changed object it no longer ships survives the upgrade, and is not removed); the run reads the Raw HTTP source back afterwards and commits and deploys nothing when its port, token, TLS or state was reset.',
+    why: 'PATCH /packs/<id> upgrades the installed pack in place — only from a version this app published and installed from that version’s release, never downward. From the Upgrade confirmation, which lists what the new version adds and what it no longer ships (a changed object it no longer ships survives the upgrade, and is not removed); the run reads the Raw HTTP source back afterwards and commits and deploys nothing when its port, token, TLS or state was reset; and the pack’s route table back, committing and deploying nothing when it is not the one the new version ships (a table changed after install survives an upgrade whole). A changed object it no longer ships is left for Restore the pack’s routes and remove leftovers.',
   },
   {
     at: 'cribl/packClient.ts#removePack',
     gates: ['onboarding_pack.remove'],
     surface: 'config',
     why: 'DELETE /packs/<id> uninstalls the pack — only when the installed id is this app’s, its version is one this app published, and the pack list names that version’s release as where it came from.',
+  },
+  {
+    at: 'cribl/packCleanup.ts#restorePackRoutes',
+    gates: ['onboarding_pack.cleanup'],
+    surface: 'config',
+    why: 'PATCH /p/<pack>/routes/default puts back the route table the installed version ships, from the clean-up confirmation that shows the table’s route ids before and after. The body is the table as read in the same call with only `routes` replaced, because a PATCH resets what it omits; nothing is sent when the table is not the one table “default”, or its route ids moved since the confirmation. The table is read back, and anything but the shipped routes is a failure.',
+  },
+  {
+    at: 'cribl/packCleanup.ts#deleteLeftoverRequest',
+    gates: ['onboarding_pack.cleanup'],
+    surface: 'config',
+    why: 'DELETE of one source or destination an earlier published version of the pack shipped and the installed one does not — by its own exact path, never a tenant’s own object — from the clean-up confirmation that names each by id and version. Destinations only once no route names them. Each is read back; still present is a failure, and a failed step commits nothing.',
   },
   {
     at: 'cribl/packClient.ts#patchPackInput',

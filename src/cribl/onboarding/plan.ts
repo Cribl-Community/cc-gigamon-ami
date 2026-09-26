@@ -38,6 +38,7 @@ import {
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
   globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
+  CLEANUP_FAILURE_PROMISE, CLEANUP_NO_LAKE, CLEANUP_ROUTES_KEPT_LOCAL, cleanupPipelinesSentence, cleanupUndo,
   FINISH_REMOVAL_UNDO, finishRemovalSentence, nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
   ROTATE_EXPORTER, ROTATE_UNDO, SAMPLE_START_UNDO, SAMPLE_STOP_KEEPS, SAMPLE_STOP_UNDO, UPGRADE_UNVERIFIED, movePortSentence, movePortUndo,
   upgradeDroppedSentence, upgradeDroppedSourcesSentence, upgradeNewSourceSentence, upgradeUndo,
@@ -49,7 +50,8 @@ import { realDataConfirmed, type DatasetTarget } from '../datasetTarget'
 import { DEFAULT_PROFILE, DEPLOY_CONSEQUENCES, datasetSpec, type DiffRow } from '../landing'
 import {
   PACK_0_1_0, PACK_0_2_1_OBJECTS, PACK_HTTP_INPUT_ID, PACK_HTTP_PLACEHOLDER_PORT, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS,
-  PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID, type PackObjectKind, type PackRelease,
+  PACK_PARQUET_DATASET_ID, PACK_PUBLISHED_VERSIONS, PACK_ROUTES, PACK_ROUTE_TABLE_ID, PACK_SAMPLE_DATASET_ID, PACK_SAMPLE_INPUT_ID,
+  routeIdOf, routeTableMatches, type PackListing, type PackObjectKind, type PackRelease,
 } from '../pack'
 import { tlsFor } from '../packSpecs'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, type CommitScope, type LakeDatasetSpec } from '../provision'
@@ -921,5 +923,184 @@ export function sourceChangeDialog(ctx: SourceChangeContext): SourceChangeDialog
     consequences: [...first, ...deployLines],
     undo,
     approved: [...ctx.diff],
+  }
+}
+
+// ── Restore the pack's routes and remove leftovers ──────────────────────────
+//
+// WHAT AN UPGRADE LEAVES BEHIND, MEASURED 2026-09-26 (pack.ts's header, M1–M6;
+// one Leader, a scratch copy of this pack, 0.1.0 upgraded in place to 0.2.2):
+// an edited route table survives the upgrade whole, so the new version's routes
+// are not used (M1); the pack's lists still name sources, pipelines and
+// destinations only the old version shipped (M2); a source and — once no route
+// names it — a destination delete and read back gone (M3, M4); a pipeline
+// DELETE answers 200 and deletes nothing (M5); and the table is put back by a
+// PATCH of the whole table (M6). What is found here is found from what the
+// pack's own lists say, never assumed; the writes are packCleanup.ts's.
+
+/** One object an earlier published version shipped and the installed one does
+ *  not, found in the pack's own list. */
+export interface PackLeftover {
+  kind: 'inputs' | 'outputs' | 'pipelines'
+  id: string
+  /** The published versions that shipped it, oldest first. */
+  shippedBy: string[]
+}
+
+/**
+ * Every source, destination and pipeline an EARLIER published version shipped
+ * (its record: `PACK_0_1_0`, `PACK_0_2_1_OBJECTS`, through `packObjectsOf`) and
+ * `installed` does not. "Earlier" is the order of `PACK_PUBLISHED_VERSIONS`,
+ * which is append-only in release order. Never an id no published version
+ * shipped (a tenant's own addition), never one `installed` ships. A version
+ * this app did not publish has no earlier versions here, so nothing.
+ */
+export function leftoverCandidates(installed: string | null): PackLeftover[] {
+  const at = installed === null ? -1 : PACK_PUBLISHED_VERSIONS.indexOf(installed)
+  if (at < 0) return []
+  const now = packObjectsOf(installed)
+  const out: PackLeftover[] = []
+  for (const kind of ['inputs', 'outputs', 'pipelines'] as const) {
+    for (const v of PACK_PUBLISHED_VERSIONS.slice(0, at)) {
+      for (const id of packObjectsOf(v)[kind]) {
+        if (now[kind].includes(id)) continue
+        const seen = out.find((o) => o.kind === kind && o.id === id)
+        if (!seen) out.push({ kind, id, shippedBy: [v] })
+        else if (!seen.shippedBy.includes(v)) seen.shippedBy.push(v)
+      }
+    }
+  }
+  return out
+}
+
+/** What the clean-up finds in an owned, current copy. */
+export interface CleanupFindings {
+  /** The installed version, whose shipped routes are the target. */
+  version: string
+  /** `differs` carries the live table's route ids, in order, as read. */
+  routes: { state: 'matches' } | { state: 'differs'; before: (string | null)[] } | { state: 'unreadable' }
+  /** Leftover sources and destinations, by the pack's own lists: deleted. */
+  sources: PackLeftover[]
+  destinations: PackLeftover[]
+  /** Leftover pipelines: named, never deleted (a DELETE does nothing, M5). */
+  pipelines: PackLeftover[]
+  /** Which of the pack's lists could not be read — never read as empty. */
+  unreadable: Array<'inputs' | 'outputs' | 'pipelines' | 'routes'>
+}
+
+/**
+ * What needs restoring or removing in the group's copy of the pack — pure, from
+ * what packClient.ts `readPackState` read. Null unless the copy is this app's
+ * (both ownership signals) and CURRENT (`current` says both, and that it is this
+ * build's released version): an older copy is Upgrade's, and a foreign one is
+ * nobody's here. A list that could not be read is named in `unreadable` and
+ * contributes nothing; a route table that could not be read is `unreadable`,
+ * never "matches".
+ */
+export function cleanupFindings(p: { current: boolean; version: string | null; listed: PackListing | null }): CleanupFindings | null {
+  if (!p.current || p.version === null || p.listed === null) return null
+  const listed = p.listed
+  const version = p.version
+  const unreadable: CleanupFindings['unreadable'] = []
+  const found = (kind: 'inputs' | 'outputs' | 'pipelines'): PackLeftover[] => {
+    const ids = listed[kind]
+    if (ids === 'unreadable') {
+      unreadable.push(kind)
+      return []
+    }
+    return leftoverCandidates(version).filter((c) => c.kind === kind && ids.includes(c.id))
+  }
+  const sources = found('inputs')
+  const destinations = found('outputs')
+  const pipelines = found('pipelines')
+  let routes: CleanupFindings['routes']
+  if (listed.routes === 'unreadable') {
+    unreadable.push('routes')
+    routes = { state: 'unreadable' }
+  } else {
+    routes = routeTableMatches(listed.routes) ? { state: 'matches' } : { state: 'differs', before: listed.routes.routes.map(routeIdOf) }
+  }
+  return { version, routes, sources, destinations, pipelines, unreadable }
+}
+
+/** Whether "Restore the pack's routes and remove leftovers" is shown: the route
+ *  table is known not to be the shipped one, or a leftover source or
+ *  destination is listed. Leftover pipelines alone are not: nothing removes them. */
+export const cleanupOffered = (f: CleanupFindings | null): f is CleanupFindings =>
+  f !== null && (f.routes.state === 'differs' || f.sources.length > 0 || f.destinations.length > 0)
+
+/** Everything the clean-up's confirmation is built from — read before it opens. */
+export interface CleanupDialogContext {
+  group: string
+  findings: CleanupFindings
+  scope: CommitScope | null
+  undeployed: string | null
+  undeployedChecking?: boolean
+}
+
+export interface CleanupDialog {
+  title: string
+  resources: ConfirmResource[]
+  diff: DiffEntry[]
+  consequences: string[]
+  undo: string
+  /** What the dialog showed, handed back to the run: the table's route ids
+   *  (null when the routes are not changed) and each id to delete. */
+  approved: { routesBefore: (string | null)[] | null; sources: string[]; destinations: string[] }
+}
+
+/**
+ * The one confirmation for the clean-up: the route table's before → after, by
+ * route id and position; each leftover source, then each leftover destination,
+ * as a delete row naming the version that shipped it; the deploy. Then, in
+ * words: the leftover pipelines Cribl keeps listing, that no Lake data is
+ * touched, that the restored table stays a local setting, what a failed step
+ * means, and the commit and deploy.
+ */
+export function cleanupDialog(ctx: CleanupDialogContext): CleanupDialog {
+  const { group, findings: f } = ctx
+  const resources: ConfirmResource[] = []
+  const diff: DiffEntry[] = []
+  const shipped = PACK_ROUTES.map((r) => r.id)
+  const routesBefore = f.routes.state === 'differs' ? f.routes.before : null
+  if (routesBefore !== null) {
+    resources.push({
+      action: 'replace', kind: 'Route table', id: PACK_ROUTE_TABLE_ID, group,
+      detail: `in pack ${PACK_ID}: the ${routesBefore.length} route${routesBefore.length === 1 ? '' : 's'} it holds now → the ${shipped.length} routes ${f.version} ships`,
+    })
+    for (let i = 0; i < Math.max(routesBefore.length, shipped.length); i++) {
+      diff.push({
+        resourceId: PACK_ROUTE_TABLE_ID, key: `routes[${i}].id`,
+        before: i < routesBefore.length ? (routesBefore[i] ?? '(no id)') : null,
+        after: shipped[i] ?? null,
+      })
+    }
+  }
+  const from = (o: PackLeftover) => `left over from ${o.shippedBy.join(', ')}, in pack ${PACK_ID}`
+  for (const o of f.sources) resources.push({ action: 'delete', kind: OBJECT_KIND.inputs, id: o.id, group, detail: from(o) })
+  for (const o of f.destinations) {
+    resources.push({ action: 'delete', kind: OBJECT_KIND.outputs, id: o.id, group, detail: `${from(o)}; once no route names it` })
+  }
+  resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
+
+  const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
+  const undeployedLine = undeployedSentence(commitCtx)
+  return {
+    title: `Restore the pack’s routes and remove leftovers in ${group}`,
+    resources,
+    diff,
+    consequences: [
+      ...(f.pipelines.length ? [cleanupPipelinesSentence(f.pipelines.map((o) => o.id))] : []),
+      CLEANUP_NO_LAKE,
+      ...(routesBefore !== null ? [CLEANUP_ROUTES_KEPT_LOCAL] : []),
+      CLEANUP_FAILURE_PROMISE,
+      carriesSentence(commitCtx, 'change'),
+      pendingSentence(commitCtx),
+      ...(undeployedLine ? [undeployedLine] : []),
+      ...DEPLOY_CONSEQUENCES,
+      HTTP_RESTART_PRECAUTION,
+    ],
+    undo: cleanupUndo(group),
+    approved: { routesBefore, sources: f.sources.map((o) => o.id), destinations: f.destinations.map((o) => o.id) },
   }
 }

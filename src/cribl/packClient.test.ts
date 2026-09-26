@@ -446,6 +446,12 @@ describe('readPackState', () => {
     expect(s.objects.outputs).toEqual({ gigamon_ami_json_lake: 'present', gigamon_ami_parquet_lake: 'present', gigamon_ami_sample_lake: 'present' })
     expect(s.objects.breakers).toEqual({ gigamon_ami_http_json_array: 'present' })
     expect(JSON.stringify(s)).not.toContain(TOKEN.slice(0, 12))
+    // The pack's own lists, by id, and its route table as read — what the
+    // clean-up finds leftovers and a kept table in.
+    expect(s.listed?.inputs).toEqual([PACK_HTTP_INPUT_ID, PACK_SAMPLE_INPUT_ID])
+    expect(s.listed?.pipelines).toEqual(['gigamon_ami_normalize'])
+    expect(s.listed?.outputs).toEqual(['gigamon_ami_json_lake', 'gigamon_ami_parquet_lake', 'gigamon_ami_sample_lake'])
+    expect(s.listed?.routes).toMatchObject({ tables: 1, id: 'default', routes: [{ id: 'gigamon_ami_http_to_json' }, { id: 'gigamon_ami_sample' }] })
   })
 
   it('reads a list it could not fetch as unreadable, not absent', async () => {
@@ -455,6 +461,14 @@ describe('readPackState', () => {
     // Eleven since 0.2.2 added gigamon_ami_normalize_parquet.
     expect(Object.values(s.objects).flatMap((o) => Object.values(o))).toEqual(Array(11).fill('unreadable'))
     expect(s.http).toBeNull()
+    // Never an empty list: "nothing is left over" is not what a refused read says.
+    expect(s.listed).toEqual({ inputs: 'unreadable', pipelines: 'unreadable', outputs: 'unreadable', routes: 'unreadable' })
+  })
+
+  it('names no listing for a pack that is not installed', async () => {
+    const c = await today()
+    leader({ packs: [] })
+    expect((await c.readPackState(GROUP)).listed).toBeNull()
   })
 })
 

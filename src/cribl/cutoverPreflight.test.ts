@@ -253,6 +253,7 @@ function packState(over: Partial<PackState> = {}): PackState {
     http: { disabled: false, port: 20005, tokenSet: true, tls: true, tlsCert: 'cloud' },
     sample: { disabled: true },
     installedSample: { id: 'in_gigamon_ami_sample', disabled: true },
+    listed: null,
     ...over,
   }
 }
