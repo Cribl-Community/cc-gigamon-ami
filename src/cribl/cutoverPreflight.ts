@@ -28,11 +28,13 @@ import {
   PACK_ID,
   PACK_LAKE_DATASET_ID,
   PACK_PARQUET_DATASET_ID,
+  PACK_PARQUET_OUTPUT_ID,
+  PACK_PARQUET_PIPELINE_ID,
   PACK_SAMPLE_DATASET_ID,
   PACK_VERSION,
   type PackObjectKind,
 } from './pack'
-import { compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackState } from './packClient'
+import { compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackRoute, type PackState } from './packClient'
 import { packObjectsOf } from './onboarding/plan'
 import {
   HTTP_BREAKER_ID,
@@ -106,22 +108,25 @@ export const PREFLIGHT_DATASETS: readonly string[] = Object.freeze([
 export const NON_DELIVERING_VERSIONS: readonly string[] = Object.freeze(['0.1.0', '0.2.0'])
 
 /**
- * What an owned, delivering copy older than this build's pin still lacks, by
- * installed version — the reason its blocker gives. Owner decision 2026-09-25
- * (`fix/preflight-block-021`): the cutover waits for `PACK_VERSION`, because
- * only 0.2.2 drops `_raw` from the Parquet copy and the owner wants no Parquet
- * row with `_raw` from the cutover on. Any owned published version older than
- * the pin blocks (`olderThanPin`); a version with no entry here gets the
- * generic sentence. 0.1.0 and 0.2.0 keep their own sentence (above).
+ * A known, stated problem of an owned, delivering copy older than this build's
+ * pin, by installed version — the reason its blocker gives. A version listed
+ * here blocks the cutover whether or not this build's pin can be installed.
  *
- * The gate is on the installed VERSION only, a proxy for the goal: the
- * preflight never reads which pipeline the pack's Parquet route runs. A tenant
- * who edited the pack's routes keeps a `local/` route table across an upgrade
- * (unmeasured for routes), so a current 0.2.2 whose Parquet route still names
- * `gigamon_ami_normalize` would read Ready while `gigamon_ami_pq` keeps getting
- * `_raw`. Still open for the owner: whether an owned older version with no
- * entry here should block while this build's pin cannot be installed (Upgrade
- * is then refused, so nothing clears the blocker until the flip).
+ * Owner decisions 2026-09-25. (`fix/preflight-block-021`) No Parquet row with
+ * `_raw` from the cutover on; only 0.2.2 drops it, so 0.2.1 is listed.
+ * (`fix/preflight-rules-route`, answering the question that branch left open)
+ * An owned version older than the pin blocks only while this build's pin can
+ * be installed (`packRelease().installable`), because Upgrade can then clear
+ * it; while the pin cannot be installed, Upgrade is refused and nothing could
+ * clear it, so an older owned version blocks only when it is listed here, and
+ * any other gets a warning. 0.1.0 and 0.2.0 keep their own refusal
+ * (`NON_DELIVERING_VERSIONS`) either way.
+ *
+ * The version is no longer the only gate on `_raw`: for a version that ships
+ * the Parquet pipeline, the preflight also reads the pack's routing table and
+ * blocks unless every enabled route into the Parquet destination runs it
+ * (`parquetRouteBlockers`), since a tenant who edited the pack's routes keeps a
+ * `local/` route table across an upgrade.
  */
 export const OLDER_VERSION_GAPS: Readonly<Record<string, string>> = Object.freeze({
   '0.2.1': `keeps _raw on every row of its Parquet copy (${PACK_PARQUET_DATASET_ID}), which 0.2.2’s Parquet pipeline removes`,
@@ -132,6 +137,55 @@ export const OLDER_VERSION_GAPS: Readonly<Record<string, string>> = Object.freez
 export function olderThanPin(p: Pick<PackState, 'version' | 'published' | 'fromRelease'>): boolean {
   return !!p.version && p.published && p.fromRelease &&
     !NON_DELIVERING_VERSIONS.includes(p.version) && compareVersions(p.version, PACK_VERSION) < 0
+}
+
+/** Whether the installed version ships the Parquet pipeline that removes
+ *  `_raw` (0.2.2 on) — the versions whose Parquet route the preflight checks. */
+export function shipsParquetPipeline(version: string | null): boolean {
+  return !!version && packObjectsOf(version).pipelines.includes(PACK_PARQUET_PIPELINE_ID)
+}
+
+/**
+ * What stops the cutover in the pack's routing table: the Parquet copy
+ * (`gigamon_ami_pq`, written by the destination `PACK_PARQUET_OUTPUT_ID`) must
+ * be written only by enabled routes that run `PACK_PARQUET_PIPELINE_ID`.
+ * Routes are found by their OUTPUT, never by id — a tenant may have edited or
+ * added routes. Blocks when the table could not be read, when no enabled route
+ * writes the destination, when any enabled route into it runs another pipeline
+ * (or none), and — the stricter reading of "by its output" — when an enabled
+ * route picks its destination by expression, since whether it writes the
+ * Parquet copy cannot then be told. Empty when the routes are as shipped.
+ */
+export function parquetRouteBlockers(group: string, table: readonly PackRoute[] | null): string[] {
+  const keeps = `so the Parquet copy (${PACK_PARQUET_DATASET_ID}) would keep _raw`
+  if (table === null) {
+    return [`The pack’s routing table in ${group} could not be read, so which pipeline writes ${PACK_PARQUET_DATASET_ID} is unknown — it may be one that keeps _raw. Check the pack’s routes in Cribl Stream, then run this again.`]
+  }
+  const name = (r: PackRoute) => r.id ?? '(a route with no id)'
+  const out: string[] = []
+  const into = table.filter((r) => r.output === PACK_PARQUET_OUTPUT_ID && !r.outputExpression)
+  const enabled = into.filter((r) => !r.disabled)
+  if (!enabled.length) {
+    const off = into.filter((r) => r.disabled)
+    out.push(
+      `No enabled route in the pack writes ${PACK_PARQUET_DATASET_ID} (destination ${PACK_PARQUET_OUTPUT_ID})` +
+        (off.length ? `; found only ${list(off.map((r) => `${name(r)}, disabled`))}` : '; no route names that destination') +
+        `. The shipped route runs ${PACK_PARQUET_PIPELINE_ID}; without it this preflight cannot tell that the Parquet copy is written without _raw.`,
+    )
+  }
+  for (const r of enabled) {
+    if (r.pipeline !== PACK_PARQUET_PIPELINE_ID) {
+      out.push(
+        `Route ${name(r)} writes ${PACK_PARQUET_DATASET_ID} through ${r.pipeline ?? 'no pipeline'}, not ${PACK_PARQUET_PIPELINE_ID}, ${keeps}` +
+          (enabled.length > 1 ? ` (${enabled.length} enabled routes write it; every one must run ${PACK_PARQUET_PIPELINE_ID})` : '') +
+          '. Put the route back on the pack’s shipped pipeline in Cribl Stream, commit and deploy, then run this again.',
+      )
+    }
+  }
+  for (const r of table.filter((x) => x.outputExpression && !x.disabled)) {
+    out.push(`Route ${name(r)} chooses its destination by expression, so whether it writes ${PACK_PARQUET_DATASET_ID} — and through which pipeline — cannot be told; the Parquet copy could keep _raw.`)
+  }
+  return out
 }
 
 export type DatasetFact =
@@ -318,12 +372,21 @@ export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
     if (p.version && NON_DELIVERING_VERSIONS.includes(p.version)) {
       blockers.push(`${PACK_ID} ${p.version} delivers nothing from a Raw HTTP POST (its routes never match inside a pack). Upgrade it in Guided Setup first.`)
     } else if (olderThanPin(p)) {
+      // Owner decision 2026-09-25 (`fix/preflight-rules-route`): block while
+      // Upgrade can clear it (the pin installable), or on a stated gap; else warn.
       const gap = OLDER_VERSION_GAPS[p.version as string]
-      blockers.push(
-        `${PACK_ID} ${p.version} is installed; this build pins ${PACK_VERSION}` + (gap ? `, and ${p.version} ${gap}` : '') +
-          `. Upgrade it to ${PACK_VERSION} from Guided Setup’s onboarding panel (Upgrade) before pointing AMX at it` +
-          (f.pinned.refusal ? ` (Upgrade is not offered yet: ${f.pinned.refusal})` : '') + '.',
-      )
+      if (f.pinned.refusal === null || gap) {
+        blockers.push(
+          `${PACK_ID} ${p.version} is installed; this build pins ${PACK_VERSION}` + (gap ? `, and ${p.version} ${gap}` : '') +
+            `. Upgrade it to ${PACK_VERSION} from Guided Setup’s onboarding panel (Upgrade) before pointing AMX at it` +
+            (f.pinned.refusal ? ` (Upgrade is not offered yet: ${f.pinned.refusal})` : '') + '.',
+        )
+      } else {
+        warnings.push(
+          `${PACK_ID} ${p.version} is installed; this build pins ${PACK_VERSION}, which cannot be installed yet (${f.pinned.refusal}). ` +
+            `${p.version} has no known problem this preflight blocks on; Upgrade it from Guided Setup once ${PACK_VERSION} is released.`,
+        )
+      }
     } else if (!p.current && p.published && p.fromRelease) {
       // Owned and not older, yet not current: a version newer than this build's
       // pin that this build also lists as published. The real readers cannot
@@ -339,6 +402,9 @@ export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
     for (const m of f.packObjectsMissing) {
       blockers.push(`The pack’s ${m.kind.replace(/s$/, '')} ${m.id} is ${m.state === 'absent' ? 'missing from' : 'unreadable in'} ${f.group}.`)
     }
+    // Which pipeline writes the Parquet copy — only for a version that ships
+    // the pipeline that removes _raw; an older one is held by the version rule.
+    if (shipsParquetPipeline(p.version)) blockers.push(...parquetRouteBlockers(f.group, p.routeTable))
   }
 
   // The pack's Raw HTTP source.
@@ -457,6 +523,13 @@ export function preflightReport(f: PreflightFacts, v: PreflightVerdict): string[
     out.push(`  owned: ${yesNo(p.published && p.fromRelease)} (published by this app: ${yesNo(p.published)}; installed from its release: ${yesNo(p.fromRelease)})`)
     out.push(`  current: ${yesNo(p.current)}`)
     if (f.packObjectsMissing.length) out.push(`  objects not present: ${list(f.packObjectsMissing.map((m) => `${m.id} (${m.state})`))}`)
+    if (p.routeTable === null) out.push('  routes: could not be read')
+    else {
+      const pq = p.routeTable.filter((r) => r.output === PACK_PARQUET_OUTPUT_ID)
+      out.push(`  routes into ${PACK_PARQUET_DATASET_ID}: ${pq.length
+        ? list(pq.map((r) => `${r.id ?? '(no id)'} via ${r.pipeline ?? 'no pipeline'}${r.disabled ? ' (disabled)' : ''}`))
+        : 'none'}`)
+    }
     const h = p.http
     out.push(h
       ? `  Raw HTTP source: ${h.disabled ? 'stopped' : 'enabled'}, port ${h.port ?? 'unknown'}, TLS ${h.tls ? 'on' : 'off'}, token ${h.tokenSet ? 'set' : 'NOT set'}`

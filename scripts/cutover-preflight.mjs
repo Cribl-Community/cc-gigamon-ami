@@ -32,7 +32,7 @@
 //   /m/:gid/p/cc-network-gigamon-ami/system/inputs
 //   /m/:gid/p/cc-network-gigamon-ami/system/outputs
 //   /m/:gid/p/cc-network-gigamon-ami/pipelines
-//   /m/:gid/p/cc-network-gigamon-ami/routes
+//   /m/:gid/p/cc-network-gigamon-ami/routes    (also: which pipeline each route into gigamon_ami_pq runs)
 //   /m/:gid/p/cc-network-gigamon-ami/lib/breakers/gigamon_ami_http_json_array
 //   /m/:gid/p/:pack/system/inputs              (every installed pack's sources, for ports)
 //   /m/:gid/system/inputs                      (the group's own sources, for ports)

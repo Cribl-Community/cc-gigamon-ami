@@ -522,7 +522,7 @@ export const API_CALLS: readonly ApiCall[] = [
     path: `/m/:gid/p/${PACK_ID}/routes`,
     scope: 'product',
     site: 'packClient.ts readPackState',
-    why: 'Ask whether the pack’s three routes are installed — the two that send HTTP data to the JSON and Parquet datasets, and the sample’s. Read only.',
+    why: 'Ask whether the pack’s three routes are installed — the two that send HTTP data to the JSON and Parquet datasets, and the sample’s — and, from the same read, which pipeline each route runs, so the cutover preflight can tell whether the Parquet copy is written without _raw. Read only.',
   },
   {
     method: 'GET',
