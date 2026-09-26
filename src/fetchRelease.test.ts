@@ -5,6 +5,7 @@
 // bundles are tar archives built here and gzipped with zlib, and build/ is a
 // temporary directory. What GitHub actually holds is the command's to find out.
 
+import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -345,10 +346,29 @@ describe('the wiring', () => {
   // Owner decision 2026-09-25: no bundle in build/ is tracked. A release's own
   // bundles come from its GitHub release; a tracked alias was only ever the
   // last hand-packaged build, and was once uploaded in place of the release.
-  it('leaves build/ wholly ignored, with no tracked alias let back in', () => {
+  // The rule is anchored (`/build/`): an unanchored `build/` would also hide a
+  // source directory named build anywhere below the root.
+  it('ignores the root build/ only, with no exception let back in', () => {
     const root = join(import.meta.dirname, '..')
     const lines = readFileSync(join(root, '.gitignore'), 'utf8').split(/\r?\n/).map((l) => l.trim())
-    expect(lines).toContain('build/')
+    expect(lines).toContain('/build/')
+    expect(lines).not.toContain('build/')
+    expect(lines).not.toContain('build/*')
     expect(lines.filter((l) => /^!\/?build\//.test(l))).toEqual([])
+  })
+
+  // An ignore rule cannot stop `git add -f`, which is how an ignored file gets
+  // tracked again, so the index itself is read. Skipped where git cannot run
+  // here (no git on PATH, or not a checkout).
+  it('has nothing under build/ in the index', (ctx) => {
+    const root = join(import.meta.dirname, '..')
+    let tracked: string
+    try {
+      tracked = execFileSync('git', ['ls-files', '--', 'build'], { cwd: root, encoding: 'utf8' })
+    } catch {
+      ctx.skip()
+      return
+    }
+    expect(tracked.split(/\r?\n/).filter(Boolean)).toEqual([])
   })
 })
