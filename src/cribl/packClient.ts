@@ -299,6 +299,48 @@ export interface PackState {
    * stopped is reported rather than read as "no sample source".
    */
   installedSample: { id: string; disabled: boolean } | null
+  /**
+   * The pack's routing table as the Leader returns it — each route's output,
+   * pipeline and whether it is on — from the same `GET …/p/<pack>/routes` that
+   * `objects.routes` is read from. Null when the pack is not installed or the
+   * table could not be read. The cutover preflight reads it for which pipeline
+   * writes the Parquet copy (added 2026-09-25, `fix/preflight-rules-route`).
+   */
+  routeTable: PackRoute[] | null
+  /**
+   * The pack's destinations — id, type and the Lake dataset each writes — from
+   * the same `GET …/p/<pack>/system/outputs` that `objects.outputs` is read
+   * from. Null when the pack is not installed or the list could not be read.
+   * The cutover preflight reads it to find every destination that writes the
+   * Parquet copy, not only the shipped one (added 2026-09-25,
+   * `fix/preflight-rules-route`, after review).
+   */
+  outputTable: PackOutput[] | null
+}
+
+/** One destination of the pack, as the preflight needs it. */
+export interface PackOutput {
+  id: string
+  /** `cribl_lake`, `router`, `default`, …; null when the Leader gave none. */
+  type: string | null
+  /** The Lake dataset a `cribl_lake` destination writes (`destPath`, else
+   *  `datasetId`); null otherwise. */
+  dataset: string | null
+}
+
+/** One route of the pack's routing table, as the preflight needs it. */
+export interface PackRoute {
+  /** `id`, else `name`; null when the route carries neither. */
+  id: string | null
+  output: string | null
+  pipeline: string | null
+  /** The route's own `disabled`, or its route group's (a group turned off
+   *  turns its routes off). */
+  disabled: boolean
+  final: boolean
+  /** The route picks its destination by expression (`enableOutputExpression`),
+   *  so `output` does not say where its events go. */
+  outputExpression: boolean
 }
 
 /** The sample DataGen's id in a given version of the pack. */
@@ -315,11 +357,21 @@ function idsOf(status: number, body: unknown): string[] | null {
   return list.map((x) => (x && typeof x === 'object' ? (x as { id?: unknown }).id : undefined)).filter((x): x is string => typeof x === 'string')
 }
 
-/** Route ids in a routing-table list: one table, its routes inside it. */
-function routeIdsOf(status: number, body: unknown): string[] | null {
+/** The tables of a routing-table list, or null when the list could not be read
+ *  or no table in it carries a `routes` array (a shape this parser does not
+ *  know is not "no routes"). */
+function routeTablesOf(status: number, body: unknown): object[] | null {
   if (status !== 200) return null
   const tables = (body as { items?: unknown })?.items
   if (!Array.isArray(tables)) return null
+  const known = tables.filter((t): t is object => !!t && typeof t === 'object' && Array.isArray((t as { routes?: unknown }).routes))
+  return known.length ? known : null
+}
+
+/** Route ids in a routing-table list: one table, its routes inside it. */
+function routeIdsOf(status: number, body: unknown): string[] | null {
+  const tables = routeTablesOf(status, body)
+  if (tables === null) return null
   return tables.flatMap((t) => {
     const routes = t && typeof t === 'object' ? (t as { routes?: unknown }).routes : undefined
     return Array.isArray(routes)
@@ -327,6 +379,55 @@ function routeIdsOf(status: number, body: unknown): string[] | null {
           .filter((x): x is string => typeof x === 'string')
       : []
   })
+}
+
+const strOr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+
+/** Every route of a routing-table list (all its tables), or null when the list
+ *  could not be read — including a 200 in which no table carries a `routes`
+ *  array. A route group marked `disabled` disables its routes. */
+export function packRoutesOf(status: number, body: unknown): PackRoute[] | null {
+  const tables = routeTablesOf(status, body)
+  if (tables === null) return null
+  const out: PackRoute[] = []
+  for (const t of tables) {
+    const routes = (t as { routes: unknown[] }).routes
+    const groups = (t as { groups?: unknown }).groups
+    const groupOff = (gid: unknown): boolean => {
+      if (typeof gid !== 'string' || !groups || typeof groups !== 'object') return false
+      const g = (groups as Record<string, unknown>)[gid]
+      return !!g && typeof g === 'object' && (g as { disabled?: unknown }).disabled === true
+    }
+    for (const r of routes) {
+      if (!r || typeof r !== 'object') continue
+      const x = r as Record<string, unknown>
+      out.push({
+        id: strOr(x.id) ?? strOr(x.name),
+        output: strOr(x.output),
+        pipeline: strOr(x.pipeline),
+        disabled: x.disabled === true || groupOff(x.groupId),
+        final: x.final === true,
+        outputExpression: x.enableOutputExpression === true,
+      })
+    }
+  }
+  return out
+}
+
+/** Every destination of an outputs list, or null when it could not be read. */
+export function packOutputsOf(status: number, body: unknown): PackOutput[] | null {
+  if (status !== 200) return null
+  const list = (body as { items?: unknown })?.items
+  if (!Array.isArray(list)) return null
+  const out: PackOutput[] = []
+  for (const o of list) {
+    if (!o || typeof o !== 'object') continue
+    const x = o as Record<string, unknown>
+    const id = strOr(x.id)
+    if (id === null) continue
+    out.push({ id, type: strOr(x.type), dataset: strOr(x.destPath) ?? strOr(x.datasetId) })
+  }
+  return out
 }
 
 const stateIn = (ids: string[] | null, id: string): ResourceState => (ids === null ? 'unreadable' : ids.includes(id) ? 'present' : 'absent')
@@ -345,7 +446,7 @@ const numberOr = (v: unknown): number | null => {
 export async function readPackState(group: string): Promise<PackState> {
   const base: PackState = {
     error: null, installed: false, version: null, published: false, fromRelease: false, current: false,
-    objects: emptyObjects(), http: null, sample: null, installedSample: null,
+    objects: emptyObjects(), http: null, sample: null, installedSample: null, routeTable: null, outputTable: null,
   }
   const found = await readInstalled(group)
   if ('error' in found) return { ...base, error: found.error }
@@ -376,8 +477,10 @@ export async function readPackState(group: string): Promise<PackState> {
   for (const id of PACK_OBJECTS.pipelines) state.objects.pipelines[id] = stateIn(pipelineIds, id)
   const routeIds = routeIdsOf(routes.status, routes.body)
   for (const id of PACK_OBJECTS.routes) state.objects.routes[id] = stateIn(routeIds, id)
+  state.routeTable = packRoutesOf(routes.status, routes.body)
   const outputIds = idsOf(outputs.status, outputs.body)
   for (const id of PACK_OBJECTS.outputs) state.objects.outputs[id] = stateIn(outputIds, id)
+  state.outputTable = packOutputsOf(outputs.status, outputs.body)
 
   const list = inputs.status === 200 ? ((inputs.body as { items?: unknown })?.items as unknown[] | undefined) ?? [] : []
   const byId = (id: string) =>

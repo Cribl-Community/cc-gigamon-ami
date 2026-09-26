@@ -14,23 +14,53 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { parse } from 'yaml'
 import { PreflightRefusal, readOnlyFetch, refusalOf, searchOriginFromDevPage } from '../../scripts/cutover-preflight-fetch.mjs'
 import {
   LIVE_READERS,
   NON_DELIVERING_VERSIONS,
+  OLDER_VERSION_GAPS,
   gatherPreflight,
+  parquetRouteBlockers,
   preflightReport,
   preflightVerdict,
+  shipsParquetPipeline,
   type PreflightFacts,
   type PreflightReaders,
 } from './cutoverPreflight'
 import type { LakeDataset } from './lake'
-import { PACK_ID, PACK_OBJECTS, PACK_PUBLISHED_VERSIONS, PACK_VERSION, packReleaseUrl } from './pack'
-import { compareVersions, type PackState } from './packClient'
+import {
+  PACK_ID,
+  PACK_OBJECTS,
+  PACK_PARQUET_OUTPUT_ID,
+  PACK_PARQUET_PIPELINE_ID,
+  PACK_PIPELINE_ID,
+  PACK_PUBLISHED_VERSIONS,
+  PACK_ROUTES_FILE,
+  PACK_VERSION,
+  packReleaseUrl,
+} from './pack'
+import { compareVersions, packOutputsOf, packRoutesOf, thisPackRelease, type PackOutput, type PackRoute, type PackState } from './packClient'
 import { API_CALLS } from './paths'
 
 const ROOT = join(__dirname, '..', '..')
 const TOKEN = 'SECRET-TOKEN-must-never-print'
+
+/** The routing table the pack ships, exactly as its YAML has it. */
+const shippedTable = () => parse(readFileSync(join(ROOT, 'packs', PACK_ID, PACK_ROUTES_FILE), 'utf8')) as { routes: Record<string, unknown>[] }
+/** That table with its routes changed, as a Leader would return it. */
+function routesBody(edit: (routes: Record<string, unknown>[]) => Record<string, unknown>[] = (r) => r, extra: Record<string, unknown> = {}) {
+  const t = shippedTable()
+  return { items: [{ ...t, ...extra, routes: edit(t.routes) }] }
+}
+/** The pack's destinations, exactly as its YAML has them, as a Leader lists them. */
+function outputsBody(extra: Record<string, unknown>[] = []) {
+  const o = (parse(readFileSync(join(ROOT, 'packs', PACK_ID, 'default/outputs.yml'), 'utf8')) as { outputs: Record<string, Record<string, unknown>> }).outputs
+  return { items: [...Object.entries(o).map(([id, v]) => ({ id, ...v })), ...extra] }
+}
+const shippedOutputs = (): PackOutput[] => packOutputsOf(200, outputsBody()) as PackOutput[]
+const toParquet = (r: Record<string, unknown>) => r.output === PACK_PARQUET_OUTPUT_ID
+const shippedRoutes = (): PackRoute[] => packRoutesOf(200, routesBody()) as PackRoute[]
 
 // ── A fake Leader, in the shapes the readers parse ─────────────────────────
 
@@ -48,8 +78,8 @@ function leaderBodies(): Record<string, { status: number; body: unknown }> {
     }),
     [`${packPrefix}/lib/breakers/gigamon_ami_http_json_array`]: ok({ items: [{ id: 'gigamon_ami_http_json_array' }] }),
     [`${packPrefix}/pipelines`]: ok({ items: PACK_OBJECTS.pipelines.map((id) => ({ id })) }),
-    [`${packPrefix}/routes`]: ok({ items: [{ id: 'default', routes: PACK_OBJECTS.routes.map((id) => ({ id })) }] }),
-    [`${packPrefix}/system/outputs`]: ok({ items: PACK_OBJECTS.outputs.map((id) => ({ id })) }),
+    [`${packPrefix}/routes`]: ok(routesBody()),
+    [`${packPrefix}/system/outputs`]: ok(outputsBody()),
     '/m/default/system/inputs': ok({ items: [{ id: 'in_gigamon_http', type: 'http_raw', port: 20000 }, { id: 'datagen', type: 'datagen' }] }),
     '/m/default/system/inputs/in_gigamon_http': ok({ items: [{ id: 'in_gigamon_http', authTokens: [{ token: 'OLD-GLOBAL-TOKEN' }] }] }),
     '/m/default/system/inputs/in_gigamon_syslog': nf,
@@ -186,6 +216,46 @@ describe('the real readers, over the runner’s guarded fetch', () => {
     expect(verdict.ready).toBe(false)
     expect(verdict.blockers.join('\n')).toMatch(/could not be told: the commit default is running/)
   })
+
+  // The Parquet route check (owner decision 2026-09-25, `fix/preflight-rules-route`)
+  // over the real readers: the route table comes from the same GET readPackState
+  // already made, so the request set — every one a granted GET — does not grow.
+  it.each<[string, { status: number; body: unknown }, RegExp]>([
+    ['its Parquet route edited to the JSON pipeline',
+      { status: 200, body: routesBody((rs) => rs.map((r) => (toParquet(r) ? { ...r, pipeline: PACK_PIPELINE_ID } : r))) },
+      new RegExp(`writes gigamon_ami_pq through ${PACK_PIPELINE_ID}, not ${PACK_PARQUET_PIPELINE_ID}, so the Parquet copy \\(gigamon_ami_pq\\) would keep _raw`)],
+    ['its routing table unreadable', { status: 403, body: { message: 'forbidden' } }, /routing table in default could not be read/],
+  ])('blocks, over the real readers, on %s — and still sends only granted GETs', async (_name, routes, words) => {
+    const b = leaderBodies()
+    b[`${packPrefix}/routes`] = routes
+    const { seen, transport } = fakeTransport(b)
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    const verdict = preflightVerdict(facts)
+    for (const r of seen) {
+      expect(r.method).toBe('GET')
+      const path = new URL(r.url).pathname.replace(/^\/capi/, '')
+      expect(path, 'a Search path').not.toMatch(/(^|\/)search(\/|$)/)
+      expect(grantedGet(path), `${path} is not a GET config/policies.yml grants`).toBe(true)
+    }
+    expect(seen.filter((r) => new URL(r.url).pathname.endsWith(`/p/${PACK_ID}/routes`))).toHaveLength(1)
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(words)
+  })
+
+  it('reads the shipped route table off the pack, whole: output, pipeline and state per route', async () => {
+    const { transport } = fakeTransport()
+    vi.stubGlobal('fetch', readOnlyFetch({ base: 'http://localhost:5173/capi', fetch: transport }))
+    const facts = await gatherPreflight('default', LIVE_READERS)
+    expect(facts.pack.routeTable).toEqual(shippedRoutes())
+    expect(facts.pack.outputTable).toEqual(shippedOutputs())
+    expect(facts.pack.outputTable?.find((o) => o.id === PACK_PARQUET_OUTPUT_ID)).toEqual({ id: PACK_PARQUET_OUTPUT_ID, type: 'cribl_lake', dataset: 'gigamon_ami_pq' })
+    expect(facts.pack.routeTable?.filter((r) => r.output === PACK_PARQUET_OUTPUT_ID)).toEqual([
+      { id: 'gigamon_ami_http_to_parquet', output: PACK_PARQUET_OUTPUT_ID, pipeline: PACK_PARQUET_PIPELINE_ID, disabled: false, final: true, outputExpression: false },
+    ])
+    expect(preflightReport(facts, preflightVerdict(facts)).join('\n')).toContain(`routes into gigamon_ami_pq: gigamon_ami_http_to_parquet via ${PACK_PARQUET_PIPELINE_ID}`)
+  })
 })
 
 describe('the guarded fetch', () => {
@@ -253,6 +323,8 @@ function packState(over: Partial<PackState> = {}): PackState {
     http: { disabled: false, port: 20005, tokenSet: true, tls: true, tlsCert: 'cloud' },
     sample: { disabled: true },
     installedSample: { id: 'in_gigamon_ami_sample', disabled: true },
+    routeTable: shippedRoutes(),
+    outputTable: shippedOutputs(),
     ...over,
   }
 }
@@ -316,7 +388,7 @@ describe('the verdict', () => {
     ['a version this app never published', { readPackState: async () => packState({ published: false, current: false }) }, /this app did not publish that version/],
     ['a source port it cannot read', { readPackState: async () => packState({ http: { disabled: false, port: null, tokenSet: true, tls: true, tlsCert: 'c' } }) }, /no port this preflight can read/],
     ['an unreadable Git status', { pendingConfigPaths: async () => null }, /Git’s status could not be read/],
-    ['a missing pack route', { readPackState: async () => { const s = packState(); s.objects.routes.gigamon_ami_http_to_parquet = 'absent'; return s } }, /route gigamon_ami_http_to_parquet is missing/],
+    ['a missing pack route', { readPackState: async () => { const s = packState(); s.objects.routes.gigamon_ami_sample = 'absent'; return s } }, /route gigamon_ami_sample is missing/],
   ]
   it.each(cases)('blocks on %s, in plain words', async (_name, over, words) => {
     const { verdict } = await verdictWith(over)
@@ -325,15 +397,20 @@ describe('the verdict', () => {
     expect(verdict.blockers.join('\n')).toMatch(words)
   })
 
-  // Owner decision 2026-09-25 (`fix/preflight-block-021`): an owned copy older
-  // than the pin blocks. One case per published version older than PACK_VERSION,
-  // read off the list itself, so a new pin brings its predecessors in by itself.
+  // Owner decisions 2026-09-25: an owned copy older than the pin blocks while
+  // the pin can be installed (`fix/preflight-rules-route`), which it can in this
+  // build — the real release constants, nothing moved. One case per published
+  // version older than PACK_VERSION, read off the list itself, so a new pin
+  // brings its predecessors in by itself. The pin that cannot be installed, and
+  // an older version with no stated gap, are cutoverPreflight.unpublished.test.ts
+  // and cutoverPreflight.nextPin.test.ts (the constants moved by a mock).
   const esc = (v: string) => v.replace(/\./g, '\\.')
   const older = PACK_PUBLISHED_VERSIONS.filter((v) => compareVersions(v, PACK_VERSION) < 0)
-  it('has the older published versions to check (else the table below is empty)', () => {
+  it('has the older published versions to check (else the table below is empty), and a pin it can install', () => {
     expect(older).toEqual(expect.arrayContaining(['0.1.0', '0.2.0', '0.2.1']))
+    expect(thisPackRelease().installable).toBe(true)
   })
-  it.each(older)('blocks on an owned %s, which is older than the pin', async (version) => {
+  it.each(older)('blocks on an owned %s, which is older than the installable pin', async (version) => {
     const { verdict } = await verdictWith({ readPackState: async () => packState({ version, current: false }) })
     expect(verdict.ready).toBe(false)
     expect(verdict.target).toBeNull()
@@ -354,11 +431,14 @@ describe('the verdict', () => {
     expect(verdict.blockers.join('\n')).toMatch(/0\.2\.1 keeps _raw on every row of its Parquet copy \(gigamon_ami_pq\)/)
   })
 
-  it('says why Upgrade is not offered when this build’s pin cannot be installed', async () => {
+  it('keeps 0.2.1 blocking when this build’s pin cannot be installed — a stated gap — and says why Upgrade is not offered', async () => {
+    expect(OLDER_VERSION_GAPS['0.2.1']).toBeTruthy()
     const facts = await gatherPreflight('default', readers({ readPackState: async () => packState({ version: '0.2.1', current: false }) }))
     const verdict = preflightVerdict({ ...facts, pinned: { ...facts.pinned, refusal: 'no release yet' } })
     expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/0\.2\.1 keeps _raw on every row of its Parquet copy/)
     expect(verdict.blockers.join('\n')).toMatch(/Upgrade is not offered yet: no release yet/)
+    expect(verdict.warnings.join('\n')).not.toMatch(/this build pins/)
   })
 
   it('does not tell a foreign copy of an older version to Upgrade: Guided Setup refuses that', async () => {
@@ -438,5 +518,164 @@ describe('the verdict', () => {
       'in_gigamon_http (raw-http source): absent', 'in_gigamon_syslog (syslog source): absent', 'uncommitted in default: none',
       'managed',
     ]) expect(text).toContain(want)
+  })
+})
+
+// ── The Parquet route (owner decision 2026-09-25, `fix/preflight-rules-route`) ─
+// The route that writes gigamon_ami_pq is found by its OUTPUT, never by id, and
+// must run the pipeline that removes _raw.
+
+describe('the Parquet route', () => {
+  const table = (edit: (routes: Record<string, unknown>[]) => Record<string, unknown>[], extra: Record<string, unknown> = {}) =>
+    packRoutesOf(200, routesBody(edit, extra))
+  const withTable = (routeTable: PackRoute[] | null, over: Partial<PackState> = {}) =>
+    verdictWith({ readPackState: async () => packState({ routeTable, ...over }) })
+
+  it('passes on the routes the pack ships', async () => {
+    expect(parquetRouteBlockers('default', shippedRoutes(), shippedOutputs())).toEqual([])
+    const { verdict } = await withTable(shippedRoutes())
+    expect(verdict.ready).toBe(true)
+  })
+
+  it('finds the route by its output: a renamed route on the shipped pipeline passes, verdict and all', async () => {
+    const t = table((rs) => rs.map((r) => (toParquet(r) ? { ...r, id: 'my_pq_route', name: 'my_pq_route' } : r)))
+    expect(parquetRouteBlockers('default', t, shippedOutputs())).toEqual([])
+    // The shipped route's id reads absent, as readPackState would read it; the
+    // route check has found a correct route by its output, so that id's
+    // absence is a fact in the report, not a blocker.
+    const pack = packState({ routeTable: t })
+    pack.objects.routes = { ...pack.objects.routes, gigamon_ami_http_to_parquet: 'absent' }
+    const { facts, verdict } = await verdictWith({ readPackState: async () => pack })
+    expect(verdict.blockers).toEqual([])
+    expect(verdict.ready).toBe(true)
+    expect(preflightReport(facts as PreflightFacts, verdict).join('\n')).toContain('objects not present: gigamon_ami_http_to_parquet (absent)')
+  })
+
+  it('still blocks on another shipped route missing by id', async () => {
+    const pack = packState()
+    pack.objects.routes = { ...pack.objects.routes, gigamon_ami_http_to_json: 'absent' }
+    const { verdict } = await verdictWith({ readPackState: async () => pack })
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/route gigamon_ami_http_to_json is missing from default/)
+  })
+
+  it('blocks on the Parquet route missing by id when no route writes the Parquet copy', async () => {
+    const pack = packState({ routeTable: table((rs) => rs.filter((r) => !toParquet(r))) })
+    pack.objects.routes = { ...pack.objects.routes, gigamon_ami_http_to_parquet: 'absent' }
+    const { verdict } = await verdictWith({ readPackState: async () => pack })
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).toMatch(/route gigamon_ami_http_to_parquet is missing from default/)
+    expect(verdict.blockers.join('\n')).toMatch(/No enabled route in the pack writes gigamon_ami_pq/)
+  })
+
+  // A destination is a route into the Parquet copy by the DATASET it writes,
+  // not only by the shipped destination's id.
+  const extraPq = { id: 'my_pq_lake', type: 'cribl_lake', destPath: 'gigamon_ami_pq', format: 'parquet' }
+  const withBoth = (routeTable: PackRoute[] | null, outputTable: PackOutput[] | null) =>
+    verdictWith({ readPackState: async () => packState({ routeTable, outputTable }) })
+
+  it.each<[string, PackRoute[] | null, PackOutput[] | null, RegExp[]]>([
+    ['a second destination writing gigamon_ami_pq, routed through gigamon_ami_normalize',
+      table((rs) => [{ id: 'mine', name: 'mine', disabled: false, final: false, pipeline: PACK_PIPELINE_ID, output: 'my_pq_lake' }, ...rs]),
+      packOutputsOf(200, outputsBody([extraPq])),
+      [/Route mine writes gigamon_ami_pq \(destination my_pq_lake\) through gigamon_ami_normalize, not gigamon_ami_normalize_parquet/, /would keep _raw/]],
+    ['an enabled route into a router destination',
+      table((rs) => [{ id: 'fan', name: 'fan', disabled: false, final: false, pipeline: PACK_PIPELINE_ID, output: 'my_router' }, ...rs]),
+      packOutputsOf(200, outputsBody([{ id: 'my_router', type: 'router', rules: [{ output: PACK_PARQUET_OUTPUT_ID }] }])),
+      [/Route fan sends to my_router, a router destination, which forwards to other destinations/, /_raw/]],
+    ['an enabled route into the default destination',
+      table((rs) => [{ id: 'dflt', name: 'dflt', disabled: false, final: false, pipeline: PACK_PIPELINE_ID, output: 'default' }, ...rs]),
+      packOutputsOf(200, outputsBody([{ id: 'default', type: 'default', defaultId: PACK_PARQUET_OUTPUT_ID }])),
+      [/Route dflt sends to default, a default destination/]],
+    ['an enabled route into a destination the pack does not list',
+      table((rs) => [{ id: 'ghost', name: 'ghost', disabled: false, final: false, pipeline: PACK_PIPELINE_ID, output: 'nowhere' }, ...rs]),
+      shippedOutputs(),
+      [/Route ghost sends to nowhere, which is not in the pack’s destination list/]],
+    ['an enabled route that names no destination',
+      table((rs) => [{ id: 'bare', name: 'bare', disabled: false, final: false, pipeline: PACK_PIPELINE_ID }, ...rs]),
+      shippedOutputs(),
+      [/Route bare names no destination/]],
+    ['an unreadable destination list', shippedRoutes(), null,
+      [/destinations in default could not be read/, /_raw/]],
+  ])('blocks on %s', async (_name, routeTable, outputTable, words) => {
+    const { verdict } = await withBoth(routeTable, outputTable)
+    expect(verdict.ready).toBe(false)
+    for (const w of words) expect(verdict.blockers.join('\n')).toMatch(w)
+  })
+
+  it('passes a second destination writing gigamon_ami_pq when its route runs the shipped pipeline, and ignores disabled routes elsewhere', async () => {
+    const t = table((rs) => [
+      { id: 'mine', name: 'mine', disabled: false, final: false, pipeline: PACK_PARQUET_PIPELINE_ID, output: 'my_pq_lake' },
+      { id: 'off', name: 'off', disabled: true, final: false, pipeline: PACK_PIPELINE_ID, output: 'nowhere' },
+      ...rs,
+    ])
+    const o = packOutputsOf(200, outputsBody([extraPq]))
+    expect(parquetRouteBlockers('default', t, o)).toEqual([])
+    const { verdict } = await withBoth(t, o)
+    expect(verdict.ready).toBe(true)
+  })
+
+  it('reads a destination’s dataset from destPath, else datasetId, and a refused list as unreadable', () => {
+    expect(packOutputsOf(403, {})).toBeNull()
+    expect(packOutputsOf(200, { nope: 1 })).toBeNull()
+    expect(packOutputsOf(200, { items: [{ id: 'a', type: 'cribl_lake', datasetId: 'gigamon_ami_pq' }, { type: 'x' }] })).toEqual([
+      { id: 'a', type: 'cribl_lake', dataset: 'gigamon_ami_pq' },
+    ])
+  })
+
+  it.each<[string, PackRoute[] | null, RegExp[]]>([
+    ['the Parquet route edited to gigamon_ami_normalize',
+      table((rs) => rs.map((r) => (toParquet(r) ? { ...r, pipeline: PACK_PIPELINE_ID } : r))),
+      [/Route gigamon_ami_http_to_parquet writes gigamon_ami_pq through gigamon_ami_normalize, not gigamon_ami_normalize_parquet/, /would keep _raw/]],
+    ['the Parquet route disabled',
+      table((rs) => rs.map((r) => (toParquet(r) ? { ...r, disabled: true } : r))),
+      [/No enabled route in the pack writes gigamon_ami_pq \(destination gigamon_ami_parquet_lake\); found only gigamon_ami_http_to_parquet, disabled/, /_raw/]],
+    ['the Parquet route in a disabled route group',
+      table((rs) => rs.map((r) => (toParquet(r) ? { ...r, groupId: 'g1' } : r)), { groups: { g1: { name: 'g1', disabled: true } } }),
+      [/No enabled route in the pack writes gigamon_ami_pq/]],
+    ['no route into the Parquet destination',
+      table((rs) => rs.filter((r) => !toParquet(r))),
+      [/No enabled route in the pack writes gigamon_ami_pq .*no route names that destination/]],
+    ['a route with no pipeline',
+      table((rs) => rs.map((r) => (toParquet(r) ? { ...r, pipeline: undefined } : r))),
+      [/through no pipeline/, /would keep _raw/]],
+    ['two routes into gigamon_ami_pq, one on another pipeline',
+      table((rs) => [...rs, { ...rs.find(toParquet), id: 'extra_pq', name: 'extra_pq', pipeline: 'passthru' }]),
+      [/Route extra_pq writes gigamon_ami_pq through passthru/, /2 enabled routes write it; every one must run gigamon_ami_normalize_parquet/, /would keep _raw/]],
+    ['an enabled route that picks its destination by expression',
+      table((rs) => [...rs, { id: 'expr', name: 'expr', disabled: false, enableOutputExpression: true, outputExpression: "'gigamon_ami_parquet_lake'", pipeline: 'passthru' }]),
+      [/Route expr chooses its destination by expression/]],
+    ['an unreadable routing table', null, [/routing table in default could not be read/, /keeps _raw/]],
+  ])('blocks on %s, saying what it found', async (_name, routeTable, words) => {
+    const { verdict } = await withTable(routeTable)
+    expect(verdict.ready).toBe(false)
+    expect(verdict.target).toBeNull()
+    for (const w of words) expect(verdict.blockers.join('\n')).toMatch(w)
+  })
+
+  it('passes two routes into gigamon_ami_pq when both run the shipped pipeline', () => {
+    const t = table((rs) => [...rs, { ...rs.find(toParquet), id: 'extra_pq', name: 'extra_pq' }])
+    expect(parquetRouteBlockers('default', t, shippedOutputs())).toEqual([])
+  })
+
+  it('is checked only for a version that ships the Parquet pipeline; older ones are held by the version rule', async () => {
+    expect(shipsParquetPipeline(PACK_VERSION)).toBe(true)
+    for (const v of ['0.1.0', '0.2.0', '0.2.1']) expect(shipsParquetPipeline(v)).toBe(false)
+    const { verdict } = await withTable(null, { version: '0.2.1', current: false })
+    expect(verdict.ready).toBe(false)
+    expect(verdict.blockers.join('\n')).not.toMatch(/routing table/)
+    expect(verdict.blockers.join('\n')).toMatch(/0\.2\.1 is installed; this build pins/)
+  })
+
+  it('reads a route group’s state, an id or a name, and a refused table as unreadable', () => {
+    expect(packRoutesOf(403, {})).toBeNull()
+    expect(packRoutesOf(200, { nope: 1 })).toBeNull()
+    // A 200 whose tables carry no routes array is a shape not understood, not an empty table.
+    expect(packRoutesOf(200, { items: [{ id: 'default', routes: null }] })).toBeNull()
+    expect(packRoutesOf(200, { items: [] })).toBeNull()
+    expect(packRoutesOf(200, { items: [{ id: 'default', routes: [] }] })).toEqual([])
+    expect(packRoutesOf(200, { items: [{ routes: [{ name: 'n', output: 'o', pipeline: 'p', groupId: 'g' }], groups: { g: { disabled: false } } }] })).toEqual([
+      { id: 'n', output: 'o', pipeline: 'p', disabled: false, final: false, outputExpression: false },
+    ])
   })
 })
