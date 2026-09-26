@@ -308,6 +308,21 @@ describe('compareGrouped — the distinct-count slack (owner decision 2026-09-25
     expect(compareGrouped(big, [row('a', 50, 1011), row('b', 40, 9), row('c', 30, 7)], SPEC).verdict).toBe('fail')
   })
 
+  it('reads an absent count as 0, as compareColumn does: a dcount of 1 against no value agrees, 2 does not', () => {
+    // Whether Cribl ever omits a count column on a row it answers is unmeasured;
+    // if it does, the grouped path must say what the single-row path says.
+    const one = [row('a', 50, 12), row('b', 40, 9), row('c', 30, 1)]
+    const two = [row('a', 50, 12), row('b', 40, 9), row('c', 30, 2)]
+    const noUsers = [row('a', 50, 12), row('b', 40, 9), { app: 'c', n: 30 }]
+    expect(compareGrouped(one, noUsers, SPEC).verdict).toBe('pass')
+    expect(compareGrouped(noUsers, one, SPEC).verdict).toBe('pass')
+    const r = compareGrouped(two, noUsers, SPEC)
+    expect(r.verdict).toBe('fail')
+    expect(r.differs).toEqual([{ key: '"c"', column: 'users', json: 2, parquet: null, allowed: 1 }])
+    // A column that is not a distinct count keeps the ordinary rule against no value.
+    expect(compareGrouped(one, noUsers, { ...SPEC, distinct: undefined }).verdict).toBe('fail')
+  })
+
   it('does not excuse a key’s place in a top N ranked by a distinct count that moved by one', () => {
     // Ranked by `users`: JSON's top 2 is a, b; on Parquet b reads one lower and c
     // one higher, so c takes b's place. Each figure is within its slack; the

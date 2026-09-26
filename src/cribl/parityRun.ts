@@ -80,8 +80,8 @@
 //   * a scalar summarize is one group with no key;
 //   * a figure its aggregate computes with `dcount`, `dcountif` or
 //     `count_distinct` may differ by one distinct value either way and agree
-//     (owner decision 2026-09-25, parity.ts THE DISTINCT-COUNT SLACK:
-//     `dcount` is approximate) — that figure only: every other column keeps
+//     (owner decision 2026-09-25, parity.ts THE DISTINCT-COUNT SLACK; a
+//     decision, not a measurement) — that figure only: every other column keeps
 //     the ordinary rule, and a top N's membership is judged as before even
 //     when a distinct count ranks it;
 //   * a figure that is TEXT on either side (e.g. `max(ssl_issuer)`) is held to

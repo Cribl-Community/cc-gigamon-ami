@@ -163,6 +163,18 @@ describe('compareQueryRows and a distinct count (owner decision 2026-09-25)', ()
     ])
   })
 
+  it('reads no wrapped distinct count and no count_distinctif — the same names isDistinctCount gives the slack', () => {
+    expect(querySpec('dataset="gigamon_ami" | summarize r=round(dcount(x)) by k').ok).toBe(false)
+    expect(querySpec('dataset="gigamon_ami" | summarize r=count_distinctif(x, y=="1") by k').ok).toBe(false)
+  })
+
+  it('holds a dcount against a row that omits it as against 0: 1 agrees, 2 does not', () => {
+    // Whether Cribl omits a count column on a row it answers is unmeasured.
+    const Q = 'dataset="gigamon_ami" | summarize r=dcount(dns_host) by app_name'
+    expect(compareQueryRows(Q, [{ app_name: 'dns', r: 1 }], [{ app_name: 'dns' }]).verdict).toBe('pass')
+    expect(compareQueryRows(Q, [{ app_name: 'dns', r: 2 }], [{ app_name: 'dns' }]).verdict).toBe('fail')
+  })
+
   it('passes a scalar dcount one off either way, and fails it two off', () => {
     expect(compareQueryRows(SCALAR, [{ total: 5000, resolvers: 12 }], [{ total: 5000, resolvers: 11 }]).verdict).toBe('pass')
     expect(compareQueryRows(SCALAR, [{ total: 5000, resolvers: 12 }], [{ total: 5000, resolvers: 13 }]).verdict).toBe('pass')

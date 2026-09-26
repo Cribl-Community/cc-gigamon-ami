@@ -31,6 +31,7 @@ import {
   classify,
   compareColumn,
   compareParity,
+  isDistinctCount,
   parityColumns,
   parityJobs,
   retarget,
@@ -208,8 +209,8 @@ describe('class B — count(f)', () => {
 
 describe('class C — dcount(f)', () => {
   // Owner decision 2026-09-25: a distinct count may differ by one either way
-  // and agree, because dcount is approximate (parity.ts, THE DISTINCT-COUNT
-  // SLACK). One extra distinct value is exactly class C's failure, so the
+  // and agree (parity.ts, THE DISTINCT-COUNT SLACK: a decision, not a
+  // measurement). One extra distinct value is exactly class C's failure, so the
   // class is never seen to pass.
   it('is not exercised, never a pass, even when the distinct count agrees exactly', () => {
     expect(verdicts(agreeing()).C).toBe('unexercised')
@@ -294,6 +295,26 @@ describe('class E — percentile / avg / min(f)', () => {
   it('passes a figure 4 % off and fails one 6 % off: ±5 % is the tolerance, not a bound nothing reaches', () => {
     expect(verdicts(withParquet(agreeing(), 'capacity-kpi', { rtt: 0.042 * 1.04 })).E).toBe('pass')
     expect(verdicts(withParquet(agreeing(), 'capacity-kpi', { rtt: 0.042 * 1.06 })).E).toBe('fail')
+  })
+})
+
+describe('which figures are distinct counts', () => {
+  it('names a bare distinct count, spaced or not', () => {
+    expect(isDistinctCount('dcount(x)')).toBe(true)
+    expect(isDistinctCount('dcount (x)')).toBe(true)
+    expect(isDistinctCount(' dcountif(x, y=="a")')).toBe(true)
+    expect(isDistinctCount('count_distinct(x)')).toBe(true)
+  })
+
+  it('is anchored: a wrapped distinct count is some other figure and keeps the ordinary rule', () => {
+    expect(isDistinctCount('round(dcount(x))')).toBe(false)
+    expect(isDistinctCount('round(dcount(a)/2)')).toBe(false)
+    expect(isDistinctCount('count(x)')).toBe(false)
+    expect(isDistinctCount('sum(dcount_x)')).toBe(false)
+  })
+
+  it('does not name count_distinctif, which parityRun.ts does not read as a count either', () => {
+    expect(isDistinctCount('count_distinctif(x, y)')).toBe(false)
   })
 })
 

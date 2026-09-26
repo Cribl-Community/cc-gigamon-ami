@@ -99,9 +99,14 @@
 // A figure computed by `dcount()`, `dcountif()` or `count_distinct()` may differ
 // between JSON and Parquet by ONE distinct value, in either direction, and
 // still agree: it is allowed max(the count rule above, `DCOUNT_SLACK`). The
-// reason is that `dcount` is approximate (measured 2026-09-23), and JSON has
-// read one higher than Parquet on the same data, so a ±1 there says nothing a
-// dashboard reader could act on. A difference of 2 on a figure the count rule
+// reason is the owner's decision itself — that a ±1 on a distinct count says
+// nothing a dashboard reader could act on — and it rests on no measurement
+// here. The owner reports JSON reading one higher than Parquet on the same
+// data; no report in this repo records that. The 2026-09-23 measurement found
+// `dcount` exact at a few hundred distinct values and ≈ ±0.5 % only at ~10k
+// (LIMITS below), so on the small counts where this slack is the only thing
+// allowing a difference (under about 100, with no drift) it does NOT say the
+// estimate is off by one. A difference of 2 on a figure the count rule
 // allows less than 2 still fails. Only the distinct-count figure itself gets
 // this: every other figure keeps `TOLERANCE` and THE COUNT SLACK exactly, a
 // `count()` one record off on a small count still fails, and in a top N a
@@ -145,7 +150,7 @@
 //   said it was outside ±1 % while the distinct count was under 100.)*
 // * `dcount()` is approximate (≈ ±0.5 % at ~10k distinct values, exact at a few
 //   hundred — measured 2026-09-23), which is part of why C is not compared
-//   exactly. See THE DISTINCT-COUNT SLACK below.
+//   exactly. See THE DISTINCT-COUNT SLACK above.
 // * Class C's only tile figure, `resolvers=dcount(dns_host)`, reads only
 //   `app_name="dns"` rows. If every DNS row carries `dns_host`, Parquet has no
 //   absent value there to turn into "", and its agreement shows nothing about
@@ -190,11 +195,12 @@ export const CLASS_ORDER: readonly NullClass[] = Object.freeze(['A', 'B', 'C', '
 
 /**
  * The absolute difference a distinct-count figure is always allowed (owner
- * decision 2026-09-25: `dcount` is approximate) — see THE DISTINCT-COUNT SLACK.
+ * decision 2026-09-25) — see THE DISTINCT-COUNT SLACK.
  */
 export const DCOUNT_SLACK = 1
 
-const DISTINCT_COUNT_RE = /^(dcount|dcountif|count_distinct|count_distinctif)\s*\(/
+// The same names `parityRun.ts`'s COUNT_RE accepts as a count, so the two lists agree.
+const DISTINCT_COUNT_RE = /^(dcount|dcountif|count_distinct)\s*\(/
 
 /**
  * Whether an aggregate's figure is a distinct count, and so gets `DCOUNT_SLACK`.
@@ -649,7 +655,7 @@ function sees(cls: NullClass, c: ColumnResult): boolean {
 /** A limit on what a class's pass can mean, whatever the run's figures. */
 const CLASS_LIMIT: Partial<Record<NullClass, string>> = {
   C:
-    `A difference of one distinct value is always allowed, because a distinct count is approximate, so this check cannot ` +
+    `A difference of one distinct value is always allowed (a decision, not a measurement), so this check cannot ` +
     `see the one extra value it looks for; a difference of two or more on a small count still fails. The "Distinct resolvers" figure reads only app_name="dns" rows: if every one of them ` +
     `carries dns_host, Parquet has no empty value to add there and its agreement shows nothing about this class.`,
 }
@@ -1197,7 +1203,7 @@ export interface GroupedDifference {
   column: string
   json: number | null
   parquet: number | null
-  /** The difference allowed; null when one side had no value at all. */
+  /** The difference allowed; null when one side of a distribution had no value at all (an absent count reads as 0). */
   allowed: number | null
 }
 
@@ -1280,15 +1286,19 @@ export function compareGrouped(jsonRows: readonly Row[], parquetRows: readonly R
     for (const [column, kind] of Object.entries(spec.columns)) {
       const a = numberOf(j.all.get(key)![column])
       const b = numberOf(p.all.get(key)![column])
-      if (a === null || b === null) {
-        // For a count, absent and 0 are one statement (see compareColumn); for a
-        // distribution "no value" against a number is class E's failure.
-        const same = a === b || (kind === 'count' && (a ?? 0) === 0 && (b ?? 0) === 0)
-        if (!same) differs.push({ key, column, json: a, parquet: b, allowed: null })
+      if ((a === null || b === null) && kind !== 'count') {
+        // For a distribution "no value" against a number is class E's failure.
+        if (a !== b) differs.push({ key, column, json: a, parquet: b, allowed: null })
         continue
       }
-      const allowed = allowedDifference({ kind, tolerance: TOLERANCE[kind], distinct: spec.distinct?.includes(column) ?? false }, a, drift)
-      if (Math.abs(b - a) > allowed) differs.push({ key, column, json: a, parquet: b, allowed })
+      // For a count, absent and 0 are one statement, as in compareColumn, so an
+      // absent count is held to the same rule as a 0 — the distinct-count slack
+      // included. (Whether Cribl ever omits a count column on a row it answers
+      // is unmeasured.) The difference keeps "no value" for the reader.
+      const jv = a ?? 0
+      const pv = b ?? 0
+      const allowed = allowedDifference({ kind, tolerance: TOLERANCE[kind], distinct: spec.distinct?.includes(column) ?? false }, jv, drift)
+      if (Math.abs(pv - jv) > allowed) differs.push({ key, column, json: a, parquet: b, allowed })
     }
   }
 
