@@ -63,22 +63,32 @@ describe('the classes', () => {
 })
 
 describe('per-install density', () => {
+  // Density exempts only class F — a grouping on a raw field. A presence term
+  // `f=*` in the head is class A since the first parity run (2026-09-27) found
+  // it matching every Parquet row, and A refuses whatever the density.
+  const BY_SOURCE = 'dataset="gigamon_ami" | summarize bytes=sum(total_bytes) by src_ip | sort by bytes desc | limit 12'
   const TALKERS = buildTalkersQuery('src_ip', '')
   const types = { src_ip: 'string', total_bytes: 'number' } as const
 
-  it('refuses D and F while this install has not measured the key', () => {
-    const e = eligibility(TALKERS, types, NO_DENSITY)
-    expect(e.refusals.map((r) => r.kind)).toEqual(['density', 'density'])
+  it('refuses F while this install has not measured the key', () => {
+    const e = eligibility(BY_SOURCE, types, NO_DENSITY)
+    expect(e.refusals).toEqual([{ kind: 'density', words: 'class F on src_ip: how many rows carry it is not measured' }])
   })
 
   it('accepts the same text on an install where the key is on every row', () => {
-    expect(eligibility(TALKERS, types, { src_ip: { present: 1000, total: 1000 } }).eligible).toBe(true)
+    expect(eligibility(BY_SOURCE, types, { src_ip: { present: 1000, total: 1000 } }).eligible).toBe(true)
   })
 
   it('refuses it on an install where the key is 99.3 % present — the "" group would rank', () => {
-    const e = eligibility(TALKERS, types, { src_ip: { present: 993, total: 1000 } })
+    const e = eligibility(BY_SOURCE, types, { src_ip: { present: 993, total: 1000 } })
     expect(e.eligible).toBe(false)
-    expect(e.refusals[0].words).toBe('class D on src_ip: 993 of 1000 rows carry it')
+    expect(e.refusals[0].words).toBe('class F on src_ip: 993 of 1000 rows carry it')
+  })
+
+  it('does not exempt a presence term, even on a key present on every row (Capacity talkers)', () => {
+    const e = eligibility(TALKERS, types, { src_ip: { present: 1000, total: 1000 } })
+    expect(e.eligible).toBe(false)
+    expect(e.refusals).toEqual([{ kind: 'class', words: 'class A on src_ip reads true on every Parquet row (needs a portable rewrite, 8.2)' }])
   })
 
   it('never calls an empty measurement dense', () => {

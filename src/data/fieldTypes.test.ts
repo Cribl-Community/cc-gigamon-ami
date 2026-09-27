@@ -77,11 +77,20 @@ describe('what the table lets through (nothing moves: every route stays json)', 
     expect(verdicts.filter((v) => v.all).map((v) => v.id)).toEqual(['dns.overall'])
   })
 
-  it('leaves eight entries refused only by per-install density, which no install has measured', () => {
-    expect(verdicts.filter((v) => v.textAndType && !v.all).map((v) => v.id).sort()).toEqual([
-      'flowMap.edges', 'flowMap.serviceEdges', 'pqc.groups', 'tls.pqcByServer',
-      'web.codes', 'web.h2', 'web.hosts', 'web.trend',
-    ])
+  it('leaves one entry refused only by per-install density, which no install has measured', () => {
+    // Until 2026-09-27 this listed eight. The seven below open with a presence
+    // term `f=*`, read as class D (density); the first parity run failed every
+    // one of them in all three windows, and the term is class A now.
+    expect(verdicts.filter((v) => v.textAndType && !v.all).map((v) => v.id).sort()).toEqual(['tls.pqcByServer'])
+  })
+
+  it('refuses the seven presence-term entries on class A, not on density', () => {
+    const presence = ['flowMap.edges', 'flowMap.serviceEdges', 'pqc.groups', 'web.codes', 'web.h2', 'web.hosts', 'web.trend']
+    for (const id of presence) {
+      const refusals = ROUTES.find((e) => e.id === id)!.queries.flatMap((q) => eligibility(q, FIELD_TYPES).refusals)
+      expect(refusals.some((r) => r.kind === 'class' && /^class A on \S+ reads true on every Parquet row/.test(r.words)), id).toBe(true)
+      expect(refusals.filter((r) => r.kind === 'type'), `${id}: every field it reads is typed`).toEqual([])
+    }
   })
 
   it('moves nothing', () => {

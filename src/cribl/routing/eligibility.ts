@@ -9,14 +9,17 @@
 //      each is a number Parquet's ""/0 fill changes, and fixing it is a
 //      rewrite (8.2) or a pipeline change (8.3), not a routing decision. C is
 //      NEUTRAL (JSON already counts the absent value as one distinct value).
-//      D and F refuse unless (3) says the field is dense. T refuses.
+//      F refuses unless (3) says the field is dense. T refuses. A search-head
+//      presence term `f=*` (or `f!=*`) is class A, not D, since the first
+//      parity run (2026-09-27) found `f=*` matching every Parquet row; so it
+//      refuses whatever the density (parity.ts, PRESENCE TERMS).
 //   2. The field TYPE table (src/data/fieldTypes.ts). Every field the query
 //      reads must have a measured type; an unknown one refuses. It holds
 //      only what the 2026-09-25 censuses counted (28 fields); a query reading
 //      any other field still refuses on this alone.
-//   3. Per-install DENSITY: how many rows carry a field. A `by f` or `f=*` on a
-//      field present on EVERY row reads the same on both copies; on a sparse
-//      field it does not. Demo figures are not production figures, so density
+//   3. Per-install DENSITY: how many rows carry a field. A `by f` on a field
+//      present on EVERY row reads the same on both copies; on a sparse field
+//      it does not. Demo figures are not production figures, so density
 //      is read per install (8.0b's query), never hand-labelled. Unknown today.
 //
 // The reasons come back as data, each with its kind, because the table's own
@@ -57,6 +60,9 @@ export function isDense(d: Density | undefined): boolean {
 
 const CLASS_WHY: Partial<Record<QueryClass, string>> = {
   A: 'reads true on every Parquet row (needs a portable rewrite, 8.2)',
+  // `classifyQuery` no longer reports D (a presence term is A); a D from any
+  // other reader refuses outright rather than wait on a density it never had.
+  D: 'admits every Parquet row (needs a portable rewrite, 8.2)',
   B: 'counts every Parquet row (needs a portable rewrite, 8.2)',
   E: 'is pulled toward 0 by Parquet\'s filled zeros (stays on JSON, 8.3)',
   T: 'has a type that differs between Parquet files',
@@ -76,7 +82,7 @@ export function eligibility(
       if (!neutral.includes('C')) neutral.push('C')
       continue
     }
-    if (cls === 'D' || cls === 'F') {
+    if (cls === 'F') {
       const d = density[field]
       if (isDense(d)) continue
       refusals.push({

@@ -100,7 +100,9 @@
 //
 // ── WHAT THIS CANNOT PROVE ──────────────────────────────────────────────────
 // * Density. Evidence is judged, like `tableProblems`, on text and type; the
-//   router still refuses at submit on an install where a D/F key is not dense.
+//   router still refuses at submit on an install where an F key is not dense.
+//   (A presence term `f=*` was D/F until 2026-09-27; it is class A now, refused
+//   here outright — parity.ts, PRESENCE TERMS.)
 // * That the three windows are representative: they are three windows.
 // * That `gigamon_ami` is written only by the pack (routing.ts says why the
 //   completeness check cannot see another writer; the control count would).

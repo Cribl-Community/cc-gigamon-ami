@@ -305,20 +305,32 @@ describe('planEntries', () => {
 
   it('runs, for evidence, exactly what the shipped type table makes eligible, and says why for the rest', () => {
     // src/data/fieldTypes.ts, filled 2026-09-25 from the censuses: dns.overall is eligible
-    // outright; the eight others are refused by the router only on density, which the runner
-    // leaves to each install (fieldTypes.test.ts pins the same lists).
+    // outright, and tls.pqcByServer is refused by the router only on density, which the runner
+    // leaves to each install (fieldTypes.test.ts pins the same lists). The seven whose text
+    // opens with a presence term `f=*` are class A since the first parity run (2026-09-27),
+    // in which every one of them failed in all three windows, and are no longer selected.
     const plan = planEntries()
-    expect(plan.selected.map((s) => s.id).sort()).toEqual([
-      'dns.overall', 'flowMap.edges', 'flowMap.serviceEdges', 'pqc.groups', 'tls.pqcByServer',
-      'web.codes', 'web.h2', 'web.hosts', 'web.trend',
-    ])
+    expect(plan.selected.map((s) => s.id).sort()).toEqual(['dns.overall', 'tls.pqcByServer'])
     expect(plan.selected.every((s) => s.mode === 'evidence')).toBe(true)
     expect(plan.refused.find((r) => r.id === 'tcp.trend')?.why).toMatch(/tcp_dup_ack/)
+    for (const [id, field] of [
+      ['web.trend', 'http_code'], ['web.codes', 'http_code'], ['web.hosts', 'http_host'], ['web.h2', 'http2_host'],
+      ['pqc.groups', 'ssl_ext_ec_supported_groups_type'], ['flowMap.edges', 'src_aws_flat_tags_name'],
+      ['flowMap.serviceEdges', 'src_aws_flat_tags_name'],
+    ]) {
+      expect(plan.refused.find((r) => r.id === id)?.why, id).toContain(`class A on ${field} reads true on every Parquet row`)
+    }
   })
 
   it('selects an entry once its fields are typed, for evidence', () => {
-    const plan = planEntries({ only: ['web.codes'], types: { http_code: 'number' } })
-    expect(plan.selected).toEqual([expect.objectContaining({ id: 'web.codes', mode: 'evidence', ineligible: [] })])
+    const plan = planEntries({ only: ['capacity.appmix'], types: { total_bytes: 'number', app_name: 'string' } })
+    expect(plan.selected).toEqual([expect.objectContaining({ id: 'capacity.appmix', mode: 'evidence', ineligible: [] })])
+  })
+
+  it('never selects a presence-term text for evidence, whatever the types say', () => {
+    const plan = planEntries({ only: ['web.codes'], types: { http_code: 'string' } })
+    expect(plan.selected).toEqual([])
+    expect(plan.refused[0].why).toMatch(/^not eligible — class A on http_code/)
   })
 
   it('runs an ineligible entry only to measure it, and never a pinned one', () => {
@@ -336,12 +348,12 @@ describe('the evidence an entry earns', () => {
   const T0 = Date.UTC(2026, 9, 1, 0, 0, 0) / 1000
   const win = (h: number): RunWindow => ({ earliest: T0 + h * 3600, latest: T0 + h * 3600 + 900, label: `h${h}` })
   const compared = (w: RunWindow): WindowResult => ({ window: w, status: 'compared', why: null, completeness: { complete: true, why: null, checkedAt: 0, buckets: [] }, control: null, drift: 0 })
-  const TEXT = ROUTES.find((e) => e.id === 'web.codes')!.queries[0]
-  const TYPES: Record<string, FieldType> = { http_code: 'number' }
+  const TEXT = ROUTES.find((e) => e.id === 'capacity.appmix')!.queries[0]
+  const TYPES: Record<string, FieldType> = { total_bytes: 'number', app_name: 'string' }
   const entry = (verdicts: string[], windows: RunWindow[], mode: 'evidence' | 'measurement' = 'evidence'): RunResult['entries'][number] => ({
-    id: 'web.codes',
+    id: 'capacity.appmix',
     mode,
-    ineligible: mode === 'measurement' ? ['type not measured: http_code'] : [],
+    ineligible: mode === 'measurement' ? ['type not measured: total_bytes, app_name'] : [],
     texts: [{ query: TEXT, submitted: TEXT, perWindow: windows.map((w, i) => ({ window: w, verdict: verdicts[i] as 'pass', sentence: '', rows: { json: 1, parquet: 1 }, grouped: null, report: null, textDiffers: [] })) }],
   })
 
@@ -354,8 +366,8 @@ describe('the evidence an entry earns', () => {
     // Earned on the temporary demo feed, it says so, and is still accepted.
     const demo = entryOutcome(entry(['pass', 'pass', 'pass'], ws), ws.map(compared), 'r', '2026-10-01', 'demo')
     expect(demo.evidence).toMatchObject({ feed: 'demo' })
-    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'web.codes')!, target: 'parquet', evidence: out.evidence }
-    const table = ROUTES.map((e) => (e.id === 'web.codes' ? pasted : e))
+    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'capacity.appmix')!, target: 'parquet', evidence: out.evidence }
+    const table = ROUTES.map((e) => (e.id === 'capacity.appmix' ? pasted : e))
     expect(tableProblems(table, TYPES)).toEqual([])
     // …and the same table without the types refuses it, as it must.
     expect(tableProblems(table, {})).not.toEqual([])

@@ -117,9 +117,16 @@ describe('the rule: Parquet only with evidence and eligibility', () => {
     expect(tableProblems([parquetEntry()], TREND_TYPES)).toEqual([])
   })
 
-  it('leaves density to the install: D/F on an unmeasured key is not a table problem', () => {
+  it('leaves density to the install: F on an unmeasured key is not a table problem', () => {
+    const appmix = parquetEntry({ id: 'capacity.appmix', queries: [capacity.buildAppmixQuery('src_ip', '')] })
+    expect(tableProblems([appmix], { app_name: 'string', total_bytes: 'number' })).toEqual([])
+  })
+
+  it('fails a presence term `f=*` on Parquet whatever the types: class A since 2026-09-27', () => {
     const talkers = parquetEntry({ id: 'capacity.talkers.src_ip', queries: [capacity.buildTalkersQuery('src_ip', '')] })
-    expect(tableProblems([talkers], { src_ip: 'string', total_bytes: 'number' })).toEqual([])
+    expect(tableProblems([talkers], { src_ip: 'string', total_bytes: 'number' })).toEqual([
+      'capacity.talkers.src_ip: routed to Parquet but not eligible — class A on src_ip reads true on every Parquet row (needs a portable rewrite, 8.2)',
+    ])
   })
 
   it('fails a text listed twice', () => {

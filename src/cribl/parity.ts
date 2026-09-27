@@ -18,7 +18,8 @@
 //   A  isnotnull(f)             measured: Q29 c_T1572 18 → 43,338
 //   B  count(f)                 measured: Q32 f2      18 → 43,338
 //   C  dcount(f)                JSON side measured; Parquet side NOT measured
-//   D  f=* presence filter      measured once: ≈2× the JSON value
+//   D  f=* presence filter      measured: web.trend total ≈250 → ≈17,500 a
+//                               minute, i.e. every row (2026-09-27, below)
 //   E  percentile/avg/min(f)    NOT measured on Parquet — dragged toward 0
 //
 // (Corrected 2026-09-25, Phase 8 design revision 2 §0.6. This table said C, D
@@ -37,13 +38,50 @@
 //      The JSON +1 itself is a separate, existing correctness question (design
 //      §6), not a Parquet one.
 //   D  `b=*` read ≈2× the JSON value for one STRING field in the lab (proof
-//      (g), 2026-09-24). A numeric `0` fill is still unmeasured.
+//      (g), 2026-09-24). On the first real parity run (2026-09-27, THE FIRST
+//      PARITY RUN below) `f=*` matched EVERY Parquet row on each of the six
+//      string fields it was read on: an absent field is stored as "" (or 0 on
+//      a number; unmeasured under `=*`), and `=*` admits it. That is class A's failure — a presence test
+//      that reads true everywhere — so a whole query's presence term is class
+//      A (`classifyQuery`, PRESENCE TERMS). This scalar check still files its
+//      two presence columns under D, which is what they measure.
 //   E  All four E fields this app reads (`tcp_rtt`, `tcp_rtt_app`,
 //      `dns_response_time`, `http_server_ms`) are numeric, so the fill is `0`.
 //      Still unmeasured on Parquet; on the demo feed's density,
 //      `percentile(http_server_ms,95)` over all rows is inferred to read
 //      exactly 0.
 //
+// ── THE FIRST PARITY RUN (MEASURED 2026-09-27) ──────────────────────────────
+// `npm run parity:run -- --feed demo --run`, report
+// `.dev/parity-run/parity-run-ref20260927T2340Z-ran20260927T234038Z.md` (and
+// `.json`) — gitignored, because it carries a tenant's figures, so this
+// paragraph is the repo's record of it. The temporary demo feed wrote the SAME
+// events to `gigamon_ami` and `gigamon_ami_pq`; three 15-minute windows
+// (23:15, 17:15 and 11:15 UTC) were proven complete, and each window's
+// control count agreed exactly (262,992, 262,880, 263,040 on both sides).
+//   * PASSED in all three: `dns.overall` and `tls.pqcByServer`. Neither text
+//     has a presence term.
+//   * FAILED in all three: `flowMap.edges` (both texts), `flowMap.serviceEdges`,
+//     `pqc.groups`, `web.codes`, `web.hosts`, `web.trend`, `web.h2`. EVERY one
+//     begins `dataset="gigamon_ami" <field>=* | …`. On Parquet that term
+//     matched every row: `web.trend`'s `total=count()` went from ≈160–300 to
+//     ≈17,200–17,800 a minute (the whole feed), and every grouped family
+//     gained a "" key (both-"" and one-side-"" pairs on the flow map).
+//   * Billed 2,302 CPU-s over 69 jobs (3 completeness checks, 6 control
+//     counts, 60 query runs), against a printed floor of ≈6,383. Per query per
+//     15-minute window, JSON ≈25–31 CPU-s and Parquet ≈33–48.
+// Evidence objects exist in the report for the two passing families and are
+// NOT pasted into routing/table.ts: nothing is routed, and the reason to route
+// at all — Live-mode latency — has not been measured on either side.
+// `classifyQuery` did not refuse the failing form: it read `f=*` as class D,
+// which the router gates on per-install density and the table check (and so
+// the runner's default selection) ignores — so `web.trend`, with no `by` key,
+// was admitted outright. It now reads it as class A (PRESENCE TERMS).
+// The portable rewrite 8.2 needs for these is `f=*` → a non-empty test (the
+// 8.0c audit found no real "" in these string fields on JSON). It changes
+// customer-visible query text (the display freeze) and drifts every schedule
+// whose body carries it, so it is NOT done here.
+
 // ── WHY THIS WILL RUN (owner, 2026-09-25) ───────────────────────────────────
 // Phase 8's Q1 — "what would make reading gigamon_ami_pq worth doing?" — was
 // answered (a), Live-mode latency: "the live queries will make it worth
@@ -187,7 +225,7 @@ export const NULL_CLASSES: Readonly<Record<NullClass, { pattern: string; underPa
   A: { pattern: 'isnotnull(f)', underParquet: 'is true on every row, so a rare signal counts the whole window' },
   B: { pattern: 'count(f)', underParquet: 'counts every row, so every detection fires' },
   C: { pattern: 'dcount(f)', underParquet: 'gains one distinct value, the empty string' },
-  D: { pattern: 'f=* presence filter', underParquet: 'may admit every row, so a scoped panel stops being scoped' },
+  D: { pattern: 'f=* presence filter', underParquet: 'admits every row, so a scoped panel stops being scoped' },
   E: { pattern: 'percentile / avg / min(f)', underParquet: 'is dragged toward 0 by rows that never had a value' },
 })
 
@@ -903,6 +941,18 @@ export function compareParity(
 // `x` too (conservative: a made column carries every raw field its expression
 // read, whatever the function did to them).
 //
+// PRESENCE TERMS. A search-head term `f=*` is class A on `f`, and so is its
+// negation `f!=*` (measured 2026-09-27, THE FIRST PARITY RUN above): Parquet
+// stores an absent field as "" or 0, so `f=*` holds on every row and `f!=*` on
+// none — the same failure as `isnotnull(f)`/`isnull(f)`, and refused the same
+// way, whatever the field's density. A dense field would read the same on both
+// copies; that exemption is given up on purpose, because the fix for every
+// such text is the 8.2 rewrite rather than a density measurement, and an error
+// here must be towards "not eligible". Until 2026-09-27 the term was class D,
+// gated on density, which the table check does not see. Only the head (before
+// the first pipe) is read for it; a quoted value (`x="a=*"`), a wildcard value
+// (`f=*.example.com`), `f==*` and the dataset selector are not terms.
+//
 // C is reported and is NEUTRAL (Phase 8 design §2.3): JSON already counts the
 // absent value as one distinct value on a sparse field (F-19), and Parquet's
 // fill is one distinct value too. The router does not refuse on it.
@@ -962,6 +1012,14 @@ function splitOutside(s: string, sep: string): string[] {
   out.push(s.slice(start))
   return out.map((x) => x.trim())
 }
+
+/**
+ * A search-head presence term: `f=*` (present) or `f!=*` (absent), standing
+ * alone — not `f==*`, not a wildcard value such as `f=*.example.com`, and never
+ * inside quotes (the caller blanks those). Group 1 is what precedes it, group 2
+ * the field.
+ */
+const PRESENCE_TERM_RE = /(^|[\s(])([A-Za-z_][\w.]*)\s*!?=\s*\*(?=[\s)]|$)/g
 
 const KEYWORDS = new Set(['and', 'or', 'not', 'in', 'by', 'asc', 'desc', 'true', 'false', 'null'])
 const NORMALISED_RE = /^iif\(\s*isnotnull\(\s*([\w.]+)\s*\)\s*,\s*\1\s*,\s*""\s*\)$/
@@ -1080,8 +1138,15 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
     for (const f of rawOf(expr)) hit('F', f)
   }
 
-  for (const m of head.matchAll(/(?:^|\s)([\w.]+)=\*(?=\s|$)/g)) hit('D', m[1])
-  read(head.replace(/=\*/g, ''))
+  // A presence term in the search head — `f=*`, or its negation `f!=*` — is
+  // class A on `f`, not D (measured 2026-09-27; see PRESENCE TERMS above).
+  // Quoted text is blanked first, so `x="a=*"` is a value, not a term, and the
+  // dataset selector is never a field.
+  const bareHead = head.replace(/"[^"]*"|'[^']*'/g, '""')
+  for (const m of bareHead.matchAll(PRESENCE_TERM_RE)) {
+    if (m[2].toLowerCase() !== 'dataset') hit('A', m[2])
+  }
+  read(bareHead.replace(PRESENCE_TERM_RE, (_, lead: string, f: string) => `${lead}${f}`))
 
   for (const stage of stages) {
     const verb = /^([\w-]+)/.exec(stage)?.[1] ?? ''
