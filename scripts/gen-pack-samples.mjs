@@ -4,10 +4,11 @@
 //   node scripts/gen-pack-samples.mjs --check     regenerate in memory and byte-compare; exit 1 on any difference
 //
 // WHY GENERATED, AND NOT COPIED. The repository is public. The workspace's own
-// demo samples have no recorded provenance or licence, so none of them are
-// committed. Every event below is made up here, from a fixed seed, so the
-// output is the same on every machine and CI can prove it (the --check mode,
-// run by src/cribl/packSamples.test.ts).
+// demo samples are real captured traffic with no recorded provenance or licence,
+// so none of them, and no value from them, is committed. Every event below is
+// made up here (only statistics of the demo are read: see THE DEMO LOOKALIKE
+// below), from a fixed seed, so the output is the same on every machine and CI
+// can prove it (the --check mode, run by src/cribl/packSamples.test.ts).
 //
 // ADDRESSES AND NAMES. Internal hosts are in 10.20.0.0/16, which is private
 // address space and identifies no one. It has to be private: Security's Lateral
@@ -15,11 +16,13 @@
 // documentation ranges 192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24, and
 // every hostname is under example.com, example.net or example.org. `app_name`
 // keeps the real classification label (openai, office365, ...), because the
-// Shadow AI tab's queries match on it.
+// Shadow AI tab's queries match on it. MACs are only in RFC 7042's documentation
+// block 00:00:5e:00:53:00/24 and IPv6 answers only in 2001:db8::/32; the flows
+// themselves are all IPv4.
 //
 // WHAT AN EVENT LOOKS LIKE. A flat object of AMI fields, in one fixed key order
-// (KEY_ORDER). A field that does not apply to a record is OMITTED, never null or
-// "": the Findings and Field Explorer tabs count presence, and in Cribl KQL an
+// (KEY_ORDER, then the demo's other fields alphabetically). A field that does
+// not apply to a record is OMITTED, never null or "": the Findings and Field Explorer tabs count presence, and in Cribl KQL an
 // empty string is not the same as an absent field. There is no `_time` (Cribl
 // adds it on replay) and no template token of any kind. Every event carries
 // gigamon_origin="sample", which the DataGen's metadata also sets. Fields the
@@ -37,6 +40,27 @@
 // reads src/data/*.ts only to check that the app names it uses are still in the
 // app's catalogues; it adds nothing there, because every export of src/data is
 // part of the display-freeze digest.
+//
+// THE DEMO LOOKALIKE (0.2.3 on; owner decision 2026-09-26). The samples are
+// also the SHAPE of the workspace's worker-group demo DataGen
+// (in_gigamon_datagen): its field names, each at its application's rate, its
+// string-typed values, its application labels and Gigamon enumerations.
+// scripts/pack-lookalike.mjs does it, from scripts/demo-profile.json — the
+// statistics scripts/derive-demo-profile.mjs derives by hand from the demo's
+// own files, which never enter the repository. Each file is:
+//   - its SCENARIO events above, which light every tab, DRESSED with the demo's
+//     fields they do not decide (never a field a tab reads for a state);
+//   - LOOKALIKE events woven in: first the fewest that make every demo field
+//     appear (`coverage`), then events at the demo's application mix, added
+//     until the next would take the file past MAX_FILE_BYTES;
+//   - every event STAMPED with the demo's flow record fields in replay order,
+//     then typed as the demo types them (FULL_ORDER, `finishTypes`).
+// The demo sends 146 events a second (73 samples at 2 each); this DataGen
+// sends 5 (default/inputs.yml's `eventsPerSec`, one per sample, mirrored in
+// src/cribl/onboarding/plan.ts `SAMPLE_FEED` and pinned by plan.test.ts). At
+// five files of at most MAX_FILE_BYTES, the lookalike is about a third of the
+// events and the scenarios the rest, so the feed's application mix follows the
+// demo's only in part (`npm run pack:samples` prints it beside the demo's).
 
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
@@ -52,71 +76,36 @@ export const AS_OF = '2026-10-01T00:00:00Z'
 const AS_OF_MS = Date.parse(AS_OF)
 const AS_OF_EPOCH = AS_OF_MS / 1000
 const DAY_MS = 86_400_000
-/** Budget for all sample files together. The DataGen replays them all day. */
-const TOTAL_BUDGET_BYTES = 400 * 1024
-/** Each file loops in five minutes or less at one event per second. */
+/**
+ * Each file loops in five minutes or less at one event per second (`npm run
+ * pack:check` refuses a longer loop).
+ */
 const MAX_EVENTS_PER_FILE = 300
+/**
+ * The most bytes one sample file may hold. Cribl's default limit on a sample
+ * file is 256 KB (UNMEASURED here: the documented default, not a read of any
+ * Leader), and the largest demo DataGen sample known to install in the
+ * workspace is about 240 KB; this stays under both. Lookalike events are added
+ * to a file until the next one would cross it.
+ */
+export const MAX_FILE_BYTES = 235_000
+
+/**
+ * The statistics of the workspace's demo DataGen that the lookalike follows,
+ * written by scripts/derive-demo-profile.mjs from files that never enter the
+ * repository. See scripts/pack-lookalike.mjs.
+ */
+const PROFILE = JSON.parse(readFileSync(join(ROOT, 'scripts', 'demo-profile.json'), 'utf8'))
+const { lookalikeKit } = await import(pathToFileURL(join(ROOT, 'scripts', 'pack-lookalike.mjs')).href)
+const { fnv1a, seededRng } = await import(pathToFileURL(join(ROOT, 'scripts', 'pack-rng.mjs')).href)
 
 const { AI_APPS } = await import(pathToFileURL(join(ROOT, 'src', 'data', 'aiApps.ts')).href)
 const { SAAS_APPS } = await import(pathToFileURL(join(ROOT, 'src', 'data', 'saasApps.ts')).href)
 
 // ── PRNG ────────────────────────────────────────────────────────────────────
 
-function fnv1a(s) {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193) >>> 0
-  }
-  return h >>> 0
-}
-
-function rng(label) {
-  let a = (SEED ^ fnv1a(label)) >>> 0
-  const next = () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-  const r = {
-    next,
-    int: (lo, hi) => lo + Math.floor(next() * (hi - lo + 1)),
-    pick: (arr) => arr[Math.floor(next() * arr.length)],
-    chance: (p) => next() < p,
-    /** [[value, weight], ...] */
-    weighted: (pairs) => {
-      const total = pairs.reduce((s, [, w]) => s + w, 0)
-      let x = next() * total
-      for (const [v, w] of pairs) {
-        if ((x -= w) < 0) return v
-      }
-      return pairs[pairs.length - 1][0]
-    },
-    /** Lognormal with the given median, by Box-Muller over this generator. */
-    lognormal: (median, sigma) => {
-      const u1 = next() || 1e-12
-      const u2 = next()
-      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
-      return median * Math.exp(sigma * z)
-    },
-    hex: (n) => {
-      let s = ''
-      for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(next() * 16)]
-      return s
-    },
-    shuffle: (arr) => {
-      const out = [...arr]
-      for (let i = out.length - 1; i > 0; i--) {
-        const j = Math.floor(next() * (i + 1))
-        ;[out[i], out[j]] = [out[j], out[i]]
-      }
-      return out
-    },
-  }
-  return r
-}
+// mulberry32 per label (scripts/pack-rng.mjs), so the lookalike draws with the same.
+const rng = seededRng(SEED)
 
 const r6 = (x) => Math.round(x * 1e6) / 1e6
 /** A value that depends only on its label, never on draw order. */
@@ -159,6 +148,24 @@ function finish(ev) {
   }
   const out = {}
   for (const k of KEY_ORDER) if (ev[k] !== undefined) out[k] = ev[k]
+  return out
+}
+
+/**
+ * Every field of an assembled event, in the order it is written: the
+ * scenarios' own vocabulary first, then every other field the demo DataGen
+ * carries, alphabetically. `_time` is not one: Cribl adds it on replay.
+ */
+const FULL_ORDER = [...KEY_ORDER, ...Object.keys(PROFILE.fields).filter((k) => k !== '_time' && !KNOWN_KEYS.has(k)).sort()]
+const FULL_KEYS = new Set(FULL_ORDER)
+
+/** Rebuild an assembled event in FULL_ORDER, refusing a key neither the scenarios nor the demo carry. */
+function finishFull(ev) {
+  for (const k of Object.keys(ev)) {
+    if (!FULL_KEYS.has(k)) throw new Error(`gen-pack-samples: field "${k}" is neither in KEY_ORDER nor a demo field`)
+  }
+  const out = {}
+  for (const k of FULL_ORDER) if (ev[k] !== undefined) out[k] = ev[k]
   return out
 }
 
@@ -420,7 +427,10 @@ function genWeb() {
   }
   const merged = r.shuffle([...shuffled, ...h2])
   const at = 45
-  return [...merged.slice(0, at), ...legacy, ...merged.slice(at)].map(finish)
+  const out = [...merged.slice(0, at), ...legacy, ...merged.slice(at)].map(finish)
+  // The legacy block stays contiguous when lookalike events are woven in.
+  out.keepTogether = [at, at + legacy.length]
+  return out
 }
 
 // ── gigamon_ami_dns: DNS health, Flow Map's DNS domain, Findings ─────────────────────
@@ -772,19 +782,118 @@ function renderSamplesYml(files) {
   return `${lines.join('\n')}\n`
 }
 
+/**
+ * Weave `look` into `scen` evenly, so a minute of replay holds both. A
+ * `keepTogether` range of the scenario (the legacy host's 5xx block) is never
+ * split: what would fall inside it waits until it ends.
+ */
+function weave(scen, look) {
+  const out = []
+  const [k0, k1] = scen.keepTogether ?? [-1, -1]
+  let given = 0
+  scen.forEach((e, i) => {
+    out.push(e)
+    if (i >= k0 && i < k1 - 1) return
+    const due = Math.floor(((i + 1) * look.length) / scen.length)
+    while (given < due) out.push(look[given++])
+  })
+  while (given < look.length) out.push(look[given++])
+  return out
+}
+
+/**
+ * One sample file: its scenario events (dressed) with its lookalike events
+ * woven in, stamped with the flow record fields in replay order, typed as the
+ * demo types them, and rendered.
+ */
+function buildFile(kit, fileIndex, id, scen, look) {
+  const stampR = rng(`look:stamp:${id}`)
+  const events = weave(scen, look).map((e, p) => finishFull(kit.finishTypes(kit.stamp(stampR, e, fileIndex, p))))
+  return { events, bytes: Buffer.from(render(events), 'utf8') }
+}
+
 export function generate() {
-  const files = SAMPLES.map(([id, gen]) => {
-    const events = gen()
+  const scenarios = SAMPLES.map(([id, gen]) => ({ id, events: gen() }))
+  const webCodes = [...new Set(scenarios.flatMap((s) => s.events.map((e) => e.http_code).filter((c) => c !== undefined)))].sort()
+  const kit = lookalikeKit({
+    profile: PROFILE, rng, fnv1a, keyOrder: KEY_ORDER, webHosts: WEB_HOSTS.map((h) => h.host), webCodes, asOfMs: AS_OF_MS,
+  })
+
+  // 1. The scenario events, dressed in the demo's fields.
+  const dressR = rng('look:dress')
+  const dressed = scenarios.map((s) => {
+    const d = s.events.map((e) => kit.dress(dressR, e))
+    d.keepTogether = s.events.keepTogether
+    return d
+  })
+
+  // 2. Lookalike events: coverage first, so every field name and every
+  //    application label the demo carries appears, then events at the demo's
+  //    application mix.
+  const lookR = rng('look:events')
+  const mixR = rng('look:mix')
+  const coverage = kit.coverage(lookR, new Set(dressed.flat().flatMap((e) => Object.keys(e))), new Set(dressed.flat().map((e) => e.app_name)))
+  const nextMixed = () => kit.lookalike(lookR, mixR.weighted(kit.apps.map((a) => [a.profile, a.profile.events])))
+
+  // 3. Coverage into the files, then mixed events round-robin into
+  //    every file that still has room, until none has.
+  const look = SAMPLES.map(() => [])
+  const size = SAMPLES.map(([id], i) => buildFile(kit, i, id, dressed[i], []).bytes.length)
+  // Stamping and weaving move a file's bytes by a few per event, so an estimate
+  // decides the easy cases and a full build decides the close ones.
+  const sizeOf = (e) => Buffer.byteLength(JSON.stringify(finishFull(kit.finishTypes(kit.stamp(rng('look:estimate'), e, 0, 0))))) + 2
+  const fits = (i, extra) => {
+    const next = [...look[i], extra]
+    if (dressed[i].length + next.length > MAX_EVENTS_PER_FILE) return false
+    const estimate = size[i] + sizeOf(extra)
+    if (estimate > MAX_FILE_BYTES + 2_000) return false
+    const bytes = estimate < MAX_FILE_BYTES - 2_000 ? estimate : buildFile(kit, i, SAMPLES[i][0], dressed[i], next).bytes.length
+    if (bytes > MAX_FILE_BYTES) return false
+    size[i] = bytes
+    return true
+  }
+  // Each coverage event goes to the file with the most room left that takes it.
+  coverage.forEach((e) => {
+    const order = SAMPLES.map((_, i) => i).sort((x, y) => size[x] - size[y] || x - y)
+    const i = order.find((k) => fits(k, e))
+    if (i === undefined) throw new Error(`gen-pack-samples: coverage event for "${e.app_name}" fits no sample file`)
+    look[i].push(e)
+  })
+  const open = new Set(SAMPLES.map((_, i) => i))
+  let turn = 0
+  let pending = nextMixed()
+  while (open.size) {
+    const i = [...open][turn++ % open.size]
+    if (fits(i, pending)) {
+      look[i].push(pending)
+      pending = nextMixed()
+    } else open.delete(i)
+  }
+
+  const files = SAMPLES.map(([id], i) => {
+    const { events, bytes } = buildFile(kit, i, id, dressed[i], look[i])
     for (const e of events) {
       if (e.gigamon_origin !== 'sample') throw new Error(`gen-pack-samples: ${id} has an event without gigamon_origin="sample"`)
       if ('_time' in e) throw new Error(`gen-pack-samples: ${id} has an event with _time`)
     }
     if (events.length > MAX_EVENTS_PER_FILE) throw new Error(`gen-pack-samples: ${id} has ${events.length} events; the limit is ${MAX_EVENTS_PER_FILE}`)
-    return { id, count: events.length, bytes: Buffer.from(render(events), 'utf8') }
+    if (bytes.length > MAX_FILE_BYTES) throw new Error(`gen-pack-samples: ${id} is ${bytes.length} bytes; the limit is ${MAX_FILE_BYTES}`)
+    return { id, count: events.length, bytes, events, lookalike: look[i].length }
   })
   const total = files.reduce((s, f) => s + f.bytes.length, 0)
-  if (total > TOTAL_BUDGET_BYTES) throw new Error(`gen-pack-samples: ${total} bytes of samples exceeds the ${TOTAL_BUDGET_BYTES}-byte budget`)
   return { files, samplesYml: Buffer.from(renderSamplesYml(files), 'utf8'), total }
+}
+
+/**
+ * The application mix a viewer sees: every file replays at one event a second,
+ * so the feed's mix is the mean of the files' own mixes.
+ */
+export function replayMix(files) {
+  const mix = {}
+  for (const f of files) {
+    for (const e of f.events) mix[e.app_name] = (mix[e.app_name] ?? 0) + 1 / f.events.length / files.length
+  }
+  return mix
 }
 
 function main() {
@@ -816,7 +925,11 @@ function main() {
 
   mkdirSync(SAMPLES_DIR, { recursive: true })
   for (const [path, bytes] of expected) writeFileSync(path, bytes)
-  for (const f of files) process.stdout.write(`  ${f.id}.json  ${f.count} events  ${f.bytes.length} bytes\n`)
+  for (const f of files) process.stdout.write(`  ${f.id}.json  ${f.count} events (${f.lookalike} lookalike)  ${f.bytes.length} bytes\n`)
+  const mix = replayMix(files)
+  const top = Object.entries(mix).sort((a, b) => b[1] - a[1]).slice(0, 5)
+  const demo = Object.fromEntries(PROFILE.apps.map((a) => [a.app, a.share]))
+  process.stdout.write(`  replay mix (demo): ${top.map(([a, s]) => `${a} ${(s * 100).toFixed(1)}% (${((demo[a] ?? 0) * 100).toFixed(1)}%)`).join(', ')}\n`)
   process.stdout.write(`gen-pack-samples: wrote ${files.length} samples, ${total} bytes\n`)
 }
 

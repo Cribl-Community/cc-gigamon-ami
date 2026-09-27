@@ -1,9 +1,9 @@
 // The cutover preflight in a build whose pinned pack CANNOT be installed: the
-// window between pinning the next version and its release. This build is not
-// that — 0.2.2 is released and flipped — so the mock below moves pack.ts's
-// release constants to an unreleased 0.2.3 (`PACK_PUBLISHED` false, no sha256,
-// 0.2.3 off `PACK_PUBLISHED_VERSIONS`), as OnboardingPanel.unpublished.test.tsx
-// does; delete it and every assertion here stops holding.
+// window between pinning the next version and its release. This build IS that
+// today (0.2.3 pinned before its release, 2026-09-26), and the mock below still
+// states it explicitly (`PACK_PUBLISHED` false, no sha256, 0.2.3 off
+// `PACK_PUBLISHED_VERSIONS`), as OnboardingPanel.unpublished.test.tsx does, so
+// these assertions keep holding after the flip.
 //
 // Owner decision 2026-09-25 (`fix/preflight-rules-route`): while the pin cannot
 // be installed, Upgrade is refused, so an owned older version blocks only on a

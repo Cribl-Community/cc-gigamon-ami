@@ -43,6 +43,20 @@ import {
 import { compareVersions, packOutputsOf, packRoutesOf, thisPackRelease, type PackOutput, type PackRoute, type PackState } from './packClient'
 import { API_CALLS } from './paths'
 
+vi.mock('./pack', async (orig) => {
+  // PACK_VERSION's release recorded, as the flip after its tag records it. This
+  // build pins 0.2.3 before its release (pack.ts); an unreleased pin is
+  // cutoverPreflight.unpublished.test.ts. Without this, "the pin it can
+  // install" below would not exist. The flip removes this mock.
+  // *(Added 2026-09-26, `feat/pack-023-demo-lookalike`.)*
+  const real = await orig<typeof import('./pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
+    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
+  }
+})
+
 const ROOT = join(__dirname, '..', '..')
 const TOKEN = 'SECRET-TOKEN-must-never-print'
 

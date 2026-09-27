@@ -141,11 +141,11 @@ export interface SampleFeedEntry {
  * dialog states is the volume the pack produces.
  */
 export const SAMPLE_FEED: readonly SampleFeedEntry[] = Object.freeze([
-  { sample: 'gigamon_ami_services', eventsPerSec: 1, size: 85476, numEvents: 126 },
-  { sample: 'gigamon_ami_web_api', eventsPerSec: 1, size: 96321, numEvents: 120 },
-  { sample: 'gigamon_ami_dns', eventsPerSec: 1, size: 53294, numEvents: 97 },
-  { sample: 'gigamon_ami_tls_apps', eventsPerSec: 1, size: 112043, numEvents: 142 },
-  { sample: 'gigamon_ami_security', eventsPerSec: 1, size: 36224, numEvents: 88 },
+  { sample: 'gigamon_ami_services', eventsPerSec: 1, size: 234977, numEvents: 213 },
+  { sample: 'gigamon_ami_web_api', eventsPerSec: 1, size: 234852, numEvents: 150 },
+  { sample: 'gigamon_ami_dns', eventsPerSec: 1, size: 234509, numEvents: 205 },
+  { sample: 'gigamon_ami_tls_apps', eventsPerSec: 1, size: 234111, numEvents: 154 },
+  { sample: 'gigamon_ami_security', eventsPerSec: 1, size: 234296, numEvents: 210 },
 ].map((e) => Object.freeze(e)))
 
 export interface SampleVolume {

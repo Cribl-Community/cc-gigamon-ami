@@ -1,9 +1,10 @@
 // The onboarding panel in a build that pins a pack version before its release
 // exists: pack.ts `PACK_PUBLISHED` false, no sha256, the pinned version off
-// `PACK_PUBLISHED_VERSIONS`. This build is NOT that: 0.2.2 is released and
-// flipped (`feat/pack-flip-022`), so the mock below is the only thing that
-// moves the constants back to an unreleased pin — delete it and every refusal
-// asserted here stops holding. The published build's behaviour is
+// `PACK_PUBLISHED_VERSIONS`. This build IS that today: it pins 0.2.3 before its
+// release (2026-09-26, `feat/pack-023-demo-lookalike`), and the mock below
+// still moves the constants back explicitly, so the refusals asserted here keep
+// holding after the flip. (0.2.2 was released and flipped, `feat/pack-flip-022`,
+// and until this build the mock was the only thing that made it unreleased.) The published build's behaviour is
 // OnboardingPanel.test.tsx (its block 10). *(Corrected 2026-09-25,
 // `feat/pack-flip-021`, and again the same day, `feat/pack-022-parquet-pipeline`,
 // when the pin moved to the unreleased 0.2.2. Corrected again 2026-09-25,

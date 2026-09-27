@@ -44,6 +44,20 @@ import { API_CALLS } from '../paths'
 import { cleanupBlockedBy, cleanupDialog, cleanupFindings, cleanupOffered, leftoverCandidates } from './plan'
 import { prepareCleanup, runPackCleanup } from './run'
 
+vi.mock('../pack', async (orig) => {
+  // PACK_VERSION's release recorded, as the flip after its tag records it. The
+  // clean-up is offered only for an owned, current copy — a released pin. This
+  // build pins 0.2.3 before its release (pack.ts), so without this no copy
+  // could be current and owned, and every block below would describe nothing.
+  // The flip removes this mock, as `feat/pack-flip-022` removed the one before.
+  const real = await orig<typeof import('../pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
+    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
+  }
+})
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const GROUP = 'default'
 const HASH = 'dddd000011112222dddd000011112222dddd0000'

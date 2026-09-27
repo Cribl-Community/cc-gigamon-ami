@@ -73,7 +73,7 @@ describe('pack.mjs check', () => {
   }, 30_000)
 
   it('passes when the version matches the tag, and fails when it does not', () => {
-    expect(run(['check', '--expect-version', '0.2.2', '--dir', copyPack()]).status).toBe(0)
+    expect(run(['check', '--expect-version', '0.2.3', '--dir', copyPack()]).status).toBe(0)
     const r = run(['check', '--expect-version', '9.9.9', '--dir', copyPack()])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/does not match the expected "9\.9\.9"/)
@@ -83,14 +83,14 @@ describe('pack.mjs check', () => {
   // PACK_PUBLISHED is still false at tag time (it is set in a later PR), so a
   // test keyed on PACK_PUBLISHED never fires when a tag is pushed. The refusal
   // has to live in the step that builds the published bytes.
-  it('passes the committed pack as a 0.2.2 release: nothing in it is PENDING', () => {
-    const r = run(['check', '--expect-version', '0.2.2'])
+  it('passes the committed pack as a 0.2.3 release: nothing in it is PENDING', () => {
+    const r = run(['check', '--expect-version', '0.2.3'])
     expect(r.out).not.toMatch(/PENDING/)
     expect(r.status).toBe(0)
   }, 30_000)
 
   it('refuses a release (--expect-version) while the pack still says PENDING', () => {
-    const r = run(['check', '--expect-version', '0.2.2', '--dir', copyPack(undecided)])
+    const r = run(['check', '--expect-version', '0.2.3', '--dir', copyPack(undecided)])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/README\.md: says PENDING; a release must not ship an undecided setting/)
     expect(r.out).toMatch(/default\/outputs\.yml: says PENDING/)
@@ -99,7 +99,7 @@ describe('pack.mjs check', () => {
   it('builds nothing for a release while the pack still says PENDING', () => {
     const out = mkdtempSync(join(tmpdir(), 'gigamon-crbl-'))
     scratch.push(out)
-    const r = run(['build', '--expect-version', '0.2.2', '--dir', copyPack(undecided), '--out', out])
+    const r = run(['build', '--expect-version', '0.2.3', '--dir', copyPack(undecided), '--out', out])
     expect(r.status).toBe(1)
     expect(r.out).toMatch(/says PENDING/)
     expect(readdirSync(out)).toEqual([])
@@ -409,6 +409,26 @@ describe('pack.mjs check', () => {
       /hostname outside example\.com\/\.net\/\.org: voip\.cribl\.io/,
     ],
     [
+      'a sample carrying a MAC outside the documentation block',
+      (d) => edit(d, 'data/samples/gigamon_ami_security.json', (s) => s.replace('00:00:5e:00:53:', '3c:22:fb:00:53:')),
+      /MAC address outside the documentation block 00:00:5e:00:53:00\/24: 3c:22:fb:00:53:/,
+    ],
+    [
+      'a sample carrying an IPv6 address outside 2001:db8::/32',
+      (d) => edit(d, 'data/samples/gigamon_ami_dns.json', (s) => s.replace('2001:0db8:', '2606:4700:')),
+      /IPv6 address outside 2001:db8::\/32: 2606:4700:/,
+    ],
+    [
+      'a sample carrying an instance-type shape outside its own field',
+      (d) => edit(d, 'data/samples/gigamon_ami_security.json', (s) => s.replace('"dst_aws_flat_tags_deploy":"lab"', '"dst_aws_flat_tags_deploy":"t3.medium"')),
+      /hostname outside example\.com\/\.net\/\.org: t3\.medium/,
+    ],
+    [
+      'a sample carrying an OID shape outside a *_oid field',
+      (d) => edit(d, 'data/samples/gigamon_ami_security.json', (s) => s.replace('"dst_aws_flat_tags_deploy":"lab"', '"dst_aws_flat_tags_deploy":"2.5.29.15"')),
+      /IPv4 address outside 10\.20\.0\.0\/16 and the documentation ranges: 2\.5\.29\.15/,
+    ],
+    [
       'a file the pack may not contain',
       (d) => writeFileSync(join(d, 'default', 'notes.txt'), 'x'),
       /default\/notes\.txt: not a file the pack may contain/,
@@ -450,7 +470,7 @@ describe('pack.mjs build', () => {
     scratch.push(out)
     const r = run(['build', '--dir', dir, '--out', out])
     expect(r.status, r.out).toBe(0)
-    return readFileSync(join(out, `${PACK_ID}-0.2.2.crbl`))
+    return readFileSync(join(out, `${PACK_ID}-0.2.3.crbl`))
   }
 
   it('writes the same bytes every time, and the same bytes from a CRLF working tree', () => {
