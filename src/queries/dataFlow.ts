@@ -43,9 +43,8 @@ function anyOfAll(terms: readonly string[]): string {
  * NOTHING DOUBLE-COUNTED: a `total.out_*` row names one destination, and a
  * destination writes an event once per path that reaches it. Each source has at
  * most one path into gigamon_ami (stackIds.test.ts holds that), so each event
- * that lands is one write to one of these destinations. The demo and Syslog
- * stacks share `gigamon_lake`, but their events are different events. The
- * pack's Parquet copy and the sample dataset are other destinations, not listed,
+ * that lands is one write to one of these destinations. Whatever else writes
+ * `gigamon_lake` beside the demo feed writes different events. The pack's Parquet copy and the sample dataset are other destinations, not listed,
  * so a dual-write lands once here — which is the whole point of the Lake card.
  * Not filtered by source: an event some other route writes into gigamon_ami
  * has landed there too.

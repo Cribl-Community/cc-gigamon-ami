@@ -1,15 +1,17 @@
 // One Guided Setup run at a time, across every panel on the page.
 //
-// Four panels on Guided Setup write configuration. Three commit and deploy a
-// worker group: the Raw HTTP stack's (ProvisionPanel), the onboarding pack's
-// (OnboardingPanel) and the Lake landing panel's destination change
-// (LakeLandingPanel, which also edits gigamon_ami's retention — a value the
-// onboarding run reads and copies onto gigamon_ami_pq). The fourth, Acceleration
-// (AccelPanel), writes the same saved searches the onboarding run's last step
-// creates, so two at once POST one absent id twice and the second fails. Each
-// used to guard only its own `running` state, so nothing stopped a Remove on
-// one panel from committing and deploying while an Onboard on another was half
-// way through its own commit. Two commits racing on one Leader can each carry
+// Three panels on Guided Setup write configuration. Two commit and deploy a
+// worker group: the onboarding pack's (OnboardingPanel) and the Lake landing
+// panel's destination change (LakeLandingPanel, which also edits gigamon_ami's
+// retention — a value the onboarding run reads and copies onto gigamon_ami_pq).
+// The third, Acceleration (AccelPanel), writes the same saved searches the
+// onboarding run's last step creates, so two at once POST one absent id twice
+// and the second fails. Each used to guard only its own `running` state, so
+// nothing stopped a write on one panel from committing and deploying while an
+// Onboard on another was half way through its own commit. *(Corrected
+// 2026-09-26, `chore/remove-global-stacks`: this said four panels, the fourth
+// the global Raw HTTP stack's (ProvisionPanel), which went with the owner's
+// decision that the app no longer shows or removes that stack.)* Two commits racing on one Leader can each carry
 // the other's files, and two deploys restart the group's Worker Processes
 // twice. So the lock is module state that every one of them reads, and a run
 // takes it before its first write and gives it back when it ends.
@@ -30,7 +32,7 @@
 import { useSyncExternalStore } from 'react'
 
 /** Who holds the lock: a word for the step log, never shown as a reason alone. */
-export type SetupRunHolder = 'onboarding_stack' | 'onboarding_pack' | 'lake_landing' | 'acceleration'
+export type SetupRunHolder = 'onboarding_pack' | 'lake_landing' | 'acceleration'
 
 let holder: SetupRunHolder | null = null
 const listeners = new Set<() => void>()

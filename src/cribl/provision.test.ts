@@ -22,10 +22,6 @@
 //   if it does NOT also fire when the group is genuinely up to date, so both
 //   directions are here.
 //
-//   THE TEARDOWN. It deletes only what the status check found present, which is
-//   exactly what its confirmation names, and never the dataset or the
-//   destination.
-//
 // *(Until 2026-09-25 this file also pinned the global Raw HTTP stack's create
 // path — `deployAll`'s no-op re-apply, its full-replacement merges, its
 // confirmation seam and re-read after the answer, the source's port, TLS and
@@ -36,6 +32,12 @@
 // way in. The token-scrub tests are unit tests of `scrubbedErrText`, which the
 // pack's source writes still use.)*
 //
+// *(Until 2026-09-26 it also pinned the teardown of the global Raw HTTP and
+// Syslog stacks earlier releases created — `removeOnboardingStack`'s one
+// routing-table edit, its breaker-ruleset guards, `removeDirtyRefusal` and the
+// KV record of an uncommitted removal. The owner decided the app no longer
+// shows or removes those stacks, and those tests went with the code.)*
+//
 // Stubbed at `fetch` rather than at `capi`, so what these assertions read is the
 // request the platform would have received — the method, the path, and the exact
 // body. The fake Leader below answers; anything it does that a real Leader does
@@ -45,17 +47,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PROFILE, FLUSH_PRESETS, datasetSpec, destinationSpec } from './landing'
 import {
-  commitMatchingAndDeploy, commitScope, pendingConfigPaths, pendingDeploy, removeOnboardingStack, scrubbedErrText, tokensOf,
-  removeDirtyRefusal, removeDirtyVerdict, type RemoveDirtyInputs,
+  commitMatchingAndDeploy, commitScopeFor, pendingConfigPaths, pendingDeploy, scrubbedErrText, tokensOf,
   undeployedHead, versionFilePaths, deployState, sameCommit,
   FILES_READ_CONCURRENCY, HISTORY_PAGE, HISTORY_PAGES,
   portProblem, portsInUse, postUrl, suggestPort, hostingOf, isCriblCloudHost,
-  DATASET_SPEC, HTTP_BREAKER_DESCRIPTION,
-  HTTP_ROUTE_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID, HTTP_BREAKER_ID, DEFAULT_STREAM_GROUP,
-  type CommitKey, type StepResult,
+  DATASET_SPEC, DEFAULT_STREAM_GROUP,
+  type StepResult,
 } from './provision'
 import * as provisionModule from './provision'
-import { ROUTE_SPEC, PIPELINE_SPEC, SOURCE_SPEC, HTTP_BREAKER_SPEC, DESTINATION_SPEC, destinationSpecFor } from './packSpecs'
+import { DESTINATION_SPEC, destinationSpecFor } from './packSpecs'
 
 const GROUP = DEFAULT_STREAM_GROUP
 const HEAD = 'aaaa111122223333aaaa111122223333aaaa1111'
@@ -64,7 +64,6 @@ const NEW_COMMIT = 'cccc777788889999cccc777788889999cccc7777'
 
 const PRODUCTS_DEPLOY = `/products/stream/groups/${GROUP}/deploy`
 const MASTER_DEPLOY = `/master/groups/${GROUP}/deploy`
-const ROUTES_PATCH = `/m/${GROUP}/routes/default`
 
 interface Call { method: string; path: string; body: unknown }
 
@@ -102,70 +101,14 @@ interface LeaderOpts {
   /** The status `/version/status` answers with. `capi` does not throw on a
    *  non-2xx, so this is the only thing that tells a caller the read failed. */
   pendingStatus?: number
-  /** The live pipeline object, as `GET /m/<g>/pipelines/<id>` returns it.
-   *  Defaults to `STALE_PIPELINE` — present, and one spec field out of date, so a
-   *  re-apply writes. `null` means a 200 whose `items` this file cannot read,
-   *  which since the full-replacement fix must NOT write. */
-  pipeline?: Record<string, unknown> | null
-  /** The live Raw HTTP source, likewise. */
-  source?: Record<string, unknown> | null
-  /** The live breaker ruleset. Defaults to exactly the spec, so a run that is
-   *  not about the ruleset neither writes it nor stops on it. */
-  breaker?: Record<string, unknown> | null
-  /**
-   * What the pipeline / source / routing-table GET answers FROM THE SECOND READ
-   * ONWARD — i.e. the other admin.
-   *
-   * Every ensure* reads once to compose the diff its confirmation shows, and
-   * again after the answer to compose the body it sends. Everything between
-   * those two reads is time somebody spent in front of a Modal, so this is the
-   * only way to stage the window the write used to be composed across: a body
-   * built on the first read is a FULL REPLACEMENT of an object that has moved,
-   * which does not lose the race, it reverts the other writer. `undefined`
-   * means nothing moved and both reads answer the same thing.
-   */
-  pipelineBetweenReads?: Record<string, unknown> | null
-  sourceBetweenReads?: Record<string, unknown> | null
-  routesBetweenReads?: Array<Record<string, unknown>> | null
-  /** The group's other sources, as `GET /m/<g>/system/inputs` lists them. */
-  inputs?: Array<Record<string, unknown>>
-  /** 404 = the Raw HTTP source does not exist yet, so a run CREATES it. */
-  sourceStatus?: number
-  /** The create POST fails with a message quoting the body it was sent — the
-   *  worst case for a token, and the one the scrub exists for. */
-  sourcePostEchoes?: boolean
-  /** The create POST fails with THIS body — for the shapes `sourcePostEchoes`
-   *  does not cover, such as a refusal with no `message` field at all. */
-  sourcePostError?: (sent: Record<string, unknown>) => unknown
-  /** The re-apply PATCH of the source fails with this body. */
-  sourcePatchError?: (sent: Record<string, unknown>) => unknown
-  /** Status per DELETE path, for a teardown step that fails. Default 200. */
-  deleteStatus?: Record<string, number>
-  /** Installed packs and the sources inside each, as `/m/<g>/packs` and
-   *  `/m/<g>/p/<pack>/system/inputs` list them. */
-  packs?: Array<{ id: string; inputs: Array<Record<string, unknown>>; inputsStatus?: number }>
-  /** The status `/m/<g>/packs` answers with. */
-  packsStatus?: number
   /** Paths `/version/status` STILL reports after a successful commit — a file
    *  this run changed and its commit did not carry. */
   commitLeaves?: string[]
-  /** A status other than 200 makes `/version/commit` fail outright: the
-   *  interrupted run whose deletes landed and whose commit did not. */
-  commitStatus?: number
 }
 
-/** Where this app keeps its record of its own uncommitted removals. */
-const REMOVALS_KV = '/kvstore/guided_setup_memory/uncommitted_removals'
-
-/** What the KV store holds under `REMOVALS_KV` at the start of a test, as the
- *  envelope kv.ts writes — carried across `stubLeader` calls, as the store is. */
-let removalsKv: string | undefined
-beforeEach(() => { removalsKv = undefined })
-
-/** The live pipeline and source the stub answers with by default: present, in
- *  a group that an earlier release provisioned and somebody later edited. */
-const STALE_PIPELINE = { ...PIPELINE_SPEC, conf: { ...PIPELINE_SPEC.conf, functions: [] } }
-const STALE_SOURCE = { ...SOURCE_SPEC, host: '127.0.0.1' }
+/** A route of the group's that a commit-and-deploy test carries. Which one
+ *  does not matter: these tests are about the commit and the deploy. */
+const SOME_ROUTE = { id: 'gigamon_route', name: 'gigamon_route', filter: 'true', final: true }
 
 const catchAll = { id: 'default', name: 'default', filter: 'true', final: false, pipeline: 'main' }
 
@@ -208,11 +151,7 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
   const {
     routes = [catchAll], table = {}, pending = [], commit = NEW_COMMIT, deploy = {},
     configVersion = HEAD, head = HEAD, changedSince = [], filesStatus = 200, pendingStatus = 200,
-    filesShape = 'tree',
-    pipeline = STALE_PIPELINE, source = STALE_SOURCE, breaker = { ...HTTP_BREAKER_SPEC },
-    pipelineBetweenReads, sourceBetweenReads, routesBetweenReads, inputs = [], sourceStatus = 200,
-    sourcePostEchoes = false, sourcePostError, sourcePatchError, deleteStatus = {}, packs = [], packsStatus = 200,
-    commitLeaves = [], commitStatus = 200,
+    filesShape = 'tree', commitLeaves = [],
   } = opts
   const history = opts.history ?? (head === configVersion
     ? [{ hash: head, refs: 'HEAD -> main', files: [] as string[] }]
@@ -221,9 +160,6 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
   // What Git reports uncommitted. A successful commit takes its files out, as a
   // real Leader's status does, except the ones `commitLeaves` names.
   let pendingNow = [...pending]
-  let pipeReads = 0
-  let sourceReads = 0
-  let routeReads = 0
 
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -271,7 +207,6 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
         ? reply(200, { items: [{ files: pendingNow.map((p) => ({ path: p })) }] })
         : reply(pendingStatus, { message: 'not granted' })
     }
-    if (at('POST', '/version/commit') && commitStatus !== 200) return reply(commitStatus, { message: 'commit refused' })
     if (at('POST', '/version/commit')) {
       if (commit !== null) {
         const carried = new Set((body as { files?: string[] } | undefined)?.files ?? [])
@@ -281,77 +216,17 @@ function stubLeader(opts: LeaderOpts = {}): Call[] {
       return reply(200, commit === null ? { items: [{}] } : { items: [{ commit }] })
     }
 
-    // The routing table, and everything else already provisioned.
-    if (at('GET', `/m/${GROUP}/routes`)) {
-      routeReads += 1
-      const now = routeReads >= 2 && routesBetweenReads !== undefined ? routesBetweenReads : routes
-      return reply(200, now === null ? { items: [] } : { items: [{ id: 'default', ...table, routes: now }] })
-    }
-    if (at('PATCH', ROUTES_PATCH)) return reply(200, { items: [] })
+    // The routing table.
+    if (at('GET', `/m/${GROUP}/routes`)) return reply(200, { items: [{ id: 'default', ...table, routes }] })
     if (at('GET', '/products/lake/lakes/default/datasets')) return reply(200, { items: [{ id: 'gigamon_ami' }] })
 
-    // The two objects whose no-op check Phase 3 added, and whose PATCH is now a
-    // merge onto this body. Answering with a real body is what lets a test say
-    // "already correct" at all — and, since the merge, what lets it say anything
-    // about the request body, which is composed from exactly this.
-    if (at('GET', `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`)) {
-      return breaker === null ? reply(404, { message: 'not found' }) : reply(200, { items: [breaker] })
-    }
-    if (at('GET', `/m/${GROUP}/system/inputs`)) return reply(200, { items: inputs })
-    if (at('GET', `/m/${GROUP}/packs`)) {
-      return packsStatus === 200 ? reply(200, { items: packs.map((p) => ({ id: p.id })) }) : reply(packsStatus, { message: 'not granted' })
-    }
-    for (const p of packs) {
-      if (at('GET', `/m/${GROUP}/p/${p.id}/system/inputs`)) {
-        return (p.inputsStatus ?? 200) === 200 ? reply(200, { items: p.inputs }) : reply(p.inputsStatus!, { message: 'not granted' })
-      }
-    }
-    if (at('POST', `/m/${GROUP}/system/inputs`) && sourcePostEchoes) {
-      return reply(400, { message: `invalid input: ${JSON.stringify(body)}` })
-    }
-    if (at('POST', `/m/${GROUP}/system/inputs`) && sourcePostError) {
-      return reply(400, sourcePostError(body as Record<string, unknown>))
-    }
-    if (at('PATCH', `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`) && sourcePatchError) {
-      return reply(400, sourcePatchError(body as Record<string, unknown>))
-    }
-    if (method === 'DELETE' && deleteStatus[path] !== undefined) {
-      return reply(deleteStatus[path], { message: 'refused' })
-    }
-    if (at('GET', `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`)) {
-      pipeReads += 1
-      const now = pipeReads >= 2 && pipelineBetweenReads !== undefined ? pipelineBetweenReads : pipeline
-      return reply(200, { items: now ? [now] : [] })
-    }
-    if (at('GET', `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)) {
-      if (sourceStatus !== 200) return reply(sourceStatus, { message: 'not found' })
-      sourceReads += 1
-      const now = sourceReads >= 2 && sourceBetweenReads !== undefined ? sourceBetweenReads : source
-      return reply(200, { items: now ? [now] : [] })
-    }
     // Everything else in the group already exists and takes whatever is sent.
-    // A re-apply therefore PATCHes the pipeline and the source every time and
-    // reports them `updated` — which is exactly what a real Leader does, and why
-    // the "nothing to commit" case below is reached through the commit rather
-    // than before it.
     if (under('GET', `/m/${GROUP}/`) || under('PATCH', `/m/${GROUP}/`) || under('POST', `/m/${GROUP}/`) || under('DELETE', `/m/${GROUP}/`)) {
       return reply(200, { items: [] })
     }
 
     // The app's own audit trail (cribl/kv.ts) — not what these tests are about,
     // but it must not 404 its way into a console full of warnings.
-    // This app's record of its own uncommitted removals, kept as the store
-    // keeps it: the envelope kv.ts PUTs is what the next GET answers.
-    if (at('PUT', REMOVALS_KV)) {
-      removalsKv = JSON.stringify(body)
-      return reply(200, '')
-    }
-    if (at('GET', REMOVALS_KV)) {
-      const v = removalsKv
-      return v === undefined
-        ? reply(404, '')
-        : { ok: true, status: 200, statusText: 'OK', text: async () => v, json: async () => JSON.parse(v) as unknown }
-    }
     if (under('PUT', '/kvstore/')) return reply(200, '')
 
     // The commit memory decides whether a stranded commit is OURS to deploy.
@@ -382,28 +257,12 @@ const run = (markers: readonly string[] = ['local/cribl/pipelines/route.yml'], c
  *  configuration, and these assertions are about the latter. */
 const writes = (calls: Call[]) =>
   calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore/')).map((c) => `${c.method} ${c.path}`)
-const patched = (calls: Call[]) => calls.find((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)
-const routesSent = (calls: Call[]) => (patched(calls)?.body as { routes: Array<Record<string, unknown>> } | undefined)?.routes
 const step = (steps: StepResult[], key: string) => steps.find((s) => s.key === key)
 
 beforeEach(() => void vi.spyOn(console, 'warn').mockImplementation(() => {}))
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
-})
-
-describe('the routing table on teardown', () => {
-  it('removes only our entry on teardown, leaving every other index where it was', async () => {
-    const calls = stubLeader({
-      routes: [{ id: 'a', name: 'a' }, { ...ROUTE_SPEC }, { id: 'b', name: 'b' }, catchAll],
-      table: { comments: [{ text: 'keep me' }] },
-      pending: [`groups/${GROUP}/local/cribl/pipelines/route.yml`],
-    })
-    await new Promise<void>((resolve) => { void removeOnboardingStack(() => {}, GROUP, undefined, { route: 'present', source: 'absent', pipeline: 'absent', breaker: 'absent', legacy_source: 'absent', legacy_pipeline: 'absent' }).then(() => resolve()) })
-
-    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'b', 'default'])
-    expect((patched(calls)!.body as { comments?: unknown }).comments).toEqual([{ text: 'keep me' }])
-  })
 })
 
 describe('the two Lake specs', () => {
@@ -469,7 +328,7 @@ describe('the two Lake specs', () => {
 })
 
 describe('deployGroup', () => {
-  const upToDate = { routes: [{ ...ROUTE_SPEC }, catchAll] }
+  const upToDate = { routes: [{ ...SOME_ROUTE }, catchAll] }
 
   it('uses the current products path, and never touches the deprecated one when it answers', async () => {
     const calls = stubLeader(upToDate)
@@ -508,7 +367,7 @@ describe('an undeployed commit', () => {
   //     already say, so files are offered but the commit answers no hash.
   //   NOTHING TO OFFER  Git has pending changes, but none of them ours, so there
   //     is no file list to commit at all.
-  const settled = { routes: [{ ...ROUTE_SPEC }, catchAll] }
+  const settled = { routes: [{ ...SOME_ROUTE }, catchAll] }
   const noNetChange = { ...settled, commit: null }
   const nothingOfOurs = { ...settled, pending: ['groups/other_group/local/cribl/outputs.yml'] }
   const stranded = { configVersion: DEPLOYED, head: HEAD, changedSince: [`groups/${GROUP}/local/cribl/pipelines/route.yml`] }
@@ -766,7 +625,7 @@ describe('pendingDeploy — one /version/files read per undeployed commit', () =
   const OURS = `groups/${GROUP}/local/cribl/pipelines/route.yml`
   const THEIRS = 'groups/other_group/local/cribl/pipelines/route.yml'
   const MID = 'dddd000011112222dddd000011112222dddd0000'
-  const settled = { routes: [{ ...ROUTE_SPEC }, catchAll], configVersion: DEPLOYED }
+  const settled = { routes: [{ ...SOME_ROUTE }, catchAll], configVersion: DEPLOYED }
 
   it('claims the literal tree for the group it names', async () => {
     vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -1030,54 +889,20 @@ describe('pendingConfigPaths', () => {
   // the three sentences are asserted there, against the same three values.
 })
 
-describe('commitScope', () => {
-  // What Guided Setup's confirmation needs in order to stop saying "Nothing else
-  // in <group> is touched, including the demo DataGen source" — a sentence that
-  // shipped, and that is true of what this app WRITES and false of what its
-  // commit CARRIES. `pendingFiles()` has been in the module since Phase 1 and
-  // nothing ever put it in front of a person.
-  const FILES = [
-    `groups/${GROUP}/local/cribl/inputs.yml`,
-    `groups/${GROUP}/local/cribl/pipelines/${HTTP_PIPELINE_ID}/conf.yml`,
-    `groups/${GROUP}/local/cribl/pipelines/route.yml`,
-    `groups/${GROUP}/local/cribl/breakers.yml`,
-  ]
-  const ALL: CommitKey[] = ['source', 'pipeline', 'route', 'breaker']
+describe('commitScopeFor', () => {
+  // What a Guided Setup confirmation needs in order to stop saying "Nothing
+  // else in <group> is touched, including the demo DataGen source" — a sentence
+  // that shipped, and that is true of what this app WRITES and false of what
+  // its commit CARRIES.
+  const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
+  const ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
+  const MARKERS = ['local/cribl/inputs.yml', 'local/cribl/pipelines/route.yml']
 
-  it('names every whole file a teardown can commit, including the one holding the demo DataGen source', () => {
-    expect(commitScope(GROUP, ALL, []).carries).toEqual(FILES)
-  })
-
-  it('matches the routing table at the path the Leader actually reports', () => {
-    // A SHIPPED DEFECT, FOUND 2026-09-23. Both the constructed path and the
-    // match marker said `local/cribl/pipelines/route.yml`. The Leader's /version/status
-    // lists the routing table as `local/cribl/pipelines/route.yml` (read from
-    // the live workspace that day; every bundled pack keeps its own at
-    // `default/pipelines/route.yml`), and no `routes.yml` exists anywhere. So a
-    // non-empty status never matched the route, the scoped commit left it out,
-    // and the deploy shipped a version without the route this app had just
-    // written — the source received data that no route sent to Lake.
-    // The literal is written out here on purpose, not derived.
-    const LEADER_ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
-    const scope = commitScope(GROUP, ['route'], [LEADER_ROUTE, `groups/${GROUP}/local/cribl/inputs.yml`])
-    expect(scope.carries).toEqual([LEADER_ROUTE])
-    expect(scope.alreadyDirty).toEqual([LEADER_ROUTE])
-    // The pipeline's marker must not swallow the routing table, which lives
-    // in the same directory.
-    expect(commitScope(GROUP, ['pipeline'], [LEADER_ROUTE]).alreadyDirty).toEqual([])
-  })
-
-  it('never names outputs.yml, because a teardown never touches the destination', () => {
-    expect(commitScope(GROUP, ALL, []).carries.some((f) => f.endsWith('outputs.yml'))).toBe(false)
-  })
-
-  it('separates somebody else\u2019s work IN those files from work elsewhere', () => {
-    const scope = commitScope(GROUP, ALL, [
-      `groups/${GROUP}/local/cribl/inputs.yml`,
-      'groups/other/local/cribl/pipelines/route.yml',
-    ])
-    // In our files: this press commits and deploys it.
-    expect(scope.alreadyDirty).toEqual([`groups/${GROUP}/local/cribl/inputs.yml`])
+  it('names the whole files it was given, and separates somebody else’s work IN them from work elsewhere', () => {
+    const scope = commitScopeFor(GROUP, [INPUTS, ROUTE], MARKERS, [INPUTS, 'groups/other/local/cribl/pipelines/route.yml'])
+    expect(scope.carries).toEqual([INPUTS, ROUTE])
+    // In these files: this press commits and deploys it.
+    expect(scope.alreadyDirty).toEqual([INPUTS])
     // Elsewhere: the commit names its own paths, so it is left alone.
     expect(scope.elsewhere).toEqual(['groups/other/local/cribl/pipelines/route.yml'])
     expect(scope.unknown).toBe(false)
@@ -1085,39 +910,31 @@ describe('commitScope', () => {
 
   it('says "could not tell" rather than "nothing is pending" when Git reported nothing', () => {
     // An empty repo-wide status and an unavailable endpoint look identical from
-    // here — the same ambiguity filesToCommit resolves by falling back to
-    // constructed paths — and a dialog that renders the second as the first is
-    // asserting a clean tree it never saw.
-    expect(commitScope(GROUP, ALL, null).unknown).toBe(true)
-    expect(commitScope(GROUP, ALL, null).alreadyDirty).toEqual([])
+    // here, and a dialog that renders the second as the first is asserting a
+    // clean tree it never saw.
+    expect(commitScopeFor(GROUP, [INPUTS], MARKERS, null).unknown).toBe(true)
+    expect(commitScopeFor(GROUP, [INPUTS], MARKERS, null).alreadyDirty).toEqual([])
   })
 })
 
-// ── The global Raw HTTP stack's create path is gone ─────────────────────────
+// ── The global stacks earlier releases created are gone ─────────────────────
 
-describe('the global Raw HTTP stack is no longer created or re-applied', () => {
-  it('exports no create path: no deployAll, and no ensure* step but the dataset one', () => {
+describe('the global Raw HTTP and Syslog stacks are neither created nor removed', () => {
+  it('exports no create path and no teardown', () => {
     // The owner collapsed Guided Setup's onboarding into the pack's
-    // (2026-09-25). A `deployAll` still exported here is a create path a
-    // screen could reach again.
+    // (2026-09-25), and decided the app no longer shows or removes the global
+    // stacks earlier releases created (2026-09-26). A `deployAll` or a
+    // `removeOnboardingStack` still exported here is a write a screen could
+    // reach again.
     const names = Object.keys(provisionModule)
     expect(names).not.toContain('deployAll')
     expect(names.filter((n) => n.startsWith('ensure'))).toEqual(['ensureLakeDataset'])
     expect(names).not.toContain('readHttpEndpoint')
-  })
-
-  it('reads only the four objects the teardown can remove, and never the dataset or the destination', async () => {
-    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], pipeline: { ...PIPELINE_SPEC }, source: { ...SOURCE_SPEC } })
-    const status = await provisionModule.checkStatus(GROUP)
-    expect(status).toEqual({ breaker: 'present', pipeline: 'present', source: 'present', route: 'present' })
-    const read = calls.map((c) => `${c.method} ${c.path}`)
-    expect(read.some((r) => r.includes('/system/outputs'))).toBe(false)
-    expect(read.some((r) => r.includes('/products/lake'))).toBe(false)
-    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
-  })
-
-  it('keeps the ownership stamp the teardown checks equal to the spec the pack is held to', () => {
-    expect(HTTP_BREAKER_SPEC.description).toBe(HTTP_BREAKER_DESCRIPTION)
+    for (const gone of [
+      'removeOnboardingStack', 'removeDirtyRefusal', 'removeDirtyVerdict', 'checkStatus', 'checkLegacyStatus', 'commitScope',
+      'legacyOnly', 'HTTP_KEYS', 'LEGACY_KEYS', 'HTTP_SOURCE_ID', 'HTTP_PIPELINE_ID', 'HTTP_ROUTE_ID', 'HTTP_BREAKER_ID',
+      'HTTP_BREAKER_DESCRIPTION', 'LEGACY_SYSLOG_SOURCE_ID', 'LEGACY_SYSLOG_PIPELINE_ID', 'LEGACY_SYSLOG_ROUTE_ID', 'STEP_LABELS',
+    ]) expect(names, gone).not.toContain(gone)
   })
 })
 
@@ -1194,290 +1011,6 @@ describe('a commit that did not carry every file this run changed', () => {
   })
 })
 
-describe('removing the onboarding stack', () => {
-  const legacyRoute = { id: 'gigamon_ami_syslog', name: 'gigamon_ami_syslog', filter: "__inputId=='syslog:in_gigamon_syslog'" }
-  const remove = (present: Parameters<typeof removeOnboardingStack>[3]) =>
-    new Promise<StepResult[]>((resolve) => { void removeOnboardingStack(() => {}, GROUP, undefined, present).then(resolve) })
-  const deletes = (calls: Call[]) => calls.filter((c) => c.method === 'DELETE').map((c) => c.path)
-  /** What a status check reports when both stacks are there — what the dialog
-   *  then names, object by object. */
-  const HTTP_PRESENT = { source: 'present', pipeline: 'present', route: 'present', breaker: 'present' } as const
-  const LEGACY_PRESENT = { legacy_source: 'present', legacy_pipeline: 'present', legacy_route: 'present' } as const
-  const EVERYTHING = { ...HTTP_PRESENT, ...LEGACY_PRESENT }
-
-  it('takes away the HTTP stack and the Syslog stack an earlier release left, in one routing-table edit', async () => {
-    const calls = stubLeader({ routes: [{ id: 'a', name: 'a' }, legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    const steps = await remove(EVERYTHING)
-
-    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['a', 'default'])
-    expect(calls.filter((c) => c.method === 'PATCH' && c.path === ROUTES_PATCH)).toHaveLength(1)
-    expect(deletes(calls)).toEqual([
-      `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`,
-      `/m/${GROUP}/system/inputs/in_gigamon_syslog`,
-      `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`,
-      `/m/${GROUP}/pipelines/gigamon_syslog`,
-      // Last: the source that names it is gone by now.
-      `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`,
-    ])
-    for (const k of ['route', 'legacy_route', 'source', 'legacy_source', 'pipeline', 'legacy_pipeline', 'breaker']) {
-      expect(step(steps, k)?.detail, k).toBe('deleted')
-    }
-  })
-
-  it('leaves the Syslog objects alone when the status check says they are not there', async () => {
-    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
-    await remove({ ...HTTP_PRESENT, legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' })
-    expect(deletes(calls).some((p) => p.includes('syslog'))).toBe(false)
-  })
-
-  // ── Every delete is one the confirmation named ────────────────────────────
-  // The dialog lists an object only when the status check found it PRESENT.
-  // So the teardown deletes only what it was told is present — never what it
-  // could not see, which the dialog had no row for.
-
-  it('deletes no old Syslog object the status check could not read, because the dialog never named it', async () => {
-    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    await remove({ ...HTTP_PRESENT, legacy_source: 'unreadable', legacy_pipeline: 'unreadable', legacy_route: 'unreadable' })
-    expect(deletes(calls).filter((p) => p.includes('syslog'))).toEqual([])
-    expect(routesSent(calls)!.map((r) => r.id), 'the unnamed Syslog route was taken out of the table').toEqual(['gigamon_ami_syslog', 'default'])
-  })
-
-  it('deletes no old Syslog object when the legacy status could not be read at all', async () => {
-    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    await remove({ ...HTTP_PRESENT })
-    expect(deletes(calls).filter((p) => p.includes('syslog'))).toEqual([])
-    expect(routesSent(calls)!.map((r) => r.id)).toEqual(['gigamon_ami_syslog', 'default'])
-  })
-
-  it('deletes no HTTP object whose state could not be read either', async () => {
-    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
-    await remove({ source: 'unreadable', pipeline: 'present', route: 'present', breaker: 'present' })
-    expect(deletes(calls)).not.toContain(`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`)
-  })
-
-  it('can remove only the old Syslog objects, leaving the HTTP source, its token and its port alone', async () => {
-    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    const steps = await remove({ ...LEGACY_PRESENT })
-    expect(deletes(calls)).toEqual([`/m/${GROUP}/system/inputs/in_gigamon_syslog`, `/m/${GROUP}/pipelines/gigamon_syslog`])
-    expect(routesSent(calls)!.map((r) => r.id), 'the HTTP route went with the Syslog one').toEqual([HTTP_ROUTE_ID, 'default'])
-    expect(step(steps, 'source')).toBeUndefined()
-    expect(step(steps, 'breaker')).toBeUndefined()
-  })
-
-  it('says so when the routing table cannot be read, rather than skipping the route in silence', async () => {
-    stubLeader({ routes: null as unknown as Array<Record<string, unknown>> })
-    const steps = await remove({ ...HTTP_PRESENT })
-    expect(step(steps, 'route')?.action).toBe('error')
-  })
-
-  // ── The breaker ruleset is deleted only when nothing can still need it ────
-
-  const RULESET = `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`
-
-  it('keeps the ruleset when the source that names it could not be deleted', async () => {
-    const calls = stubLeader({
-      routes: [{ ...ROUTE_SPEC }, catchAll],
-      deleteStatus: { [`/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`]: 500 },
-    })
-    const steps = await remove({ ...HTTP_PRESENT })
-    expect(deletes(calls)).not.toContain(RULESET)
-    expect(step(steps, 'breaker')?.action).toBe('error')
-  })
-
-  it('keeps the ruleset when another source in the group still names it', async () => {
-    const calls = stubLeader({
-      routes: [{ ...ROUTE_SPEC }, catchAll],
-      inputs: [{ id: 'customer_http', type: 'http_raw', port: 20009, breakerRulesets: [HTTP_BREAKER_ID] }],
-    })
-    const steps = await remove({ ...HTTP_PRESENT })
-    expect(deletes(calls)).not.toContain(RULESET)
-    expect(step(steps, 'breaker')?.detail).toContain('customer_http')
-  })
-
-  it('keeps the ruleset when a source inside a pack still names it', async () => {
-    const calls = stubLeader({
-      routes: [{ ...ROUTE_SPEC }, catchAll],
-      packs: [{ id: 'somepack', inputs: [{ id: 'in_theirs', type: 'http_raw', port: 20008, breakerRulesets: [HTTP_BREAKER_ID] }] }],
-    })
-    await remove({ ...HTTP_PRESENT })
-    expect(deletes(calls)).not.toContain(RULESET)
-  })
-
-  it('keeps the ruleset when the group’s sources cannot be read, rather than guessing nobody uses it', async () => {
-    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], packsStatus: 403 })
-    const steps = await remove({ ...HTTP_PRESENT })
-    expect(deletes(calls)).not.toContain(RULESET)
-    expect(step(steps, 'breaker')?.action).toBe('error')
-  })
-
-  it('keeps a ruleset of that id that does not carry this app’s description', async () => {
-    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll], breaker: { ...HTTP_BREAKER_SPEC, description: 'Our own AMX breaker' } })
-    const steps = await remove({ ...HTTP_PRESENT })
-    expect(deletes(calls)).not.toContain(RULESET)
-    expect(step(steps, 'breaker')?.action).toBe('error')
-  })
-
-  it('deletes the ruleset when the source was already gone and nothing else names it', async () => {
-    const calls = stubLeader({ routes: [{ ...ROUTE_SPEC }, catchAll] })
-    const steps = await remove({ source: 'absent', pipeline: 'present', route: 'present', breaker: 'present' })
-    expect(deletes(calls)).toContain(RULESET)
-    expect(step(steps, 'breaker')?.detail).toBe('deleted')
-  })
-
-  it('never deletes the dataset, the destination, or anything not named by id', async () => {
-    const calls = stubLeader({ routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll] })
-    await remove(EVERYTHING)
-    const allowed = new Set([
-      `/m/${GROUP}/system/inputs/${HTTP_SOURCE_ID}`, `/m/${GROUP}/system/inputs/in_gigamon_syslog`,
-      `/m/${GROUP}/pipelines/${HTTP_PIPELINE_ID}`, `/m/${GROUP}/pipelines/gigamon_syslog`,
-      `/m/${GROUP}/lib/breakers/${HTTP_BREAKER_ID}`,
-    ])
-    expect(deletes(calls).filter((p) => !allowed.has(p))).toEqual([])
-  })
-
-  it('commits the breaker file and the old pipeline directory along with the rest', async () => {
-    const calls = stubLeader({
-      routes: [legacyRoute, { ...ROUTE_SPEC }, catchAll],
-      pending: [
-        `groups/${GROUP}/local/cribl/breakers.yml`,
-        `groups/${GROUP}/local/cribl/pipelines/gigamon_syslog/conf.yml`,
-        `groups/${GROUP}/local/cribl/outputs.yml`,
-      ],
-    })
-    await remove(EVERYTHING)
-    const files = (calls.find((c) => c.path === '/version/commit')?.body as { files?: string[] } | undefined)?.files ?? []
-    expect(files).toContain(`groups/${GROUP}/local/cribl/breakers.yml`)
-    expect(files).toContain(`groups/${GROUP}/local/cribl/pipelines/gigamon_syslog/conf.yml`)
-    // A teardown never touches the destination, so it never commits its file.
-    expect(files).not.toContain(`groups/${GROUP}/local/cribl/outputs.yml`)
-  })
-})
-
-// ── A Remove never commits somebody else's uncommitted work (runbook 4c P1) ──
-//
-// The teardown's commit takes whole files — `inputs.yml` holds every source in
-// the group, `pipelines/route.yml` is the one routing table — so a change
-// somebody left uncommitted in one of them used to be committed and deployed
-// with the removal, the dialog having named it. `removeDirtyRefusal` refuses
-// that, inside the run lock, before the first write; and it must not refuse
-// this app's own earlier removal whose commit failed, or the group could never
-// be retried from here.
-
-describe('removeDirtyVerdict', () => {
-  const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
-  const ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
-  const base: RemoveDirtyInputs = {
-    group: GROUP, keys: ['legacy_source', 'legacy_route'], pending: [], record: null, head: HEAD, live: { source: 'absent', route: 'absent' },
-  }
-
-  it('lets a clean scope through, and ignores what is pending outside it', () => {
-    expect(removeDirtyVerdict(base)).toEqual({ ok: true, ownRetry: [] })
-    expect(removeDirtyVerdict({ ...base, pending: [`groups/other/local/cribl/inputs.yml`, `groups/${GROUP}/local/cribl/outputs.yml`] }).ok).toBe(true)
-  })
-
-  it('refuses a file of the scope that is already uncommitted, naming it', () => {
-    expect(removeDirtyVerdict({ ...base, pending: [INPUTS] })).toEqual({ ok: false, unknown: false, files: [INPUTS] })
-    expect(removeDirtyVerdict({ ...base, pending: [ROUTE] })).toEqual({ ok: false, unknown: false, files: [ROUTE] })
-  })
-
-  it('refuses when Git’s status could not be read', () => {
-    expect(removeDirtyVerdict({ ...base, pending: null })).toEqual({ ok: false, unknown: true, files: [] })
-  })
-
-  it('lets through a file whose only recorded change is this app’s own earlier removal, at the same HEAD', () => {
-    const v = removeDirtyVerdict({ ...base, pending: [INPUTS, ROUTE], record: { keys: ['source', 'route'], head: HEAD } })
-    expect(v).toEqual({ ok: true, ownRetry: [INPUTS, ROUTE] })
-  })
-
-  it('refuses the record once HEAD has moved, because a commit since may have carried it', () => {
-    const v = removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: DEPLOYED } })
-    expect(v).toEqual({ ok: false, unknown: false, files: [INPUTS] })
-    expect(removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: null } }).ok).toBe(false)
-    expect(removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: HEAD }, head: null }).ok).toBe(false)
-  })
-
-  it('refuses when the recorded object is back, or cannot be seen', () => {
-    for (const state of ['present', 'unreadable'] as const) {
-      expect(removeDirtyVerdict({ ...base, pending: [INPUTS], record: { keys: ['source'], head: HEAD }, live: { source: state } }).ok, state).toBe(false)
-    }
-  })
-
-  it('refuses a file the record says nothing about, even when it vouches for another', () => {
-    const v = removeDirtyVerdict({ ...base, pending: [INPUTS, ROUTE], record: { keys: ['source'], head: HEAD } })
-    expect(v).toEqual({ ok: false, unknown: false, files: [ROUTE] })
-  })
-})
-
-describe('removeDirtyRefusal, and the record a failed removal leaves', () => {
-  const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
-  const ROUTE = `groups/${GROUP}/local/cribl/pipelines/route.yml`
-  const LEGACY_DELETE = `/m/${GROUP}/system/inputs/in_gigamon_syslog`
-  const recorded = () => (removalsKv === undefined ? undefined : (JSON.parse(removalsKv) as { doc: Record<string, unknown> }).doc)
-
-  it('refuses a foreign change pending in inputs.yml, naming it and saying to commit in Cribl Stream, and writes nothing', async () => {
-    const calls = stubLeader({ pending: [INPUTS] })
-    const why = await removeDirtyRefusal(GROUP, { legacy_source: 'present' })
-    expect(why).toContain(INPUTS)
-    expect(why).toContain('Commit (or discard) them in Cribl Stream')
-    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
-  })
-
-  it('refuses a foreign change pending in the routing table', async () => {
-    stubLeader({ pending: [ROUTE] })
-    expect(await removeDirtyRefusal(GROUP, { route: 'present', source: 'present' })).toContain(ROUTE)
-  })
-
-  it('refuses when Git’s status cannot be read, and says it could not tell', async () => {
-    const calls = stubLeader({ pendingStatus: 403 })
-    const why = await removeDirtyRefusal(GROUP, { legacy_source: 'present' })
-    expect(why).toContain(`Cribl did not report what is uncommitted in ${GROUP}`)
-    expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
-  })
-
-  it('answers nothing on a clean scope, after one Git status read and nothing else', async () => {
-    const calls = stubLeader({ pending: [`groups/${GROUP}/local/cribl/outputs.yml`] })
-    expect(await removeDirtyRefusal(GROUP, { legacy_source: 'present', route: 'present' })).toBeNull()
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /version/status'])
-  })
-
-  it('lets its own half-finished removal be retried: the DELETE landed, the commit failed, and the retry commits it', async () => {
-    // Run 1: the Raw HTTP source is deleted, the old Syslog source's DELETE is
-    // refused, and the commit fails — so this app's deletion sits in inputs.yml.
-    stubLeader({ pending: [INPUTS], commitStatus: 500, deleteStatus: { [LEGACY_DELETE]: 500 } })
-    const first = await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'present', legacy_source: 'present' })
-    expect(step(first, 'source')?.detail).toBe('deleted')
-    expect(step(first, 'commit')?.action).toBe('error')
-    expect(recorded()).toEqual({ [GROUP]: { keys: ['source'], head: HEAD } })
-
-    // Run 2: only the Syslog source is left, and inputs.yml is still pending.
-    // Without the record this is exactly the refusal above.
-    const calls = stubLeader({ pending: [INPUTS], sourceStatus: 404 })
-    expect(await removeDirtyRefusal(GROUP, { source: 'absent', legacy_source: 'present' })).toBeNull()
-    // (Run 1's audit-trail entry is not awaited, so it may land on this stub.)
-    expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore/gigamon/log/')), 'the check wrote something').toEqual([])
-
-    await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'absent', legacy_source: 'present' })
-    const commit = calls.find((c) => c.method === 'POST' && c.path === '/version/commit')
-    expect((commit?.body as { files?: string[] }).files).toEqual([INPUTS])
-    expect(recorded(), 'a committed removal is still recorded as uncommitted').toEqual({})
-  })
-
-  it('does not believe that record once somebody has committed since', async () => {
-    stubLeader({ pending: [INPUTS], commitStatus: 500 })
-    await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'present' })
-    expect(recorded()).toEqual({ [GROUP]: { keys: ['source'], head: HEAD } })
-    stubLeader({ pending: [INPUTS], sourceStatus: 404, head: NEW_COMMIT })
-    expect(await removeDirtyRefusal(GROUP, { legacy_source: 'present' })).toContain(INPUTS)
-  })
-
-  it('does not believe it for an object that is back', async () => {
-    stubLeader({ pending: [INPUTS], commitStatus: 500 })
-    await removeOnboardingStack(() => {}, GROUP, undefined, { source: 'present' })
-    stubLeader({ pending: [INPUTS] })
-    expect(await removeDirtyRefusal(GROUP, { legacy_source: 'present' })).toContain(INPUTS)
-  })
-})
-
 describe('the port picker’s rules', () => {
   it('holds a Cribl-managed group to 20000–20010 and a hybrid one to any valid port', () => {
     expect(portProblem(20000, true, [])).toBeNull()
@@ -1544,11 +1077,6 @@ describe('the port picker’s rules', () => {
 // Read this before reporting a green run as a result. The fake Leader above is
 // transcribed from the API spec and from one measured workspace; every status in
 // it is a decision this file made.
-//
-//   * THAT THE CONFIRMATION A CUSTOMER SEES IS THE ONE THESE TESTS PASS. They
-//     assert what the teardown deletes and commits given a presence map; what
-//     components/ProvisionPanel.tsx builds that map from, and names in its
-//     dialog, is ProvisionPanel.test.tsx's.
 //
 //   * ANY REFUSAL. Every 401/403 in this suite is fabricated. The gate is
 //     retrospective and this workspace's callers are all admins, so no

@@ -20,12 +20,17 @@
 // out of happy-dom is one long string, and "the honest sentence is in there
 // somewhere" is exactly the assertion that passes while the sentence says the
 // opposite of what it should.
+//
+// *(Corrected 2026-09-26, `chore/remove-global-stacks`: this file also held the
+// teardown dialog of the global Raw HTTP and Syslog stacks — `removeConsequences`,
+// `removalPendingSentence`, `leftAloneSentence`, the Syslog tips, `REMOVE_UNDO`,
+// `behindNote` — which went with that panel. The sentences the onboarding
+// plan's dialogs reuse are asserted here over a scope of whole group files.)*
 
 import { describe, expect, it } from 'vitest'
 import {
-  AUTH_HEADER, ENDPOINT_LEAD, HTTP_RESTART_PRECAUTION, PACK_SETUP_FACTS, REMOVE_UNDO, TOKEN_ONCE, UNENCRYPTED_WARNING,
-  behindNote, behindTip, legacyNote, LEGACY_ONLY_TIP, LEGACY_TIP, leftAloneSentence, pendingSentence, removalPendingSentence, removeConsequences,
-  undeployedSentence,
+  AUTH_HEADER, ENDPOINT_LEAD, HTTP_RESTART_PRECAUTION, PACK_SETUP_FACTS, TOKEN_ONCE, UNENCRYPTED_WARNING,
+  carriesSentence, pendingSentence, undeployedSentence,
 } from './provisionPanelCopy'
 import * as copy from './provisionPanelCopy'
 import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
@@ -33,52 +38,29 @@ import {
   PACK_BREAKER_ID, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_PARQUET_DATASET_ID,
   PACK_PIPELINE_ID,
 } from '../cribl/pack'
-import {
-  commitScope, CLOUD_PORT_RANGE, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_SOURCE_ID,
-  LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID, type CommitKey,
-} from '../cribl/provision'
+import { commitScopeFor, CLOUD_PORT_RANGE } from '../cribl/provision'
 
 const GROUP = 'default'
-const ALL: CommitKey[] = ['source', 'pipeline', 'route', 'breaker']
 const INPUTS = `groups/${GROUP}/local/cribl/inputs.yml`
 const ROUTES = `groups/${GROUP}/local/cribl/pipelines/route.yml`
-const OUTPUTS = `groups/${GROUP}/local/cribl/outputs.yml`
 const BREAKERS = `groups/${GROUP}/local/cribl/breakers.yml`
+/** A commit that names three whole files a group shares with everything else in it. */
+const CARRIES = [INPUTS, ROUTES, BREAKERS]
+const MARKERS = ['local/cribl/inputs.yml', 'local/cribl/pipelines/route.yml', 'local/cribl/breakers.yml']
 
-const ctx = (pending: string[] | null, keys: CommitKey[] = ALL, undeployed: string | null = null) => ({
+const ctx = (pending: string[] | null, undeployed: string | null = null) => ({
   group: GROUP,
-  scope: commitScope(GROUP, keys, pending),
+  scope: commitScopeFor(GROUP, CARRIES, MARKERS, pending),
   undeployed,
 })
 
-const all = (lines: string[]) => lines.join('\n')
-
-describe('what the teardown confirmation claims about reach', () => {
-  // The deploy confirmation these sentences were first written for was
-  // withdrawn on 2026-09-25 with the global Raw HTTP deploy; the teardown and
-  // the onboarding plan (which reuses `carriesSentence` and `pendingSentence`)
-  // still say them.
-  it('never says nothing else in the group is touched', () => {
-    for (const pending of [null, [], [INPUTS], ['groups/other/local/cribl/pipelines/route.yml']]) {
-      expect(all(removeConsequences(ctx(pending), 'gigamon_lake', 'gigamon_ami'))).not.toContain('Nothing else in')
-    }
-  })
-
+describe('what a confirmation claims about reach', () => {
   it('names the files the commit carries, rather than softening into "other configuration"', () => {
-    const line = removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami')[1]
-    for (const f of [INPUTS, ROUTES, BREAKERS]) expect(line).toContain(f)
+    const line = carriesSentence(ctx([]), 'change')
+    for (const f of CARRIES) expect(line).toContain(f)
     expect(line).toContain('whole files, not single objects')
     expect(line).toContain('drawn from')
-  })
-
-  it('never names outputs.yml, because a teardown never touches the destination', () => {
-    // Over-naming is the same class of untruth as hiding: `removeOnboardingStack`
-    // never writes the destination, so its commit never carries outputs.yml.
-    expect(all(removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami'))).not.toContain(OUTPUTS)
-  })
-
-  it('says the destination and the dataset are kept', () => {
-    expect(removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami')[0]).toContain('gigamon_lake and dataset gigamon_ami are kept')
+    expect(line).not.toContain('Nothing else in')
   })
 
   it('says the commit carries somebody else’s work only when it actually does', () => {
@@ -107,49 +89,10 @@ describe('what the teardown confirmation claims about reach', () => {
     expect(dirty).not.toContain('Assume it may be')
     expect(failed).toContain('Assume it may be')
   })
-
-  it('names what is already uncommitted in the teardown, and no longer says Yes commits and deploys it', () => {
-    // Since 2026-09-25 the Remove refuses on such a file (provision.ts
-    // `removeDirtyRefusal`); the line naming it stays, and says so.
-    const dirty = all(removeConsequences(ctx([INPUTS]), 'gigamon_lake', 'gigamon_ami'))
-    expect(dirty).toContain(INPUTS)
-    expect(dirty).toContain('already carrying uncommitted changes')
-    expect(dirty).toContain('Yes removes nothing unless')
-    expect(dirty).not.toContain('which this press commits and deploys')
-    const clean = removalPendingSentence(ctx([]))
-    const failed = removalPendingSentence(ctx(null))
-    expect(new Set([clean, removalPendingSentence(ctx([INPUTS])), failed]).size).toBe(3)
-    expect(clean).toContain('Yes reads it again')
-    expect(failed).toContain('removes nothing while it still cannot be read')
-  })
-
-  it('carries every deploy consequence the rest of the app carries, verbatim', () => {
-    const lines = removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami')
-    for (const owed of DEPLOY_CONSEQUENCES) expect(lines).toContain(owed)
-  })
-
-  it('stops claiming a stranded deploy puts exactly one commit live', () => {
-    const line = all(removeConsequences(ctx([], ALL, 'abcdef1234567890'), 'gigamon_lake', 'gigamon_ami'))
-    expect(line).toContain('abcdef1234')
-    expect(line).toContain('everything else committed since')
-    expect(line).not.toContain('It also deploys commit')
-  })
-
-  it('says nothing about a stranded deploy when there is none', () => {
-    expect(all(removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami'))).not.toContain('never deployed')
-  })
-
-  it('does not promise a rebuild that no control on the page can do', () => {
-    // It said "Deploy onboarding stack, on this tab, rebuilds …" while that
-    // button existed; the pack is the only onboarding now.
-    expect(REMOVE_UNDO).not.toMatch(/Deploy onboarding stack|rebuilds everything/)
-    expect(REMOVE_UNDO).toContain('nothing here rebuilds it')
-    expect(REMOVE_UNDO).toContain('onboarding pack')
-  })
 })
 
 describe('what a Raw HTTP source does across the restart', () => {
-  it('is said in Guided Setup’s own teardown dialog, as a precaution, not in the sentences every deploy dialog shares', () => {
+  it('is a precaution of its own, not in the sentences every deploy dialog shares', () => {
     // DEPLOY_CONSEQUENCES is also the Lake landing panel's, where no Raw HTTP
     // source need exist — and "refuses POSTs" was never measured.
     for (const line of DEPLOY_CONSEQUENCES) {
@@ -157,25 +100,33 @@ describe('what a Raw HTTP source does across the restart', () => {
     }
     expect(HTTP_RESTART_PRECAUTION).toMatch(/retry/)
     expect(HTTP_RESTART_PRECAUTION).not.toMatch(/refuses/)
-    expect(removeConsequences(ctx([]), 'gigamon_lake', 'gigamon_ami')).toContain(HTTP_RESTART_PRECAUTION)
   })
 })
 
-describe('what a teardown leaves alone because it could not see it', () => {
-  it('names each object it will not delete, and says why', () => {
-    const line = leftAloneSentence(GROUP, ['Syslog source in_gigamon_syslog', 'Raw HTTP source in_gigamon_http'])
-    expect(line).toContain('in_gigamon_syslog')
-    expect(line).toContain('in_gigamon_http')
-    expect(line).toContain('could not')
-    expect(line).toContain('not deleted')
+describe('what a confirmation says about an undeployed commit', () => {
+  const HEAD = 'aaaa1111cccc2222'
+  const at = (undeployed: string | null, undeployedChecking = false) => ({ ...ctx([]), undeployed, undeployedChecking })
+
+  it('names the commit, and that everything since goes live with it', () => {
+    const line = undeployedSentence(at(HEAD)) ?? ''
+    expect(line).toContain(`${GROUP} is behind commit #${HEAD.slice(0, 10)}`)
+    expect(line).toContain('everything else committed since')
+    expect(line).not.toContain('It also deploys commit')
+    expect(undeployedSentence(at(null))).toBeNull()
   })
 
-  it('says nothing when there is nothing it could not see', () => {
-    expect(leftAloneSentence(GROUP, [])).toBeNull()
+  it('says the check was still running, rather than saying nothing', () => {
+    const text = undeployedSentence(at(null, true)) ?? ''
+    expect(text).toContain(`still checking whether ${GROUP} is behind a commit that touches it`)
+    expect(text).not.toContain('is behind commit #')
+  })
+
+  it('says it about when the dialog opened, so the sentence stays true while it is open', () => {
+    expect(undeployedSentence(at(null, true))).toContain('When this dialog opened')
   })
 })
 
-describe('the endpoint card and the old Syslog stack', () => {
+describe('the endpoint card', () => {
   it('says the token is shown once and kept nowhere by this app', () => {
     expect(TOKEN_ONCE).toContain('Shown once')
     expect(TOKEN_ONCE).toContain('keeps no copy')
@@ -196,56 +147,22 @@ describe('the endpoint card and the old Syslog stack', () => {
     // by any client (Authorization: <token>)" — the whole value, no scheme.
     expect(AUTH_HEADER).toBe('Authorization: <token>')
   })
-
-  it('names every old Syslog object the teardown will remove', () => {
-    for (const id of [LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID]) {
-      expect(LEGACY_TIP).toContain(id)
-      expect(LEGACY_ONLY_TIP).toContain(id)
-    }
-    expect(legacyNote(GROUP)).toContain(GROUP)
-  })
 })
 
-describe('what the teardown confirmations say about an undeployed commit', () => {
-  const HEAD = 'aaaa1111cccc2222'
-  const at = (undeployed: string | null, undeployedChecking = false) => ({ ...ctx([]), undeployed, undeployedChecking })
-  const removal = (c: ReturnType<typeof at>) => all(removeConsequences(c, 'gigamon_lake', 'gigamon_ami'))
-
-  it('names the commit in the teardown dialogs too, because a teardown deploys as well', () => {
-    // Both Remove dialogs commit and deploy (DEPLOY_CONSEQUENCES), so they move
-    // the group to HEAD like any deploy. They used to say nothing.
-    expect(removal(at(HEAD))).toContain(`${GROUP} is behind commit #${HEAD.slice(0, 10)}`)
-    expect(removal(at(null))).not.toContain('is behind')
-  })
-
-  it('says the check was still running, in every dialog, rather than saying nothing', () => {
-    for (const text of [removal(at(null, true))]) {
-      expect(text).toContain(`still checking whether ${GROUP} is behind a commit that touches it`)
-      expect(text).not.toContain('is behind commit #')
-    }
-  })
-
-  it('says it about when the dialog opened, so the sentence stays true while it is open', () => {
-    expect(undeployedSentence(at(null, true))).toContain('When this dialog opened')
-  })
-})
-
-describe('the undeployed-commit note beside Remove', () => {
-  it('claims only what pendingDeploy proves: a commit that touches the group, not a failed deploy', () => {
-    expect(behindNote(GROUP)).toBe(`${GROUP} is behind a commit that touches it.`)
-    const tip = behindTip(GROUP, 'aaaa1111cccc2222')
-    expect(tip).toContain('#aaaa1111cc')
-    expect(tip).toContain('somebody else')
-    expect(`${behindNote(GROUP)} ${tip}`).not.toMatch(/did not finish|failed/)
+describe('no word of the global stacks’ teardown is left', () => {
+  it('exports none of the Remove panel’s sentences', () => {
+    for (const gone of [
+      'removeConsequences', 'removalPendingSentence', 'leftAloneSentence', 'legacyNote', 'LEGACY_TIP',
+      'LEGACY_ONLY_LEAD', 'LEGACY_ONLY_TIP', 'REMOVE_UNDO', 'behindNote', 'behindTip',
+    ]) expect(Object.keys(copy), gone).not.toContain(gone)
   })
 })
 
 // ── What this file does not establish ───────────────────────────────────────
 //
 //   * THAT THE DIALOG RENDERS THESE. <ConfirmDialog> takes `consequences` and
-//     prints them; that it does is asserted in ConfirmDialog's own tests, not
-//     here, and ProvisionPanel passing these arrays rather than others is a
-//     type-level fact only.
+//     prints them; that it does is asserted in ConfirmDialog's own tests, and
+//     the onboarding plan's tests hold which of these its dialogs carry.
 //   * THAT `POST /version/commit` STAGES WHOLE FILES. Every sentence here rests
 //     on it. It comes from GitCommitBody.files ("Array of file paths") and from
 //     ordinary Git semantics; the spec does not say "whole file" in those
@@ -271,7 +188,8 @@ describe('“What gets created” is the pack’s list, always', () => {
     for (const id of [PACK_ID, PACK_HTTP_INPUT_ID, PACK_BREAKER_ID, PACK_PIPELINE_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_PARQUET_DATASET_ID]) {
       expect(text, id).toContain(id)
     }
-    for (const id of [HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_BREAKER_ID]) expect(text, id).not.toContain(id)
+    // The ids the global stack earlier releases created carried.
+    for (const id of ['in_gigamon_http', 'gigamon_http_normalize', 'gigamon_ami_json_array']) expect(text, id).not.toContain(id)
     const range = `${CLOUD_PORT_RANGE.min}–${CLOUD_PORT_RANGE.max}`
     expect(PACK_SETUP_FACTS.some((f) => f.label.includes(range))).toBe(true)
   })

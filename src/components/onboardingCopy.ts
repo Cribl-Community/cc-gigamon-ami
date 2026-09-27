@@ -62,11 +62,6 @@ export function sampleVolumeWords(v: SampleVolume): string {
   )
 }
 
-/** When Guided Setup's global Raw HTTP stack is already in the group. */
-export const globalStackSentence = (group: string): string =>
-  `The Raw HTTP stack already in ${group} is not touched and keeps listening. Point Gigamon AMX at one source — ` +
-  `${PACK_HTTP_INPUT_ID} or the existing one — or every record is stored twice.`
-
 /** When schedules are created running on a verdict that never saw data. */
 export const emptyRealDatasetSentence = (): string =>
   `The scheduled searches start running now and read ${PACK_LAKE_DATASET_ID} whether or not it holds any data yet; ` +
@@ -364,9 +359,6 @@ export function keptDatasetsSentence(ids: readonly string[]): string {
 export const keptSchedulesSentence = (): string =>
   'Kept: the scheduled searches, which keep running and billing. Remove them in Acceleration.'
 
-export const keptGlobalStackSentence = (group: string): string =>
-  `Any Raw HTTP stack created outside the pack in ${group} is not touched.`
-
 export const REMOVE_PACK_UNDO =
   'Onboard, on this tab, installs the pack again, with a new auth token. The datasets and the data in them stay where they are.'
 
@@ -443,10 +435,3 @@ export const cleanupUnrestorableSentence = (words: string, expected: string): st
 export const cleanupHeldSentence = (group: string): string =>
   `Nothing was committed or deployed, because a step failed. What did change is in ${group}’s configuration but uncommitted, and ` +
   `another admin’s commit and deploy of ${group} would push it as it is. Check the pack in Cribl, then run this again.`
-
-// ── The Raw HTTP stack's panel, when the pack onboards ──────────────────────
-
-export const REMOVE_ONLY_LEAD = 'This group also has the Raw HTTP stack created outside the pack.'
-export const REMOVE_ONLY_TIP =
-  `Point Gigamon AMX at one source, ${PACK_HTTP_INPUT_ID} or this stack’s, or every record is stored twice. ` +
-  'This panel only removes that stack: the pack panel above is how this app onboards now.'

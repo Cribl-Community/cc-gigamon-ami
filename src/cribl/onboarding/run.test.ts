@@ -818,7 +818,10 @@ describe('prepareOnboarding refuses what the run could not honour', () => {
     expect(writes()).toEqual([])
   })
 
-  it('a group whose own sources could not be read is said to hold the Raw HTTP stack', async () => {
+  it('looks for no global stack: a group whose own sources could not be read still opens, and nothing names one', async () => {
+    // Until 2026-09-26 the dialog said the group held Guided Setup's global Raw
+    // HTTP stack when its sources could not be read. The app no longer shows or
+    // removes those objects (owner decision), so it no longer looks for them.
     leader({
       datasets: REAL_DATA,
       installed: { http: { disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] } },
@@ -826,7 +829,7 @@ describe('prepareOnboarding refuses what the run could not honour', () => {
     })
     const r = await prepare()
     if (!r.ok) throw new Error(r.why)
-    expect(r.ctx.globalStackPresent).toBe(true)
+    expect(Object.keys(r.ctx)).not.toContain('globalStackPresent')
   })
 })
 

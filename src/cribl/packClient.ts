@@ -958,8 +958,8 @@ export const packCommitPaths = (group: string): string[] => [
 
 /**
  * The key a pack commit's hash is kept under in Guided Setup's commit memory
- * (setupMemory.ts: group → key → {hash, message}). Not a `ResourceKey`: the
- * pack is not one of the stack's rows. provision.ts's stranded-commit repair
+ * (setupMemory.ts: group → key → {hash, message}). A key of its own: the
+ * pack is not one of any stack's rows. provision.ts's stranded-commit repair
  * reads every key of the group, so a hash here is one it will deploy.
  */
 export const PACK_COMMIT_KEY = 'onboarding_pack'

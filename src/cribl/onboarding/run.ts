@@ -66,7 +66,7 @@ import {
 } from '../packClient'
 import { upgradePack } from '../packUpgrade'
 import {
-  HTTP_SOURCE_ID, LEGACY_SYSLOG_SOURCE_ID, ensureLakeDataset, generateToken, groupInputs, hostingOf, leaderHostname,
+  ensureLakeDataset, generateToken, hostingOf, leaderHostname,
   pendingConfigPaths, portProblem, sameValue, type LakeDatasetStep, type StepResult,
 } from '../provision'
 import {
@@ -140,13 +140,6 @@ const labelOf = (key: string): string => LABELS[key] ?? key
 
 // ── The reads the dialog is built from ──────────────────────────────────────
 
-/** Whether the group holds Guided Setup's global Raw HTTP or old Syslog source. */
-function globalSourcePresent(inputs: readonly { id: string; pack: string | null }[] | null): boolean {
-  // A group whose sources could not be read may hold one: say so rather than not.
-  if (inputs === null) return true
-  return inputs.some((i) => i.pack === null && (i.id === HTTP_SOURCE_ID || i.id === LEGACY_SYSLOG_SOURCE_ID))
-}
-
 const liveIds = (list: readonly LakeDataset[]): string[] => list.filter((d) => d.deletionStartedAt === null).map((d) => d.id)
 
 export type PrepareResult =
@@ -165,10 +158,9 @@ export async function prepareOnboarding(
 ): Promise<PrepareResult> {
   const release = thisPackRelease()
   if (!release.installable) return { ok: false, why: release.refusal ?? 'the pack’s release cannot be installed' }
-  const [pack, datasets, inputs, groups, pending, accel] = await Promise.all([
+  const [pack, datasets, groups, pending, accel] = await Promise.all([
     readPackState(group),
     listDatasets(),
-    groupInputs(group).catch(() => null),
     listStreamGroupsCurrent(),
     pendingConfigPaths().catch(() => null),
     readAccelState(),
@@ -232,7 +224,6 @@ export async function prepareOnboarding(
       scope: packCommitScope(group, pending),
       undeployed: opts.undeployed,
       undeployedChecking: opts.undeployedChecking,
-      globalStackPresent: globalSourcePresent(inputs),
     },
   }
 }

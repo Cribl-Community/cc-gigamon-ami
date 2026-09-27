@@ -41,8 +41,6 @@ function packState(over: Partial<PackState>): PackState {
 
 const readers = (pack: PackState): PreflightReaders => ({
   readPackState: async () => pack,
-  checkStatus: async () => ({ breaker: 'absent', pipeline: 'absent', source: 'absent', route: 'absent' }),
-  checkLegacyStatus: async () => ({ legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' }),
   listDatasets: async () => ({
     outcome: 'ok', object: '/x', status: 200, detail: null,
     value: ['gigamon_ami', 'gigamon_ami_pq'].map((id) => ({

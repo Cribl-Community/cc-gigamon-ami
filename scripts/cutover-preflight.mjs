@@ -1,5 +1,5 @@
-// Runbook 4c: is a worker group ready for Gigamon AMX to be re-pointed from the
-// old global Raw HTTP source to the onboarding pack's — READ-ONLY.
+// Runbook 4c: is a worker group ready for Gigamon AMX to be pointed at the
+// onboarding pack's Raw HTTP source — READ-ONLY.
 //
 //   npm run cutover:preflight                      the `default` group
 //   npm run cutover:preflight -- --group <id>      another worker group
@@ -36,13 +36,13 @@
 //   /m/:gid/p/cc-network-gigamon-ami/lib/breakers/gigamon_ami_http_json_array
 //   /m/:gid/p/:pack/system/inputs              (every installed pack's sources, for ports)
 //   /m/:gid/system/inputs                      (the group's own sources, for ports)
-//   /m/:gid/system/inputs/in_gigamon_http, /m/:gid/system/inputs/in_gigamon_syslog
-//   /m/:gid/pipelines/gigamon_http_normalize, /m/:gid/pipelines/gigamon_syslog
-//   /m/:gid/lib/breakers/gigamon_ami_json_array
-//   /m/:gid/routes
 //   /products/lake/lakes/default/datasets
 //   /products/stream/groups, /products/stream/groups/:gid (/master/groups/:gid on an old Leader)
 //   /version/status, /version, /version/files
+//
+// It no longer reads the global Raw HTTP and Syslog stacks earlier releases
+// created (2026-09-26, `chore/remove-global-stacks`): Guided Setup no longer
+// shows or removes them.
 //
 // NOT MEASURED. Built 2026-09-25 and tested only against fakes; it has not been
 // run against a Leader.

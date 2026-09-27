@@ -43,8 +43,7 @@ import { PACK_HTTP_INPUT_ID, PACK_ID, PACK_LAKE_DATASET_ID, PACK_OBJECTS, PACK_P
 import { thisPackRelease } from '../cribl/packClient'
 import { acquireSetupRun, resetSetupRunLock } from '../cribl/setupRunLock'
 import { OnboardingPanel } from './OnboardingPanel'
-import { ProvisionPanel } from './ProvisionPanel'
-import { REMOVE_ONLY_LEAD, SAMPLE_LABEL, SAMPLE_START_REFUSAL, TOKEN_UNDEPLOYED } from './onboardingCopy'
+import { SAMPLE_LABEL, SAMPLE_START_REFUSAL, TOKEN_UNDEPLOYED } from './onboardingCopy'
 
 const toasts = vi.hoisted(() => [] as Array<{ kind: string; text: string }>)
 vi.mock('./Toast', () => ({
@@ -248,11 +247,8 @@ function leader(o: {
         }
       }
       if (method === 'GET' && path.startsWith(`${P}/`)) return fake.packs[g].length ? reply(200, { items: [] }) : reply(404, {})
-      // Guided Setup's global stack: absent unless asked for.
-      if (method === 'GET' && path.startsWith(`/m/${g}/`)) {
-        if (fake.globalHttp && g === 'default' && path.endsWith('/in_gigamon_http')) return reply(200, { items: [{ id: 'in_gigamon_http' }] })
-        return reply(404, { message: 'not found' })
-      }
+      // Anything else in the group: absent.
+      if (method === 'GET' && path.startsWith(`/m/${g}/`)) return reply(404, { message: 'not found' })
     }
     return reply(599, { message: `no route for ${method} ${path}` })
   })
@@ -373,12 +369,15 @@ describe('10. this build, as it ships: 0.2.2, released and recorded', () => {
     expect(calls.some((c) => c.method === 'POST' && c.path === '/m/default/packs')).toBe(false)
   })
 
-  it('the pack panel holds the page’s one picker, and the Raw HTTP panel holds none', async () => {
+  it('the pack panel holds the page’s one picker, whatever else the group holds', async () => {
+    // A global Raw HTTP source an earlier release created, left orphaned: the
+    // app no longer shows or removes it (2026-09-26), and offers no Remove.
     leader({ globalHttp: true })
-    await mount(<><OnboardingPanel /><ProvisionPanel /></>)
+    await mount()
     expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
-    expect(document.body.querySelector('#gs-group-select')).toBeNull()
     expect(buttonNamed('Deploy onboarding stack')).toBeUndefined()
+    expect(buttonNamed('Remove Raw HTTP stack')).toBeUndefined()
+    expect(bodyText()).not.toContain('in_gigamon_http')
     expect(writes()).toEqual([])
   })
 
@@ -578,35 +577,18 @@ describe('a Remove whose commit failed', () => {
   })
 })
 
-// ── The run lock, and the Raw HTTP panel stepping aside ─────────────────────
+// ── The run lock ─────────────────────────────────────────────────────────────
 
 describe('one run at a time, and one onboarding path', () => {
   it('while another Guided Setup run holds the lock, Onboard does not open', async () => {
     leader()
     await mount()
-    const release = acquireSetupRun('onboarding_stack')!
+    const release = acquireSetupRun('lake_landing')!
     await settle()
     expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBe('true')
     await press(buttonNamed('Onboard'))
     expect(dialog()).toBeNull()
     release()
-  })
-
-  it('with the pack available and no global stack, the Raw HTTP panel is absent', async () => {
-    leader()
-    await mount(<ProvisionPanel />)
-    expect(container.textContent).toBe('')
-  })
-
-  it('with the global Raw HTTP stack in the group, it offers Remove and nothing else', async () => {
-    leader({ globalHttp: true })
-    await mount(<ProvisionPanel />)
-    expect(bodyText()).toContain(REMOVE_ONLY_LEAD)
-    expect(bodyText()).not.toContain('Deploy onboarding stack')
-    expect(bodyText()).not.toContain('Re-apply onboarding stack')
-    expect(buttonNamed('Remove Raw HTTP stack')).toBeTruthy()
-    // The page's one picker is the pack panel's now.
-    expect(document.body.querySelector('#gs-group-select')).toBeNull()
   })
 })
 

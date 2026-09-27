@@ -91,7 +91,6 @@ export type WriteSurface =
 /** Every control in this app that performs a write. One id per control, because
  *  the id is what a `<GatedControl>` carries and what a denial is latched to. */
 export type WriteId =
-  | 'onboarding_stack.remove'
   | 'search_caps.save'
   | 'dataset_intel.generate'
   | 'hung_job.cancel'
@@ -128,14 +127,11 @@ export interface GatedWrite {
 
 /** The controls, and what each one is. */
 export const GATED_WRITES: Record<WriteId, GatedWrite> = {
-  // Guided Setup's global stacks, from earlier releases: Remove only. Its
-  // sibling `onboarding_stack.apply` — Deploy / Re-apply of the global Raw HTTP
-  // stack — was withdrawn with that control on 2026-09-25, when the onboarding
-  // collapsed into the pack's.
-  'onboarding_stack.remove': {
-    surface: 'config',
-    does: 'removing the Gigamon AMI objects an earlier release created',
-  },
+  // Guided Setup's global stacks, from earlier releases, have no write any
+  // more: `onboarding_stack.apply` (Deploy / Re-apply of the global Raw HTTP
+  // stack) went on 2026-09-25, when the onboarding collapsed into the pack's,
+  // and `onboarding_stack.remove` (their Remove) on 2026-09-26, when the owner
+  // decided the app no longer shows or removes them.
   'search_caps.save': {
     surface: 'app',
     does: 'saving the search running-time limits',
@@ -303,7 +299,9 @@ export const WRITE_SITES: readonly WriteSite[] = [
   // The global Raw HTTP stack's create path (`ensureDestination`,
   // `ensureBreaker`, `ensurePipeline`, `ensureSource`, `ensureRoute`, all
   // gated by `onboarding_stack.apply`) was removed on 2026-09-25 with the
-  // Deploy control that reached it.
+  // Deploy control that reached it; its teardown (`removeOnboardingStack`,
+  // `removeBreaker`, gated by `onboarding_stack.remove`) on 2026-09-26 with the
+  // Remove control.
   {
     at: 'cribl/provision.ts#ensureLakeDataset',
     gates: ['onboarding_pack.install'],
@@ -312,27 +310,15 @@ export const WRITE_SITES: readonly WriteSite[] = [
   },
   {
     at: 'cribl/provision.ts#deployGroup',
-    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove', 'onboarding_pack.cleanup'],
+    gates: ['onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove', 'onboarding_pack.cleanup'],
     surface: 'config',
-    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Guided Setup’s Remove of the global stacks ends here, and so does every onboarding-pack write, through packClient.ts commitAndDeployPack.',
+    why: 'PATCH .../deploy restarts the group Workers on the new configuration. Every onboarding-pack write ends here, through packClient.ts commitAndDeployPack.',
   },
   {
     at: 'cribl/provision.ts#commitAndDeploy',
-    gates: ['onboarding_stack.remove', 'onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove', 'onboarding_pack.cleanup'],
+    gates: ['onboarding_pack.install', 'onboarding_pack.upgrade', 'onboarding_pack.configure', 'onboarding_pack.remove', 'onboarding_pack.cleanup'],
     surface: 'config',
-    why: 'POST /version/commit writes a Git commit on the Leader. Guided Setup’s Remove of the global stacks ends here, and so does every onboarding-pack write (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
-  },
-  {
-    at: 'cribl/provision.ts#removeOnboardingStack',
-    gates: ['onboarding_stack.remove'],
-    surface: 'config',
-    why: 'PATCH drops our routes from the table — this release’s, the Syslog route an earlier release created, or both; DELETE removes the Raw HTTP source and the pipeline, and the old Syslog source and pipeline. Only what the status check found present, which is exactly what the confirmation names. The same control also removes the old Syslog objects alone.',
-  },
-  {
-    at: 'cribl/provision.ts#removeBreaker',
-    gates: ['onboarding_stack.remove'],
-    surface: 'config',
-    why: 'DELETE removes the breaker ruleset in the teardown — only once its source is gone, only when it carries this app’s description, and only when no other source in the group, or in a pack, names it.',
+    why: 'POST /version/commit writes a Git commit on the Leader. Every onboarding-pack write ends here (packClient.ts commitAndDeployPack, via commitMatchingAndDeploy), scoped to the pack’s own directories.',
   },
 
   // --- The onboarding pack (components/OnboardingPanel.tsx) -----------------

@@ -46,8 +46,8 @@ import type { Phase } from '../cribl/provision'
 
 /**
  * The progress toast currently on screen, if any. Module scope rather than
- * component state because `pushToast` is handed to `deployAll`/`removeOnboardingStack`
- * as a plain callback and has no component to live in — the same reason the old
+ * component state because `pushToast` is handed to Guided Setup's runs as a
+ * plain callback and has no component to live in — the same reason the old
  * implementation needed a ref.
  */
 let progressId: string | null = null

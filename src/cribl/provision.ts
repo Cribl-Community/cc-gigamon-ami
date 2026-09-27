@@ -1,93 +1,51 @@
-// Guided Setup's worker-group client: the reads, the teardown of the global
-// stacks earlier releases created, and the commit-and-deploy machinery every
-// Guided Setup write shares.
+// Guided Setup's worker-group client: the reads, and the commit-and-deploy
+// machinery every Guided Setup write shares.
 //
-// ── WHAT THIS FILE NO LONGER DOES (owner decision, 2026-09-25) ──────────────
+// ── WHAT THIS FILE NO LONGER DOES ───────────────────────────────────────────
 //
-// It used to CREATE the global Raw HTTP onboarding stack — an `http_raw`
-// source `in_gigamon_http` with an app-generated token, the breaker ruleset
-// `gigamon_ami_json_array`, the pipeline `gigamon_http_normalize`, the route
-// `gigamon_ami_http` and, where missing, the `gigamon_lake` destination — and
-// commit and deploy it (`deployAll` and its `ensure*` steps), and it was THE
-// onboarding whenever the pinned pack release could not be installed. The
-// owner collapsed that onboarding into the pack-based one: the onboarding
-// pack (cribl/packClient.ts, cribl/onboarding/run.ts) is now the only way this
-// app onboards, and when its release cannot be installed Onboard is refused
-// with the release's own sentence and nothing falls back to this stack.
+// It used to CREATE the global Raw HTTP onboarding stack (`deployAll`, until
+// 2026-09-25, when the owner collapsed that onboarding into the pack's), and
+// then — until 2026-09-26 — to read and REMOVE it, and the Syslog stack before
+// it, from a Guided Setup panel of their own. Owner decision 2026-09-26: new
+// installs never have those global stacks, so the app no longer shows them or
+// removes them. A tenant that ran an earlier release keeps whatever of them is
+// still in its worker group, orphaned; Cribl Stream is where to delete it. The
+// onboarding pack (cribl/packClient.ts, cribl/onboarding/run.ts) is the only
+// way this app onboards. The specs the global stack was created from live on
+// in cribl/packSpecs.ts, where pack.test.ts holds the pack's YAML equal to them.
 //
-// So what is left of the global stack here is what a tenant who ran an
-// earlier release still needs: its status (`checkStatus`, and
-// `checkLegacyStatus` for the Syslog stack before it) and its confirmed
-// teardown (`removeOnboardingStack`), which deletes only the fixed ids below,
-// only what the status check found present, and never the dataset or the
-// destination. The specs it was created from moved to cribl/packSpecs.ts,
-// where pack.test.ts holds the pack's YAML equal to them.
-//
-// ── WHAT IT STILL DOES FOR EVERYONE ─────────────────────────────────────────
+// ── WHAT IT DOES ────────────────────────────────────────────────────────────
 //
 //   * `ensureLakeDataset` — the one Lake dataset POST in the app: created when
 //     absent, never edited. Its only caller is the onboarding run.
-//   * `commitMatchingAndDeploy` / `commitAndDeploy` — commit exactly the files
-//     a run touched, re-read Git to refuse a commit that left one behind, and
-//     deploy; with the stranded-commit repair that deploys only a hash this app
-//     recorded. The pack client and the teardown both end here.
-//   * `pendingDeploy`, `undeployedHead`, `pendingConfigPaths`, `commitScope` —
-//     reads that let every confirmation say what its commit carries.
+//   * `commitMatchingAndDeploy` — commit exactly the files a run touched,
+//     re-read Git to refuse a commit that left one behind, and deploy; with the
+//     stranded-commit repair that deploys only a hash this app recorded. The
+//     pack client ends here.
+//   * `pendingDeploy`, `undeployedHead`, `deployState`, `pendingConfigPaths`,
+//     `commitScopeFor` — reads that let every confirmation say what its commit
+//     carries, and the cutover preflight refuse on doubt.
 //   * `portProblem`, `suggestPort`, `hostingOf`, `groupInputs`, `generateToken`,
 //     `scrubbedErrText` — used by the pack's source settings.
 //
-// Every write here is behind a confirmation in a component: the teardown in
-// components/ProvisionPanel.tsx, the pack's writes in
-// components/OnboardingPanel.tsx. Nothing here runs on load, render or a timer.
+// Every write here is behind a confirmation in a component (the pack's, in
+// components/OnboardingPanel.tsx). Nothing here runs on load, render or a timer.
 //
 // Calls go through cribl/capi.ts, which is where the auth story lives: the
 // platform proxy (installed) and the Vite `/capi` proxy (`npm run dev`) both
 // inject it, so nothing here handles a token.
 
-import { isDenial } from './authz'
-import { capi, errText, groupPath, type ApiResp } from './capi'
+import { capi, errText, type ApiResp } from './capi'
 import { STREAM_GROUP } from './config'
-import { appendLog } from './kv'
 import { DEFAULT_PROFILE, datasetSpec, pathFilterRows } from './landing'
 import { listInputs, listPackInputs, type StreamInput } from './lake'
 import { PACK_PARQUET_DATASET_ID } from './pack'
-import { loadCommitMemory, loadUncommittedRemovals, updateUncommittedRemovals } from './setupMemory'
+import { loadCommitMemory } from './setupMemory'
 
-/** The Raw HTTP source earlier releases created for Gigamon AMX to POST to.
- *  Global (not pack) ids, each distinct from every id in the onboarding pack
- *  (src/cribl/pack.ts), so the pack installs beside this stack. Read and
- *  removed; never created or edited any more. */
-export const HTTP_SOURCE_ID = 'in_gigamon_http'
-/** Its cast + derive pipeline. */
-export const HTTP_PIPELINE_ID = 'gigamon_http_normalize'
-export const HTTP_ROUTE_ID = 'gigamon_ami_http'
-/**
- * The event breaker ruleset the source names. A GLOBAL object in the group's
- * library, created by earlier releases of this app — and named for what it
- * does rather than after the lab ruleset it is modelled on
- * (`gigamon_json_http`), so a group that already has that one is never deleted
- * by this app.
- */
-export const HTTP_BREAKER_ID = 'gigamon_ami_json_array'
-/**
- * The description earlier releases wrote on that ruleset — this app's
- * ownership stamp. The teardown deletes a ruleset of that id only when it
- * carries exactly this; packSpecs.ts's `HTTP_BREAKER_SPEC` carries it too, and
- * pack.test.ts holds the pack's own ruleset to a different one.
- */
-export const HTTP_BREAKER_DESCRIPTION = 'Gigamon AMI: one event per record of a POSTed JSON array'
+/** The global Cribl Lake destination the Lake landing panel edits, where a
+ *  group has one. Nothing in this release creates it. */
 export const LAKE_DESTINATION_ID = 'gigamon_lake'
 export const LAKE_DATASET_ID = 'gigamon_ami'
-
-/**
- * The Syslog stack earlier releases created. Read and removed, never created or
- * edited: the teardown still has to take these away on a tenant that has them,
- * because "installs but cannot uninstall" does not stop being true when a
- * release changes what it installs.
- */
-export const LEGACY_SYSLOG_SOURCE_ID = 'in_gigamon_syslog'
-export const LEGACY_SYSLOG_PIPELINE_ID = 'gigamon_syslog'
-export const LEGACY_SYSLOG_ROUTE_ID = 'gigamon_ami_syslog'
 
 /** The only ports a Cribl-managed (Cribl.Cloud) worker group exposes for a
  *  source. A hybrid group's workers are the customer's, so any port works there. */
@@ -256,10 +214,7 @@ export const PARQUET_DATASET_SPEC = Object.freeze({
 
 // --- Addressing -----------------------------------------------------------
 
-// Every source, pipeline, route and destination below is addressed inside a
-// worker group; `g` is the short name this file has always used for that.
-const g = groupPath
-// The Lake dataset is the exception: Cribl Lake is group-independent.
+// Cribl Lake is group-independent, so its datasets are not under a group.
 const datasetsPath = `/products/lake/lakes/${LAKE_ID}/datasets`
 
 // --- Worker groups --------------------------------------------------------
@@ -320,101 +275,19 @@ export async function listStreamGroups(): Promise<StreamGroup[]> {
 // --- Status ---------------------------------------------------------------
 
 /**
- * The resources a Cribl worker group can hold for this app's onboarding, by
- * key. `dataset` is created by the onboarding run (group-independent, in Cribl
- * Lake); `destination` is `gigamon_lake`, which earlier releases created where
- * it was missing and nothing creates now. The other four are the global Raw
- * HTTP stack (`HttpKey`). cribl/paths.ts names what the app creates and removes
- * in this vocabulary.
- */
-export type ResourceKey = 'dataset' | 'destination' | HttpKey
-
-/** The global Raw HTTP stack earlier releases created: read and removed only. */
-export type HttpKey = 'breaker' | 'pipeline' | 'source' | 'route'
-
-/**
- * The three objects of the Syslog stack earlier releases created. A separate
- * key set from `HttpKey`, so "Remove old Syslog objects" can take them alone.
- */
-export type LegacyKey = 'legacy_source' | 'legacy_pipeline' | 'legacy_route'
-export const LEGACY_KEYS: readonly LegacyKey[] = Object.freeze(['legacy_source', 'legacy_pipeline', 'legacy_route'])
-
-/** Anything a Guided Setup teardown commit can carry a file for. */
-export type CommitKey = HttpKey | LegacyKey
-
-/**
- * What a status check can honestly say about one resource.
+ * What a status check can honestly say about one object.
  *
- * `unreadable` is the state this used to lack, and its absence reached
- * customers. Every check below is a GET, and a GET the platform refuses answers
- * neither "there" nor "not there" — but a boolean has nowhere to put that, so a
- * refused read became `false`, the row rendered "— absent", and the screen
- * positively told somebody who could not SEE the stack that it did not exist.
- * A gate downstream reading that boolean would be reading laundered data, which
- * is worse than no gate at all.
+ * `unreadable` is the state a boolean has nowhere to put. A GET the platform
+ * refuses answers neither "there" nor "not there"; read as `false`, the screen
+ * would positively tell somebody who could not SEE an object that it did not
+ * exist. The pack client's reads and the cutover preflight use it.
  */
 export type ResourceState = 'present' | 'absent' | 'unreadable'
-
-/** The global Raw HTTP stack's four objects, as the status check read them. */
-export type SetupStatus = Record<HttpKey, ResourceState>
-export type LegacyStatus = Record<LegacyKey, ResourceState>
-
-/** What one status GET really told us. `present` is the caller's own reading of
- *  the body; a refusal overrides it, because the body of a refused call says
- *  nothing about the resource. */
-function stateOf(r: ApiResp, present: boolean): ResourceState {
-  if (isDenial(r.status)) return 'unreadable'
-  return present ? 'present' : 'absent'
-}
-
-type RouteRow = { id?: string; name?: string }
-const routeRows = (r: ApiResp): RouteRow[] =>
-  ((r.body as { items?: Array<{ routes?: RouteRow[] }> })?.items?.[0]?.routes) || []
-const hasRoute = (rows: RouteRow[], id: string) => rows.some((x) => x.id === id || x.name === id)
-
-/**
- * Whether the global Raw HTTP stack an earlier release created is still in this
- * group. Read-only, and read so the teardown can name what it will delete and
- * so Guided Setup shows its panel only while one of these is (or may be) there.
- * *(Until 2026-09-25 it also read the Lake dataset and the `gigamon_lake`
- * destination, for a Deploy that could create them.)*
- */
-export async function checkStatus(group: string = DEFAULT_STREAM_GROUP): Promise<SetupStatus> {
-  const [brk, pipe, src, routes] = await Promise.all([
-    capi('GET', g(group, `/lib/breakers/${HTTP_BREAKER_ID}`)),
-    capi('GET', g(group, `/pipelines/${HTTP_PIPELINE_ID}`)),
-    capi('GET', g(group, `/system/inputs/${HTTP_SOURCE_ID}`)),
-    capi('GET', g(group, '/routes')),
-  ])
-  return {
-    breaker: stateOf(brk, brk.status === 200),
-    pipeline: stateOf(pipe, pipe.status === 200),
-    source: stateOf(src, src.status === 200),
-    route: stateOf(routes, hasRoute(routeRows(routes), HTTP_ROUTE_ID)),
-  }
-}
-
-/**
- * Whether the Syslog stack an earlier release created is still in this group.
- * Read-only, and read so the teardown can name what it will delete.
- */
-export async function checkLegacyStatus(group: string = DEFAULT_STREAM_GROUP): Promise<LegacyStatus> {
-  const [src, pipe, routes] = await Promise.all([
-    capi('GET', g(group, `/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`)),
-    capi('GET', g(group, `/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`)),
-    capi('GET', g(group, '/routes')),
-  ])
-  return {
-    legacy_source: stateOf(src, src.status === 200),
-    legacy_pipeline: stateOf(pipe, pipe.status === 200),
-    legacy_route: stateOf(routes, hasRoute(routeRows(routes), LEGACY_SYSLOG_ROUTE_ID)),
-  }
-}
 
 // --- What a step reports ---------------------------------------------------
 
 export type StepAction = 'created' | 'updated' | 'exists' | 'error' | 'skipped'
-export type StepKey = CommitKey | 'commit' | 'deploy'
+export type StepKey = 'commit' | 'deploy'
 export interface StepResult {
   key: StepKey
   action: StepAction
@@ -435,62 +308,6 @@ export type Phase =
 
 export type OnPhase = (p: Phase) => void
 const noopPhase: OnPhase = () => {}
-
-/** Human labels for each resource, used in step logs and phase pop-ups. */
-export const STEP_LABELS: Record<StepKey, string> = {
-  breaker: 'Event breaker',
-  pipeline: 'Pipeline',
-  source: 'Raw HTTP source',
-  route: 'Route',
-  legacy_source: 'Old Syslog source',
-  legacy_pipeline: 'Old Syslog pipeline',
-  legacy_route: 'Old Syslog route',
-  commit: 'Commit',
-  deploy: 'Deploy',
-}
-
-// Rich, human-readable description of each resource — names the concrete Cribl
-// object, so the Git commit history explains itself.
-const RESOURCE_PHRASE: Record<CommitKey, string> = {
-  breaker: `event breaker ruleset '${HTTP_BREAKER_ID}' (from an earlier release)`,
-  pipeline: `pipeline '${HTTP_PIPELINE_ID}' (from an earlier release)`,
-  source: `Raw HTTP source '${HTTP_SOURCE_ID}' (from an earlier release)`,
-  route: `route '${HTTP_ROUTE_ID}' (from an earlier release)`,
-  legacy_source: `Syslog source '${LEGACY_SYSLOG_SOURCE_ID}' (from an earlier release)`,
-  legacy_pipeline: `pipeline '${LEGACY_SYSLOG_PIPELINE_ID}' (from an earlier release)`,
-  legacy_route: `route '${LEGACY_SYSLOG_ROUTE_ID}' (from an earlier release)`,
-}
-
-/** Commit message for teardown, naming exactly what was removed. */
-function removeCommitMessage(group: string, keys: CommitKey[]): string {
-  const removed = keys.map((k) => RESOURCE_PHRASE[k]).join(', ')
-  return (
-    `Gigamon Network Observability — remove Gigamon AMI onboarding from worker group '${group}': deleted ${removed}. ` +
-    `Cribl Lake dataset '${LAKE_DATASET_ID}' retained (shared, group-independent).`
-  )
-}
-
-/**
- * Git file path for a resource inside a Stream group's local config. Scoping the
- * commit to exactly these files is what keeps us from committing unrelated
- * pending changes elsewhere in the group.
- */
-function groupFile(group: string, key: CommitKey): string | null {
-  const root = `groups/${group}/local/cribl`
-  switch (key) {
-    case 'source': case 'legacy_source': return `${root}/inputs.yml`
-    case 'route': case 'legacy_route': return `${root}/pipelines/route.yml`
-    // Where a group keeps its custom event breaker rulesets. MEASURED
-    // 2026-09-24 on the Gigamon Leader: the commit that created the lab
-    // ruleset added `groups/default/local/cribl/breakers.yml` (/version/show).
-    // A commit that still leaves a file of this run behind is caught after the
-    // fact, in `commitAndDeploy`, and not deployed.
-    case 'breaker': return `${root}/breakers.yml`
-    case 'pipeline': return `${root}/pipelines/${HTTP_PIPELINE_ID}/conf.yml`
-    case 'legacy_pipeline': return `${root}/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}/conf.yml`
-    default: return null
-  }
-}
 
 /**
  * Read the config file paths Git currently sees as changed (uncommitted),
@@ -524,26 +341,6 @@ async function pendingFiles(): Promise<string[] | null> {
   return [...out]
 }
 
-/**
- * Layout-independent substring identifying a resource's config file. Matches
- * whether the versioning root yields `groups/<gid>/local/cribl/pipelines/route.yml` or a
- * group-rooted `local/cribl/pipelines/route.yml` — we don't guess the prefix.
- */
-function fileMarker(key: CommitKey): string | null {
-  switch (key) {
-    case 'source': case 'legacy_source': return 'local/cribl/inputs.yml'
-    case 'route': case 'legacy_route': return 'local/cribl/pipelines/route.yml'
-    case 'breaker': return 'local/cribl/breakers.yml'
-    case 'pipeline': return `local/cribl/pipelines/${HTTP_PIPELINE_ID}/`
-    case 'legacy_pipeline': return `local/cribl/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}/`
-    default: return null
-  }
-}
-
-/** Every file marker for these keys. */
-const markersFor = (keys: readonly CommitKey[]): string[] =>
-  keys.map(fileMarker).filter((m): m is string => m !== null)
-
 /** The pending paths that belong to `group` and match one of `markers` — the
  *  one test every commit in this module scopes by, whatever made the change. */
 function matching(pending: readonly string[], group: string, markers: readonly string[]): string[] {
@@ -560,26 +357,10 @@ export function pathInGroup(path: string, group: string): boolean {
 }
 
 /**
- * The exact set of pending paths to commit for the given resource keys in the
- * target group — matched against the real Git status so paths are valid and
- * scoped to just our resources. Falls back to constructed paths only when the
- * status call yields nothing (e.g. endpoint restricted), as a best effort.
- */
-async function filesToCommit(group: string, keys: CommitKey[]): Promise<string[]> {
-  if (keys.length === 0) return []
-  return filesToCommitFor(
-    group,
-    markersFor(keys),
-    keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null),
-  )
-}
-
-/**
- * `filesToCommit` for any set of markers: the pending paths in `group` that
- * match one, or — only when Git reported nothing at all — `constructed`, the
- * paths a known layout says the change landed in. Shared with the onboarding
- * pack client (cribl/packClient.ts), whose files are a pack directory rather
- * than one of the resource files above.
+ * The files a commit names: the pending paths in `group` that match one of
+ * `markers`, or — only when Git reported nothing at all — `constructed`, the
+ * paths a known layout says the change landed in. The onboarding pack client
+ * (cribl/packClient.ts) passes its pack directory's markers.
  */
 async function filesToCommitFor(group: string, markers: readonly string[], constructed: readonly string[]): Promise<string[]> {
   if (markers.length === 0) return []
@@ -615,7 +396,7 @@ async function filesToCommitFor(group: string, markers: readonly string[], const
  * `carries` IS CONSTRUCTED, NOT READ, and deliberately: at the moment the
  * dialog opens nothing has been written, so no Git status can report the files
  * this run is about to dirty. It is the full set the run MAY commit — which
- * files it actually names is decided by `filesToCommit` afterwards, from the
+ * files it actually names is decided by `filesToCommitFor` afterwards, from the
  * status read taken after the writes.
  *
  * `alsoPending` IS READ, because it is the half the code can actually check,
@@ -646,8 +427,8 @@ export interface CommitScope {
 
 /** Everything Cribl currently sees as uncommitted, anywhere in the repo, or
  *  null when the status read answered nothing — which is "could not tell", not
- *  "nothing is pending", and `commitScope` keeps the two apart. Read once per
- *  status check and split per dialog by `commitScope`, which is pure. */
+ *  "nothing is pending", and `commitScopeFor` keeps the two apart. Read once per
+ *  status check and split per dialog by `commitScopeFor`, which is pure. */
 export async function pendingConfigPaths(): Promise<string[] | null> {
   try {
     // An EMPTY LIST IS AN ANSWER: the read succeeded and the tree is clean.
@@ -662,13 +443,8 @@ export async function pendingConfigPaths(): Promise<string[] | null> {
   }
 }
 
-export function commitScope(group: string, keys: readonly CommitKey[], pending: readonly string[] | null): CommitScope {
-  const carries = keys.map((k) => groupFile(group, k)).filter((f): f is string => f !== null)
-  return commitScopeFor(group, carries, markersFor(keys), pending)
-}
-
-/** `commitScope` for any set of markers, with `carries` given rather than
- *  derived from resource keys — the onboarding pack's scope is its directories
+/** What a commit over `markers` carries in `group`, and what else is pending
+ *  beside it (`CommitScope`) — the onboarding pack's scope is its directories
  *  (cribl/packClient.ts `packCommitScope`). */
 export function commitScopeFor(
   group: string,
@@ -808,11 +584,6 @@ export async function ensureLakeDataset(
   return r.status >= 200 && r.status < 300 ? { id: spec.id, action: 'created' } : { id: spec.id, action: 'error', detail: errText(r) }
 }
 
-/** This app's ownership stamp on its ruleset: the description it wrote. */
-const stampedBreaker = (live: Record<string, unknown>) => live.description === HTTP_BREAKER_DESCRIPTION
-const NOT_OUR_BREAKER =
-  `a ruleset named ${HTTP_BREAKER_ID} exists without the description this app wrote, so it may not be this app's, and this app leaves it alone`
-
 /** Every port the group's sources already listen on, or null when one of them
  *  has a port this app cannot read — "cannot tell", which is never "free". */
 export function portsInUse(inputs: readonly StreamInput[]): number[] | null {
@@ -825,9 +596,8 @@ export type GroupInput = StreamInput & { pack: string | null }
 
 /**
  * Every source in the group: its own, and those inside each installed pack.
- * Null when any part could not be read — both callers (the free-port check and
- * the breaker's "who else names this" check) would otherwise answer "free" or
- * "unused" about something they never saw.
+ * Null when any part could not be read — the free-port check (packClient.ts
+ * `portsOfOthers`) would otherwise answer "free" about a port it never saw.
  */
 export async function groupInputs(group: string): Promise<GroupInput[] | null> {
   const [own, packed] = await Promise.all([listInputs(group), listPackInputs(group)])
@@ -873,34 +643,6 @@ export function hostingOf(onPrem: boolean | null | undefined, host: string | nul
   if (onPrem === false && isCriblCloudHost(host)) return 'managed'
   return null
 }
-
-// --- The routing table ----------------------------------------------------
-//
-// A group has ONE routing table, and `PATCH /m/<group>/routes/<id>` replaces it
-// wholesale — the array in the request body becomes the customer's routing
-// order. So the teardown writes it as an edit of the table it just read — the
-// entries being removed taken out, every other route at its index — never as a
-// table composed from scratch.
-
-/** The routing table as the leader returns it. `comments` and `groups` (Route
- *  Groups) ride along in the same object, so the index signature is not
- *  defensive padding: sending back `{ id, routes }` alone would delete them. */
-interface RoutingTable {
-  id: string
-  routes: Array<Record<string, unknown>>
-  [field: string]: unknown
-}
-
-async function readRoutes(group: string): Promise<RoutingTable | null> {
-  const cur = await capi('GET', g(group, '/routes'))
-  const obj = (cur.body as { items?: RoutingTable[] })?.items?.[0]
-  return obj && Array.isArray(obj.routes) ? obj : null
-}
-
-/** Our route, by either of the two fields it can be identified by. */
-const isOurRoute = (r: Record<string, unknown>) => r.id === HTTP_ROUTE_ID || r.name === HTTP_ROUTE_ID
-/** The Syslog route an earlier release inserted. Matched only for removal. */
-const isLegacyRoute = (r: Record<string, unknown>) => r.id === LEGACY_SYSLOG_ROUTE_ID || r.name === LEGACY_SYSLOG_ROUTE_ID
 
 // --- Deploy ---------------------------------------------------------------
 
@@ -1193,8 +935,7 @@ export async function undeployedHead(group: string = DEFAULT_STREAM_GROUP): Prom
  * CAN WE PROVE IT TOUCHES THIS GROUP — the hash of a commit this group has not
  * deployed AND that moved a file belonging to it, or null.
  *
- * This is what the screen needs. `ProvisionPanel` renders it as "${group} is
- * behind a commit that touches it", and every Guided Setup confirmation says
+ * This is what the screen needs. Every Guided Setup confirmation says
  * that its deploy — which restarts that group's Worker Processes — carries that
  * commit live, so a claim derived from a signal that
  * cannot distinguish this group from any other is not good enough. "Could not
@@ -1453,326 +1194,6 @@ export async function commitMatchingAndDeploy(
 ): Promise<StepResult[]> {
   const files = await filesToCommitFor(group, markers, constructed)
   return commitAndDeploy(message, group, files, markers, onStep, onPhase, nothingCommitted)
-}
-
-/**
- * One entry in this app's own audit trail per completed run.
- *
- * A teardown is a change to customer configuration, and the only record of them otherwise is a toast that is gone in four seconds
- * and a Git commit that does not say who pressed the button. `appendLog` stamps
- * the user and the time itself (cribl/kv.ts).
- *
- * Deliberately best-effort and not awaited: the trail answers false when the
- * store refuses it, and a lost trail entry must not turn a successful deploy
- * into a reported failure. What the user is told about is the deploy's own
- * outcome, which is in `steps` either way.
- *
- * Called from the end of a user-triggered run and from nowhere else — a trail
- * written on load or on a timer records nothing anybody did.
- */
-function logRun(action: string, group: string, steps: StepResult[]): void {
-  void appendLog('gigamon', {
-    action,
-    group,
-    outcome: steps.some((s) => s.action === 'error') ? 'error' : 'ok',
-    steps: steps.map((s) => `${s.key}:${s.action}`),
-  })
-}
-
-/** One DELETE's answer as a step. 404 is "already gone" (a racy partial
- *  cleanup), not an error. */
-function deleteStep(key: CommitKey, r: ApiResp): StepResult {
-  if (r.status === 404) return { key, action: 'exists', detail: 'not present' }
-  return r.status < 300 ? { key, action: 'updated', detail: 'deleted' } : { key, action: 'error', detail: errText(r) }
-}
-
-/**
- * What the teardown knows is there — the same status the confirmation was built
- * from. ONLY A KEY THAT IS `present` IS DELETED.
- *
- * It used to be the other way round: anything not stated as `absent` was
- * attempted, on the reasoning that "I could not see it" is not "it is not
- * there". That is true, and it is also a delete the confirmation never named —
- * the dialog lists an object only when it is `present`, so an `unreadable` key,
- * or a legacy status that could not be read at all, was deleted without a row
- * saying so. On a tenant whose old Syslog stack is still receiving AMX data,
- * that is the live feed. Now an object this app could not see is left alone, and
- * the dialog says it is.
- */
-export type RemovalPresence = Partial<Record<CommitKey, ResourceState>>
-
-/** The HTTP stack's keys, and the old Syslog stack's. A presence map holding
- *  only `LEGACY_KEYS` removes only the old stack — see `legacyOnly`. */
-export const HTTP_KEYS: readonly HttpKey[] = Object.freeze(['source', 'pipeline', 'route', 'breaker'])
-
-/** The part of a presence map that is the old Syslog stack, alone — what
- *  "Remove old Syslog objects" passes, so the HTTP source, its token and its
- *  port are not touched by retiring the old feed. */
-export function legacyOnly(present: RemovalPresence): RemovalPresence {
-  const out: RemovalPresence = {}
-  for (const k of LEGACY_KEYS) if (present[k] !== undefined) out[k] = present[k]
-  return out
-}
-
-/**
- * Tear down what `present` says is there: the Raw HTTP source, pipeline, route
- * entry and breaker ruleset, and the Syslog source, pipeline and route, that
- * earlier releases created. Only those fixed ids — plus, for the
- * ruleset, this app's description stamp and a check that no other source names
- * it. Leaves the shared dataset and destination in place.
- */
-export async function removeOnboardingStack(
-  onStep: (r: StepResult) => void,
-  group: string = DEFAULT_STREAM_GROUP,
-  onPhase: OnPhase = noopPhase,
-  present: RemovalPresence = {},
-): Promise<StepResult[]> {
-  const out: StepResult[] = []
-  const touched: CommitKey[] = []
-  const exists = (k: CommitKey) => present[k] === 'present'
-  const record = (res: StepResult) => {
-    out.push(res); onStep(res)
-    if (res.detail === 'deleted') touched.push(res.key as CommitKey)
-  }
-
-  // Routes: remove the entries being removed — the Raw HTTP one, the old Syslog
-  // one, or both — in ONE edit of the table, keeping every other route at its
-  // index. An entry not being removed stays, whichever stack it belongs to.
-  const routeKeys = (['route', 'legacy_route'] as const).filter(exists)
-  if (routeKeys.length) {
-    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.route}…` })
-    const obj = await readRoutes(group)
-    if (!obj) {
-      for (const key of routeKeys) record({ key, action: 'error', detail: 'routing table could not be read, so nothing was removed from it' })
-    } else {
-      const drop = (x: Record<string, unknown>) =>
-        (routeKeys.includes('route') && isOurRoute(x)) || (routeKeys.includes('legacy_route') && isLegacyRoute(x))
-      const had = { route: obj.routes.some(isOurRoute), legacy_route: obj.routes.some(isLegacyRoute) }
-      // Drop those entries and nothing else: the table's own `comments` / Route
-      // Groups ride back out with `...obj`.
-      const kept = obj.routes.filter((x) => !drop(x))
-      if (kept.length !== obj.routes.length) {
-        const r = await capi('PATCH', g(group, `/routes/${obj.id}`), { ...obj, routes: kept })
-        for (const key of routeKeys) {
-          if (!had[key]) continue
-          record(r.status === 200 ? { key, action: 'updated', detail: 'deleted' } : { key, action: 'error', detail: errText(r) })
-        }
-      }
-    }
-  }
-  // Sources before the pipelines and the ruleset they reference.
-  if (exists('source')) {
-    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.source}…` })
-    record(deleteStep('source', await capi('DELETE', g(group, `/system/inputs/${HTTP_SOURCE_ID}`))))
-  }
-  if (exists('legacy_source')) {
-    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.legacy_source}…` })
-    record(deleteStep('legacy_source', await capi('DELETE', g(group, `/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`))))
-  }
-  if (exists('pipeline')) {
-    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.pipeline}…` })
-    record(deleteStep('pipeline', await capi('DELETE', g(group, `/pipelines/${HTTP_PIPELINE_ID}`))))
-  }
-  if (exists('legacy_pipeline')) {
-    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.legacy_pipeline}…` })
-    record(deleteStep('legacy_pipeline', await capi('DELETE', g(group, `/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`))))
-  }
-  if (exists('breaker')) {
-    onPhase({ kind: 'provision', text: `Removing ${STEP_LABELS.breaker}…` })
-    record(await removeBreaker(group, present, out))
-  }
-  // Commit only the files whose resources we actually removed — matched against
-  // the real Git status (deletions/modifications show up there too).
-  const files = await filesToCommit(group, touched)
-  const cd = await commitAndDeploy(removeCommitMessage(group, touched), group, files, markersFor(touched), onStep, onPhase)
-  await recordUncommittedRemoval(group, touched, cd)
-  const all = [...out, ...cd]
-  logRun('onboarding_stack.removed', group, all)
-  return all
-}
-
-/**
- * Keep `removeDirtyRefusal`'s evidence current, at the end of a run and from
- * nowhere else (setupMemory.ts `UncommittedRemoval`).
- *
- *   * THE COMMIT FAILED after deletes landed: this run's deletions are pending
- *     in Git and nothing committed them, so they are recorded under the
- *     Leader's HEAD as it is now. A commit that landed but left a file behind
- *     ("commit incomplete") counts as failed: that file still holds this
- *     run's change.
- *   * THE COMMIT LANDED: every recorded key whose file this commit carried is
- *     dropped — that earlier deletion is committed now.
- *
- * Best-effort, like the audit trail: a store that refuses the record costs a
- * later retry its way through (it is refused, and says commit in Cribl Stream),
- * never a write it should not make.
- */
-async function recordUncommittedRemoval(group: string, touched: readonly CommitKey[], steps: readonly StepResult[]): Promise<void> {
-  if (touched.length === 0) return
-  const commit = steps.find((s) => s.key === 'commit')
-  try {
-    if (commit?.action === 'created') {
-      const carried = new Set(markersFor(touched))
-      const drop = ALL_COMMIT_KEYS.filter((k) => {
-        const m = fileMarker(k)
-        return m !== null && carried.has(m)
-      })
-      await updateUncommittedRemovals({ group, drop })
-    } else if (commit?.action === 'error') {
-      await updateUncommittedRemovals({ group, add: { keys: [...touched], head: await leaderHead() } })
-    }
-  } catch {
-    // The record is evidence for a later retry, not part of this run's outcome.
-  }
-}
-
-/** Every key a Guided Setup teardown commit can carry a file for. */
-const ALL_COMMIT_KEYS: readonly CommitKey[] = Object.freeze(['source', 'pipeline', 'route', 'breaker', ...LEGACY_KEYS])
-
-/** The Leader's local HEAD, or null when the history cannot be read. */
-async function leaderHead(): Promise<string | null> {
-  const items = await commitHistory(0).catch(() => null)
-  if (!items) return null
-  const i = headIndex(items)
-  return i >= 0 ? items[i].hash : null
-}
-
-// ── The Remove's own guard against committing somebody else's work ─────────
-//
-// `POST /version/commit` takes whole FILES, and the teardown's files are shared:
-// `inputs.yml` holds every source in the group, `pipelines/route.yml` is the one
-// routing table, `breakers.yml` the group's whole ruleset library. So a change
-// somebody left uncommitted in one of them is committed and deployed with the
-// removal — to running Worker Processes. The dialog has always NAMED such files
-// (`pendingSentence`); it did not stop. This does, inside the run lock and
-// before the first write: it re-reads Git's status, builds the run's commit
-// scope, and refuses while any file in that scope is already uncommitted, or
-// while the status cannot be read.
-//
-// ITS OWN RETRY IS NOT LOCKED OUT. A Remove whose DELETE landed and whose commit
-// failed leaves this app's deletion pending in exactly those files, and this
-// panel has no "finish removal". Git names files, not hunks, so the pending
-// change cannot be read for whose it is; the evidence is this app's own record
-// of the removals it left uncommitted (setupMemory.ts), made under the Leader's
-// HEAD. A pending file is let through only when that record, at the HEAD the
-// Leader still has, names an object of this app's in that file, and every such
-// recorded object is absent now (a fresh read: one re-created since would be a
-// change that is not this app's). Anything else is refused with the files
-// named, and the way out said: commit them in Cribl Stream.
-//
-// WHAT IT CANNOT SEE: an edit somebody saves to the SAME file after this app's
-// failed commit and before the retry, at an unchanged HEAD — Git's status looks
-// the same with or without it. And a save made after this check and before the
-// commit, which no re-read can close.
-// (Runbook 4c, P1: `removeDirtyRefusal`.)
-
-/** The verdict on the files a Remove's commit would carry. */
-export type RemoveDirtyVerdict =
-  | { ok: true; ownRetry: string[] }
-  | { ok: false; unknown: true; files: [] }
-  | { ok: false; unknown: false; files: string[] }
-
-/** What `removeDirtyVerdict` weighs, all of it read by the caller. */
-export interface RemoveDirtyInputs {
-  group: string
-  /** The keys this run will delete — the ones the confirmation named present. */
-  keys: readonly CommitKey[]
-  /** Git's pending paths, or null when the status read answered nothing. */
-  pending: readonly string[] | null
-  /** This app's record of its own uncommitted removal in `group`, or null. */
-  record: { keys: readonly string[]; head: string | null } | null
-  /** The Leader's HEAD now, or null when unread. */
-  head: string | null
-  /** Each of this app's objects as a fresh status read found it. */
-  live: Partial<Record<CommitKey, ResourceState>>
-}
-
-/** Pure: may a Remove over `keys` commit now? See the block above. */
-export function removeDirtyVerdict(i: RemoveDirtyInputs): RemoveDirtyVerdict {
-  const scope = commitScope(i.group, i.keys, i.pending)
-  if (scope.unknown) return { ok: false, unknown: true, files: [] }
-  if (scope.alreadyDirty.length === 0) return { ok: true, ownRetry: [] }
-  const vouches = i.record !== null && i.record.head !== null && i.head !== null && i.record.head === i.head
-  const recorded = new Set(vouches && i.record ? i.record.keys : [])
-  const ours = (file: string): boolean => {
-    const here = ALL_COMMIT_KEYS.filter((k) => {
-      const m = fileMarker(k)
-      return m !== null && file.includes(m) && recorded.has(k)
-    })
-    return here.length > 0 && here.every((k) => i.live[k] === 'absent')
-  }
-  const foreign = scope.alreadyDirty.filter((f) => !ours(f))
-  return foreign.length ? { ok: false, unknown: false, files: foreign } : { ok: true, ownRetry: [...scope.alreadyDirty] }
-}
-
-/** The refusal when Git's status cannot be read. */
-export const removeDirtyUnknownSentence = (group: string): string =>
-  `Cribl did not report what is uncommitted in ${group}, so this app cannot tell whether somebody else’s unfinished work is in ` +
-  'the files this removal commits whole. Try again once it can be read, or remove the objects in Cribl Stream'
-
-/** The refusal on a file already uncommitted with a change this app cannot
- *  account for as its own earlier removal. */
-export const removeDirtySentence = (group: string, files: readonly string[]): string =>
-  `${files.join(', ')} ${files.length === 1 ? 'is' : 'are'} already uncommitted in ${group}, with changes this app cannot account ` +
-  'for as its own earlier removal, and this removal commits whole files, so it would commit and deploy those changes too. ' +
-  `Commit (or discard) them in Cribl Stream first, then press Remove again`
-
-/**
- * Why a Remove over `present` may not commit now, or null — re-read at the
- * moment it is asked. Reads only: Git's status, and — only when a file is
- * already uncommitted — this app's record, the Leader's HEAD and the objects'
- * state. The caller writes nothing when this answers a sentence.
- */
-export async function removeDirtyRefusal(group: string, present: RemovalPresence): Promise<string | null> {
-  const keys = ALL_COMMIT_KEYS.filter((k) => present[k] === 'present')
-  const pending = await pendingConfigPaths()
-  const first = removeDirtyVerdict({ group, keys, pending, record: null, head: null, live: {} })
-  if (first.ok) return null
-  if (first.unknown) return removeDirtyUnknownSentence(group)
-  const [records, head, http, legacy] = await Promise.all([
-    loadUncommittedRemovals().catch(() => null),
-    leaderHead(),
-    checkStatus(group).catch(() => null),
-    checkLegacyStatus(group).catch(() => null),
-  ])
-  const verdict = removeDirtyVerdict({
-    group, keys, pending, record: records?.[group] ?? null, head, live: { ...(http ?? {}), ...(legacy ?? {}) },
-  })
-  if (verdict.ok) return null
-  return verdict.unknown ? removeDirtyUnknownSentence(group) : removeDirtySentence(group, verdict.files)
-}
-
-/**
- * The breaker ruleset's teardown step, which has three reasons to keep it that
- * the other objects do not.
- *
- *   * THE SOURCE THAT NAMES IT MAY STILL BE THERE. When its DELETE failed, or
- *     its state was never known, deleting the ruleset leaves `in_gigamon_http`
- *     naming a ruleset that does not exist.
- *   * THE ID IS NOT PROOF OF OWNERSHIP. The ruleset must carry the description
- *     earlier releases of this app wrote (`HTTP_BREAKER_DESCRIPTION`).
- *   * IT IS A LIBRARY OBJECT. Any other source in the group — the customer's
- *     own, or one inside a pack — may name it. Their sources are read, and a
- *     read that fails keeps it: "could not check" is not "nobody uses it".
- */
-async function removeBreaker(group: string, present: RemovalPresence, steps: readonly StepResult[]): Promise<StepResult> {
-  const src = steps.find((s) => s.key === 'source')
-  const sourceGone = present.source === 'absent' || src?.detail === 'deleted' || src?.detail === 'not present'
-  if (!sourceGone) {
-    return { key: 'breaker', action: 'error', detail: `kept — source ${HTTP_SOURCE_ID} may still exist and names this ruleset` }
-  }
-  const cur = await capi('GET', g(group, `/lib/breakers/${HTTP_BREAKER_ID}`))
-  if (cur.status === 404) return { key: 'breaker', action: 'exists', detail: 'not present' }
-  const live = cur.status === 200 ? firstItem(cur) : null
-  if (!live) return { key: 'breaker', action: 'error', detail: 'kept — the ruleset could not be read, so this app could not check it is its own' }
-  if (!stampedBreaker(live)) return { key: 'breaker', action: 'error', detail: `kept — ${NOT_OUR_BREAKER}` }
-  const inputs = await groupInputs(group)
-  if (!inputs) return { key: 'breaker', action: 'error', detail: 'kept — this app could not read the group’s sources, so it could not check whether another one names this ruleset' }
-  const users = inputs
-    .filter((i) => i.breakerRulesets.includes(HTTP_BREAKER_ID) && !(i.pack === null && i.id === HTTP_SOURCE_ID))
-    .map((i) => (i.pack ? `${i.pack}/${i.id}` : i.id))
-  if (users.length) return { key: 'breaker', action: 'error', detail: `kept — still named by ${users.join(', ')}` }
-  return deleteStep('breaker', await capi('DELETE', g(group, `/lib/breakers/${HTTP_BREAKER_ID}`)))
 }
 
 /**

@@ -1,5 +1,5 @@
 // "How is my data landing, and let me change it" — one more Panel on Guided
-// Setup's single page, a sibling of <ProvisionPanel> and <AccelPanel>.
+// Setup's single page, a sibling of <OnboardingPanel> and <AccelPanel>.
 //
 // THERE IS NO SECTION SHELL AND NO `/setup/<section>` ROUTE. The owner withdrew
 // the four-section design on 2026-09-17 (I-D2), so the dataset-absent state

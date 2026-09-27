@@ -23,14 +23,15 @@ into the raw Cribl Search UI whenever you want to go deeper.
 
 ## What it does
 
-1. **Onboard the data (Guided Setup).** Idempotently provisions a real-world Gigamon AMX
-   onboarding stack — a Raw HTTP source with an auth token the app generates and shows once, an
-   event breaker ruleset that splits each POSTed JSON array into records, a normalize pipeline, a
-   route, and the `gigamon_ami` Cribl Lake dataset — in a Stream worker group you pick (`default`
-   unless you change it), then commits and deploys it. On a Cribl-managed group the source listens
-   on a free port in 20000–20010 with TLS; on a hybrid group it starts without TLS and the app says
-   so. It only *adds* resources (never edits shared ones) and can tear down exactly what it added —
-   including the Syslog stack earlier releases created.
+1. **Onboard the data (Guided Setup).** Installs the onboarding pack `cc-network-gigamon-ami` —
+   a Raw HTTP source with an auth token the app generates and shows once, an event breaker ruleset
+   that splits each POSTed JSON array into records, normalize pipelines and routes into the
+   `gigamon_ami` Cribl Lake dataset and its Parquet copy — creates those datasets, in a Stream
+   worker group you pick (`default` unless you change it), then commits and deploys it. On a
+   Cribl-managed group the source listens on a free port in 20000–20010 with TLS; on a hybrid group
+   it starts without TLS and the app says so. It can upgrade or remove the pack it installed. The
+   global Raw HTTP and Syslog stacks earlier releases created are no longer shown or removed: a
+   tenant that still has them keeps them, and deletes them in Cribl Stream if it wants them gone.
 2. **Query on demand.** Each tab issues KQL jobs against `dataset="gigamon_ami"`, polls to
    completion, and streams the result rows into the view. A global time range and auto-refresh
    interval drive every panel at once.
@@ -129,17 +130,15 @@ fields so the Copilot agent does not rediscover it on every investigation.
 and none of it touches configuration", which the long-running-search watch (slice 1.8, branch
 `feat/phase-1.8-hang-control`) falsified.*
 
-**The writes are worth reading properly.** Guided Setup can create a Raw HTTP source, an event
-breaker ruleset, a pipeline, a route and a Cribl Lake destination and dataset, commit them to your Leader's config repo, and deploy
+**The writes are worth reading properly.** Guided Setup can install, configure, upgrade and remove
+the onboarding pack, create its Cribl Lake datasets, commit to your Leader's config repo, and deploy
 that commit to a worker group — which restarts that group's Worker Processes. It only ever runs
-from a button press with a confirmation that names the objects it will change, it only touches
-objects it created, and it can remove the source, the ruleset, the pipeline and the route again
-— and the Syslog source, pipeline and route an earlier release created. Two things it
-creates it does **not** remove: the `gigamon_ami` Lake dataset, because that holds your ingested
-data and deleting it is a Cribl Lake decision you should make deliberately, and the `gigamon_lake`
-destination, because on most tenants it already existed and other things may route through it — so
-on a tenant that lacked one, an uninstall leaves an unreferenced destination behind for you to
-delete in Stream. The Git commit is permanent by design; the app never calls revert or undo.
+from a button press with a confirmation that names the objects it will change, and it only touches
+objects it created. What it creates it does **not** remove: the Lake datasets, because they hold
+your ingested data and deleting one is a Cribl Lake decision you should make deliberately. The
+global Raw HTTP and Syslog stacks earlier releases created (and the `gigamon_lake` destination
+they may have created) are neither shown nor removed any more; delete them in Stream if you want
+them gone. The Git commit is permanent by design; the app never calls revert or undo.
 
 **The one thing the app cannot narrow, and you should know about:** Guided Setup lets the user pick
 which worker group to onboard into, so the group is a variable in the granted path
@@ -164,8 +163,9 @@ took. It is scoped to this app; nothing else can read it, and it holds no search
 ways to cover a child path and never says whether `*` matches one path segment or many — and an
 admin can never find out by testing, because a user who already holds a permission reaches the path
 without any grant. So every object names each segment it needs, and uses a literal wherever the app
-only ever calls one value: the entry is `/m/:gid/system/inputs/in_gigamon_http`, so what you
-approve is "may delete the input this app made" rather than "may delete any input".
+only ever calls one value: the entry is `/m/:gid/p/cc-network-gigamon-ami/system/inputs/in_gno_syslog`,
+so what you approve is "may delete the input this app's pack left behind" rather than "may delete any
+input".
 
 Everything in that file is checked against the code: `src/cribl/policyCoverage.test.ts` fails if the
 app calls a path the file does not declare, and equally if the file declares a path the app never

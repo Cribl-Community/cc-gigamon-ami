@@ -29,9 +29,10 @@
 //
 // THE ONLY ONBOARDING (owner decision, 2026-09-25). The panel always renders,
 // holds the page's one worker-group picker, and is how this app onboards,
-// whatever the pinned release says. The Raw HTTP stack's panel below
-// (ProvisionPanel) shows only while an object an earlier release created is (or
-// may be) in the group, and then offers Remove alone.
+// whatever the pinned release says. *(Until 2026-09-26 a second panel below it,
+// ProvisionPanel, offered Remove of the global stacks earlier releases created
+// while one of their objects was in the group; the owner decided the app no
+// longer shows or removes them, and that panel is gone.)*
 //
 // IN A BUILD WHOSE PACK CANNOT BE INSTALLED (one that pins a version before its
 // release), Onboard — and, for an owned copy that is behind, Upgrade — is
@@ -192,7 +193,8 @@ export function OnboardingPanel() {
       const [pack, pending] = await Promise.all([readPackState(group), pendingConfigPaths().catch(() => null)])
       if (!current()) return
       const stranded = pack.installed || pack.error ? [] : packCommitScope(group, pending).alreadyDirty
-      // Captured for the dialogs, never awaited by them (see ProvisionPanel).
+      // Captured for the dialogs, never awaited by them: a dialog says what the
+      // answer was when it opened (provisionPanelCopy.ts `undeployedSentence`).
       void pendingDeploy(group).catch(() => null).then((h) => {
         if (current()) pendingNow.current = { known: true, hash: h }
       })

@@ -13,10 +13,11 @@
 //   * Onboard is aria-disabled, with the release's own sentence as visible text
 //     it points at, and pressing it opens nothing and sends nothing;
 //   * `POST /packs` is never sent, by anything on the page;
-//   * NOTHING FALLS BACK: the pack panel holds the page's picker, and the Raw
-//     HTTP stack's panel offers no Deploy (it renders only to remove an old
-//     stack). *(Until 2026-09-25 that panel became the onboarding here, with
-//     its Deploy and picker — `onboardingPath`'s 'global' mode.)*
+//   * NOTHING FALLS BACK: the pack panel holds the page's picker, and nothing
+//     offers a Deploy of a global stack. *(Until 2026-09-25 the Raw HTTP
+//     stack's panel became the onboarding here, with its Deploy and picker —
+//     `onboardingPath`'s 'global' mode; until 2026-09-26 it rendered to remove
+//     an old stack, and it is gone.)*
 //   * a copy this app owns (the published 0.1.0, from its release) is still
 //     offered Remove, and Upgrade is aria-disabled with the release's refusal
 //     as the visible sentence it points at — pressing it sends nothing;
@@ -33,7 +34,6 @@ import { resetDenials } from '../cribl/authz'
 import { PACK_ID, PACK_VERSION, packReleaseUrl } from '../cribl/pack'
 import { thisPackRelease } from '../cribl/packClient'
 import { OnboardingPanel } from './OnboardingPanel'
-import { ProvisionPanel } from './ProvisionPanel'
 
 vi.mock('../cribl/pack', async (orig) => {
   const real = await orig<typeof import('../cribl/pack')>()
@@ -137,7 +137,7 @@ describe('10. while this build records no release', () => {
     // Until 2026-09-25 this asserted the opposite — the global stack's panel as
     // the onboarding, with "Deploy onboarding stack" and the page's picker.
     leader()
-    await mount(<><OnboardingPanel /><ProvisionPanel /></>)
+    await mount(<OnboardingPanel />)
     expect(buttonNamed('Deploy onboarding stack')).toBeUndefined()
     expect(document.body.querySelector('#gs-group-select')).toBeNull()
     expect(document.body.querySelector('#gs-port-input')).toBeNull()

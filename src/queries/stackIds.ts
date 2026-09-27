@@ -96,15 +96,15 @@ export interface Stack {
   /** Whether anything can run it today, and how a tenant comes to have it.
    *  `running` is running in this workspace; `offered` is what this release
    *  offers to create as a global stack (none since 2026-09-25: the pack is the
-   *  only onboarding, and its stacks are `released`); `retired` is what an
-   *  earlier release of this app created and this one only offers to remove,
-   *  which a tenant may still run.
-   *  Those three are the ones the screen names. `released` is a published pack
+   *  only onboarding, and its stacks are `released`).
+   *  Those two are the ones the screen names. *(`retired` — a global stack an
+   *  earlier release created and this one only offered to remove — went on
+   *  2026-09-26 with the last two such stacks.)* `released` is a published pack
    *  release a tenant may have installed — counted, but not named on screen
    *  until it is. `unreleased` is built but not published, `planned` is not
    *  built, and `pending` ids are not known yet. Every one of them is COUNTED:
    *  the status decides only what the screen names (SHOWN_PATHS below). */
-  status: 'running' | 'offered' | 'retired' | 'released' | 'unreleased' | 'planned' | 'pending'
+  status: 'running' | 'offered' | 'released' | 'unreleased' | 'planned' | 'pending'
   what: string
   paths: readonly StackPath[]
 }
@@ -124,37 +124,19 @@ export const STACKS: readonly Stack[] = [
       { route: null, input: 'datagen:in_gigamon_datagen', pipeline: 'gigamon_ami', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
     ],
   },
-  {
-    // Earlier releases' Guided Setup wrote it; this one only offers to remove
-    // it. A tenant that ran an earlier release can still have it running, so
-    // it is still counted and still named.
-    key: 'global-legacy-syslog',
-    scope: 'global',
-    status: 'retired',
-    what: "The Syslog onboarding earlier releases of Guided Setup created (provision.ts's LEGACY_SYSLOG_*). It shares the demo's Lake destination.",
-    paths: [
-      { route: 'gigamon_ami_syslog', input: 'syslog:in_gigamon_syslog', pipeline: 'gigamon_syslog', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
-    ],
-  },
-  {
-    // Written out, not imported: ../cribl/provision reaches the network, and
-    // this file is loaded under plain Node. stackIds.test.ts holds these equal
-    // to provision.ts's HTTP_* and LAKE_DESTINATION_ID, and the `http_raw:`
-    // prefix to the route filter packSpecs.ts's ROUTE_SPEC names.
-    //
-    // RETIRED, like the Syslog stack above it (2026-09-25): Guided Setup's
-    // onboarding collapsed into the pack's, so no release offers to create this
-    // stack any more; this one only offers to remove it. A tenant an earlier
-    // release provisioned can still be sending through it, so it is still
-    // counted and still named. (`offered` until then.)
-    key: 'global-http',
-    scope: 'global',
-    status: 'retired',
-    what: "The Raw HTTP onboarding earlier releases of Guided Setup created (src/cribl/provision.ts's HTTP_*); this release only offers to remove it. It shares the demo's Lake destination.",
-    paths: [
-      { route: 'gigamon_ami_http', input: 'http_raw:in_gigamon_http', pipeline: 'gigamon_http_normalize', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
-    ],
-  },
+  // The global Syslog and Raw HTTP stacks earlier releases of Guided Setup
+  // created (`global-legacy-syslog`, `global-http`, both `retired`) left this
+  // list on 2026-09-26 (owner decision, `chore/remove-global-stacks`): new
+  // installs never have them, and the app no longer shows or removes them. A
+  // tenant that still runs one keeps it, orphaned. Sources and Processing no
+  // longer count it (its input left src_events, its pipeline pipe_events), but
+  // it writes through the demo's `gigamon_lake`, and Destinations (dst_events,
+  // dst_bytes) and the Lake card count that destination by `output` alone —
+  // as they always did — so its writes are still counted there, and those two
+  // can run ahead of Sources and Processing. The change moved METRICS_QUERY
+  // only (src_events and pipe_events), so gno_pipeline_c1h reads as drifted
+  // until Re-apply; LAKE_TOTAL_QUERY did not move, and gno_lake_30d_c1d does
+  // not drift.
   {
     // The published 0.1.0 release, from ../cribl/pack's PACK_0_1_0 — literals
     // read from that tag, never the 0.2.x constants, several of which kept
@@ -283,15 +265,14 @@ const listed = (xs: readonly string[]): string =>
 // ── WHAT THE SCREEN NAMES ───────────────────────────────────────────────────
 //
 // The queries count every stack above, so they are right the day a pack is
-// installed. The words on screen name only the stacks a tenant can have today
-// (the demo feed, and the Raw HTTP and Syslog onboardings earlier releases of
-// Guided Setup created), so a viewer is never told
+// installed. The words on screen name only the stacks this workspace runs today
+// (the demo feed), so a viewer is never told
 // about an object no release has shipped, nor how a planned one will work.
 // The query in the ⓘ still shows every id it counts; the sentence below
 // accounts for the rest in one clause.
 
 const SHOWN_PATHS: readonly StackPath[] = STACKS
-  .filter((s) => s.status === 'running' || s.status === 'offered' || s.status === 'retired')
+  .filter((s) => s.status === 'running' || s.status === 'offered')
   .flatMap((s) => s.paths)
   .filter((p) => p.dataset === COUNTED_DATASET)
 

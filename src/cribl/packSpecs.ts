@@ -3,11 +3,15 @@
 // ── WHY THESE LIVE HERE, AND NOT IN provision.ts ────────────────────────────
 //
 // Until 2026-09-25 these were Guided Setup's create bodies: provision.ts's
-// `deployAll` POSTed and PATCHed them into a worker group as the global Raw
-// HTTP stack (`in_gigamon_http`, `gigamon_ami_json_array`,
-// `gigamon_http_normalize`, `gigamon_ami_http`). The owner collapsed that
-// onboarding into the pack's (2026-09-25): nothing creates or re-applies the
-// global stack any more, and provision.ts only reads it and removes it.
+// `deployAll` POSTed and PATCHed them into a worker group as a global Raw HTTP
+// stack. The owner collapsed that onboarding into the pack's (2026-09-25), and
+// on 2026-09-26 Guided Setup stopped reading or removing that stack as well:
+// nothing in the app touches a global Raw HTTP stack any more.
+//
+// THE IDS BELOW ARE THE SPECS' OWN, not objects the app addresses. They are the
+// ids the global stack carried, kept so each spec stays the whole body it was
+// and pack.test.ts can say "every field but the id"; the pack's own ids are in
+// src/cribl/pack.ts, and pack.test.ts holds them distinct from these.
 //
 // The specs stay, VALUE FOR VALUE, for one reason: src/cribl/pack.test.ts
 // holds the pack under packs/cc-network-gigamon-ami/ equal to them — the HTTP
@@ -25,11 +29,15 @@
 //
 // PURE: no `capi`, no `kv`, no network — only ids and bodies.
 
-import {
-  HTTP_BREAKER_DESCRIPTION, HTTP_BREAKER_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DESTINATION_ID,
-} from './provision'
+import { LAKE_DESTINATION_ID } from './provision'
 import { destinationSpec, type LandingProfile, DEFAULT_PROFILE } from './landing'
 import { PACK_PARQUET_PIPELINE_ID } from './pack'
+
+/** The specs' own ids — see the header. */
+const SPEC_SOURCE_ID = 'in_gigamon_http'
+const SPEC_PIPELINE_ID = 'gigamon_http_normalize'
+const SPEC_ROUTE_ID = 'gigamon_ami_http'
+const SPEC_BREAKER_ID = 'gigamon_ami_json_array'
 
 /** The two Evals below are copied verbatim from the existing `gigamon_ami`
  *  pipeline so HTTP-delivered flows get identical field derivations. */
@@ -73,7 +81,7 @@ const DERIVE_FN = {
  * one shape.
  */
 export const PIPELINE_SPEC = {
-  id: HTTP_PIPELINE_ID,
+  id: SPEC_PIPELINE_ID,
   conf: { functions: [CAST_FN, DERIVE_FN] },
 }
 
@@ -111,14 +119,16 @@ export const PARQUET_PIPELINE_SPEC = {
  * The breaker ruleset, from the lab model (`gigamon_json_http`): one
  * `json_array` rule over the whole body, every record's fields extracted, a
  * 51,200-byte cap per event, and the timestamp found automatically in the first
- * 150 characters. `minRawLength` 256 is the model's. Its description is the
- * global ruleset's ownership stamp (provision.ts `HTTP_BREAKER_DESCRIPTION`),
- * which the pack's own ruleset must never carry.
+ * 150 characters. `minRawLength` 256 is the model's. Its description is the one
+ * earlier releases wrote on the global ruleset as this app's ownership stamp;
+ * the pack's own ruleset carries a description of its own (pack.test.ts), so a
+ * pack ruleset is never mistaken for that global one on a tenant that still
+ * holds it.
  */
 export const HTTP_BREAKER_SPEC = {
-  id: HTTP_BREAKER_ID,
+  id: SPEC_BREAKER_ID,
   lib: 'custom',
-  description: HTTP_BREAKER_DESCRIPTION,
+  description: 'Gigamon AMI: one event per record of a POSTed JSON array',
   minRawLength: 256,
   rules: [
     {
@@ -139,23 +149,23 @@ export const HTTP_BREAKER_SPEC = {
  * and the auth token (see `sourceCreateBody`).
  */
 export const SOURCE_SPEC = {
-  id: HTTP_SOURCE_ID,
+  id: SPEC_SOURCE_ID,
   type: 'http_raw',
   disabled: false,
   host: '0.0.0.0',
   sendToRoutes: true,
-  breakerRulesets: [HTTP_BREAKER_ID],
+  breakerRulesets: [SPEC_BREAKER_ID],
   autoParse: false,
   streamtags: ['gigamon', 'ami'],
 }
 
 export const ROUTE_SPEC = {
-  id: HTTP_ROUTE_ID,
-  name: HTTP_ROUTE_ID,
+  id: SPEC_ROUTE_ID,
+  name: SPEC_ROUTE_ID,
   final: true,
   disabled: false,
-  filter: `__inputId=='http_raw:${HTTP_SOURCE_ID}'`,
-  pipeline: HTTP_PIPELINE_ID,
+  filter: `__inputId=='http_raw:${SPEC_SOURCE_ID}'`,
+  pipeline: SPEC_PIPELINE_ID,
   output: LAKE_DESTINATION_ID,
   description: 'Gigamon AMI over HTTP → normalize → Cribl Lake (gigamon_ami)',
   clones: [],
