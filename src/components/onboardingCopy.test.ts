@@ -73,7 +73,7 @@ describe('onboarding copy', () => {
   })
 
   it('leads are one sentence each', () => {
-    for (const lead of [copy.ONBOARDING_LEAD, copy.REMOVE_ONLY_LEAD, ENDPOINT_LEAD]) {
+    for (const lead of [copy.ONBOARDING_LEAD, ENDPOINT_LEAD]) {
       expect(lead.trim().endsWith('.'), lead).toBe(true)
       expect(lead.trim().slice(0, -1), lead).not.toMatch(/[.!?]\s/)
     }

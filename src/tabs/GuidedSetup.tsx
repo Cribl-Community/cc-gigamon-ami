@@ -1,17 +1,17 @@
-// What is left of the Guided Setup tab once the half that writes moved out.
+// The Guided Setup tab: a column of panels, each owning its own state and
+// taking no props.
 //
-// The provisioning screen — the worker-group picker, the resource checklist,
-// both write confirmations, the step log, and the endpoint a deployed stack
-// listens on — is <ProvisionPanel>. It owns all of that state and takes no
-// props. src/components/ProvisionPanel.tsx carries the argument for why the
-// seam falls there and not somewhere that would have left this file in charge;
-// the short version is that every value it holds is read by at least two of the
-// things it draws, and not one of them is read by anything below.
+// The onboarding screen — the worker-group picker, the pack's status rows,
+// every pack write's confirmation, the step log, and the endpoint the pack's
+// source listens on — is <OnboardingPanel>. What stays in this file is the part
+// with no state at all: a reference list of what onboarding creates and what to
+// know before running it, and the order of the panels below it.
 //
-// What stayed is the part with no state at all: a reference list of what a
-// deploy creates and what to know before running one, and the single
-// install-wide search setting that shares this page because an installer is
-// already standing on it — not because it has anything to do with setup.
+// *(Corrected 2026-09-26, `chore/remove-global-stacks`: <ProvisionPanel>, the
+// Remove of the global Raw HTTP and Syslog stacks earlier releases created,
+// sat under <OnboardingPanel> while one of their objects was in the group.
+// Owner decision: new installs never have those stacks, so the panel is gone;
+// a tenant that still holds them keeps them, orphaned.)*
 
 import { Suspense } from 'react'
 import { AccelPanel } from '../components/AccelPanel'
@@ -24,7 +24,6 @@ import { LakeLandingPanel } from '../components/LakeLandingPanel'
 // component file — src/components/lakeLandingCopy.ts.
 import { INGEST_ANCHOR_ID } from '../components/lakeLandingCopy'
 import { Panel } from '../components/Panel'
-import { ProvisionPanel } from '../components/ProvisionPanel'
 import { SearchLimitsPanel } from '../components/SearchLimitsPanel'
 import { InfoTip } from '../components/InfoTip'
 import { PACK_SETUP_FACTS } from '../components/provisionPanelCopy'
@@ -55,14 +54,11 @@ export function GuidedSetup() {
           a `.tab` flex column is one flex item wrapping one panel; it changes
           nothing about the layout. */}
       <div id={INGEST_ANCHOR_ID}>
-        {/* The pack's onboarding — the only one — then the panel for the
-            global stacks earlier releases created, which offers Remove and
-            shows only while one of their objects is (or may be) in the group
-            (onboarding/plan.ts `provisionPanelMode`). Both read one worker
-            group (useSetupGroup) and one run lock (cribl/setupRunLock.ts), so
-            they cannot name two groups or commit over each other. */}
+        {/* The pack's onboarding — the only one. It reads the page's one
+            worker group (useSetupGroup) and one run lock
+            (cribl/setupRunLock.ts), which every panel here that writes shares,
+            so no two of them name two groups or commit over each other. */}
         <OnboardingPanel />
-        <ProvisionPanel />
       </div>
 
       {/* Five short labels, each with its explanation behind an ⓘ. The words

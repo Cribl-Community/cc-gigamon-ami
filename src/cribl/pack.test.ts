@@ -23,8 +23,9 @@
 //     at gigamon_ami_pq, and `onBackpressure: drop` so it cannot stall the JSON
 //     feed. Its schema mode is automatic, decided 2026-09-24 (pack.ts
 //     `PACK_DECISIONS`).
-//   - the breaker's rule name and description are the pack's own: the global
-//     description is provision.ts's ownership stamp.
+//   - the breaker's rule name and description are the pack's own: the spec's
+//     description is the ownership stamp earlier releases wrote on the global
+//     ruleset, which a tenant may still hold.
 //
 // Every comparison is whole-object: `toMatchObject` would let an added key (an
 // `outputExpression`, an auth token) pass unseen.
@@ -37,11 +38,7 @@ import { describe, it, expect } from 'vitest'
 import {
   PIPELINE_SPEC, PARQUET_PIPELINE_SPEC, SOURCE_SPEC, ROUTE_SPEC, HTTP_BREAKER_SPEC, destinationSpecFor, sourceCreateBody, tlsFor,
 } from './packSpecs'
-import {
-  HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID, HTTP_BREAKER_DESCRIPTION, CLOUD_PORT_RANGE,
-  LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
-  DATASET_SPEC, PARQUET_DATASET_SPEC,
-} from './provision'
+import { CLOUD_PORT_RANGE, DATASET_SPEC, PARQUET_DATASET_SPEC } from './provision'
 import { DEFAULT_PROFILE, destinationSpec, pathFilterRows, type LandingProfile } from './landing'
 import {
   PACK_ID, PACK_VERSION, PACK_URL, packTag, packAssetName,
@@ -105,7 +102,7 @@ describe('the pack HTTP input is packSpecs.ts\'s Cribl-managed source, with the 
       without(global, 'id', 'disabled', 'authTokensExt', 'breakerRulesets'),
     )
     expect(src.breakerRulesets).toEqual([PACK_BREAKER_ID])
-    expect(global.breakerRulesets).toEqual([HTTP_BREAKER_ID])
+    expect(global.breakerRulesets).toEqual([HTTP_BREAKER_SPEC.id])
     expect(src.type).toBe('http_raw')
     // Cribl's own certificate: what a Cribl-managed group provides.
     expect(src.tls).toEqual(tlsFor(true))
@@ -148,15 +145,16 @@ describe('the pack breaker is HTTP_BREAKER_SPEC under the pack\'s own names', ()
   it('names its rule for the pack, not after the global ruleset', () => {
     // An operator reading the pack in the UI would otherwise see the global
     // ruleset's id inside it.
-    const globalNames = new Set<string>([HTTP_BREAKER_ID, ...HTTP_BREAKER_SPEC.rules.map((r) => r.name)])
+    const globalNames = new Set<string>([HTTP_BREAKER_SPEC.id, ...HTTP_BREAKER_SPEC.rules.map((r) => r.name)])
     for (const r of pack.rules) expect(globalNames.has(r.name as string)).toBe(false)
   })
 
-  it('does not carry the description provision.ts reads as its ownership stamp', () => {
-    // stampedBreaker() treats HTTP_BREAKER_DESCRIPTION as "this app wrote
-    // it". A pack ruleset listed beside the global one must never pass that test.
-    expect(HTTP_BREAKER_SPEC.description).toBe(HTTP_BREAKER_DESCRIPTION)
-    expect(pack.description).not.toBe(HTTP_BREAKER_DESCRIPTION)
+  it('does not carry the description earlier releases wrote as their ownership stamp', () => {
+    // Earlier releases' teardown read that description as "this app wrote it".
+    // A pack ruleset listed beside a global one a tenant still holds must never
+    // read the same.
+    expect(HTTP_BREAKER_SPEC.description).toBe('Gigamon AMI: one event per record of a POSTed JSON array')
+    expect(pack.description).not.toBe(HTTP_BREAKER_SPEC.description)
     expect(pack.description.trim()).not.toBe('')
   })
 })
@@ -636,6 +634,14 @@ describe('pack ids', () => {
     ...pipelineDirs(), ...Object.keys(breakers), ...Object.keys(samples),
   ]
   const replaced = Object.keys(REPLACED_BY_PACK)
+  /** The global objects earlier releases created — the Raw HTTP stack and the
+   *  Syslog stack before it. The app no longer reads or removes them
+   *  (2026-09-26), but a tenant may still hold them, so the pack never reuses
+   *  one of their ids. */
+  const EARLIER_GLOBAL_IDS = [
+    'in_gigamon_http', 'gigamon_http_normalize', 'gigamon_ami_http', 'gigamon_ami_json_array',
+    'in_gigamon_syslog', 'gigamon_syslog', 'gigamon_ami_syslog',
+  ]
   const kept = Object.keys(KEPT_BESIDE_PACK)
 
   it('are exactly the ids pack.ts names', () => {
@@ -687,7 +693,7 @@ describe('pack ids', () => {
     const globals = new Set([
       ...replaced, ...kept,
       SOURCE_SPEC.id, PIPELINE_SPEC.id, ROUTE_SPEC.id, HTTP_BREAKER_SPEC.id, destinationSpecFor(DEFAULT_PROFILE).id,
-      LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
+      ...EARLIER_GLOBAL_IDS,
     ])
     expect(packIds.filter((id) => globals.has(id))).toEqual([])
   })
@@ -700,11 +706,10 @@ describe('pack ids', () => {
     for (const why of Object.values(KEPT_BESIDE_PACK)) expect(why.trim()).not.toBe('')
   })
 
-  it('the migration removes exactly Guided Setup\'s HTTP stack and the old Syslog stack', () => {
-    expect([...replaced].sort()).toEqual([
-      HTTP_SOURCE_ID, HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_BREAKER_ID,
-      LEGACY_SYSLOG_SOURCE_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
-    ].sort())
+  it('the pack replaces exactly the global Raw HTTP stack and the old Syslog stack earlier releases created', () => {
+    expect([...replaced].sort()).toEqual([...EARLIER_GLOBAL_IDS].sort())
+    // The Raw HTTP half is the specs' own ids (packSpecs.ts).
+    for (const id of [SOURCE_SPEC.id, PIPELINE_SPEC.id, ROUTE_SPEC.id, HTTP_BREAKER_SPEC.id]) expect(replaced).toContain(id)
   })
 
   it('keeps the demo DataGen, the global gigamon_ami pipeline and the global Lake destination', () => {

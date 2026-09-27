@@ -67,7 +67,6 @@ const shippedRoutes = (): PackRoute[] => packRoutesOf(200, routesBody()) as Pack
 const packPrefix = `/m/default/p/${PACK_ID}`
 function leaderBodies(): Record<string, { status: number; body: unknown }> {
   const ok = (body: unknown) => ({ status: 200, body })
-  const nf = { status: 404, body: { message: 'not found' } }
   return {
     '/m/default/packs': ok({ items: [{ id: PACK_ID, version: PACK_VERSION, source: packReleaseUrl(PACK_VERSION) }] }),
     [`${packPrefix}/system/inputs`]: ok({
@@ -81,12 +80,6 @@ function leaderBodies(): Record<string, { status: number; body: unknown }> {
     [`${packPrefix}/routes`]: ok(routesBody()),
     [`${packPrefix}/system/outputs`]: ok(outputsBody()),
     '/m/default/system/inputs': ok({ items: [{ id: 'in_gigamon_http', type: 'http_raw', port: 20000 }, { id: 'datagen', type: 'datagen' }] }),
-    '/m/default/system/inputs/in_gigamon_http': ok({ items: [{ id: 'in_gigamon_http', authTokens: [{ token: 'OLD-GLOBAL-TOKEN' }] }] }),
-    '/m/default/system/inputs/in_gigamon_syslog': nf,
-    '/m/default/pipelines/gigamon_http_normalize': ok({ items: [{ id: 'gigamon_http_normalize' }] }),
-    '/m/default/pipelines/gigamon_syslog': nf,
-    '/m/default/lib/breakers/gigamon_ami_json_array': ok({ items: [{ id: 'gigamon_ami_json_array' }] }),
-    '/m/default/routes': ok({ items: [{ id: 'default', routes: [{ id: 'gigamon_ami_http' }, { id: 'default' }] }] }),
     '/products/lake/lakes/default/datasets': ok({
       items: [
         { id: 'gigamon_ami', format: 'json', metrics: { currentSizeBytes: 5 * 1024 ** 3, metricsDate: '2026-09-24' } },
@@ -149,13 +142,14 @@ describe('the real readers, over the runner’s guarded fetch', () => {
     expect(verdict.url).toBe('https://default.main.acme.cribl.cloud:20005/')
     expect(facts.pack.http).toMatchObject({ disabled: false, port: 20005, tokenSet: true, tls: true })
     expect(facts.datasets.map((d) => `${d.id}:${d.state}`)).toEqual(['gigamon_ami:present', 'gigamon_ami_pq:present', 'gigamon_ami_sample:absent'])
-    expect(facts.globalObjects.filter((o) => o.state === 'present').map((o) => o.id)).toEqual([
-      'in_gigamon_http', 'gigamon_ami_json_array', 'gigamon_http_normalize', 'gigamon_ami_http',
-    ])
+    // The global stacks earlier releases created are not read (2026-09-26):
+    // Guided Setup no longer shows or removes them.
+    for (const r of seen) {
+      expect(new URL(r.url).pathname, 'a global-stack read').not.toMatch(/in_gigamon_http|in_gigamon_syslog|gigamon_http_normalize|gigamon_syslog|gigamon_ami_json_array|\/m\/default\/routes/)
+    }
 
     const text = [...preflightReport(facts, verdict), JSON.stringify(facts), JSON.stringify(verdict)].join('\n')
     expect(text).not.toContain(TOKEN)
-    expect(text).not.toContain('OLD-GLOBAL-TOKEN')
     expect(text).toContain('Ready to point AMX at default.main.acme.cribl.cloud:20005')
   })
 
@@ -336,11 +330,8 @@ const dataset = (id: string, extra: Partial<LakeDataset> = {}): LakeDataset => (
 })
 
 function readers(over: Partial<PreflightReaders> = {}): PreflightReaders {
-  const absent = { breaker: 'absent', pipeline: 'absent', source: 'absent', route: 'absent' } as const
   return {
     readPackState: async () => packState(),
-    checkStatus: async () => ({ ...absent }),
-    checkLegacyStatus: async () => ({ legacy_source: 'absent', legacy_pipeline: 'absent', legacy_route: 'absent' }),
     listDatasets: async () => ({ outcome: 'ok', value: [dataset('gigamon_ami'), dataset('gigamon_ami_pq', { format: 'parquet' })], object: '/x', status: 200, detail: null }),
     listStreamGroupsCurrent: async () => ({ outcome: 'ok', value: [{ id: 'default', name: 'default', configVersion: 'a', onPrem: false }], object: '/x', status: 200, detail: null }),
     portsOfOthers: async () => [20000],
@@ -482,43 +473,16 @@ describe('the verdict', () => {
     expect(verdict.warnings.join('\n')).toMatch(words)
   })
 
-  it('says nothing of Remove refusing when no global object is present, whatever is uncommitted', async () => {
-    const { facts, verdict } = await verdictWith({ pendingConfigPaths: async () => ['groups/default/local/cribl/inputs.yml'] })
-    expect(facts.git.globalStackFiles).toEqual([])
-    expect(verdict.afterCutover.join('\n')).toMatch(/nothing for Remove to take/)
-    expect(verdict.afterCutover.join('\n')).not.toMatch(/Remove will refuse/)
-  })
-
-  it('does not name a Syslog pipeline file for a Remove that takes only the Raw HTTP stack', async () => {
-    const { facts } = await verdictWith({
-      checkStatus: async () => ({ breaker: 'absent', pipeline: 'present', source: 'absent', route: 'absent' }),
-      pendingConfigPaths: async () => ['groups/default/local/cribl/pipelines/gigamon_syslog/conf.yml'],
-    })
-    expect(facts.git.globalStackFiles).toEqual([])
-  })
-
-  it('says what Remove will meet afterwards: the global objects, and files it would refuse over', async () => {
-    const { verdict } = await verdictWith({
-      checkStatus: async () => ({ breaker: 'present', pipeline: 'present', source: 'present', route: 'unreadable' }),
-      pendingConfigPaths: async () => ['groups/default/local/cribl/inputs.yml'],
-    })
-    expect(verdict.ready).toBe(true)
-    const after = verdict.afterCutover.join('\n')
-    expect(after).toMatch(/Remove will find: in_gigamon_http/)
-    expect(after).toMatch(/Could not be read: gigamon_ami_http/)
-    expect(after).toMatch(/Remove will refuse .*groups\/default\/local\/cribl\/inputs\.yml/)
-    expect(after).toMatch(/Re-point Gigamon AMX before removing in_gigamon_http/)
-  })
-
   it('reports each fact the runbook asks for', async () => {
     const { facts, verdict } = await verdictWith()
     const text = preflightReport(facts as PreflightFacts, verdict).join('\n')
     for (const want of [
       `${PACK_ID} ${PACK_VERSION}`, 'owned: yes', 'current: yes', 'Raw HTTP source: enabled, port 20005, TLS on, token set',
       'sample source: stopped', 'gigamon_ami: present', 'gigamon_ami_pq: present', 'gigamon_ami_sample: absent',
-      'in_gigamon_http (raw-http source): absent', 'in_gigamon_syslog (syslog source): absent', 'uncommitted in default: none',
-      'managed',
+      'uncommitted in default: none', 'managed',
     ]) expect(text).toContain(want)
+    // No "Global stacks" section and no "After the cutover" line (2026-09-26).
+    expect(text).not.toMatch(/Global stacks|After the cutover|in_gigamon_http|in_gigamon_syslog/)
   })
 })
 

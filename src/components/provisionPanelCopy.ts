@@ -1,4 +1,4 @@
-// What Guided Setup's two confirmations say about reach, pure and DOM-free.
+// What Guided Setup's confirmations say about reach, pure and DOM-free.
 //
 // The same split components/lakeLandingCopy.ts and components/accelPanelCopy.ts
 // make, for the same reason: what this screen can get wrong is not its markup,
@@ -49,12 +49,16 @@
 // `ENDPOINT_INCOMPLETE`, `TOKEN_ELSEWHERE`, `SETUP_FACTS`, `setupFacts`). What
 // stays is the teardown's copy, the reach sentences the onboarding plan reuses,
 // the pack's endpoint-card words and the page's "What gets created" list.
+//
+// WHAT IS LEFT (2026-09-26, `chore/remove-global-stacks`). The teardown of the
+// global Raw HTTP and Syslog stacks went with its panel (owner decision: new
+// installs never have them), and its words with it (`removeConsequences`,
+// `removalPendingSentence`, `leftAloneSentence`, `legacyNote`, `LEGACY_TIP`,
+// `LEGACY_ONLY_LEAD`, `LEGACY_ONLY_TIP`, `REMOVE_UNDO`, `behindNote`,
+// `behindTip`). What stays is what the onboarding plan's dialogs reuse, the
+// pack's endpoint-card words and the page's "What gets created" list.
 
-import {
-  CLOUD_PORT_RANGE, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID, LEGACY_SYSLOG_SOURCE_ID,
-  type CommitScope,
-} from '../cribl/provision'
-import { DEPLOY_CONSEQUENCES } from '../cribl/landing'
+import { CLOUD_PORT_RANGE, type CommitScope } from '../cribl/provision'
 import {
   PACK_BREAKER_ID, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_LAKE_DATASET_ID,
   PACK_PARQUET_DATASET_ID, PACK_PARQUET_PIPELINE_ID, PACK_PIPELINE_ID,
@@ -80,11 +84,11 @@ export interface ProvisionConfirmContext {
  * FROZEN AT OPEN. `pendingDeploy` reads `/version/files` once per commit the
  * group is behind, so it can still be out when somebody opens a dialog — and a
  * sentence that appeared while the reader was already reading would be a claim
- * changing underneath them. ProvisionPanel captures the answer as the dialog
- * opens and passes that; "still checking" is worded about the moment of opening
+ * changing underneath them. The onboarding panel captures the answer as the
+ * dialog opens and passes that; "still checking" is worded about the moment of opening
  * so it stays true however long the dialog is left open.
  *
- * Every dialog gets it, teardowns included: a removal commits and deploys too,
+ * Every dialog gets it, removals included: a removal commits and deploys too,
  * and a deploy moves the group to a commit, carrying everything before it.
  */
 export function undeployedSentence(ctx: ProvisionConfirmContext): string | null {
@@ -104,21 +108,6 @@ export function undeployedSentence(ctx: ProvisionConfirmContext): string | null 
     'the group to the commit it creates, so that one and everything else committed since go live with it.'
   )
 }
-
-/**
- * The one line beside Deploy when `pendingDeploy` proved something. All it
- * proves is that SOME commit after the one this group runs moved one of its
- * files — this app's failed deploy, or another admin's commit made in Cribl —
- * so it says that and no more. It used to say "an earlier deploy did not
- * finish", which names a cause nothing here established.
- */
-export const behindNote = (group: string): string => `${group} is behind a commit that touches it.`
-
-/** The rest, one ⓘ away. `head` is what `pendingDeploy` returns: HEAD. */
-export const behindTip = (group: string, head: string): string =>
-  `A commit made on this Leader since ${group} was last deployed changes one of ${group}’s files — made by this app or by somebody ` +
-  `else in Cribl. Deploying moves the group to the commit this run creates on top of HEAD (#${head.slice(0, 10)}), so every commit ` +
-  'since the last deploy goes live with it.'
 
 /**
  * What Git already holds in the files this commit names.
@@ -181,119 +170,14 @@ export function carriesSentence(ctx: ProvisionConfirmContext, verb: string): str
 }
 
 /**
- * What a Raw HTTP source may do while the Worker Processes restart. Said here,
- * in Guided Setup's own two dialogs, and NOT in DEPLOY_CONSEQUENCES, which the
+ * What a Raw HTTP source may do while the Worker Processes restart. Said in the
+ * onboarding plan's dialogs, and NOT in DEPLOY_CONSEQUENCES, which the
  * Lake landing panel shares and where no such source need exist. Worded as a
  * precaution because it is one: whether the source refuses a POST mid-restart,
  * or holds the connection, has not been measured.
  */
 export const HTTP_RESTART_PRECAUTION =
   'While the Worker Processes restart, a Raw HTTP source can briefly fail to accept a POST, so set Gigamon AMX to retry a failed POST.'
-
-/**
- * The objects a teardown will NOT delete because this app could not see them,
- * as one sentence, or null when there are none. The teardown deletes only what
- * the status check found present, which is also exactly what the dialog lists —
- * so an object it could not read is left alone, and this is the dialog saying so
- * rather than leaving the reader to infer it from an absence.
- */
-export function leftAloneSentence(group: string, objects: readonly string[]): string | null {
-  if (objects.length === 0) return null
-  return (
-    `This app could not tell whether ${objects.join(', ')} ${objects.length === 1 ? 'is' : 'are'} in ${group}, so ` +
-    `${objects.length === 1 ? 'it is' : 'they are'} not deleted. Check in Cribl, and remove ${objects.length === 1 ? 'it' : 'them'} there if needed.`
-  )
-}
-
-/**
- * The teardown's "already uncommitted" line. It names what `pendingSentence`
- * names, from the Git status read when the dialog opened, and says what "Yes"
- * does about it — which is no longer what `pendingSentence` says for the
- * onboarding plan's dialogs ("which this press commits and deploys"): since
- * 2026-09-25 the Remove re-reads Git's status inside the run lock and refuses,
- * writing nothing, on a file it cannot account for as this app's own earlier
- * removal, or on a status it cannot read (cribl/provision.ts
- * `removeDirtyRefusal`). So the three states keep three sentences, and none of
- * them promises the commit will carry somebody else's work.
- */
-export function removalPendingSentence(ctx: ProvisionConfirmContext): string {
-  const { scope, group } = ctx
-  if (scope === null || scope.unknown) {
-    return (
-      `Cribl did not report what is already uncommitted in ${group}, so this app cannot tell you whether anybody else’s unfinished work is ` +
-      'sitting in those files. Yes reads it again before it writes anything, and removes nothing while it still cannot be read.'
-    )
-  }
-  if (scope.alreadyDirty.length === 0) {
-    return (
-      `Cribl reports nothing already uncommitted in those files. That was read when this dialog opened; Yes reads it again before it ` +
-      'writes anything, and removes nothing if a change has been saved in one of them since.'
-    )
-  }
-  return (
-    `Cribl reports ${scope.alreadyDirty.length} of those file${scope.alreadyDirty.length === 1 ? '' : 's'} already carrying uncommitted changes: ` +
-    `${scope.alreadyDirty.join(', ')}. Yes removes nothing unless every one of them holds only this app’s own earlier removal from ${group} ` +
-    'that was never committed; anything else is somebody else’s unfinished work, to commit in Cribl Stream first.'
-  )
-}
-
-const withUndeployed = (ctx: ProvisionConfirmContext): string[] => {
-  const line = undeployedSentence(ctx)
-  return line ? [line] : []
-}
-
-/**
- * Teardown: the same three facts, for a run that deletes.
- *
- * The teardown dialog had no counterpart to the deploy dialog's reach sentence
- * at all — the same defect stated by omission — so this is the first time it
- * says what its commit carries. It never names `outputs.yml`: `removeOnboardingStack`
- * never touches the destination, so naming it here would be the over-naming half
- * of the same class.
- */
-export function removeConsequences(ctx: ProvisionConfirmContext, keptDestination: string, keptDataset: string): string[] {
-  return [
-    `Cribl Lake destination ${keptDestination} and dataset ${keptDataset} are kept — they are shared, and the dashboards read that dataset.`,
-    carriesSentence(ctx, 'removal'),
-    removalPendingSentence(ctx),
-    ...withUndeployed(ctx),
-    ...DEPLOY_CONSEQUENCES,
-    HTTP_RESTART_PRECAUTION,
-  ]
-}
-
-// ── What the panel says before anybody presses anything ─────────────────────
-//
-// The page used to open on a 120-word paragraph, a three-sentence hint under
-// the group picker and five long bullets. The owner's call (2026-09-24): one
-// short lead line per panel, and the rest behind an ⓘ on the thing it
-// explains. None of these is a confirmation — the dialogs still say everything
-// a write needs said, and nothing here replaces them.
-
-/** Beside the actions, when the group still has the Syslog stack an earlier release created. */
-export const legacyNote = (group: string): string =>
-  `${group} still has the Syslog objects an earlier release created. Remove them on their own, or with the HTTP stack.`
-
-export const LEGACY_TIP =
-  `Syslog source ${LEGACY_SYSLOG_SOURCE_ID}, pipeline ${LEGACY_SYSLOG_PIPELINE_ID} and route ${LEGACY_SYSLOG_ROUTE_ID}. This release no longer creates or edits them; ` +
-  'they keep running until they are removed, and the confirmation names each one before anything is deleted.'
-
-/** The lead when the group holds only the old Syslog stack (REMOVE_ONLY_LEAD,
- *  in onboardingCopy.ts, is the Raw HTTP stack's). */
-export const LEGACY_ONLY_LEAD = 'This group still has the Syslog stack an earlier release of this app created.'
-
-export const LEGACY_ONLY_TIP =
-  `Syslog source ${LEGACY_SYSLOG_SOURCE_ID}, pipeline ${LEGACY_SYSLOG_PIPELINE_ID} and route ${LEGACY_SYSLOG_ROUTE_ID}. This app no longer creates or edits ` +
-  'them, and this panel only removes them: the pack panel above is how this app onboards now.'
-
-/**
- * What puts the Raw HTTP stack back after Remove: nothing in this app. It used
- * to say "Deploy onboarding stack, on this tab, rebuilds…", which was true
- * until that control was withdrawn on 2026-09-25.
- */
-export const REMOVE_UNDO =
-  'This app no longer creates the Raw HTTP stack, so nothing here rebuilds it: the onboarding pack above replaces it, with its own source, port and token. ' +
-  'The deleted configuration is recoverable only from the group’s Git history.'
 
 // ── The endpoint card ────────────────────────────────────────────────────────
 

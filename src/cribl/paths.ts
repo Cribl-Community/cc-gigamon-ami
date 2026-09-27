@@ -42,7 +42,7 @@
 //
 // ── THE IDS ARE IMPORTED, NOT TYPED OUT ─────────────────────────────────────
 // The paths below interpolate the same constants provision.ts and config.ts call
-// with, so renaming `HTTP_SOURCE_ID` moves this list, which then no longer
+// with, so renaming `PACK_HTTP_INPUT_ID` moves this list, which then no longer
 // matches config/policies.yml, which fails the test and makes somebody update the
 // declaration. The one value not bound that way is the Cribl Lake id `default`
 // (provision.ts keeps `LAKE_ID` private); the source scan resolves it from
@@ -61,16 +61,7 @@ import {
   PACK_ROUTE_TABLE_ID,
   PACK_SAMPLE_INPUT_ID,
 } from './pack'
-import {
-  HTTP_BREAKER_ID,
-  HTTP_PIPELINE_ID,
-  HTTP_SOURCE_ID,
-  LAKE_DATASET_ID,
-  LAKE_DESTINATION_ID,
-  LEGACY_SYSLOG_PIPELINE_ID,
-  LEGACY_SYSLOG_SOURCE_ID,
-  type ResourceKey,
-} from './provision'
+import { LAKE_DATASET_ID, LAKE_DESTINATION_ID } from './provision'
 
 export type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -90,21 +81,16 @@ export type Scope =
   | 'app'
 
 /**
- * A resource this app can bring into existence in a customer's Cribl — or, for
- * the global Raw HTTP stack's four objects, one an earlier release did and this
- * one can still remove. The Stream objects share provision.ts's own
- * vocabulary (`ResourceKey`) so the two cannot drift apart; `commit` is what a
- * deploy leaves behind, `accel_saved_search` and `pack` the other two things
- * the app creates.
- *
- * WIDENED HERE RATHER THAN IN `ResourceKey`, deliberately: several surfaces
- * render a record keyed by provision.ts's keys, and the scheduled searches and
- * the pack are different lifecycles with different teardowns. What they share
- * is only this: what the app creates, it has to be able to remove.
- * *(Corrected 2026-09-25: since the Raw HTTP deploy was withdrawn, only the
- * dataset, the pack, the commit and the scheduled searches are created.)*
+ * A resource this app can bring into existence in a customer's Cribl: a Lake
+ * `dataset`, the `commit` a deploy leaves behind, an `accel_saved_search` and
+ * the onboarding `pack`. What the app creates, it has to be able to remove —
+ * or say in `LEFT_BEHIND` why not.
+ * *(Corrected 2026-09-26, `chore/remove-global-stacks`: this also named the
+ * global Raw HTTP stack's objects, by provision.ts's `ResourceKey`, which an
+ * earlier release created and this one could remove. Guided Setup no longer
+ * removes them, and the type is gone.)*
  */
-export type Provisioned = ResourceKey | 'commit' | 'accel_saved_search' | 'pack'
+export type Provisioned = 'dataset' | 'commit' | 'accel_saved_search' | 'pack'
 
 export interface ApiCall {
   method: Method
@@ -452,7 +438,7 @@ export const API_CALLS: readonly ApiCall[] = [
   // The child paths name the object, rather than taking a wildcard. The app only
   // ever touches the objects it created, and a declaration that says so is both
   // narrower and more useful to the admin reading it: "may delete the input
-  // in_gigamon_http" rather than "may delete any input".
+  // in_gno_syslog the pack left behind" rather than "may delete any input".
   {
     method: 'GET',
     path: '/m/:gid/packs',
@@ -639,59 +625,12 @@ export const API_CALLS: readonly ApiCall[] = [
     site: 'packCleanup.ts deleteLeftoverRequest',
     why: `Delete the ${PACK_0_1_0.outputs.sample} sample Cribl Lake destination that 0.1.0 of the pack shipped and later versions do not — left behind in the pack by an in-place upgrade — from Guided Setup's "Restore the pack's routes and remove leftovers" confirmation, which names it by id. Only on this app's own current copy of the pack, and only this exact id: never a tenant's own object. Only once no route names it.`,
   },
-  // ── Guided Setup: the global stacks earlier releases created ─────────────
-  // Read, and removed from the confirmed Remove. Nothing creates or edits them
-  // any more: the POST and PATCH grants on the Raw HTTP source, its breaker
-  // ruleset and pipeline, the POST of a destination and the route insert went
-  // with the Deploy control on 2026-09-25, when Guided Setup's onboarding
-  // collapsed into the pack's.
-  {
-    method: 'GET',
-    path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
-    scope: 'product',
-    site: 'provision.ts checkStatus',
-    why: 'Ask whether the Raw HTTP source an earlier release of this app created is still in the group, so Guided Setup can show it and Remove can name it.',
-  },
-  {
-    method: 'DELETE',
-    path: `/m/:gid/system/inputs/${HTTP_SOURCE_ID}`,
-    scope: 'product',
-    site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that source, from the confirmed Remove button that names it. Without it a customer who installed the stack with an earlier release could not uninstall it.',
-    removes: 'source',
-  },
-  // The Syslog source an earlier release created. Read so the teardown can name
-  // it, and deleted by that teardown — never created or edited any more, so no
-  // POST or PATCH is asked for it.
-  {
-    method: 'GET',
-    path: `/m/:gid/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`,
-    scope: 'product',
-    site: 'provision.ts checkLegacyStatus',
-    why: 'Ask whether the Syslog source an earlier release of this app created is still in the group, so Remove can name it.',
-  },
-  {
-    method: 'DELETE',
-    path: `/m/:gid/system/inputs/${LEGACY_SYSLOG_SOURCE_ID}`,
-    scope: 'product',
-    site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that old Syslog source, from the confirmed Remove button that names it.',
-  },
-  {
-    method: 'GET',
-    path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
-    scope: 'product',
-    site: 'provision.ts checkStatus (also removeBreaker)',
-    why: 'Ask whether the event breaker ruleset an earlier release created is still there, and — before Remove deletes it — read it whole to check it carries this app’s own description.',
-  },
-  {
-    method: 'DELETE',
-    path: `/m/:gid/lib/breakers/${HTTP_BREAKER_ID}`,
-    scope: 'product',
-    site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that ruleset, from the confirmed Remove button, after the source that names it — only when it carries this app’s description and no other source, in the group or a pack, names it.',
-    removes: 'breaker',
-  },
+  // ── The Lake landing panel: the group's own destination and routes ────────
+  // The GET, DELETE and PATCH grants for the global Raw HTTP and Syslog stacks
+  // earlier releases created — their sources, pipelines, breaker ruleset and
+  // the routing-table PATCH that took their routes out — went on 2026-09-26
+  // with Guided Setup's Remove of them (owner decision: tenants that still hold
+  // those objects keep them, orphaned).
   {
     method: 'GET',
     path: `/m/:gid/system/outputs/${LAKE_DESTINATION_ID}`,
@@ -701,47 +640,10 @@ export const API_CALLS: readonly ApiCall[] = [
   },
   {
     method: 'GET',
-    path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
-    scope: 'product',
-    site: 'provision.ts checkStatus',
-    why: 'Ask whether the pipeline an earlier release created is still in the group, so Remove can name it.',
-  },
-  {
-    method: 'DELETE',
-    path: `/m/:gid/pipelines/${HTTP_PIPELINE_ID}`,
-    scope: 'product',
-    site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that pipeline, from the confirmed Remove button that names it.',
-    removes: 'pipeline',
-  },
-  {
-    method: 'GET',
-    path: `/m/:gid/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`,
-    scope: 'product',
-    site: 'provision.ts checkLegacyStatus',
-    why: 'Ask whether the Syslog pipeline an earlier release of this app created is still in the group, so Remove can name it.',
-  },
-  {
-    method: 'DELETE',
-    path: `/m/:gid/pipelines/${LEGACY_SYSLOG_PIPELINE_ID}`,
-    scope: 'product',
-    site: 'provision.ts removeOnboardingStack',
-    why: 'Remove that old Syslog pipeline, from the confirmed Remove button that names it.',
-  },
-  {
-    method: 'GET',
     path: '/m/:gid/routes',
     scope: 'product',
-    site: 'provision.ts readRoutes (also lake.ts listRoutes)',
-    why: `Read the group’s routing table: whether the routes earlier releases added are still in it, and the array Remove edits. The Lake landing panel reads the same table for a second purpose: to name every route writing into the '${LAKE_DESTINATION_ID}' destination before a confirmation offers to change it.`,
-  },
-  {
-    method: 'PATCH',
-    path: '/m/:gid/routes/:tableId',
-    scope: 'product',
-    site: 'provision.ts removeOnboardingStack',
-    why: 'Take the routes earlier releases added — the Raw HTTP one, the Syslog one, or both — out of the group’s routing table, from the confirmed Remove button. A group has one routing table and this replaces it wholesale, so it is the most consequential grant in the file: the body is the table just read with only those entries dropped, and every other route keeps its index.',
-    removes: 'route',
+    site: 'lake.ts listRoutes',
+    why: `Read the group’s routing table, for the Lake landing panel: to name every route writing into the '${LAKE_DESTINATION_ID}' destination before a confirmation offers to change it.`,
   },
 
   // ── Guided Setup: Git versioning on the Leader ────────────────────────────

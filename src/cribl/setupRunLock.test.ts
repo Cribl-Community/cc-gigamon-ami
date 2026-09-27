@@ -1,4 +1,4 @@
-// One Guided Setup run at a time: the lock both panels take before their
+// One Guided Setup run at a time: the lock every writing panel takes before its
 // first write. What is held: a second taker gets nothing, the lock comes back
 // once, and giving it back twice cannot free somebody else's hold.
 
@@ -12,14 +12,14 @@ describe('setupRunLock', () => {
     const release = acquireSetupRun('onboarding_pack')
     expect(release).not.toBeNull()
     expect(setupRunHolder()).toBe('onboarding_pack')
-    expect(acquireSetupRun('onboarding_stack')).toBeNull()
+    expect(acquireSetupRun('lake_landing')).toBeNull()
     expect(acquireSetupRun('onboarding_pack')).toBeNull()
     release!()
     expect(setupRunHolder()).toBeNull()
   })
 
   it('a second release of an old hold does not free the next one', () => {
-    const first = acquireSetupRun('onboarding_stack')!
+    const first = acquireSetupRun('lake_landing')!
     first()
     const second = acquireSetupRun('onboarding_pack')!
     first()
@@ -30,5 +30,4 @@ describe('setupRunLock', () => {
 })
 
 // What this file could not assert: that each panel takes the lock before its
-// first write — OnboardingPanel.test.tsx and ProvisionPanel.test.tsx press the
-// buttons while it is held.
+// first write — OnboardingPanel.test.tsx presses the buttons while it is held.

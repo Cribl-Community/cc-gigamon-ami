@@ -7,7 +7,7 @@
 //     against what packClient.ts's own preview reads off a source built from
 //     it — so the dialog shown before the pack exists is the diff the run will
 //     be handed back as `approved`;
-//   * truth tables for `accelMode` and `provisionPanelMode`.
+//   * the truth table for `accelMode`.
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,14 +15,14 @@ import { parse } from 'yaml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ONBOARDING_RETENTION_DAYS, SAMPLE_DATASET_SPEC, SAMPLE_FEED, SAMPLE_START_DIFF, SHIPPED_HTTP_INPUT,
-  accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingSteps, provisionPanelMode,
+  accelMode, expectedConfigureDiff, httpActionOf, onboardingDatasets, onboardingDialog, onboardingSteps,
   packObjectsOf, packRemovalDialog, packUpgradeDialog, parquetDatasetSpec, sampleVolume, sameWrites, sourceChangeDialog,
   type OnboardingDialogContext,
 } from './plan'
 import * as planModule from './plan'
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
-  globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, lakeEntryNotCreatedSentence, sampleVolumeWords, storageCostWords,
+  keptDatasetsSentence, keptSchedulesSentence, lakeEntryNotCreatedSentence, sampleVolumeWords, storageCostWords,
 } from '../../components/onboardingCopy'
 import { MANIFEST } from '../accel/manifest'
 import type { AccelRow, AccelState } from '../accel/provision'
@@ -218,23 +218,14 @@ describe('accelMode — installed running or paused', () => {
   })
 })
 
-describe('provisionPanelMode — the global stacks’ panel, which only removes', () => {
-  // Until 2026-09-25 this was `onboardingPath(release, presence)`, and an
-  // uninstallable release made the global Raw HTTP stack THE onboarding again
-  // (`{ mode: 'global', provision: 'full' }`). The owner collapsed that: the
-  // pack is the only onboarding, so the release is not an input any more, and
-  // no answer offers anything but Remove.
-  it('offers Remove only while something is (or may be) there, and is hidden otherwise', () => {
-    expect(provisionPanelMode({ http: true, legacySyslog: false })).toBe('remove-only')
-    expect(provisionPanelMode({ http: false, legacySyslog: true })).toBe('remove-only')
-    expect(provisionPanelMode({ http: true, legacySyslog: true })).toBe('remove-only')
-    expect(provisionPanelMode(null), 'unread is never hidden').toBe('remove-only')
-    expect(provisionPanelMode({ http: false, legacySyslog: false })).toBe('hidden')
-  })
-
-  it('takes no release: an uninstallable pack does not bring a global onboarding back', () => {
-    // One argument: the answer cannot depend on the release at all.
-    expect(provisionPanelMode.length).toBe(1)
+describe('no global stack, whatever the release', () => {
+  // Until 2026-09-25 `onboardingPath(release, presence)` made the global Raw
+  // HTTP stack THE onboarding again when the release could not be installed;
+  // until 2026-09-26 `provisionPanelMode(presence)` showed a panel that removed
+  // it. The owner decided both away: the pack is the only onboarding, and the
+  // app no longer shows or removes the global stacks earlier releases created.
+  it('an uninstallable pack does not bring a global onboarding back, and nothing decides a global panel', () => {
+    expect(Object.keys(planModule)).not.toContain('provisionPanelMode')
     const unpublished = packRelease({ published: false, sha256: null, version: '0.2.2' })
     expect(unpublished.installable).toBe(false)
     expect(unpublished.refusal).toBe('pack 0.2.2 has not been released, so there is nothing to install yet')
@@ -285,7 +276,6 @@ const ctx = (over: Partial<OnboardingDialogContext> = {}): OnboardingDialogConte
   target: target('no-sample'),
   scope: { carries: ['groups/g1/default/cc-network-gigamon-ami'], alreadyDirty: [], elsewhere: [], unknown: false } as unknown as OnboardingDialogContext['scope'],
   undeployed: null,
-  globalStackPresent: false,
   ...over,
 })
 
@@ -365,12 +355,11 @@ describe('onboardingDialog', () => {
     expect(d.consequences).toContain(lakeEntryNotCreatedSentence(LAKE))
   })
 
-  it('names the global stack when it is present, and always the failure promise and the uninstall warning', () => {
-    const d = onboardingDialog(ctx({ globalStackPresent: true }))
-    expect(d.consequences).toContain(globalStackSentence('g1'))
+  it('always says the failure promise and the uninstall warning, and never names a global stack', () => {
+    const d = onboardingDialog(ctx())
     expect(d.consequences).toContain(ONBOARDING_FAILURE_PROMISE)
     expect(d.consequences).toContain(ONBOARDING_UNINSTALL)
-    expect(onboardingDialog(ctx()).consequences).not.toContain(globalStackSentence('g1'))
+    expect(d.consequences.join(' ')).not.toMatch(/Raw HTTP stack|stored twice/)
   })
 
   it('a corrected schedule is labelled with the pause state it keeps, not the mode new ones are created in', () => {
@@ -519,7 +508,7 @@ describe('packRemovalDialog', () => {
 
 describe('copy hygiene', () => {
   it('no internal project history in anything the dialog says', () => {
-    const d = onboardingDialog(ctx({ sample: true, globalStackPresent: true, accel: accel({ unresolved: true }), undeployed: 'a'.repeat(40) }))
+    const d = onboardingDialog(ctx({ sample: true, accel: accel({ unresolved: true }), undeployed: 'a'.repeat(40) }))
     const text = [d.title, d.costLine, d.undo, ...d.consequences, ...d.resources.map((r) => `${r.kind} ${r.id} ${r.detail ?? ''}`)].join('\n')
     expect(text).not.toMatch(/\b(spike|Phase \d|A-SP|I-D\d|P-S\d|slice)\b/)
     expect(text).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)

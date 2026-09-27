@@ -22,7 +22,7 @@
 // beside 48 columns (measured 2026-09-25, a scratch HTTP test: 50 of 50 records
 // in both datasets). Owner decision 2026-09-25: the Parquet route gets its own
 // pipeline, `PACK_PARQUET_PIPELINE_ID` — `gigamon_ami_normalize`'s cast and
-// derive plus an Eval that removes `_raw` (provision.ts
+// derive plus an Eval that removes `_raw` (packSpecs.ts
 // `PARQUET_PIPELINE_SPEC`) — and the JSON and sample routes keep
 // `PACK_PIPELINE_ID` and `_raw`, which the evidence drills, Field Explorer's
 // presence view and the Copilot briefs read (all pinned to JSON,
@@ -68,17 +68,18 @@
 // schedules (src/cribl/accel/manifest.ts); no pack object may carry it, and
 // `npm run pack:check` refuses one.
 //
-// DISTINCT IDS, NOT THE GLOBAL ONES. The group's global config holds Guided
-// Setup's own Raw HTTP stack (provision.ts: `in_gigamon_http`,
+// DISTINCT IDS, NOT THE GLOBAL ONES. A group's global config may hold the Raw
+// HTTP stack earlier releases of Guided Setup created (`in_gigamon_http`,
 // `gigamon_http_normalize`, `gigamon_ami_http`, the `gigamon_ami_json_array`
 // breaker), possibly the older Syslog stack, the `gigamon_lake` destination and
 // the demo DataGen. A pack object with one of those names would make every place
 // that matches on an id (a route filter on `__inputId`, a `cribl_metrics`
 // dimension, an operator reading the UI) ambiguous about which of the two it
-// meant, and would stop the pack being installed beside the global stack for a
-// side-by-side migration. `REPLACED_BY_PACK` records the global objects the
-// migration removes and what takes their place; `KEPT_BESIDE_PACK` records the
-// ones it deliberately leaves alone, and why.
+// meant, and would stop the pack being installed beside such a stack.
+// `REPLACED_BY_PACK` records the global objects the pack takes the place of;
+// `KEPT_BESIDE_PACK` the ones it deliberately leaves alone, and why. Since
+// 2026-09-26 the app neither reads nor removes the global stacks (owner
+// decision): a tenant that still holds them keeps them, orphaned.
 //
 // NOT VERIFIED, AND LEFT FOR THE PROOF INSTALL (on a real Leader):
 //   - (the value of `__inputId` for an input inside a pack was on this list
@@ -345,10 +346,10 @@ export const PACK_SAMPLE_INPUT_ID = 'in_gigamon_ami_sample'
 /** Splits a POSTed JSON array into one event per record, fields extracted. */
 export const PACK_BREAKER_ID = 'gigamon_ami_http_json_array'
 /** Cast + derive only, for the JSON and sample routes, which keep `_raw`:
- *  provision.ts's `PIPELINE_SPEC`. (All three routes ran it until 0.2.2.) */
+ *  packSpecs.ts's `PIPELINE_SPEC`. (All three routes ran it until 0.2.2.) */
 export const PACK_PIPELINE_ID = 'gigamon_ami_normalize'
 /** The Parquet route's pipeline (0.2.2 on): `PACK_PIPELINE_ID`'s cast and
- *  derive, then an Eval that removes `_raw` — provision.ts's
+ *  derive, then an Eval that removes `_raw` — packSpecs.ts's
  *  `PARQUET_PIPELINE_SPEC`. */
 export const PACK_PARQUET_PIPELINE_ID = 'gigamon_ami_normalize_parquet'
 /** HTTP → the JSON dataset the dashboards read. NOT final: the event goes on
@@ -714,10 +715,11 @@ export const PACK_0_1_0 = Object.freeze({
 })
 
 /**
- * The GLOBAL objects the migration to the pack REMOVES, each with the pack
- * object that takes its place: Guided Setup's Raw HTTP stack (provision.ts's
- * `HTTP_SOURCE_ID`, `HTTP_PIPELINE_ID`, `HTTP_ROUTE_ID`, `HTTP_BREAKER_ID`) and
- * the Syslog stack earlier releases created (`LEGACY_SYSLOG_*`).
+ * The GLOBAL objects the pack takes the place of, each with the pack object
+ * that does: the Raw HTTP stack earlier releases of Guided Setup created (the
+ * ids packSpecs.ts's specs still carry) and the Syslog stack before it. A
+ * record of ids, not a list the app acts on: since 2026-09-26 nothing reads or
+ * removes these objects, and a tenant that still holds them keeps them.
  */
 export const REPLACED_BY_PACK: Readonly<Record<string, { readonly by: string; readonly why: string }>> = Object.freeze({
   in_gigamon_http: {
@@ -730,7 +732,7 @@ export const REPLACED_BY_PACK: Readonly<Record<string, { readonly by: string; re
   },
   gigamon_ami_http: {
     by: PACK_HTTP_JSON_ROUTE_ID,
-    why: 'Its filter names the global source, which the migration removes; the pack routes its own input.',
+    why: 'Its filter names the global source; the pack routes its own input.',
   },
   gigamon_ami_json_array: {
     by: PACK_BREAKER_ID,
@@ -746,7 +748,7 @@ export const REPLACED_BY_PACK: Readonly<Record<string, { readonly by: string; re
   },
   gigamon_ami_syslog: {
     by: PACK_HTTP_JSON_ROUTE_ID,
-    why: 'Its filter names the old syslog source, which the migration removes.',
+    why: 'Its filter names the old syslog source; the pack routes its own input.',
   },
 })
 
@@ -757,6 +759,6 @@ export const REPLACED_BY_PACK: Readonly<Record<string, { readonly by: string; re
  */
 export const KEPT_BESIDE_PACK: Readonly<Record<string, string>> = Object.freeze({
   in_gigamon_datagen: 'The workspace\'s demo feed, which this app did not create and never edits; the pack\'s in_gigamon_ami_sample is a separate feed into a separate dataset.',
-  gigamon_ami: 'The global pipeline the demo feed is processed by (provision.ts copied its two Evals from it); removing it would break a feed the pack does not own.',
-  gigamon_lake: 'The global Lake destination usually pre-dates the app and other routes may use it; Guided Setup\'s teardown already leaves it in place.',
+  gigamon_ami: 'The global pipeline the demo feed is processed by (the pack pipeline copies its two Evals); removing it would break a feed the pack does not own.',
+  gigamon_lake: 'The global Lake destination usually pre-dates the app and other routes may use it; the Lake landing panel edits it, and nothing in this app deletes it.',
 })

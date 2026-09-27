@@ -36,7 +36,7 @@ import type { LakeDestination } from '../cribl/lake'
 import type { DestinationConfirmContext, RetentionConfirmContext } from '../cribl/lakeLanding'
 
 /**
- * The id of the wrapper around <ProvisionPanel> in src/tabs/GuidedSetup.tsx.
+ * The id of the wrapper around <OnboardingPanel> in src/tabs/GuidedSetup.tsx.
  *
  * Exported so the anchor and its target are one string. The dataset-absent state
  * links here — an in-page anchor to the panel that creates the dataset, because

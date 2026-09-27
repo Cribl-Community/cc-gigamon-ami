@@ -1027,21 +1027,22 @@ describe('paired teardown', () => {
     }
   })
 
-  it('creates nothing of the global Raw HTTP stack any more, and can still remove all of it', () => {
-    // Until 2026-09-25 the route was added and taken away by the same PATCH of
-    // the group's one routing table (provision.ts ensureRoute /
-    // removeOnboardingStack), and the source, breaker ruleset, pipeline and
-    // destination each had a POST. The create path went with Guided Setup's
-    // Raw HTTP deploy; a tenant an earlier release provisioned must still be
-    // able to remove what it has.
-    for (const r of ['source', 'breaker', 'pipeline', 'route', 'destination'] as const) {
-      expect(API_CALLS.filter((c) => c.creates === r).map((c) => `${c.method} ${c.path}`), r).toEqual([])
+  it('touches nothing of the global stacks earlier releases created, and grants nothing on them', () => {
+    // Until 2026-09-25 the global Raw HTTP stack was created here (a POST per
+    // object, and a routing-table PATCH that added its route); until 2026-09-26
+    // it and the Syslog stack before it were read and removed (a GET and a
+    // DELETE per object, and the same PATCH taking their routes out). Owner
+    // decision 2026-09-26: the app no longer shows or removes them, so no call
+    // and no grant names them, and the group's routing table is only read.
+    const GLOBAL = /in_gigamon_http$|in_gigamon_syslog$|gigamon_http_normalize$|gigamon_syslog$|gigamon_ami_json_array$/
+    expect(API_CALLS.filter((c) => GLOBAL.test(c.path)).map((c) => `${c.method} ${c.path}`)).toEqual([])
+    expect(API_CALLS.filter((c) => c.path.startsWith('/m/:gid/routes/')).map((c) => `${c.method} ${c.path}`)).toEqual([])
+    expect(API_CALLS.filter((c) => c.path === '/m/:gid/routes').map((c) => c.method)).toEqual(['GET'])
+    const policies = readFileSync(join(ROOT, 'config', 'policies.yml'), 'utf8')
+    for (const id of ['in_gigamon_http', 'in_gigamon_syslog', 'gigamon_http_normalize', 'gigamon_syslog', 'gigamon_ami_json_array']) {
+      expect(policies, id).not.toMatch(new RegExp(`object: '[^']*/${id}'`))
     }
-    for (const r of ['source', 'breaker', 'pipeline', 'route'] as const) {
-      expect(API_CALLS.some((c) => c.removes === r), r).toBe(true)
-    }
-    const route = API_CALLS.find((c) => c.removes === 'route')
-    expect(route).toMatchObject({ method: 'PATCH', path: '/m/:gid/routes/:tableId' })
+    expect(policies).not.toContain("'/m/:gid/routes/:tableId'")
   })
 
   it('excuses only what the app still creates', () => {
@@ -1051,12 +1052,14 @@ describe('paired teardown', () => {
     expect(LEFT_BEHIND.map((x) => x.resource).filter((r) => !created.has(r))).toEqual([])
   })
 
-  it('grants no create or edit of the global Raw HTTP stack', () => {
+  it('grants nothing on the global Raw HTTP stack, and no collection write in the group', () => {
     const byObject = new Map(DECLARED.map((d) => [d.object, [...d.actions].sort()]))
     expect(byObject.get('/m/:gid/system/inputs')).toEqual(['GET'])
-    expect(byObject.get('/m/:gid/system/inputs/in_gigamon_http')).toEqual(['DELETE', 'GET'])
-    expect(byObject.get('/m/:gid/lib/breakers/gigamon_ami_json_array')).toEqual(['DELETE', 'GET'])
-    expect(byObject.get('/m/:gid/pipelines/gigamon_http_normalize')).toEqual(['DELETE', 'GET'])
+    expect(byObject.get('/m/:gid/routes')).toEqual(['GET'])
+    for (const gone of [
+      '/m/:gid/system/inputs/in_gigamon_http', '/m/:gid/system/inputs/in_gigamon_syslog', '/m/:gid/lib/breakers/gigamon_ami_json_array',
+      '/m/:gid/pipelines/gigamon_http_normalize', '/m/:gid/pipelines/gigamon_syslog', '/m/:gid/routes/:tableId',
+    ]) expect(byObject.has(gone), gone).toBe(false)
     for (const gone of ['/m/:gid/lib/breakers', '/m/:gid/pipelines', '/m/:gid/system/outputs']) {
       expect(byObject.has(gone), gone).toBe(false)
     }

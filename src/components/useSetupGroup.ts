@@ -1,7 +1,8 @@
 // The worker group Guided Setup is working on — ONE per page, shared by every
 // panel that writes to a group.
 //
-// Extracted from ProvisionPanel, where it was three useStates and two effects,
+// Extracted from ProvisionPanel (gone since 2026-09-26), where it was three
+// useStates and two effects,
 // because the onboarding panel needs the same group: two pickers on one page
 // that could disagree would let one panel's confirmation name a group the other
 // panel is not showing. So the state lives here, in a module-level store read

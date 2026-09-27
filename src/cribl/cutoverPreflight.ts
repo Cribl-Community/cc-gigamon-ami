@@ -1,10 +1,10 @@
 // The 4c cutover preflight: is this worker group ready for Gigamon AMX to be
-// re-pointed from the old global Raw HTTP source (`in_gigamon_http`) to the
-// onboarding pack's Raw HTTP source — and what stands in the way if not.
+// pointed at the onboarding pack's Raw HTTP source — and what stands in the way
+// if not.
 //
 // READ-ONLY, AND BUILT FROM THE APP'S OWN READERS. Every fact below comes from a
 // function Guided Setup already calls — `readPackState` (packClient.ts),
-// `checkStatus`/`checkLegacyStatus`, `pendingConfigPaths`, `deployState`
+// `pendingConfigPaths`, `deployState`
 // (provision.ts — the reads `pendingDeploy` makes, without its null that means
 // both "nothing pending" and "could not tell"), `listDatasets`/`listStreamGroupsCurrent`
 // (lake.ts), `portsOfOthers` (packClient.ts) — so the preflight cannot disagree
@@ -18,6 +18,12 @@
 // This module has NO transport of its own (policyCoverage.test.ts allows four,
 // in src/cribl): the readers are injected, `LIVE_READERS` names the real ones,
 // and the tests pass fakes or run the real ones over a fake fetch.
+//
+// NO GLOBAL STACKS (2026-09-26, `chore/remove-global-stacks`). It also read the
+// global Raw HTTP and Syslog stacks earlier releases created, listed them under
+// "Global stacks (earlier releases)", and said what Guided Setup's Remove of
+// them would meet after the cutover. Guided Setup no longer shows or removes
+// those objects (owner decision), so neither does this.
 //
 // NOT MEASURED. Built 2026-09-25 (`feat/cutover-preflight`) and run only against
 // fakes: it has not been run against a Leader, so no verdict it prints has yet
@@ -38,16 +44,6 @@ import {
 import { compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackOutput, type PackRoute, type PackState } from './packClient'
 import { packObjectsOf } from './onboarding/plan'
 import {
-  HTTP_BREAKER_ID,
-  HTTP_PIPELINE_ID,
-  HTTP_ROUTE_ID,
-  HTTP_SOURCE_ID,
-  LEGACY_SYSLOG_PIPELINE_ID,
-  LEGACY_SYSLOG_ROUTE_ID,
-  LEGACY_SYSLOG_SOURCE_ID,
-  checkLegacyStatus,
-  checkStatus,
-  commitScope,
   deployState,
   hostingOf,
   leaderHostname,
@@ -56,18 +52,13 @@ import {
   portProblem,
   postUrl,
   suggestedIngressHost,
-  type CommitKey,
   type DeployState,
-  type LegacyStatus,
   type ResourceState,
-  type SetupStatus,
 } from './provision'
 
 /** Every read the preflight makes, injectable. `LIVE_READERS` is the app's own. */
 export interface PreflightReaders {
   readPackState: (group: string) => Promise<PackState>
-  checkStatus: (group: string) => Promise<SetupStatus>
-  checkLegacyStatus: (group: string) => Promise<LegacyStatus>
   listDatasets: () => Promise<ReadResult<LakeDataset[]>>
   listStreamGroupsCurrent: () => Promise<ReadResult<StreamGroupInfo[]>>
   portsOfOthers: (group: string) => Promise<number[] | null>
@@ -81,8 +72,6 @@ export interface PreflightReaders {
 
 export const LIVE_READERS: PreflightReaders = Object.freeze({
   readPackState,
-  checkStatus: (group: string) => checkStatus(group),
-  checkLegacyStatus: (group: string) => checkLegacyStatus(group),
   listDatasets: () => listDatasets(),
   listStreamGroupsCurrent: () => listStreamGroupsCurrent(),
   portsOfOthers,
@@ -245,13 +234,6 @@ export type DatasetFact =
   | { id: string; state: 'absent' | 'deleting' }
   | { id: string; state: 'unreadable'; detail: string }
 
-export interface GlobalObject {
-  id: string
-  kind: 'source' | 'pipeline' | 'route' | 'breaker'
-  stack: 'raw-http' | 'syslog'
-  state: ResourceState
-}
-
 export interface PreflightFacts {
   group: string
   /** This build's pinned pack version, and whether the build may install it. */
@@ -263,7 +245,6 @@ export interface PreflightFacts {
   /** Ports the group's other sources listen on; null when unreadable. */
   otherPorts: number[] | null
   datasets: DatasetFact[]
-  globalObjects: GlobalObject[]
   hosting: {
     /** Null when the group record was not found or could not be read. */
     onPrem: boolean | null
@@ -280,10 +261,6 @@ export interface PreflightFacts {
     inGroup: string[] | null
     /** Those of the pack's own directory in this group. */
     packFiles: string[] | null
-    /** Those the global stacks' Remove would commit and refuse over — scoped,
-     *  as `removeDirtyRefusal` scopes it, to the keys whose objects read
-     *  `present` (none present: none). */
-    globalStackFiles: string[] | null
     /** Whether the group's Workers run the Leader's HEAD, with "could not
      *  tell" kept apart from "up to date" (provision.ts `deployState`). */
     deploy: DeployState
@@ -304,28 +281,6 @@ function datasetFacts(r: ReadResult<LakeDataset[]>): DatasetFact[] {
   })
 }
 
-/** The commit keys whose objects read `present` — exactly the keys Remove
- *  would delete and so commit (provision.ts `removeDirtyRefusal`). */
-function presentKeys(http: SetupStatus, legacy: LegacyStatus): CommitKey[] {
-  const all: [CommitKey, ResourceState][] = [
-    ['source', http.source], ['pipeline', http.pipeline], ['route', http.route], ['breaker', http.breaker],
-    ['legacy_source', legacy.legacy_source], ['legacy_pipeline', legacy.legacy_pipeline], ['legacy_route', legacy.legacy_route],
-  ]
-  return all.filter(([, st]) => st === 'present').map(([k]) => k)
-}
-
-function globalObjects(http: SetupStatus, legacy: LegacyStatus): GlobalObject[] {
-  return [
-    { id: HTTP_SOURCE_ID, kind: 'source', stack: 'raw-http', state: http.source },
-    { id: HTTP_BREAKER_ID, kind: 'breaker', stack: 'raw-http', state: http.breaker },
-    { id: HTTP_PIPELINE_ID, kind: 'pipeline', stack: 'raw-http', state: http.pipeline },
-    { id: HTTP_ROUTE_ID, kind: 'route', stack: 'raw-http', state: http.route },
-    { id: LEGACY_SYSLOG_SOURCE_ID, kind: 'source', stack: 'syslog', state: legacy.legacy_source },
-    { id: LEGACY_SYSLOG_PIPELINE_ID, kind: 'pipeline', stack: 'syslog', state: legacy.legacy_pipeline },
-    { id: LEGACY_SYSLOG_ROUTE_ID, kind: 'route', stack: 'syslog', state: legacy.legacy_route },
-  ]
-}
-
 function missingObjects(pack: PackState): PreflightFacts['packObjectsMissing'] {
   if (!pack.installed) return []
   const shipped = packObjectsOf(pack.version)
@@ -343,17 +298,14 @@ function missingObjects(pack: PackState): PreflightFacts['packObjectsMissing'] {
 
 /** Read everything the verdict needs. GETs only — see the header. */
 export async function gatherPreflight(group: string, readers: PreflightReaders = LIVE_READERS): Promise<PreflightFacts> {
-  const [pack, http, legacy, datasets, groups, otherPorts, pending, deploy] = await Promise.all([
+  const [pack, datasets, groups, otherPorts, pending, deploy] = await Promise.all([
     readers.readPackState(group),
-    readers.checkStatus(group),
-    readers.checkLegacyStatus(group),
     readers.listDatasets(),
     readers.listStreamGroupsCurrent(),
     readers.portsOfOthers(group),
     readers.pendingConfigPaths(),
     readers.deployState(group),
   ])
-  const removeKeys = presentKeys(http, legacy)
   const rec = groups.outcome === 'ok' ? (groups.value ?? []).find((x) => x.id === group) ?? null : null
   const leaderHost = readers.leaderHostname()
   const hosting = rec ? hostingOf(rec.onPrem, leaderHost) : null
@@ -365,7 +317,6 @@ export async function gatherPreflight(group: string, readers: PreflightReaders =
     packObjectsMissing: missingObjects(pack),
     otherPorts,
     datasets: datasetFacts(datasets),
-    globalObjects: globalObjects(http, legacy),
     hosting: {
       onPrem: rec?.onPrem ?? null,
       groupRecord: groups.outcome !== 'ok' ? 'unreadable' : rec ? 'found' : 'missing',
@@ -377,7 +328,6 @@ export async function gatherPreflight(group: string, readers: PreflightReaders =
       pending,
       inGroup: pending === null ? null : pending.filter((p) => pathInGroup(p, group)),
       packFiles: pending === null ? null : packCommitScope(group, pending).alreadyDirty,
-      globalStackFiles: pending === null ? null : removeKeys.length ? commitScope(group, removeKeys, pending).alreadyDirty : [],
       deploy,
     },
   }
@@ -397,8 +347,6 @@ export interface PreflightVerdict {
   blockers: string[]
   /** True, and worth reading, but not blocking. */
   warnings: string[]
-  /** What the cutover's last step (Remove in Guided Setup) will meet. */
-  afterCutover: string[]
 }
 
 const UNKNOWN_HOST = '<this group’s worker ingress host>'
@@ -407,7 +355,6 @@ const list = (xs: readonly string[]) => xs.join(', ')
 export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
   const blockers: string[] = []
   const warnings: string[] = []
-  const afterCutover: string[] = []
   const p = f.pack
 
   // The pack.
@@ -528,21 +475,6 @@ export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
     warnings.push('Hosting could not be told (managed needs the group record’s onPrem=false and a Cribl.Cloud Leader host; pass --leader).')
   }
 
-  // What Remove will meet after the cutover.
-  const present = f.globalObjects.filter((o) => o.state === 'present')
-  const unknown = f.globalObjects.filter((o) => o.state === 'unreadable')
-  if (present.length) afterCutover.push(`Guided Setup’s Remove will find: ${list(present.map((o) => `${o.id} (${o.stack} ${o.kind})`))}.`)
-  if (unknown.length) afterCutover.push(`Could not be read: ${list(unknown.map((o) => o.id))}.`)
-  if (!present.length && !unknown.length) afterCutover.push('No global stack object is present: there is nothing for Remove to take.')
-  if (f.git.globalStackFiles && f.git.globalStackFiles.length) {
-    afterCutover.push(
-      `Remove will refuse while these files it commits are already uncommitted (unless they are its own failed removal): ${list(f.git.globalStackFiles)}.`,
-    )
-  }
-  if (present.some((o) => o.id === HTTP_SOURCE_ID)) {
-    afterCutover.push(`Re-point Gigamon AMX before removing ${HTTP_SOURCE_ID}: while AMX still posts to it, Remove stops that feed.`)
-  }
-
   const ready = blockers.length === 0
   const port = h?.port ?? null
   const host = f.hosting.ingressHost
@@ -552,7 +484,6 @@ export function preflightVerdict(f: PreflightFacts): PreflightVerdict {
     url: ready && port !== null && host && h ? postUrl(host, port, h.tls) : null,
     blockers,
     warnings,
-    afterCutover,
   }
 }
 
@@ -606,9 +537,6 @@ export function preflightReport(f: PreflightFacts, v: PreflightVerdict): string[
     else out.push(`  ${d.id}: ${d.state === 'deleting' ? 'being deleted' : 'absent'}`)
   }
   out.push('')
-  out.push('Global stacks (earlier releases)')
-  for (const o of f.globalObjects) out.push(`  ${o.id} (${o.stack} ${o.kind}): ${o.state}`)
-  out.push('')
   out.push('Git and deploy')
   if (f.git.pending === null) out.push('  status: could not be read')
   else {
@@ -639,7 +567,5 @@ export function preflightReport(f: PreflightFacts, v: PreflightVerdict): string[
     out.push('  Also:')
     for (const w of v.warnings) out.push(`  - ${w}`)
   }
-  out.push('  After the cutover:')
-  for (const a of v.afterCutover) out.push(`  - ${a}`)
   return out
 }

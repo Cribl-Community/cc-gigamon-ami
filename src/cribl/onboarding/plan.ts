@@ -37,7 +37,7 @@ import {
 } from '../../components/provisionPanelCopy'
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
-  globalStackSentence, keptDatasetsSentence, keptSchedulesSentence, keptGlobalStackSentence, lakeEntryNotCreatedSentence,
+  keptDatasetsSentence, keptSchedulesSentence, lakeEntryNotCreatedSentence,
   CLEANUP_FAILURE_PROMISE, CLEANUP_NO_LAKE, CLEANUP_ROUTES_KEPT_LOCAL, cleanupPipelinesSentence, cleanupUndo, cleanupUnreadableSentence,
   cleanupUnrestorableSentence, routeTableShapeWords,
   FINISH_REMOVAL_UNDO, finishRemovalSentence, nothingToDeploySentence, removePackIrreversible, sampleVolumeWords, storageCostWords,
@@ -278,35 +278,6 @@ export function accelMode(sampleTicked: boolean, target: DatasetTarget): AccelMo
 export const realDataSeen = (target: DatasetTarget): boolean =>
   target.known && (target.reason === 'has-data' || target.reason === 'probe-found')
 
-// ── The global stacks' panel ────────────────────────────────────────────────
-
-/** Whether the group holds the global objects earlier releases of Guided Setup
- *  created: the Raw HTTP stack, or the Syslog stack before it. */
-export interface GlobalStackPresence {
-  http: boolean
-  legacySyslog: boolean
-}
-
-/**
- * Whether Guided Setup shows the global stacks' panel (components/
- * ProvisionPanel.tsx), which offers Remove and nothing else. It shows while a
- * global object is in the group, or may be: a presence nobody could read yet,
- * or whose read was refused, counts as present, so a stack that exists is never
- * hidden by a failed read.
- *
- * THE PACK IS THE ONLY ONBOARDING (owner decision, 2026-09-25), WHATEVER THE
- * RELEASE SAYS. This used to be `onboardingPath(release, presence)`, and while
- * `release.installable` was false it answered `{ mode: 'global', provision:
- * 'full' }`: the global Raw HTTP stack became the onboarding again, with its
- * Deploy, port picker and endpoint card. Now nothing falls back — an
- * uninstallable pack refuses Onboard with the release's own sentence in the
- * pack panel — so the release is not an input here at all.
- */
-export function provisionPanelMode(presence: GlobalStackPresence | null): 'remove-only' | 'hidden' {
-  if (presence === null || presence.http || presence.legacySyslog) return 'remove-only'
-  return 'hidden'
-}
-
 // ── The steps ───────────────────────────────────────────────────────────────
 
 export type OnboardingStepKey =
@@ -380,8 +351,6 @@ export interface OnboardingDialogContext {
   scope: CommitScope | null
   undeployed: string | null
   undeployedChecking?: boolean
-  /** Guided Setup's global Raw HTTP (or legacy Syslog) stack is in the group. */
-  globalStackPresent: boolean
 }
 
 export interface OnboardingDialog {
@@ -538,7 +507,6 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
           HTTP_RESTART_PRECAUTION,
         ]
       : [nothingToDeploySentence(group)]),
-    ...(ctx.globalStackPresent ? [globalStackSentence(group)] : []),
     ...(mode === 'running' && !realDataSeen(ctx.target) ? [emptyRealDatasetSentence()] : []),
     ...lakeUnresolved.map((id) => lakeEntryNotCreatedSentence(id)),
     ONBOARDING_FAILURE_PROMISE,
@@ -633,7 +601,6 @@ export function packRemovalDialog(ctx: RemovalDialogContext): RemovalDialog {
     consequences: [
       keptDatasetsSentence(kept),
       keptSchedulesSentence(),
-      keptGlobalStackSentence(group),
       carriesSentence(commitCtx, 'removal'),
       pendingSentence(commitCtx),
       ...(undeployedLine ? [undeployedLine] : []),

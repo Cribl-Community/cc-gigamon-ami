@@ -17,11 +17,6 @@ import {
   PACK_0_1_0, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_ID, PACK_PUBLISHED_VERSIONS, PACK_ROUTES_FILE,
   PACK_SAMPLE_ROUTE_ID, packRouteLabel,
 } from '../cribl/pack'
-import {
-  HTTP_PIPELINE_ID, HTTP_ROUTE_ID, HTTP_SOURCE_ID, LAKE_DESTINATION_ID, LEGACY_SYSLOG_PIPELINE_ID, LEGACY_SYSLOG_ROUTE_ID,
-  LEGACY_SYSLOG_SOURCE_ID,
-} from '../cribl/provision'
-import { ROUTE_SPEC } from '../cribl/packSpecs'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY } from './dataFlow'
 import {
   COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
@@ -112,7 +107,7 @@ function everyStackRunning(opts: { fromInput?: boolean; packPipe?: (p: StackPath
 }
 
 describe('the Data Flow counters count every stack, and each event once', () => {
-  it('adds up the demo, Syslog, Raw HTTP and pack stacks side by side, dual-write included', () => {
+  it('adds up the demo and pack stacks side by side, dual-write included', () => {
     const { rows, landed } = everyStackRunning()
     expect(landed).toBeGreaterThan(0)
     const m = run(METRICS_QUERY, rows)
@@ -184,6 +179,8 @@ describe('the Data Flow counters count every stack, and each event once', () => 
   })
 })
 
+const bare = (v: string) => v.slice(v.indexOf(':') + 1)
+
 describe('the stack list', () => {
   it('gives each source at most one path into gigamon_ami', () => {
     // The Destinations and Lake sums rely on it: two gigamon_ami paths from one
@@ -196,54 +193,21 @@ describe('the stack list', () => {
     expect(COUNTED_DATASET).toBe(LAKE_DATASET)
   })
 
-  it('calls the old Syslog stack retired, and still counts and names it, because tenants may still run it', () => {
-    // No release creates it any more — this one only offers to remove it — so
-    // "offered" was wrong. It is not gone either: a tenant that ran an earlier
-    // release can still be sending through it, and a counter that skipped it
-    // would read short while looking complete.
-    const legacy = STACKS.find((s) => s.key === 'global-legacy-syslog')!
-    expect(legacy.status).toBe('retired')
-    for (const p of legacy.paths) expect(COUNTED_PATHS).toContain(p)
-    expect(SHOWN_INPUTS).toContain(LEGACY_SYSLOG_SOURCE_ID)
-    expect(SHOWN_PIPELINES).toContain(LEGACY_SYSLOG_PIPELINE_ID)
-  })
-
-  it('names the Syslog stack earlier releases of Guided Setup wrote', () => {
-    const syslog = STACKS.find((s) => s.key === 'global-legacy-syslog')!.paths[0]
-    expect(syslog).toEqual({
-      route: LEGACY_SYSLOG_ROUTE_ID,
-      input: `syslog:${LEGACY_SYSLOG_SOURCE_ID}`,
-      pipeline: LEGACY_SYSLOG_PIPELINE_ID,
-      output: `cribl_lake:${LAKE_DESTINATION_ID}`,
-      dataset: LAKE_DATASET,
-    })
-  })
-
-  it('calls the old Raw HTTP stack retired, and still counts and names it, because tenants may still run it', () => {
-    // No release creates it since 2026-09-25 — Guided Setup's onboarding
-    // collapsed into the pack's, and this release only offers to remove it — so
-    // "offered" became wrong, exactly as it did for the Syslog stack.
-    const http = STACKS.find((s) => s.key === 'global-http')!
-    expect(http.status).toBe('retired')
+  it('counts no global stack an earlier release of Guided Setup created', () => {
+    // The Syslog and Raw HTTP stacks earlier releases created left the list on
+    // 2026-09-26 (owner decision): new installs never have them, and the app no
+    // longer shows or removes them. So no path, query or ⓘ names their objects,
+    // and the only global stack is the demo feed.
+    const EARLIER = ['in_gigamon_syslog', 'gigamon_syslog', 'gigamon_ami_syslog', 'in_gigamon_http', 'gigamon_http_normalize', 'gigamon_ami_http']
+    const paths = STACKS.flatMap((s) => s.paths)
+    for (const id of EARLIER) {
+      expect(paths.some((p) => [p.route, bare(p.input), p.pipeline].includes(id)), id).toBe(false)
+      for (const text of [METRICS_QUERY, LAKE_TOTAL_QUERY, COUNTED_SOURCES_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_DESTINATIONS_PROSE]) {
+        expect(text, id).not.toMatch(new RegExp(`\\b${id}\\b`))
+      }
+    }
+    expect(STACKS.filter((s) => s.scope === 'global').map((s) => s.key)).toEqual(['global-demo'])
     expect(STACKS.filter((s) => s.status === 'offered').map((s) => s.key), 'a global stack is offered again').toEqual([])
-    for (const p of http.paths) expect(COUNTED_PATHS).toContain(p)
-    expect(SHOWN_INPUTS).toContain(HTTP_SOURCE_ID)
-    expect(SHOWN_PIPELINES).toContain(HTTP_PIPELINE_ID)
-  })
-
-  it('names the Raw HTTP stack earlier releases of Guided Setup wrote, type prefix from its route filter', () => {
-    const http = STACKS.find((s) => s.key === 'global-http')!
-    expect(http.paths).toEqual([{
-      route: HTTP_ROUTE_ID,
-      input: `http_raw:${HTTP_SOURCE_ID}`,
-      pipeline: HTTP_PIPELINE_ID,
-      output: `cribl_lake:${LAKE_DESTINATION_ID}`,
-      dataset: LAKE_DATASET,
-    }])
-    // The route earlier releases wrote (packSpecs.ts ROUTE_SPEC) selects exactly this `input` value.
-    expect(ROUTE_SPEC.filter).toBe(`__inputId=='${http.paths[0].input}'`)
-    expect(ROUTE_SPEC.pipeline).toBe(http.paths[0].pipeline)
-    expect(ROUTE_SPEC.output).toBe(LAKE_DESTINATION_ID)
   })
 
   it('has no stack still waiting for its ids', () => {
@@ -290,10 +254,9 @@ describe('the stack list', () => {
 
 describe('the stage ⓘ prose', () => {
   const PROSE = [COUNTED_SOURCES_PROSE, COUNTED_PIPELINES_PROSE, COUNTED_DESTINATIONS_PROSE]
-  const bare = (v: string) => v.slice(v.indexOf(':') + 1)
 
-  it('names only objects a tenant can have today: the running, offered and retired stacks', () => {
-    const today = (s: (typeof STACKS)[number]) => s.status === 'running' || s.status === 'offered' || s.status === 'retired'
+  it('names only objects this workspace runs today: the running and offered stacks', () => {
+    const today = (s: (typeof STACKS)[number]) => s.status === 'running' || s.status === 'offered'
     const shown = STACKS.filter(today).flatMap((s) => s.paths)
     const unshown = STACKS.filter((s) => !today(s)).flatMap((s) => s.paths)
     const ids = (ps: readonly StackPath[]) => new Set(ps.flatMap((p) => [bare(p.input), p.pipeline, bare(p.output)]))
@@ -301,8 +264,8 @@ describe('the stage ⓘ prose', () => {
     const forbidden = [...ids(unshown)].filter((id) => !allowed.has(id))
     expect(forbidden.length).toBeGreaterThan(0)
     for (const text of PROSE) for (const id of forbidden) expect(text).not.toMatch(new RegExp(`\\b${id}\\b`))
-    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen', 'in_gigamon_syslog', 'in_gigamon_http'])
-    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami', 'gigamon_syslog', 'gigamon_http_normalize'])
+    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen'])
+    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami'])
     expect(SHOWN_OUTPUTS).toEqual(['gigamon_lake'])
     for (const id of SHOWN_INPUTS) expect(COUNTED_SOURCES_PROSE).toContain(id)
     for (const id of SHOWN_PIPELINES) expect(COUNTED_PIPELINES_PROSE).toContain(id)

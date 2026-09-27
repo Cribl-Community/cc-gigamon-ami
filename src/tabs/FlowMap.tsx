@@ -225,7 +225,7 @@ export function FlowMap() {
           rather than by being mounted. Capra's Modal releases the page scroll
           lock and the `inert` it puts on #root when it CLOSES; unmounting it
           while it is still open would skip that and leave the app behind it
-          unscrollable. Same shape as <ConfirmDialog> in ProvisionPanel. */}
+          unscrollable. Same shape as <ConfirmDialog> in OnboardingPanel. */}
       {sel && <ServiceNowModal isOpen={snOpen} service={cleanName(sel)} onClose={() => setSnOpen(false)} />}
     </div>
   )
