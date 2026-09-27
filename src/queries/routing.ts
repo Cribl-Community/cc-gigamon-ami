@@ -48,7 +48,43 @@ export const COMPLETENESS_BUCKET_SECONDS = 300
 
 const written = (label: string) => `sum(iif(metric=="total.out_events" and namespace=="data_insights" and output=="${label}", value, 0))`
 
+/**
+ * Events two Lake destinations wrote, per five-minute bucket: `json_events`
+ * for the one that writes `gigamon_ami`, `pq_events` for the one that writes
+ * `gigamon_ami_pq`, each named by its cribl_metrics `output` label.
+ */
+export function completenessQuery(jsonOutputLabel: string, parquetOutputLabel: string): string {
+  return (
+    `dataset="cribl_metrics" | summarize json_events=${written(jsonOutputLabel)}, ` +
+    `pq_events=${written(parquetOutputLabel)} by bin(_time, 5m) | sort by _time asc`
+  )
+}
+
 /** Events each of the pack's two Lake destinations wrote, per five-minute bucket. */
-export const COMPLETENESS_QUERY =
-  `dataset="cribl_metrics" | summarize json_events=${written(PACK_JSON_OUTPUT_LABEL)}, ` +
-  `pq_events=${written(PACK_PARQUET_OUTPUT_LABEL)} by bin(_time, 5m) | sort by _time asc`
+export const COMPLETENESS_QUERY = completenessQuery(PACK_JSON_OUTPUT_LABEL, PACK_PARQUET_OUTPUT_LABEL)
+
+// ── THE DEMO FEED: TEMPORARY, AND FOR THE PARITY RUNNER ONLY ────────────────
+// Added 2026-09-27. On the owner's org no pack HTTP source sends anything yet,
+// so the pack's two destinations write nothing and every window the parity
+// runner checks with COMPLETENESS_QUERY would be skipped. A TEMPORARY global
+// feed was deployed there instead (2026-09-27 00:38Z, that org's commit
+// cb2b990): the global DataGen `in_gigamon_datagen` fans out through
+// QuickConnect to `gigamon_lake` (JSON, `gigamon_ami`) and to
+// `gigamon_ami_pq_demo_lake` (Parquet, `gigamon_ami_pq`, `_raw` removed).
+// A global output is labelled `cribl_lake:<id>` (measured 2026-09-24, see
+// ./stackIds.ts). `npm run parity:run -- --feed demo` proves windows complete
+// on this pair; the app's router never does — it keeps the pack pair above.
+//
+// WHAT IT CANNOT SHOW: `gigamon_lake` is the global destination every global
+// stack shares (the demo, and the Syslog and Raw HTTP stacks earlier releases
+// created). Where anything else also writes through it — on another tenant, or
+// on this one later — `json_events` counts more than the demo's Parquet copy
+// was sent, the two columns disagree, and every window is refused: the safe
+// way round. And, as for the pack pair, whether `total.out_events` counts an
+// event the Parquet destination dropped is unmeasured.
+
+/** The demo feed's JSON destination (global), as cribl_metrics labels it. */
+export const DEMO_JSON_OUTPUT_LABEL = 'cribl_lake:gigamon_lake'
+
+/** The demo feed's Parquet destination (global, TEMPORARY), as cribl_metrics labels it. */
+export const DEMO_PARQUET_OUTPUT_LABEL = 'cribl_lake:gigamon_ami_pq_demo_lake'

@@ -88,7 +88,24 @@ export interface RouteEvidence {
   windows: readonly ParityWindow[]
   /** When the run was made, YYYY-MM-DD. */
   date: string
+  /**
+   * Which feed wrote the two datasets the run compared, by whose destinations
+   * its completeness check was proven (`PARITY_FEEDS` in ../parityRun.ts):
+   * `pack` — the onboarding pack's dual-write — or `demo`, the TEMPORARY
+   * global DataGen feed on the owner's org (added 2026-09-27). Absent means
+   * `pack`, the only feed before the field existed; the runner always writes
+   * it. A `demo` run proves the two copies agree on the demo DataGen's
+   * records, written through the demo's own Parquet destination and pipeline,
+   * not through the pack's.
+   */
+  feed?: ParityFeedId
 }
+
+/** The feeds a parity run can prove completeness on. */
+export type ParityFeedId = 'pack' | 'demo'
+
+/** Every feed id `RouteEvidence.feed` may hold. */
+export const PARITY_FEED_IDS: readonly ParityFeedId[] = ['pack', 'demo']
 
 export interface RouteEntry {
   /** Stable id: `<tab or module>.<figure>`. */
@@ -189,6 +206,7 @@ export function evidenceProblems(ev: RouteEvidence): string[] {
   const out: string[] = []
   if (!ev.report.trim()) out.push('names no report')
   if (!DATE_RE.test(ev.date)) out.push(`has no date in YYYY-MM-DD form ("${ev.date}")`)
+  if (ev.feed !== undefined && !PARITY_FEED_IDS.includes(ev.feed)) out.push(`names a feed no parity run uses ("${String(ev.feed)}")`)
   if (ev.windows.some((w) => !(w.latest > w.earliest))) out.push('has an empty or reversed window')
   const hours = new Set(ev.windows.map((w) => new Date(w.earliest * 1000).getUTCHours()))
   if (ev.windows.length < 3 || hours.size < 3) out.push('covers fewer than three windows at different hours')

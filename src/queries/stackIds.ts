@@ -116,6 +116,11 @@ export const COUNTED_DATASET = 'gigamon_ami'
 
 export const STACKS: readonly Stack[] = [
   {
+    // On the owner's org the same DataGen also fans out, TEMPORARILY (from
+    // 2026-09-27), to a global Parquet destination `gigamon_ami_pq_demo_lake`
+    // writing gigamon_ami_pq, for the parity runner's `--feed demo`
+    // (./routing.ts). That path is deliberately not listed: it writes no
+    // gigamon_ami figure, and stackIds.test.ts holds that it counts into none.
     key: 'global-demo',
     scope: 'global',
     status: 'running',

@@ -7,9 +7,12 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { COMPLETENESS_BUCKET_SECONDS as B } from '../queries/routing'
+import { COMPLETENESS_BUCKET_SECONDS as B, COMPLETENESS_QUERY, completenessQuery } from '../queries/routing'
 import type { FieldType, Row } from './parity'
 import {
+  DEFAULT_PARITY_FEED,
+  PARITY_FEEDS,
+  parityFeed,
   comparisonText,
   compareQueryRows,
   entryOutcome,
@@ -336,7 +339,11 @@ describe('the evidence an entry earns', () => {
     const ws = [win(1), win(8), win(15)]
     const out = entryOutcome(entry(['pass', 'pass', 'pass'], ws), ws.map(compared), '.dev/parity-run/parity-run-x.json', '2026-10-01')
     expect(out.verdict).toBe('evidence')
-    expect(Object.keys(out.evidence!).sort()).toEqual(['date', 'report', 'windows'])
+    expect(Object.keys(out.evidence!).sort()).toEqual(['date', 'feed', 'report', 'windows'])
+    expect(out.evidence!.feed).toBe('pack')
+    // Earned on the temporary demo feed, it says so, and is still accepted.
+    const demo = entryOutcome(entry(['pass', 'pass', 'pass'], ws), ws.map(compared), 'r', '2026-10-01', 'demo')
+    expect(demo.evidence).toMatchObject({ feed: 'demo' })
     const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'web.codes')!, target: 'parquet', evidence: out.evidence }
     const table = ROUTES.map((e) => (e.id === 'web.codes' ? pasted : e))
     expect(tableProblems(table, TYPES)).toEqual([])
@@ -352,6 +359,27 @@ describe('the evidence an entry earns', () => {
     const skipped = ws.map(compared)
     skipped[2] = { ...skipped[2], status: 'skipped', why: 'gap' }
     expect(entryOutcome(entry(['pass', 'pass'], ws.slice(0, 2)), skipped, 'r', '2026-10-01')).toMatchObject({ verdict: 'not-enough', evidence: null })
+  })
+})
+
+describe('the feed (--feed, added 2026-09-27)', () => {
+  it('defaults to the pack, whose completeness check is exactly the router’s', () => {
+    expect(DEFAULT_PARITY_FEED).toBe('pack')
+    expect(parityFeed()).toBe(PARITY_FEEDS.pack)
+    expect(PARITY_FEEDS.pack.completenessQuery).toBe(COMPLETENESS_QUERY)
+  })
+
+  it('on demo, compares the global demo destinations and nothing of the pack', () => {
+    const demo = parityFeed('demo')
+    expect([demo.jsonOutput, demo.parquetOutput]).toEqual(['cribl_lake:gigamon_lake', 'cribl_lake:gigamon_ami_pq_demo_lake'])
+    expect(demo.completenessQuery).toBe(completenessQuery(demo.jsonOutput, demo.parquetOutput))
+    expect(demo.completenessQuery).not.toBe(COMPLETENESS_QUERY)
+    expect(demo.completenessQuery).not.toContain('cc-network-gigamon-ami')
+  })
+
+  it('refuses any other name before anything is billed', () => {
+    expect(() => parityFeed('global')).toThrow(/--feed must be one of pack, demo/)
+    expect(() => parityFeed('toString')).toThrow(/--feed must be one of/)
   })
 })
 

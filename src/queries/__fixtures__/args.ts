@@ -241,6 +241,18 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     drillQuery: { cases: "[{ label: 'one server', args: [serverFilter('login.example.com')] }]" },
   },
 
+  'src/queries/routing.ts': {
+    // The completeness check on each destination pair it is ever given: the
+    // pack's (COMPLETENESS_QUERY, the app's router and the parity runner's
+    // default) and the temporary global demo feed's (the parity runner's
+    // `--feed demo` only).
+    completenessQuery: {
+      cases:
+        "[{ label: 'the pack', args: [PACK_JSON_OUTPUT_LABEL, PACK_PARQUET_OUTPUT_LABEL] }," +
+        " { label: 'the demo feed', args: [DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL] }]",
+    },
+  },
+
   'src/queries/security.ts': {
     // Every technique, flow-signal and behaviour alike — a behaviour technique
     // runs no query, and that empty string is part of the promise.

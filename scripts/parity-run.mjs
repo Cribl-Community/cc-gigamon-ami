@@ -8,6 +8,11 @@
 //
 // Options:
 //   --entries a,b             routing entry ids to consider (default: every entry)
+//   --feed pack|demo          whose Lake destinations prove each window complete (default pack:
+//                             the onboarding pack's JSON and Parquet destinations). demo: the
+//                             TEMPORARY global feed on the owner's org (2026-09-27) — DataGen
+//                             through gigamon_lake and gigamon_ami_pq_demo_lake. The report and
+//                             every evidence object it prints record the feed.
 //   --force-ineligible        also run entries the type table makes ineligible — to MEASURE them.
 //                             Their results are marked measurement-only and never carry evidence.
 //   --at <ISO time>           the reference "now" (default: the current time). The newest window
@@ -71,7 +76,7 @@ const J = await import(pathToFileURL(join(ROOT, 'scripts/parquet-audit-job.mjs')
 const W = await import(pathToFileURL(join(ROOT, 'scripts/parity-run-job.mjs')).href)
 
 function parseArgs(argv) {
-  const out = { run: false, entries: null, forceIneligible: false, at: null, offsets: null, minutes: null, cap: 300, maxRows: W.DEFAULT_MAX_ROWS, base: 'http://localhost:5173/capi', out: join(ROOT, '.dev', 'parity-run'), rowsPerHour: null, cpuPer1k: null }
+  const out = { run: false, entries: null, feed: 'pack', forceIneligible: false, at: null, offsets: null, minutes: null, cap: 300, maxRows: W.DEFAULT_MAX_ROWS, base: 'http://localhost:5173/capi', out: join(ROOT, '.dev', 'parity-run'), rowsPerHour: null, cpuPer1k: null }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     const next = () => {
@@ -82,6 +87,7 @@ function parseArgs(argv) {
     if (a === '--run') out.run = true
     else if (a === '--entries') out.entries = next().split(',').map((s) => s.trim()).filter(Boolean)
     else if (a === '--force-ineligible') out.forceIneligible = true
+    else if (a === '--feed') out.feed = next()
     else if (a === '--at') out.at = next()
     else if (a === '--offsets') out.offsets = next().split(',').map((s) => Number(s.trim()))
     else if (a === '--minutes') out.minutes = Number(next())
@@ -109,6 +115,7 @@ const nowSec = args.at ? Math.floor(Date.parse(args.at) / 1000) : Math.floor(sta
 if (!Number.isFinite(nowSec)) throw new Error(`--at ${args.at} is not a date`)
 
 // Everything below up to --run is free: plan, windows, floor. Each refuses before anything is billed.
+const feed = P.parityFeed(args.feed)
 const windows = P.parityRunWindows(nowSec, { minutes: args.minutes ?? undefined, offsetsHours: args.offsets ?? undefined, clockSec: Math.floor(startedMs / 1000) })
 const plan = P.planEntries({ only: args.entries, forceIneligible: args.forceIneligible })
 const basis = {
@@ -119,6 +126,8 @@ const estimate = P.parityCostFloor(windows, plan.selected, basis)
 
 console.log('Phase 8.0e parity run — "%s" (JSON) against "%s" (Parquet)', P.PARITY_JSON_DATASET, P.PARITY_PARQUET_DATASET)
 console.log('This run never edits src/cribl/routing/table.ts.')
+console.log('Feed: %s — %s. Completeness compares %s (JSON) with %s (Parquet).', feed.id, feed.what, feed.jsonOutput, feed.parquetOutput)
+if (feed.id === 'demo') console.log('The demo feed is TEMPORARY; evidence from this run will say feed "demo". Where anything else also writes through gigamon_lake, every window is refused.')
 console.log('')
 console.log('Windows (each checked for completeness first; a window not proven complete is skipped):')
 for (const w of windows) console.log(`  ${w.label}`)
@@ -162,7 +171,7 @@ const run = await P.executeParityRun(windows, plan.selected, {
   submit: (purpose, w, query) => W.runParityJob(deps, purpose, w, query, { maxRows: args.maxRows }),
   nowSec: () => Math.floor(Date.now() / 1000),
   log: (line) => console.log(line),
-})
+}, feed)
 const finishedAt = new Date().toISOString()
 
 const stem = W.writeReportOnce({

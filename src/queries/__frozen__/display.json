@@ -17,7 +17,7 @@
     "links": 23,
     "briefs": 17,
     "prose": 19,
-    "modules": 236,
+    "modules": 240,
     "catalogs": 15,
     "states": 44,
     "passthrough": 3,
@@ -367,8 +367,12 @@
     "src/queries/routing.ts": {
       "COMPLETENESS_BUCKET_SECONDS": "number · sha256 983bd614bb5afece",
       "COMPLETENESS_QUERY": "dataset=\"cribl_metrics\" | summarize json_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\", value, 0)), pq_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake\", value, 0)) by bin(_time, 5m) | sort by _time asc",
+      "DEMO_JSON_OUTPUT_LABEL": "cribl_lake:gigamon_lake",
+      "DEMO_PARQUET_OUTPUT_LABEL": "cribl_lake:gigamon_ami_pq_demo_lake",
       "PACK_JSON_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake",
-      "PACK_PARQUET_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake"
+      "PACK_PARQUET_OUTPUT_LABEL": "cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake",
+      "completenessQuery(the demo feed)": "dataset=\"cribl_metrics\" | summarize json_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_lake\", value, 0)), pq_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:gigamon_ami_pq_demo_lake\", value, 0)) by bin(_time, 5m) | sort by _time asc",
+      "completenessQuery(the pack)": "dataset=\"cribl_metrics\" | summarize json_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\", value, 0)), pq_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_parquet_lake\", value, 0)) by bin(_time, 5m) | sort by _time asc"
     },
     "src/queries/security.ts": {
       "COUNTS": "dataset=\"gigamon_ami\" | summarize c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0))",

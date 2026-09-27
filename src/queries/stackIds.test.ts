@@ -24,7 +24,7 @@ import {
 import { ROUTE_SPEC } from '../cribl/packSpecs'
 import { LAKE_TOTAL_QUERY, METRICS_QUERY } from './dataFlow'
 import {
-  COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
+  COUNTED_DATASET, COUNTED_DESTINATIONS_PROSE, COUNTED_OUTPUTS, COUNTED_PATHS, COUNTED_PIPELINES_PROSE, COUNTED_SOURCES_PROSE,
   DESTINATION_COUNTED_PATHS, PIPELINE_COUNTED_PATHS, SHOWN_INPUTS, SHOWN_OUTPUTS, SHOWN_PIPELINES, STACKS, type StackPath,
 } from './stackIds'
 
@@ -163,6 +163,36 @@ describe('the Data Flow counters count every stack, and each event once', () => 
     expect(run(LAKE_TOTAL_QUERY, rows)).toEqual({ total_events: 500, total_bytes: 5000 })
     const m = run(METRICS_QUERY, rows)
     expect([m.src_events, m.pipe_events, m.dst_events]).toEqual([500, 500, 500])
+  })
+
+  it('does not count a global Parquet destination that writes gigamon_ami_pq — the temporary demo fan-out', () => {
+    // Deployed 2026-09-27 on the owner's org, for the parity runner's
+    // `--feed demo` (src/queries/routing.ts): the demo DataGen fans out through
+    // QuickConnect to gigamon_lake AND, through its own pipeline, to a global
+    // Parquet destination writing gigamon_ami_pq. It is deliberately NOT in
+    // STACKS: it is temporary, and nothing here should count it. Modelled
+    // beside the demo's own path, from the same source, every figure must be
+    // the demo's alone — the Parquet copy doubles nothing.
+    const demo = COUNTED_PATHS.find((p) => p.input === 'datagen:in_gigamon_datagen')!
+    const pqDemo: StackPath = {
+      route: null,
+      input: 'datagen:in_gigamon_datagen',
+      pipeline: 'gigamon_ami_pq_demo',
+      output: 'cribl_lake:gigamon_ami_pq_demo_lake',
+      dataset: 'gigamon_ami_pq',
+    }
+    expect(STACKS.flatMap((s) => s.paths).some((p) => p.output === pqDemo.output)).toBe(false)
+    expect(COUNTED_OUTPUTS).not.toContain(pqDemo.output)
+    for (const q of [METRICS_QUERY, LAKE_TOTAL_QUERY]) {
+      expect(q).not.toContain(`"${pqDemo.output}"`)
+      expect(q).not.toContain(`"${pqDemo.pipeline}"`)
+    }
+    for (const fromInput of [true, false]) {
+      const rows = sourceRows(demo.input, [demo, pqDemo], 17522, { fromInput })
+      expect(run(LAKE_TOTAL_QUERY, rows)).toEqual({ total_events: 17522, total_bytes: 175220 })
+      const m = run(METRICS_QUERY, rows)
+      expect([m.src_events, m.pipe_events, m.dst_events, m.dst_bytes]).toEqual([17522, 17522, 17522, 175220])
+    }
   })
 
   it('still counts today’s demo feed exactly as it did', () => {
