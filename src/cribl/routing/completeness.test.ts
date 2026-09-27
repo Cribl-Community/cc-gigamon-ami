@@ -10,8 +10,11 @@ import { PACK_ID, PACK_JSON_OUTPUT_ID, PACK_PARQUET_OUTPUT_ID } from '../pack'
 import {
   COMPLETENESS_BUCKET_SECONDS,
   COMPLETENESS_QUERY,
+  DEMO_JSON_OUTPUT_LABEL,
+  DEMO_PARQUET_OUTPUT_LABEL,
   PACK_JSON_OUTPUT_LABEL,
   PACK_PARQUET_OUTPUT_LABEL,
+  completenessQuery,
 } from '../../queries/routing'
 import {
   COMPLETENESS_BUCKET_COLUMN,
@@ -44,6 +47,19 @@ describe('the query', () => {
     expect(PACK_PARQUET_OUTPUT_LABEL).toBe(`cribl_lake:${PACK_ID}.${PACK_PARQUET_OUTPUT_ID}`)
     expect(COMPLETENESS_QUERY).toContain(`output=="${PACK_JSON_OUTPUT_LABEL}"`)
     expect(COMPLETENESS_QUERY).toContain(`output=="${PACK_PARQUET_OUTPUT_LABEL}"`)
+  })
+
+  it('is the builder over the pack pair, and the builder moves only the two labels', () => {
+    expect(COMPLETENESS_QUERY).toBe(completenessQuery(PACK_JSON_OUTPUT_LABEL, PACK_PARQUET_OUTPUT_LABEL))
+    // The temporary global demo feed (2026-09-27, the parity runner's --feed
+    // demo): global outputs are labelled `cribl_lake:<id>`, no pack id.
+    expect(DEMO_JSON_OUTPUT_LABEL).toBe('cribl_lake:gigamon_lake')
+    expect(DEMO_PARQUET_OUTPUT_LABEL).toBe('cribl_lake:gigamon_ami_pq_demo_lake')
+    const demo = completenessQuery(DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL)
+    expect(demo).toBe(
+      COMPLETENESS_QUERY.replace(`"${PACK_JSON_OUTPUT_LABEL}"`, `"${DEMO_JSON_OUTPUT_LABEL}"`).replace(`"${PACK_PARQUET_OUTPUT_LABEL}"`, `"${DEMO_PARQUET_OUTPUT_LABEL}"`),
+    )
+    expect(demo).not.toContain(PACK_ID)
   })
 
   it('compares destination counters only — pipeline labels inside a pack are unmeasured', () => {
@@ -79,6 +95,15 @@ describe('one bucket', () => {
   })
   it('proves nothing when JSON wrote nothing', () => {
     expect(bucketVerdict(0, 0)).toBe('empty')
+  })
+  it('on the demo feed, passes another gigamon_lake writer under the tolerance and refuses one over it', () => {
+    // gigamon_lake is shared by every global stack, so a leftover writer adds to
+    // json_events only. The check sees it only past COMPLETENESS_TOLERANCE: a
+    // trickle under 0.1 % of the demo's volume reads complete and is left to
+    // the control count (src/queries/routing.ts says so).
+    const demo = 17_000
+    expect(bucketVerdict(demo + 8, demo)).toBe('complete')
+    expect(bucketVerdict(demo + 18, demo)).toBe('gap')
   })
 })
 

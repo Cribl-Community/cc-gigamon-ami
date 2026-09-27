@@ -11,10 +11,11 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { makeApi, type FetchLike } from '../../scripts/parquet-audit-job.mjs'
 import { runParityJob, writeReportOnce } from '../../scripts/parity-run-job.mjs'
-import { COMPLETENESS_BUCKET_SECONDS as B } from '../queries/routing'
+import { COMPLETENESS_BUCKET_SECONDS as B, DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL, PACK_JSON_OUTPUT_LABEL, PACK_PARQUET_OUTPUT_LABEL } from '../queries/routing'
 import type { FieldType, Row } from './parity'
 import {
   PARITY_CONTROL_QUERY,
+  PARITY_FEEDS,
   buildParityReport,
   comparisonText,
   executeParityRun,
@@ -23,6 +24,7 @@ import {
   parityRunWindows,
   planEntries,
   renderParityMarkdown,
+  type ParityFeed,
   type ParityRunReport,
   type RunWindow,
 } from './parityRun'
@@ -45,6 +47,9 @@ interface Scenario {
   control?: (parquet: boolean, earliest: number) => number
   /** The column the completeness rows carry their bucket in; default what a live row names it. */
   bucketColumn?: string
+  /** The two destinations actually writing on this org (JSON, Parquet); default the pack's. A
+   *  completeness check naming any other pair reads zero from both, as cribl_metrics would. */
+  writing?: readonly [string, string]
 }
 
 /** A stand-in for the Search API: jobs complete at once and answer from the scenario. */
@@ -73,7 +78,9 @@ function fakeCribl(s: Scenario = {}) {
     let rows: Row[]
     if (q.startsWith('dataset="cribl_metrics"')) {
       rows = []
-      for (let t = job.earliest; t < job.latest; t += B) rows.push({ [s.bucketColumn ?? 'bin_time_5m']: t, json_events: 1000, pq_events: s.pqEvents?.(t) ?? 1000 })
+      const [jl, pl] = s.writing ?? [PACK_JSON_OUTPUT_LABEL, PACK_PARQUET_OUTPUT_LABEL]
+      const names = q.includes(`output=="${jl}"`) && q.includes(`output=="${pl}"`)
+      for (let t = job.earliest; t < job.latest; t += B) rows.push({ [s.bucketColumn ?? 'bin_time_5m']: t, json_events: names ? 1000 : 0, pq_events: names ? (s.pqEvents?.(t) ?? 1000) : 0 })
     } else if (q.endsWith(PARITY_CONTROL_QUERY.slice('dataset="gigamon_ami" '.length))) {
       rows = [{ c: s.control?.(parquet, job.earliest) ?? 50_000 }]
     } else {
@@ -85,7 +92,7 @@ function fakeCribl(s: Scenario = {}) {
   return { fetch, posts }
 }
 
-function run(s: Scenario, windows: RunWindow[], plan = planEntries({ only: ['web.codes'], types: TYPES })) {
+function run(s: Scenario, windows: RunWindow[], plan = planEntries({ only: ['web.codes'], types: TYPES }), feed: ParityFeed = PARITY_FEEDS.pack) {
   const cribl = fakeCribl(s)
   const sleep = async () => {}
   const api = makeApi({ base: 'http://fake/capi', fetch: cribl.fetch, sleep })
@@ -94,7 +101,7 @@ function run(s: Scenario, windows: RunWindow[], plan = planEntries({ only: ['web
     submit: (purpose, w, query) => runParityJob(deps, purpose, w, query, { maxRows: 100 }),
     nowSec: () => NOW,
     log: () => {},
-  })
+  }, feed)
   return { cribl, plan, result }
 }
 
@@ -128,13 +135,52 @@ function write(r: Awaited<ReturnType<typeof run>['result']>, plan: ReturnType<ty
 }
 
 describe('a parity run against a fake transport', () => {
+  it('on the demo feed, proves windows by the global demo destinations and says so in the report and the evidence', async () => {
+    // The owner's org, 2026-09-27: only the temporary global demo feed writes
+    // both datasets; the pack's destinations write nothing.
+    const windows = parityRunWindows(NOW)
+    const demo = { writing: [DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL] as const }
+    const { cribl, plan, result } = run(demo, windows, undefined, PARITY_FEEDS.demo)
+    const { stem, report } = write(await result, plan, windows)
+    const texts = cribl.posts.map((p) => p.query.replace(/^set max_running_time_per_search=300; /, ''))
+    expect(texts.filter((t) => t.startsWith('dataset="cribl_metrics"'))).toEqual(windows.map(() => PARITY_FEEDS.demo.completenessQuery))
+    expect(report.windows.map((w) => w.status)).toEqual(['compared', 'compared', 'compared'])
+    expect(report.feed).toEqual({ id: 'demo', what: PARITY_FEEDS.demo.what, jsonOutput: DEMO_JSON_OUTPUT_LABEL, parquetOutput: DEMO_PARQUET_OUTPUT_LABEL })
+    const ev = report.evidence['web.codes']
+    expect(ev).toEqual({ report: `.dev/parity-run/${stem}.json`, date: '2026-10-01', feed: 'demo', windows: windows.map((w) => ({ earliest: w.earliest, latest: w.latest })) })
+    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'web.codes')!, target: 'parquet', evidence: ev }
+    expect(tableProblems(ROUTES.map((e) => (e.id === 'web.codes' ? pasted : e)), TYPES)).toEqual([])
+    const md = readFileSync(join(dir!, `${stem}.md`), 'utf8')
+    expect(md).toContain('Feed: **demo**')
+    expect(md).toContain('TEMPORARY')
+  })
+
+  it('on that org, the default pack feed skips every window and submits nothing past the completeness checks', async () => {
+    const windows = parityRunWindows(NOW)
+    const { cribl, result } = run({ writing: [DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL] }, windows)
+    const r = await result
+    expect(r.feed.id).toBe('pack')
+    expect(r.windows.map((w) => w.status)).toEqual(['skipped', 'skipped', 'skipped'])
+    expect(cribl.posts).toHaveLength(windows.length)
+  })
+
+  it('on demo, refuses every window where something else also writes through gigamon_lake', async () => {
+    // gigamon_lake is shared by every global stack; another writer puts more
+    // in the JSON column than the demo's Parquet copy was sent.
+    const windows = parityRunWindows(NOW)
+    const { cribl, result } = run({ writing: [DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL], pqEvents: () => 600 }, windows, undefined, PARITY_FEEDS.demo)
+    const r = await result
+    expect(r.windows.map((w) => w.status)).toEqual(['skipped', 'skipped', 'skipped'])
+    expect(cribl.posts).toHaveLength(windows.length)
+  })
+
   it('earns evidence the routing table accepts when pasted, and names its own report', async () => {
     const windows = parityRunWindows(NOW)
     const { plan, result } = run({}, windows)
     const { stem, report } = write(await result, plan, windows)
     expect(report.windows.map((w) => w.status)).toEqual(['compared', 'compared', 'compared'])
     const ev = report.evidence['web.codes']
-    expect(ev).toEqual({ report: `.dev/parity-run/${stem}.json`, date: '2026-10-01', windows: windows.map((w) => ({ earliest: w.earliest, latest: w.latest })) })
+    expect(ev).toEqual({ report: `.dev/parity-run/${stem}.json`, date: '2026-10-01', feed: 'pack', windows: windows.map((w) => ({ earliest: w.earliest, latest: w.latest })) })
     const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'web.codes')!, target: 'parquet', evidence: ev }
     expect(tableProblems(ROUTES.map((e) => (e.id === 'web.codes' ? pasted : e)), TYPES)).toEqual([])
     expect(report.billed).toEqual({ known: 1.5 * report.jobs.length, knownJobs: report.jobs.length, unknownJobs: 0, complete: true })

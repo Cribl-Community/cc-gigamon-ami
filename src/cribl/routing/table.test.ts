@@ -85,6 +85,17 @@ describe('the rule: Parquet only with evidence and eligibility', () => {
     ])
   })
 
+  it('accepts evidence with no feed (the shape before 2026-09-27) and with either feed, and refuses any other', () => {
+    expect(evidenceProblems(EVIDENCE)).toEqual([])
+    expect(tableProblems([parquetEntry()], TREND_TYPES)).toEqual([])
+    for (const feed of ['pack', 'demo'] as const) {
+      expect(evidenceProblems({ ...EVIDENCE, feed })).toEqual([])
+      expect(tableProblems([parquetEntry({ evidence: { ...EVIDENCE, feed } })], TREND_TYPES)).toEqual([])
+    }
+    const odd = { ...EVIDENCE, feed: 'global' } as unknown as RouteEvidence
+    expect(evidenceProblems(odd)).toEqual(['names a feed no parity run uses ("global")'])
+  })
+
   it('fails three windows in the same hour — "different hours" is the point', () => {
     const sameHour = { ...EVIDENCE, windows: [0, 1, 2].map((m) => ({ earliest: T0 + m * 900, latest: T0 + m * 900 + 600 })) }
     expect(evidenceProblems(sameHour)).toEqual(['covers fewer than three windows at different hours'])

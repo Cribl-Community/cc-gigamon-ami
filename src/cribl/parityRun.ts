@@ -40,7 +40,10 @@
 // `feat/phase8-parity-runner`.)*
 //
 // ── ORDER, PER WINDOW, AND WHAT STOPS IT ────────────────────────────────────
-//   1. COMPLETENESS_QUERY over the window. Not proven complete (a gap, an empty
+//   1. The feed's completeness check over the window — COMPLETENESS_QUERY for
+//      the pack (the default), `completenessQuery` on the global demo
+//      destinations for `--feed demo` (PARITY_FEEDS, below; added
+//      2026-09-27). Not proven complete (a gap, an empty
 //      or missing bucket, unsettled, or no answer) → the window is SKIPPED, and
 //      the report says why. Nothing else is submitted for it. An answer with
 //      rows but not one bucket this can read (no `bin_time_5m`, no `_time`)
@@ -101,9 +104,19 @@
 // * That the three windows are representative: they are three windows.
 // * That `gigamon_ami` is written only by the pack (routing.ts says why the
 //   completeness check cannot see another writer; the control count would).
+// * On `--feed demo`, anything about the pack: the records are the demo
+//   DataGen's and the Parquet copy went through the demo's own destination
+//   and pipeline, so its evidence carries `feed: 'demo'` and says so.
 
 import { PACK_PARQUET_DATASET_ID } from './pack'
-import { COMPLETENESS_BUCKET_SECONDS, COMPLETENESS_QUERY } from '../queries/routing'
+import {
+  COMPLETENESS_BUCKET_SECONDS,
+  DEMO_JSON_OUTPUT_LABEL,
+  DEMO_PARQUET_OUTPUT_LABEL,
+  PACK_JSON_OUTPUT_LABEL,
+  PACK_PARQUET_OUTPUT_LABEL,
+  completenessQuery,
+} from '../queries/routing'
 import { FIELD_TYPES } from '../data/fieldTypes'
 import { LAKE_DATASET } from './config'
 import {
@@ -123,11 +136,53 @@ import {
 } from './parity'
 import { eligibility } from './routing/eligibility'
 import { COMPLETENESS_BUCKET_COLUMN, COMPLETENESS_SETTLE_SECONDS, bucketRecords, windowCompleteness, type BucketRecord } from './routing/completeness'
-import { ROUTES, evidenceProblems, type RouteEntry, type RouteEvidence } from './routing/table'
+import { ROUTES, evidenceProblems, type ParityFeedId, type RouteEntry, type RouteEvidence } from './routing/table'
 import { COST_MARGIN, DEFAULT_COST_BASIS, MEASURED_RUN } from './parquetAuditReport'
 
 export const PARITY_JSON_DATASET = LAKE_DATASET
 export const PARITY_PARQUET_DATASET = PACK_PARQUET_DATASET_ID
+
+// ── Feeds ───────────────────────────────────────────────────────────────────
+
+export type { ParityFeedId }
+
+export interface ParityFeed {
+  id: ParityFeedId
+  /** What wrote both datasets, in words, for the plan and the report. */
+  what: string
+  /** The cribl_metrics `output` label of the destination writing `gigamon_ami`. */
+  jsonOutput: string
+  /** The cribl_metrics `output` label of the destination writing `gigamon_ami_pq`. */
+  parquetOutput: string
+  /** The completeness check this feed's windows are proven by. */
+  completenessQuery: string
+}
+
+const makeFeed = (id: ParityFeedId, what: string, jsonOutput: string, parquetOutput: string): ParityFeed =>
+  Object.freeze({ id, what, jsonOutput, parquetOutput, completenessQuery: completenessQuery(jsonOutput, parquetOutput) })
+
+/**
+ * Which destinations a run proves each window complete by (`--feed`). `pack`
+ * is the default and what the app's router uses: the onboarding pack's JSON
+ * and Parquet destinations, COMPLETENESS_QUERY exactly. `demo` is the
+ * TEMPORARY global feed on the owner's org (2026-09-27; ../queries/routing.ts
+ * says what it is and what it cannot show): the global DataGen through
+ * `gigamon_lake` and `gigamon_ami_pq_demo_lake`. Both write the same two
+ * datasets, so the texts and the control count are the same on either; only
+ * the completeness check moves. Evidence records its feed.
+ */
+export const PARITY_FEEDS: Readonly<Record<ParityFeedId, ParityFeed>> = Object.freeze({
+  pack: makeFeed('pack', "the onboarding pack's dual-write", PACK_JSON_OUTPUT_LABEL, PACK_PARQUET_OUTPUT_LABEL),
+  demo: makeFeed('demo', 'the temporary global demo feed (DataGen through QuickConnect)', DEMO_JSON_OUTPUT_LABEL, DEMO_PARQUET_OUTPUT_LABEL),
+})
+
+export const DEFAULT_PARITY_FEED: ParityFeedId = 'pack'
+
+/** The feed named by `--feed`; throws, before anything is billed, on any other name. */
+export function parityFeed(id: string = DEFAULT_PARITY_FEED): ParityFeed {
+  if (!Object.hasOwn(PARITY_FEEDS, id)) throw new Error(`parity run: --feed must be one of ${Object.keys(PARITY_FEEDS).join(', ')} (got "${id}")`)
+  return PARITY_FEEDS[id as ParityFeedId]
+}
 
 // ── Windows ─────────────────────────────────────────────────────────────────
 
@@ -631,6 +686,8 @@ export interface TextResult {
 
 export interface RunResult {
   datasets: { json: string; parquet: string }
+  /** The feed whose destinations proved each window complete. */
+  feed: ParityFeed
   windows: WindowResult[]
   entries: { id: string; mode: EntryMode; ineligible: string[]; texts: TextResult[] }[]
   jobs: ParityJobRecord[]
@@ -646,8 +703,13 @@ const CONTROL = (() => {
 /** The control count's text, as written. */
 export const PARITY_CONTROL_QUERY = CONTROL.query
 
-/** Run the plan, one job at a time. Every stop is recorded, never thrown. */
-export async function executeParityRun(windows: readonly RunWindow[], selected: readonly PlannedEntry[], deps: ParityRunDeps): Promise<RunResult> {
+/**
+ * Run the plan, one job at a time. Every stop is recorded, never thrown.
+ * `feed` chooses only which destinations the completeness check compares
+ * (`PARITY_FEEDS`). Required, with no default: a caller that dropped it would
+ * run, and record, the pack's check under a plan that named another feed.
+ */
+export async function executeParityRun(windows: readonly RunWindow[], selected: readonly PlannedEntry[], deps: ParityRunDeps, feed: ParityFeed): Promise<RunResult> {
   const pq = PARITY_PARQUET_DATASET
   const jobs: ParityJobRecord[] = []
   const submit = async (purpose: string, w: RunWindow, query: string) => {
@@ -666,7 +728,7 @@ export async function executeParityRun(windows: readonly RunWindow[], selected: 
       deps.log('  skipped: the run had stopped')
       continue
     }
-    const rows = await submit('completeness', w, COMPLETENESS_QUERY)
+    const rows = await submit('completeness', w, feed.completenessQuery)
     if (!rows) {
       results.push({ window: w, status: 'skipped', why: 'the completeness check gave no answer, so nothing proves the Parquet copy complete', completeness: { complete: false, why: 'no answer', checkedAt: null, buckets: [] }, control: null, drift: null })
       deps.log('  skipped: the completeness check gave no answer')
@@ -714,7 +776,7 @@ export async function executeParityRun(windows: readonly RunWindow[], selected: 
       }
     }
   }
-  return { datasets: { json: PARITY_JSON_DATASET, parquet: pq }, windows: results, entries, jobs }
+  return { datasets: { json: PARITY_JSON_DATASET, parquet: pq }, feed, windows: results, entries, jobs }
 }
 
 // ── Judging an entry, and the evidence it earns ─────────────────────────────
@@ -741,7 +803,7 @@ const WORST: readonly (QueryVerdict | 'skipped')[] = ['fail', 'notrun', 'incompa
  * and failed in none — and only if `evidenceProblems` accepts the object as
  * built, so what is pasted is what the table will accept.
  */
-export function entryOutcome(entry: RunResult['entries'][number], windows: readonly WindowResult[], reportPath: string, date: string): EntryOutcome {
+export function entryOutcome(entry: RunResult['entries'][number], windows: readonly WindowResult[], reportPath: string, date: string, feed: ParityFeedId = DEFAULT_PARITY_FEED): EntryOutcome {
   const perWindow = windows.map((wr) => {
     if (wr.status !== 'compared') return { window: wr.window, verdict: 'skipped' as const }
     const vs = entry.texts.map((t) => t.perWindow.find((c) => c.window.earliest === wr.window.earliest)?.verdict ?? 'notrun')
@@ -749,7 +811,7 @@ export function entryOutcome(entry: RunResult['entries'][number], windows: reado
     return { window: wr.window, verdict: worst }
   })
   const passing = perWindow.filter((p) => p.verdict === 'pass').map((p) => ({ earliest: p.window.earliest, latest: p.window.latest }))
-  const candidate: RouteEvidence = { report: reportPath, windows: passing, date }
+  const candidate: RouteEvidence = { report: reportPath, windows: passing, date, feed }
   const failedIn = perWindow.filter((p) => p.verdict === 'fail').length
   const base = { id: entry.id, mode: entry.mode, perWindow, texts: entry.texts }
   if (failedIn) return { ...base, verdict: 'failed', why: `failed in ${failedIn} window${failedIn === 1 ? '' : 's'}: it stays on JSON`, evidence: null }
@@ -772,6 +834,8 @@ export interface ParityRunReport {
   /** Where this report is kept — the `report` every evidence object names. */
   reportPath: string
   datasets: { json: string; parquet: string }
+  /** Which feed's destinations proved each window complete; every evidence object names it too. */
+  feed: { id: ParityFeedId; what: string; jsonOutput: string; parquetOutput: string }
   capSeconds: number
   settleSeconds: number
   estimate: ParityCostFloor
@@ -798,13 +862,14 @@ export interface ReportMeta {
 
 export function buildParityReport(run: RunResult, meta: ReportMeta): ParityRunReport {
   const date = meta.ranAt.slice(0, 10)
-  const entries = run.entries.map((e) => entryOutcome(e, run.windows, meta.reportPath, date))
+  const entries = run.entries.map((e) => entryOutcome(e, run.windows, meta.reportPath, date, run.feed.id))
   const created = run.jobs.filter((j) => j.jobId !== null)
   const known = created.filter((j) => j.billableCPUSeconds !== null)
   return {
     kind: 'phase-8.0e parity run',
     ...meta,
     datasets: run.datasets,
+    feed: { id: run.feed.id, what: run.feed.what, jsonOutput: run.feed.jsonOutput, parquetOutput: run.feed.parquetOutput },
     settleSeconds: COMPLETENESS_SETTLE_SECONDS,
     windows: run.windows,
     entries,
@@ -831,6 +896,7 @@ export function renderParityMarkdown(r: ParityRunReport): string {
   const out: string[] = []
   out.push('# Parity run (Phase 8.0e)', '')
   out.push(`Taken ${r.ranAt} to ${r.finishedAt}: \`${r.datasets.json}\` against \`${r.datasets.parquet}\`. Running-time cap ${r.capSeconds} s per job. Windows measured back from ${r.referenceAt} (${r.referenceFrom}), each ending at least ${r.settleSeconds} s before its completeness check.`, '')
+  out.push(`Feed: **${r.feed.id}** — ${r.feed.what}. Completeness compared \`${r.feed.jsonOutput}\` (JSON) with \`${r.feed.parquetOutput}\` (Parquet).${r.feed.id === 'demo' ? ' The demo feed is TEMPORARY, and every evidence object below says it was earned on the demo DataGen through its own Parquet destination, not on the pack.' : ''}`, '')
   out.push(`**This report routes nothing.** ${r.note}`, '')
   out.push('## Windows', '')
   out.push('| Window | Status | Why | Control (JSON → Parquet) |', '|---|---|---|---|')
