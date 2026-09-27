@@ -91,10 +91,13 @@ Hostnames are only under `example.com`, `example.net` and `example.org`. MAC add
 the documentation block `00:00:5e:00:53:00/24`, and IPv6 answers only in `2001:db8::/32`.
 
 **From 0.2.3 the samples are shaped like a real Gigamon AMI feed** (added 2026-09-26): the demo
-DataGen of the workspace this app was built in. They carry every field name that feed sends, each at
-about the rate it appears for that application, with values sent as strings the way Gigamon sends
-them (the pipeline casts the numeric ones). They also carry that feed's application labels and
-Gigamon's own value lists: protocol numbers, DNS record types and reply codes, HTTP methods and
+DataGen of the workspace this app was built in. They carry every field name and every application
+label that feed sends, with values sent as strings the way Gigamon sends them (the pipeline casts
+the numeric ones). A **lookalike** event (below) carries each field at about the rate it appears
+for that application in that feed. A scenario event keeps its scenario's own fields, so an
+application the scenarios dominate (http, https, http2, ssh and others) shows its scenario's field
+rates, not the feed's: a scenario event is never given AWS metadata, TCP timings or certificate
+fields its story does not already carry. They also carry Gigamon's own value lists: protocol numbers, DNS record types and reply codes, HTTP methods and
 codes, TLS versions and cipher names, SNMP methods. Sizes and timings fall in that feed's range for
 each application. Nothing in them was captured. The generator reads only statistics of that feed
 (`scripts/demo-profile.json` in the app's repository): field names, how often each appears, size ranges, and the value lists
@@ -104,8 +107,21 @@ Each sample has two parts. **Scenario** events light every dashboard: a slow ser
 that fails, an expiring certificate, a port scan. **Lookalike** events follow the real feed's
 application mix. That feed sends 146 events a second (73 samples at 2 each). This DataGen sends 5,
 and each sample file stays under 235,000 bytes (Cribl's default limit on a sample file is 256 KB).
-So about 360 of the 938 events are lookalike, and the application mix follows the real feed's only in
-part. DNS is 86% of that feed's events and about 40% of these.
+So about 360 of the 932 events are lookalike, and the application mix follows the real feed's only in
+part: DNS is 86% of that feed's events and about 36% of these as replayed, while the applications the
+scenarios use (http, https, http2) are replayed far more often than that feed sends them, and a small
+one of that feed's (cloudflare, say) may appear once.
+
+Two things differ from that feed on purpose or by inheritance:
+
+- **DNS resolvers.** The DNS tab reads `dns_host` as the resolver. Every DNS event, lookalike too,
+  names the resolver it went to by address, so the tab lists the scenarios' four resolvers. The
+  lookalike's DNS fails about as rarely as that feed's, so the DNS error tile shows a warning
+  (about 4% as replayed), with the scenarios' failing resolver still marked SERVFAIL.
+- **Mixed value formats.** A few fields hold two formats in one column: `http_server` is a host on
+  lookalike events (as in that feed) and a server agent on the scenario's web events;
+  `ssl_cipher_suite_id` is a decimal id on scenario events and a `TLS_*` name on lookalike ones;
+  `icmp_type` is a number on scenario events.
 
 Sample events go to their own dataset, `gigamon_ami_sample`, and never to `gigamon_ami` or
 `gigamon_ami_pq`. Each event carries `gigamon_origin=sample`. The DataGen replays five samples at

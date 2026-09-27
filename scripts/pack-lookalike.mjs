@@ -110,10 +110,6 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
     while (s.length < n) s += String(r.int(0, 9))
     return s
   }
-  const DNS_HOSTS = Array.from({ length: 64 }, (_, i) => {
-    const s = rng(`look:dnshost:${i}`)
-    return `${s.hex(s.int(13, 17))}.${s.pick(['cdn-a', 'edge-b', 'svc-c'])}.example.net`
-  })
 
   function weighted(r, m) {
     return r.weighted(Object.entries(m))
@@ -138,7 +134,9 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
       case 'src_port': return String(r.int(1024, 65535))
       case 'dst_port': return String(r.int(10001, 65535))
       case 'app_id': return String(1 + (fnv1a(`app:${ctx.app}`) % 4000))
-      case 'dns_host': return r.pick(DNS_HOSTS)
+      // The DNS tab reads dns_host as the resolver (the scenarios write its
+      // address), so a lookalike DNS flow names the resolver it went to.
+      case 'dns_host': return ctx.dst
       case 'dns_query':
       case 'dns_name': return ctx.dnsName
       case 'dns_host_addr':
@@ -167,7 +165,8 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
       case 'http_referer_path': return '/'
       case 'http_user_agent':
       case 'http2_user_agent': return r.pick(UA)
-      case 'http_server':
+      // http_server is host-shaped in the demo; the agent strings are *_server_agent's.
+      case 'http_server': return ctx.httpHost
       case 'http_server_agent':
       case 'http2_server_agent': return ctx.server
       case 'http_referer': return 'https://www.example.com/'
@@ -180,10 +179,11 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
       case 'http2_date': return httpDate(asOfMs + r.int(-30, 30) * 86_400_000)
       case 'http_header_name':
       case 'http_header_private_name': return r.pick(HEADER_NAMES)
-      case 'http2_header_name': return 'content-type'
-      case 'http_header_value':
-      case 'http2_header_value': return r.pick(['text/html', 'application/json', 'text/plain'])
-      case 'http2_header_raw': return `content-type: ${r.pick(['text/html', 'application/json'])}`
+      // HTTP/2 names its headers with the demo's ':'-prefixed pseudo-headers.
+      case 'http2_header_name': return ctx.h2Header[0]
+      case 'http2_header_value': return ctx.h2Header[1]
+      case 'http2_header_raw': return `${ctx.h2Header[0]}: ${ctx.h2Header[1]}`
+      case 'http_header_value': return r.pick(['text/html', 'application/json', 'text/plain'])
       case 'http_header_private_value': return r.hex(24)
       case 'http_header_statusline': return `GET ${ctx.uri} HTTP/1.1`
       case 'http_request_ts': return ctx.reqTs
@@ -310,6 +310,8 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
     const src = ev.src_ip ?? (r.chance(a.srcPrivate / a.events) ? r.pick(LOOK_CLIENTS) : r.pick(LOOK_EXTERNAL))
     const dst = ev.dst_ip ?? (a.app === 'dns' ? r.pick(LOOK_RESOLVERS) : r.chance(a.dstPrivate / a.events) ? r.pick(LOOK_SERVERS) : r.pick(LOOK_EXTERNAL))
     const reqTs = (100_000 + r.int(0, 86_400) + r.next()).toFixed(6)
+    const uri = ev.http_uri ?? r.pick(URIS)
+    const h2Host = `www.${slug(a.app)}.example.com`
     return {
       app: a.app,
       src,
@@ -317,7 +319,8 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
       tag: { src: r.pick(LOOK_TAGGED), dst: r.pick(LOOK_TAGGED) },
       dnsName: ev.dns_query ?? `${r.hex(r.int(13, 17))}.${r.pick(['cdn-a', 'edge-b', 'svc-c'])}.example.org`,
       httpHost: ev.http_host ?? r.pick(webHosts),
-      uri: ev.http_uri ?? r.pick(URIS),
+      uri,
+      h2Header: r.pick([[':method', 'GET'], [':status', '200'], [':path', uri], [':authority', h2Host], [':scheme', 'https']]),
       server: ev.http_server ?? r.pick(SERVERS),
       sni: ev.ssl_server_name ?? `${slug(a.app) || 'tls'}.example.net`,
       issuer: ev.ssl_issuer ?? r.pick(CA_NAMES),
@@ -485,9 +488,11 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
    * Coverage: the fewest extra events that make every demo field appear.
    * Greedy: the application that carries the most still-missing fields gets
    * one ordinary event of its own with those fields forced on; repeat. A field
-   * is only ever forced onto an application the demo saw carry it.
+   * is only ever forced onto an application the demo saw carry it. Then one
+   * unforced event of each demo application that neither the scenarios
+   * (`alreadyApps`) nor the field pass produced, so every label appears.
    */
-  function coverage(r, already) {
+  function coverage(r, already, alreadyApps = new Set()) {
     const missing = new Set(Object.keys(profile.fields).filter((f) => f !== '_time' && !STAMPED.includes(f) && !already.has(f)))
     const out = []
     while (missing.size) {
@@ -503,6 +508,10 @@ export function lookalikeKit({ profile, rng, fnv1a, keyOrder, webHosts, webCodes
       for (const f of Object.keys(ev)) missing.delete(f)
       out.push(ev)
     }
+    // Then one ordinary event of every demo application no event carries yet,
+    // so the samples carry every application label the demo does.
+    const seen = new Set([...alreadyApps, ...out.map((e) => e.app_name)])
+    for (const a of profile.apps) if (!seen.has(a.app)) out.push(lookalike(r, a))
     return out
   }
 

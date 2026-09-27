@@ -271,6 +271,35 @@ describe('DNS health', () => {
     const failing = [...groupBy(dns, 'dns_host')].some(([, evs]) => evs.filter((e) => String(e.dns_reply_code) === '2').length / evs.length > 0.2)
     expect(failing).toBe(true)
   })
+
+  it('names only the resolvers the scenarios use, by address', () => {
+    // The tab lists dns_host as the resolver. A lookalike DNS flow names the
+    // resolver it went to (dst_ip), never a made-up hostname.
+    const hosts = [...distinct(dns, 'dns_host')].map(String)
+    expect(hosts.every((h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h))).toBe(true)
+    expect(hosts.length).toBeLessThanOrEqual(6)
+    expect(dns.filter((e) => present(e.dns_host)).every((e) => e.dns_host === e.dst_ip)).toBe(true)
+  })
+
+  it('shows the error tile in its warning band as the DataGen replays it', () => {
+    // Weighted by 1/events per file, as five samples at one event a second
+    // replay them. The demo's own DNS fails ~0.1% of the time; the lookalike's
+    // DNS follows it, so the scenario's failing resolver lifts the tile to
+    // warning (1 to 5 %), not danger. A change that moves it is a decision.
+    let total = 0
+    let failed = 0
+    for (const f of files) {
+      const evs = (JSON.parse(raw[f]) as Ev[]).filter((e) => e.app_name === 'dns')
+      const n = (JSON.parse(raw[f]) as Ev[]).length
+      for (const e of evs) {
+        total += 1 / n
+        if (['2', '3'].includes(String(e.dns_reply_code))) failed += 1 / n
+      }
+    }
+    const rate = (failed / total) * 100
+    expect(rate).toBeGreaterThan(1)
+    expect(rate).toBeLessThanOrEqual(5)
+  })
 })
 
 describe('Shadow AI', () => {
@@ -459,6 +488,17 @@ describe('the demo lookalike', () => {
   it('every field the demo carries appears in the samples', () => {
     const seen = new Set(rawEvents.flatMap((e) => Object.keys(e)))
     expect(demoFields.filter((f) => !seen.has(f))).toEqual([])
+  })
+
+  it('every application label the demo carries appears in the samples', () => {
+    const seen = new Set(rawEvents.map((e) => String(e.app_name)))
+    expect(PROFILE.apps.map((a) => a.app).filter((a) => !seen.has(a))).toEqual([])
+  })
+
+  it('names HTTP/2 headers as the demo does, with pseudo-headers', () => {
+    const names = rawEvents.filter((e) => present(e.http2_header_name)).map((e) => String(e.http2_header_name))
+    expect(names.length).toBeGreaterThan(0)
+    expect(names.filter((n) => !n.startsWith(':'))).toEqual([])
   })
 
   it('every field the demo sends as a string arrives as a string', () => {

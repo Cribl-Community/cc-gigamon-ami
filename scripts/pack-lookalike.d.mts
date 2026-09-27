@@ -31,7 +31,7 @@ export function lookalikeKit(opts: {
 }): {
   apps: { app: string; share: number; profile: AppProfile }[]
   lookalike(r: Rng, a: AppProfile, opts?: { force?: string[] }): Event
-  coverage(r: Rng, already: Set<string>): Event[]
+  coverage(r: Rng, already: Set<string>, alreadyApps?: Set<string>): Event[]
   dress(r: Rng, ev: Event): Event
   stamp(r: Rng, ev: Event, fileIndex: number, p: number): Event
   finishTypes(ev: Event): Event

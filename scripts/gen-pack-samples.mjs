@@ -827,14 +827,15 @@ export function generate() {
     return d
   })
 
-  // 2. Lookalike events: one per demo application first, so every field name
-  //    the demo carries appears, then events at the demo's application mix.
+  // 2. Lookalike events: coverage first, so every field name and every
+  //    application label the demo carries appears, then events at the demo's
+  //    application mix.
   const lookR = rng('look:events')
   const mixR = rng('look:mix')
-  const coverage = kit.coverage(lookR, new Set(dressed.flat().flatMap((e) => Object.keys(e))))
+  const coverage = kit.coverage(lookR, new Set(dressed.flat().flatMap((e) => Object.keys(e))), new Set(dressed.flat().map((e) => e.app_name)))
   const nextMixed = () => kit.lookalike(lookR, mixR.weighted(kit.apps.map((a) => [a.profile, a.profile.events])))
 
-  // 3. Coverage round-robin into the files, then mixed events round-robin into
+  // 3. Coverage into the files, then mixed events round-robin into
   //    every file that still has room, until none has.
   const look = SAMPLES.map(() => [])
   const size = SAMPLES.map(([id], i) => buildFile(kit, i, id, dressed[i], []).bytes.length)
@@ -851,9 +852,11 @@ export function generate() {
     size[i] = bytes
     return true
   }
-  coverage.forEach((e, n) => {
-    const i = n % SAMPLES.length
-    if (!fits(i, e)) throw new Error(`gen-pack-samples: coverage event for "${e.app_name}" does not fit ${SAMPLES[i][0]}`)
+  // Each coverage event goes to the file with the most room left that takes it.
+  coverage.forEach((e) => {
+    const order = SAMPLES.map((_, i) => i).sort((x, y) => size[x] - size[y] || x - y)
+    const i = order.find((k) => fits(k, e))
+    if (i === undefined) throw new Error(`gen-pack-samples: coverage event for "${e.app_name}" fits no sample file`)
     look[i].push(e)
   })
   const open = new Set(SAMPLES.map((_, i) => i))
