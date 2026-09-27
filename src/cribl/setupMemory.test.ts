@@ -159,17 +159,17 @@ describe('worker-group preference', () => {
   })
 })
 
-describe('commit memory, written by two panels', () => {
-  it('a change reads the stored document again and keeps the other panel’s key', async () => {
-    // The Raw HTTP panel loaded {pipeline} on mount; the onboarding panel then
-    // recorded the pack's commit. The Raw HTTP panel's next change must not
-    // write back the document it loaded and drop `onboarding_pack`.
+describe('commit memory, read-merge-write', () => {
+  it('a change reads the stored document again and keeps every other key', async () => {
+    // A tenant's document may still hold keys the removed global-stack panel
+    // wrote ({pipeline}). Recording the pack's commit, and any change after it,
+    // must read the stored document again and keep what it did not set.
     const { store } = stubStore({ 'guided_setup_memory/commits': envelope(MEM) })
     const { updateCommitMemory } = await loadSetupMemory()
     await updateCommitMemory({ group: 'default', set: { onboarding_pack: { hash: 'pack111', message: 'onboard' } } })
-    const { memory, saved } = await updateCommitMemory({ group: 'default', drop: ['pipeline'], set: { source: { hash: 'src222', message: 'x' } } })
+    const { memory, saved } = await updateCommitMemory({ group: 'default', set: { source: { hash: 'src222', message: 'x' } } })
     expect(saved).toBe(true)
-    expect(memory).toEqual({ default: { onboarding_pack: { hash: 'pack111', message: 'onboard' }, source: { hash: 'src222', message: 'x' } } })
+    expect(memory).toEqual({ default: { ...MEM.default, onboarding_pack: { hash: 'pack111', message: 'onboard' }, source: { hash: 'src222', message: 'x' } } })
     expect(docIn(store.get('guided_setup_memory/commits')!)).toEqual(memory)
   })
 

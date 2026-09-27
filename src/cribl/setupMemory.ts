@@ -78,11 +78,10 @@ export async function saveCommitMemory(mem: CommitMemory): Promise<boolean> {
   return putDoc(COMMITS_KEY, mem)
 }
 
-/** One change to one group's commit notes: the keys to set, and the keys to drop. */
+/** One change to one group's commit notes: the keys to set. */
 export interface CommitMemoryChange {
   group: string
-  set?: Readonly<Record<string, CommitInfo>>
-  drop?: readonly string[]
+  set: Readonly<Record<string, CommitInfo>>
 }
 
 /** The chain every `updateCommitMemory` call waits its turn on. */
@@ -95,7 +94,8 @@ let commitQueue: Promise<unknown> = Promise.resolve()
  * ONE WRITER TODAY: the onboarding panel, which records the pack's commit under
  * `onboarding_pack` (packClient.ts `PACK_COMMIT_KEY`). *(Corrected 2026-09-26,
  * `chore/remove-global-stacks`: the global stacks' Remove-only ProvisionPanel
- * was a second writer, dropping the keys of what it removed, and went with the
+ * was a second writer, dropping the keys of what it removed (the `drop` field
+ * of a change, gone with it), and went with the
  * owner's decision that the app no longer shows or removes those stacks. A
  * tenant's document may still hold that panel's old keys; nothing reads them
  * but the stranded-commit repair, which only compares hashes.)* The
@@ -109,8 +109,7 @@ export function updateCommitMemory(change: CommitMemoryChange): Promise<{ memory
   const turn = commitQueue.then(async () => {
     const mem = await loadCommitMemory()
     const forGroup = { ...(mem[change.group] ?? {}) }
-    for (const [k, v] of Object.entries(change.set ?? {})) forGroup[k] = v
-    for (const k of change.drop ?? []) delete forGroup[k]
+    for (const [k, v] of Object.entries(change.set)) forGroup[k] = v
     const memory: CommitMemory = { ...mem, [change.group]: forGroup }
     const saved = await saveCommitMemory(memory)
     return { memory, saved }

@@ -195,11 +195,14 @@ Key constants in `config.ts`: `SEARCH_GROUP = 'default_search'` (search **always
   `gigamon_ami_normalize`.)* **The global Syslog and Raw HTTP stacks earlier releases of Guided Setup
   created are no longer on the list** (owner decision 2026-09-26, `chore/remove-global-stacks`): new
   installs never have them and the app no longer shows or removes them, so a tenant still running one
-  keeps it, orphaned, and these counters no longer add it up. The `retired` status they carried is
-  gone with them. Removing them took `in_gigamon_syslog` and `in_gigamon_http` out of `src_events`,
-  `gigamon_syslog` and `gigamon_http_normalize` out of `pipe_events`, and — since `gigamon_lake` is now
-  written by one path only — `from_input` out of its `dst_*` terms, so **`METRICS_QUERY` moved and
-  `gno_pipeline_c1h` reads as drifted until Re-apply**. `LAKE_TOTAL_QUERY` did not move (it counts
+  keeps it, orphaned: Sources and Processing no longer count it, but it writes through the demo's
+  `gigamon_lake`, which Destinations (`dst_events`, `dst_bytes`) and the Lake card count by `output`
+  alone — as they always did — so its writes are still counted there, and those two can run ahead of
+  Sources and Processing (owner decision: orphaning is accepted). The `retired` status they carried is
+  gone with them. Removing them took `in_gigamon_syslog` and `in_gigamon_http` out of `src_events` and
+  `gigamon_syslog` and `gigamon_http_normalize` out of `pipe_events`, so **`METRICS_QUERY` moved and
+  `gno_pipeline_c1h` reads as drifted until Re-apply**; `SHARED_OUTPUTS` going empty changed no query
+  text. `LAKE_TOTAL_QUERY` did not move (it counts
   `gigamon_lake` by `output` alone), so `gno_lake_30d_c1d` does not drift from this change. *(Corrected
   2026-09-26, `chore/remove-global-stacks`: the list held both global stacks as `retired`, counted and
   named in the ⓘ prose and stage headings.)* A 0.1.0 or 0.2.0 source can receive events its routes never match, so

@@ -128,9 +128,15 @@ export const STACKS: readonly Stack[] = [
   // created (`global-legacy-syslog`, `global-http`, both `retired`) left this
   // list on 2026-09-26 (owner decision, `chore/remove-global-stacks`): new
   // installs never have them, and the app no longer shows or removes them. A
-  // tenant that still runs one keeps it, orphaned, and these counters no
-  // longer add it up. The change moved METRICS_QUERY and LAKE_TOTAL_QUERY, so
-  // gno_pipeline_c1h and gno_lake_30d_c1d read as drifted until Re-apply.
+  // tenant that still runs one keeps it, orphaned. Sources and Processing no
+  // longer count it (its input left src_events, its pipeline pipe_events), but
+  // it writes through the demo's `gigamon_lake`, and Destinations (dst_events,
+  // dst_bytes) and the Lake card count that destination by `output` alone —
+  // as they always did — so its writes are still counted there, and those two
+  // can run ahead of Sources and Processing. The change moved METRICS_QUERY
+  // only (src_events and pipe_events), so gno_pipeline_c1h reads as drifted
+  // until Re-apply; LAKE_TOTAL_QUERY did not move, and gno_lake_30d_c1d does
+  // not drift.
   {
     // The published 0.1.0 release, from ../cribl/pack's PACK_0_1_0 — literals
     // read from that tag, never the 0.2.x constants, several of which kept
