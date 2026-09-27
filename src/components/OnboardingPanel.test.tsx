@@ -1,6 +1,9 @@
-// The onboarding panel in a build whose pinned pack is released — THIS build:
-// pack.ts pins 0.2.2, released and flipped (`feat/pack-flip-022`), so the
-// release constants are the real ones and nothing here swaps them. *(Corrected
+// The onboarding panel in a build whose pinned pack is released. This build
+// pins 0.2.3 before its release (pack.ts), so the release constants are moved
+// forward below, as the flip after the tag will move them. *(Corrected
+// 2026-09-26, `feat/pack-023-demo-lookalike`: from `feat/pack-flip-022` until
+// then this file swapped nothing, because the build shipped with 0.2.2
+// released.)* *(Corrected
 // 2026-09-25, `chore/release-fetch-and-doc-drift`: this said the build pinned
 // 0.2.2 before its release and moved the constants forward with a mock, which
 // the flip removed. Before that, `feat/pack-022-parquet-pipeline` had mocked a
@@ -52,6 +55,20 @@ vi.mock('./Toast', () => ({
   clearToastError: () => {},
   ToastProvider: () => null,
 }))
+vi.mock('../cribl/pack', async (orig) => {
+  // PACK_VERSION's release recorded, as the flip after its tag records it:
+  // published, a digest, and appended to the versions already published. This
+  // build pins 0.2.3 before its release (pack.ts), so without this every block
+  // below would describe the refusal, which OnboardingPanel.unpublished.test.tsx
+  // already pins. The flip removes this mock and repins block 10's premise to
+  // the real digest, as `feat/pack-flip-022` did for 0.2.2.
+  const real = await orig<typeof import('../cribl/pack')>()
+  return {
+    ...real,
+    PACK_PUBLISHED: true, PACK_SHA256: 'ab'.repeat(32),
+    PACK_PUBLISHED_VERSIONS: Object.freeze([...real.PACK_PUBLISHED_VERSIONS, real.PACK_VERSION]),
+  }
+})
 
 const GROUPS = ['default', 'lab']
 const HASH = 'dddd000011112222dddd000011112222dddd0000'
@@ -348,11 +365,11 @@ async function removeThroughTheDialog() {
 
 // ── 10 ──────────────────────────────────────────────────────────────────────
 
-describe('10. this build, as it ships: 0.2.2, released and recorded', () => {
-  it('pins the premise: the pinned release is installable, with its real digest', () => {
+describe('10. this build once its pin is released: 0.2.3, recorded by the mock above', () => {
+  it('pins the premise: the pinned release is installable (its digest mocked until the flip records the real one)', () => {
     expect(thisPackRelease()).toMatchObject({
-      version: '0.2.2', published: true, installable: true, refusal: null, url: PACK_URL,
-      sha256: 'e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0',
+      version: '0.2.3', published: true, installable: true, refusal: null, url: PACK_URL,
+      sha256: 'ab'.repeat(32),
     })
   })
 

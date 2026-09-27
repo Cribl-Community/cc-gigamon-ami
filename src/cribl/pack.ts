@@ -152,7 +152,18 @@ export const PACK_ID = 'cc-network-gigamon-ami'
 /**
  * The pack version this app build installs.
  *
- * RELEASED: 0.2.2 (the Parquet route's own pipeline, which removes `_raw`) was
+ * NOT RELEASED YET: 0.2.3 is 0.2.2 with the demo lookalike samples (owner
+ * decision 2026-09-26: the sample DataGen produces the shape of the
+ * workspace's worker-group demo DataGen, synthesized; see
+ * scripts/pack-lookalike.mjs) and nothing else changed: the same objects, ids,
+ * routes and pipelines. `PACK_PUBLISHED` is false and `PACK_SHA256` null until
+ * `gigamon-pack-v0.2.3` is released and a flip commit records it, as for 0.2.1
+ * and 0.2.2; until then Onboard and Upgrade refuse with the release's own
+ * sentence, and `PACK_PUBLISHED_VERSIONS` stays as it is. *(0.2.2 until
+ * 2026-09-26, `feat/pack-023-demo-lookalike`: released as
+ * `gigamon-pack-v0.2.2` on 2026-09-25, tag at 2207a65.)*
+ *
+ * WAS: 0.2.2 (the Parquet route's own pipeline, which removes `_raw`) was
  * published as `gigamon-pack-v0.2.2` on 2026-09-25, and the flip set
  * `PACK_PUBLISHED` and `PACK_SHA256` below and appended 0.2.2 to
  * `PACK_PUBLISHED_VERSIONS`. An installed 0.2.1 (or 0.2.0, or 0.1.0) is owned:
@@ -166,12 +177,12 @@ export const PACK_ID = 'cc-network-gigamon-ami'
  * 1,372 sample rows in 2.5 minutes. Before that 0.2.0, which delivers
  * nothing.)*
  */
-export const PACK_VERSION = '0.2.2'
+export const PACK_VERSION = '0.2.3'
 
 /**
- * Whether `PACK_VERSION`'s release exists on GitHub. TRUE: `gigamon-pack-v0.2.2`
- * was published on 2026-09-25 (tag at 2207a65, not marked Latest). It was
- * false for about an hour between this build pinning 0.2.2 and that release.
+ * Whether `PACK_VERSION`'s release exists on GitHub. FALSE: this build pins
+ * 0.2.3, which has no release yet (2026-09-26). It was true for 0.2.2
+ * (`gigamon-pack-v0.2.2`, published 2026-09-25, tag at 2207a65, not Latest).
  * It moves only in the same change that sets `PACK_SHA256` and appends the
  * version to `PACK_PUBLISHED_VERSIONS`;
  * pack.test.ts fails if one moves without the others, and fails while
@@ -179,7 +190,7 @@ export const PACK_VERSION = '0.2.2'
  * scripts/check-pack-release.mjs (CI) skips and says why; once true it
  * downloads `PACK_URL` and fails when its sha256 is not `PACK_SHA256`.
  */
-export const PACK_PUBLISHED: boolean = true
+export const PACK_PUBLISHED: boolean = false
 
 /**
  * The sha256 of `PACK_VERSION`'s released `.crbl`, as pack-release.yml's
@@ -189,11 +200,11 @@ export const PACK_PUBLISHED: boolean = true
  * `PACK_URL` itself and `POST /packs` takes no digest, so nothing in this app
  * sees the asset to hash it. CI does, instead: scripts/check-pack-release.mjs
  * downloads `PACK_URL` on every push and fails when the bytes hash to anything
- * else. Null only while no release exists (`PACK_PUBLISHED` false). This is
- * 0.2.2's digest: the release asset downloaded after publishing, the local
- * deterministic build, and the release workflow all agree (2026-09-25).
+ * else. Null only while no release exists (`PACK_PUBLISHED` false) — today,
+ * for 0.2.3. 0.2.2's digest, recorded in `PACK_PUBLISHED_VERSIONS` below, was
+ * e1b389da…f424e0.
  */
-export const PACK_SHA256: string | null = 'e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0'
+export const PACK_SHA256: string | null = null
 
 /**
  * Where a pack keeps its routes, relative to the pack root. Measured on a
@@ -326,7 +337,7 @@ export const PACK_PUBLISHED_VERSIONS: readonly string[] = Object.freeze([
   '0.2.1',
   // gigamon-pack-v0.2.2, tag commit 2207a65, asset sha256
   // e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0 (the
-  // current `PACK_SHA256`). Released 2026-09-25: the Parquet route's own
+  // `PACK_SHA256` until this build pinned 0.2.3). Released 2026-09-25: the Parquet route's own
   // pipeline removes _raw from gigamon_ami_pq; the JSON copy keeps it.
   '0.2.2',
 ])

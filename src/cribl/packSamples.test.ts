@@ -46,6 +46,8 @@ import { AI_APPS } from '../data/aiApps'
 import { SAAS_APPS } from '../data/saasApps'
 import { PQC_GROUP_CODES, classifyGroup, sensitivityOf, type Sensitivity } from '../data/pqc'
 import { METRICS } from '../queries/tcpHealth'
+import { lookalikeKit, STAMPED, type DemoProfile } from '../../scripts/pack-lookalike.mjs'
+import { fnv1a, seededRng } from '../../scripts/pack-rng.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const GENERATOR = join(ROOT, 'scripts', 'gen-pack-samples.mjs')
@@ -118,10 +120,14 @@ describe('the generator reproduces the committed samples', () => {
     expect(out).toMatch(/match/)
   }, 60_000)
 
-  it('stays within the size budget and loops within five minutes per file', () => {
-    const total = files.reduce((s, f) => s + Buffer.byteLength(raw[f]), 0)
-    expect(total).toBeLessThanOrEqual(400 * 1024)
-    for (const f of files) expect((JSON.parse(raw[f]) as Ev[]).length).toBeLessThanOrEqual(300)
+  it('keeps each file under the per-file cap (and Cribl’s 256 KB default) and loops within five minutes', () => {
+    // The generator's own cap, read from the script so there is one copy of it.
+    const cap = Number(/export const MAX_FILE_BYTES = ([\d_]+)/.exec(readFileSync(GENERATOR, 'utf8'))![1].replace(/_/g, ''))
+    expect(cap).toBeLessThan(256 * 1024)
+    for (const f of files) {
+      expect(Buffer.byteLength(raw[f])).toBeLessThanOrEqual(cap)
+      expect((JSON.parse(raw[f]) as Ev[]).length).toBeLessThanOrEqual(300)
+    }
   })
 
   it('every event is tagged as sample data and carries no _time', () => {
@@ -375,14 +381,39 @@ describe('public-repo hygiene', () => {
   const text = files.map((f) => raw[f]).join('\n')
   // Reverse-lookup names are addresses written backwards; check the address.
   const reverse = [...text.matchAll(/((?:\d{1,3}\.){3}\d{1,3})\.in-addr\.arpa/gi)]
-  const scrubbed = text.replace(/(?:\d{1,3}\.){3}\d{1,3}\.in-addr\.arpa/gi, ' ')
+  // Two dotted shapes that are not addresses or hosts, let through only in
+  // their own fields and only in their own shape: an OID (2.5.29.15) and an
+  // AWS instance type (t3.medium). Each is checked, then taken out of the text.
+  const OID = /^[0-2](\.\d+)+$/
+  const INSTANCE_TYPE = /^[a-z][a-z0-9-]*\.(nano|micro|small|medium|large|\d*xlarge|metal)$/
+  const scrubbed = text
+    .replace(/(?:\d{1,3}\.){3}\d{1,3}\.in-addr\.arpa/gi, ' ')
+    .replace(/"(\w+_oid)":"([^"]*)"/g, (m, _k, v: string) => (OID.test(v) ? ' ' : m))
+    .replace(/"(\w+_aws_instance_type)":"([^"]*)"/g, (m, _k, v: string) => (INSTANCE_TYPE.test(v) ? ' ' : m))
+  /** A netmask (ones then zeros, 255.255.255.0) identifies no host. */
+  const isNetmask = (ip: string) => {
+    if (!ip.startsWith('255.') || ip.split('.').some((o) => Number(o) > 255)) return false
+    const n = ip.split('.').reduce((a, o) => a * 256 + Number(o), 0)
+    const inv = (2 ** 32 - 1 - n) >>> 0
+    return (inv & (inv + 1)) === 0
+  }
 
   it('every IPv4 address is in 10.20.0.0/16 or a documentation range', () => {
     const ips = [...scrubbed.matchAll(/(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])/g)].map((m) => m[1])
     expect(ips.length).toBeGreaterThan(100)
-    expect([...new Set(ips.filter((ip) => !ipOk(ip)))]).toEqual([])
+    expect([...new Set(ips.filter((ip) => !ipOk(ip) && !isNetmask(ip)))]).toEqual([])
     const reversed = reverse.map((m) => m[1].split('.').reverse().join('.'))
     expect(reversed.filter((ip) => !ipOk(ip))).toEqual([])
+  })
+
+  it('an OID or instance type let through is only ever in its own field', () => {
+    for (const e of rawEvents) {
+      for (const [k, v] of Object.entries(e)) {
+        if (typeof v !== 'string') continue
+        if (OID.test(v) && v.split('.').length === 4) expect(k, `${k}=${v}`).toMatch(/_oid$/)
+        if (INSTANCE_TYPE.test(v)) expect(k, `${k}=${v}`).toMatch(/_aws_instance_type$/)
+      }
+    }
   })
 
   it('every hostname is under example.com, example.net or example.org', () => {
@@ -400,9 +431,124 @@ describe('public-repo hygiene', () => {
     }
   })
 
-  it('carries no IPv6 address and no MAC address', () => {
+  it('every flow is IPv4; a MAC is only in the documentation block, an IPv6 answer only in 2001:db8::/32', () => {
     expect(events.every((e) => e.ip_version === 4)).toBe(true)
-    expect(text).not.toMatch(/\b[0-9a-f]{2}(:[0-9a-f]{2}){5}\b/i)
-    expect(text).not.toMatch(/[0-9a-f]{1,4}::|::[0-9a-f]{1,4}/i)
+    // RFC 7042's documentation MACs, 00:00:5e:00:53:00/24.
+    const macs = [...text.matchAll(/\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b/gi)].map((m) => m[0])
+    expect(macs.length).toBeGreaterThan(100)
+    expect([...new Set(macs.filter((m) => !/^00:00:5e:00:53:[0-9a-f]{2}$/i.test(m)))]).toEqual([])
+    // Any colon-hex run of eight groups, or one with a `::`, standing alone.
+    const v6 = [...text.matchAll(/(?<![\w:])((?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|[0-9a-f:]*::[0-9a-f:]*)(?![\w:])/gi)].map((m) => m[1]).filter((m) => m.length > 2)
+    expect(v6.length).toBeGreaterThan(0)
+    expect([...new Set(v6.filter((a) => !/^2001:0?db8:/i.test(a)))]).toEqual([])
+  })
+})
+
+// ── 4. The demo lookalike ───────────────────────────────────────────────────
+//
+// Owner decision 2026-09-26: the samples are the SHAPE of the workspace's
+// worker-group demo DataGen, synthesized. scripts/demo-profile.json is the
+// statistics of it (scripts/derive-demo-profile.mjs, run by hand from files
+// that never enter the repository). These hold the samples to the profile,
+// and the profile to the same hygiene as the samples.
+
+describe('the demo lookalike', () => {
+  const PROFILE = JSON.parse(readFileSync(join(ROOT, 'scripts', 'demo-profile.json'), 'utf8')) as DemoProfile
+  const demoFields = Object.keys(PROFILE.fields).filter((f) => f !== '_time')
+
+  it('every field the demo carries appears in the samples', () => {
+    const seen = new Set(rawEvents.flatMap((e) => Object.keys(e)))
+    expect(demoFields.filter((f) => !seen.has(f))).toEqual([])
+  })
+
+  it('every field the demo sends as a string arrives as a string', () => {
+    const strings = new Set(demoFields.filter((f) => PROFILE.fields[f].type === 'string'))
+    const wrong = new Set<string>()
+    for (const e of rawEvents) for (const [k, v] of Object.entries(e)) if (strings.has(k) && typeof v !== 'string') wrong.add(k)
+    expect([...wrong]).toEqual([])
+  })
+
+  it('a field appears only on an application the demo saw carry it, or on a scenario event', () => {
+    // Scenario-only apps (postgresql, redis, ...) are not in the demo; only the
+    // demo apps are held. A scenario's own vocabulary is its own decision.
+    const byApp = new Map(PROFILE.apps.map((a) => [a.app, a]))
+    const KEY_ORDER = new Set(readFileSync(GENERATOR, 'utf8').match(/const KEY_ORDER = \[([\s\S]*?)\]/)![1].match(/'([a-z0-9_]+)'/g)!.map((s) => s.slice(1, -1)))
+    const STAMPED = ['id', 'seq_num', 'start_time', 'end_time', 'ts', 'generator', 'event_type', 'vendor', 'version', 'end_reason', 'src_mac', 'dst_mac', 'app_id', 'gigamon_origin', 'app_name']
+    const stray: string[] = []
+    for (const e of rawEvents) {
+      const a = byApp.get(String(e.app_name))
+      if (!a) continue
+      for (const k of Object.keys(e)) {
+        if (KEY_ORDER.has(k) || STAMPED.includes(k)) continue
+        if (!(a.present[k] > 0)) stray.push(`${a.app}.${k}`)
+      }
+    }
+    expect([...new Set(stray)]).toEqual([])
+  })
+
+  describe('a lookalike event, drawn many times', () => {
+    // The mechanism, not the committed files: which of a file's events are
+    // lookalike is not recorded in them. 4,000 draws of the demo's largest
+    // application, through the generator's own kit and PRNG.
+    const kit = lookalikeKit({
+      profile: PROFILE, rng: seededRng(1), fnv1a, keyOrder: [],
+      webHosts: ['www.example.com'], webCodes: ['200', '404'], asOfMs: Date.parse('2026-10-01T00:00:00Z'),
+    })
+    const a = PROFILE.apps[0]
+    const r = seededRng(2)('test')
+    const drawn = Array.from({ length: 4000 }, () => kit.lookalike(r, a))
+
+    it('carries each field at the demo’s rate for that application, within 3 points', () => {
+      const off: string[] = []
+      for (const [f, n] of Object.entries(a.present)) {
+        if (STAMPED.includes(f) || ['src_ip', 'dst_ip', 'protocol', 'ip_version'].includes(f)) continue
+        const got = drawn.filter((e) => f in e).length / drawn.length
+        if (Math.abs(got - n / a.events) > 0.03) off.push(`${f}: ${got.toFixed(3)} vs ${(n / a.events).toFixed(3)}`)
+      }
+      expect(off).toEqual([])
+    })
+
+    it('copies an enumeration only as a value the demo sent for that application', () => {
+      const bad: string[] = []
+      for (const e of drawn) {
+        for (const [f, dist] of Object.entries(a.categorical)) {
+          if (f in e && f !== 'dst_port' && !(String(e[f]) in dist)) bad.push(`${f}=${String(e[f])}`)
+        }
+      }
+      expect([...new Set(bad)]).toEqual([])
+    })
+
+    it('writes every demo field as the demo does: a string', () => {
+      for (const e of drawn.slice(0, 200)) {
+        const typed = kit.finishTypes(e)
+        for (const [k, v] of Object.entries(typed)) if (k in PROFILE.fields) expect(typeof v, k).toBe('string')
+      }
+    })
+  })
+
+  it('the DataGen replays the demo’s largest application most, and every sample loops the lookalike in', () => {
+    const mix = new Map<string, number>()
+    for (const f of files) {
+      const evs = JSON.parse(raw[f]) as Ev[]
+      for (const e of evs) mix.set(String(e.app_name), (mix.get(String(e.app_name)) ?? 0) + 1 / evs.length / files.length)
+    }
+    const top = [...mix.entries()].sort((x, y) => y[1] - x[1])[0]
+    expect(top[0]).toBe(PROFILE.apps[0].app)
+    expect(top[1]).toBeGreaterThan(0.3)
+  })
+
+  it('the profile states the demo’s own rate, 146 events a second (73 samples at 2 each)', () => {
+    expect(PROFILE.totals.eventsPerSec).toBe(146)
+  })
+
+  it('the profile itself holds no address, MAC, email or hostname', () => {
+    const txt = readFileSync(join(ROOT, 'scripts', 'demo-profile.json'), 'utf8')
+      .replace(/"(\w+_oid)": ?\{[^}]*\}/g, ' ')
+    expect(txt).not.toMatch(/(?<![\d.])\d{1,3}(\.\d{1,3}){3}(?![\d.])/)
+    expect(txt).not.toMatch(/\b[0-9a-f]{2}(:[0-9a-f]{2}){5}\b/i)
+    expect(txt).not.toMatch(/[\w.-]+@[\w-]+\./)
+    const hosts = [...txt.matchAll(/(?<![\w.-])((?:[a-z0-9_-]+\.)+[a-z][a-z0-9-]*)(?![\w-])/gi)].map((m) => m[1])
+      .filter((h) => !/\.(mjs|json)$/.test(h))
+    expect([...new Set(hosts)]).toEqual([])
   })
 })

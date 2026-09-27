@@ -257,6 +257,16 @@ function parseYaml(dir, rel, errors) {
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 // ── Public-repo hygiene for the samples ─────────────────────────────────────
+//
+// IPv4 only in 10.20.0.0/16 and the three documentation ranges; hostnames only
+// under example.com/.net/.org; MACs only in RFC 7042's documentation block
+// 00:00:5e:00:53:00/24; IPv6 only in 2001:db8::/32 (RFC 3849). Three shapes
+// are let through by what they are, and only where they are: a netmask
+// (255.255.255.0), an OID in a `*_oid` field, and an AWS instance type in a
+// `*_aws_instance_type` field. *(Changed 2026-09-26, `feat/pack-023-demo-lookalike`:
+// the samples became the shape of the workspace demo DataGen, which carries
+// MACs, IPv6 answers, OIDs, netmasks and instance types; before it every MAC
+// and every IPv6 address was refused outright.)*
 
 const ALLOWED_NETS = [
   ['10.20.0.0', 16], // internal hosts: private address space
@@ -290,17 +300,44 @@ const IPV4 = /(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])/g
 /** Labels may carry `_` (service names such as `_ldap._tcp`); the last label starts with a letter. */
 const HOSTNAME = /(?<![\w.-])((?:[a-z0-9_-]+\.)+[a-z][a-z0-9-]*)(?![\w-])/gi
 
-/** Every IPv4 address and hostname in any string (or key) of an event, checked. */
+/**
+ * A netmask (ones, then zeros: 255.255.255.0) is dotted like an address and
+ * identifies no host. The demo lookalike's DHCP record carries one.
+ */
+function isNetmask(ip) {
+  const n = ipToInt(ip)
+  if (ip.split('.').some((o) => Number(o) > 255) || !ip.startsWith('255.')) return false
+  const inv = (2 ** 32 - 1 - n) >>> 0
+  return (inv & (inv + 1)) === 0
+}
+/** An object identifier in a field named `*_oid` (2.5.29.15 is dotted like an address). */
+const OID = /^[0-2](\.\d+)+$/
+/** An AWS instance type in a `*_aws_instance_type` field (t3.medium is dotted like a host). */
+const INSTANCE_TYPE = /^[a-z][a-z0-9-]*\.(nano|micro|small|medium|large|\d*xlarge|metal)$/
+/** RFC 7042's documentation block: the only MACs a sample may carry. */
+const MAC = /\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b/gi
+const DOC_MAC = /^00:00:5e:00:53:[0-9a-f]{2}$/i
+/**
+ * An IPv6 address: eight groups, or fewer around a `::`, standing alone (not
+ * inside an ARN's `iam::<account>` or a longer colon-separated run).
+ */
+const IPV6 = /(?<![\w:])((?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?)(?![\w:])/gi
+/** 2001:db8::/32, the IPv6 documentation prefix (RFC 3849), written in full or short. */
+const DOC_IPV6 = /^2001:0?db8(:|$)/i
+
+/** Every address, MAC and hostname in any string (or key) of an event, checked. */
 export function hygieneProblems(value, where) {
   const problems = []
-  const visit = (v) => {
+  const visit = (v, key = '') => {
     if (typeof v === 'string') {
+      if (key.endsWith('_oid') && OID.test(v)) return
+      if (key.endsWith('_aws_instance_type') && INSTANCE_TYPE.test(v)) return
       const arpaFree = v.replace(/(?:\d{1,3}\.){3}\d{1,3}\.in-addr\.arpa/gi, (m) => {
         if (!hostAllowed(m)) problems.push(`${where}: reverse name outside the allowed ranges: ${m}`)
         return ' '
       })
       for (const m of arpaFree.matchAll(IPV4)) {
-        if (!ipAllowed(m[1])) problems.push(`${where}: IPv4 address outside 10.20.0.0/16 and the documentation ranges: ${m[1]}`)
+        if (!ipAllowed(m[1]) && !isNetmask(m[1])) problems.push(`${where}: IPv4 address outside 10.20.0.0/16 and the documentation ranges: ${m[1]}`)
       }
       for (const m of arpaFree.matchAll(HOSTNAME)) {
         const host = m[1]
@@ -308,13 +345,18 @@ export function hygieneProblems(value, where) {
         if (FILE_EXTENSIONS.has(tld) && !host.includes('.example.')) continue
         if (!hostAllowed(host)) problems.push(`${where}: hostname outside example.com/.net/.org: ${host}`)
       }
-      if (/[0-9a-f]{0,4}:[0-9a-f]{0,4}:[0-9a-f:]*::|::[0-9a-f]{1,4}/i.test(v)) problems.push(`${where}: IPv6 address; samples are IPv4 only: ${v}`)
+      for (const m of v.matchAll(MAC)) {
+        if (!DOC_MAC.test(m[0])) problems.push(`${where}: MAC address outside the documentation block 00:00:5e:00:53:00/24: ${m[0]}`)
+      }
+      for (const m of v.matchAll(IPV6)) {
+        if (m[1].length > 2 && !DOC_IPV6.test(m[1])) problems.push(`${where}: IPv6 address outside 2001:db8::/32: ${m[1]}`)
+      }
     } else if (Array.isArray(v)) {
-      v.forEach(visit)
+      v.forEach((x) => visit(x))
     } else if (isPlainObject(v)) {
       for (const [k, x] of Object.entries(v)) {
         visit(k)
-        visit(x)
+        visit(x, k)
       }
     }
   }

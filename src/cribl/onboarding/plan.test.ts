@@ -67,14 +67,14 @@ describe('the sample feed, as the pack ships it', () => {
     expect(SAMPLE_FEED).toEqual(shipped)
   })
 
-  it('writes 432,000 events a day, about 280 MB of sample text before compression', () => {
+  it('writes 432,000 events a day, about 560 MB of sample text before compression', () => {
     const v = sampleVolume()
     expect(v.eventsPerSec).toBe(5)
     expect(v.eventsPerDay).toBe(432_000)
     const perSec = SAMPLE_FEED.reduce((n, e) => n + e.eventsPerSec * (e.size / e.numEvents), 0)
     expect(v.bytesPerDay).toBe(Math.round(perSec * 86_400))
-    expect(v.bytesPerDay).toBeGreaterThan(270e6)
-    expect(v.bytesPerDay).toBeLessThan(290e6)
+    expect(v.bytesPerDay).toBeGreaterThan(540e6)
+    expect(v.bytesPerDay).toBeLessThan(580e6)
     expect(sampleVolumeWords(v)).toBe(
       `Sample data: about 432,000 events a day (5 a second), about ${Math.round(v.bytesPerDay / 1e6)} MB a day before compression, into ${PACK_SAMPLE_DATASET_ID}.`,
     )

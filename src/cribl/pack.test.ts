@@ -616,9 +616,9 @@ describe('Data Flow\'s stack list names each pack release\'s own ids', () => {
   })
 
   it('pack-0.2 is this build\'s pack ids, by their in-pack metric labels, and released since 0.2.0 was', () => {
-    // 0.2.0 and 0.2.1 (published) and 0.2.2 (this build) ship the same
+    // 0.2.0, 0.2.1 and 0.2.2 (published) and 0.2.3 (this build) ship the same
     // sources, routes and destinations under the same ids, so one stack names
-    // all three; the Parquet path names 0.2.2's pipeline for the reader only.
+    // all four; the Parquet path names 0.2.2's pipeline for the reader only.
     expect(PACK_PUBLISHED_VERSIONS).toContain('0.2.0')
     expect(stack('pack-0.2')?.status).toBe('released')
     expect(stack('pack-0.2')?.paths).toEqual([
@@ -837,17 +837,21 @@ describe('the pack release workflow cannot publish, hijack or break the app rele
 // until its grants are declared). packClient.ts's `installRefusal` is this
 // function bound to the constants it imports, so the two cannot disagree.
 describe('packRelease — the pinned release, and why it cannot be installed', () => {
-  it('installs 0.2.2 in this build: released, with its digest recorded', () => {
-    // gigamon-pack-v0.2.2 was published on 2026-09-25 (tag at 2207a65); its
-    // asset, the local build and the release workflow agree on this digest.
-    // (It was refused here for about an hour between the pin and the release.)
+  it('refuses 0.2.3 in this build: built, not released, so no digest is recorded', () => {
+    // 0.2.3 (0.2.2 with the demo-lookalike samples) has no gigamon-pack-v0.2.3
+    // release yet. The flip after the tag sets PACK_PUBLISHED and PACK_SHA256
+    // and appends 0.2.3 to PACK_PUBLISHED_VERSIONS, as 0.2.2's did; until then
+    // Onboard and Upgrade are refused with this sentence, and CI's
+    // scripts/check-pack-release.mjs skips. (0.2.2, published 2026-09-25 with
+    // sha256 e1b389da…f424e0, was installable here until this build.)
     const r = packRelease()
     expect(r).toMatchObject({ version: PACK_VERSION, url: PACK_URL, published: PACK_PUBLISHED, sha256: PACK_SHA256 })
-    expect(PACK_VERSION).toBe('0.2.2')
-    expect(PACK_PUBLISHED).toBe(true)
-    expect(PACK_SHA256).toBe('e1b389da11bb8fa3836791dc8b35721f549c1c389de109223ac9279895f424e0')
-    expect(r.refusal).toBeNull()
-    expect(r.installable).toBe(true)
+    expect(PACK_VERSION).toBe('0.2.3')
+    expect(PACK_PUBLISHED).toBe(false)
+    expect(PACK_SHA256).toBeNull()
+    expect(PACK_PUBLISHED_VERSIONS).toEqual(['0.1.0', '0.2.0', '0.2.1', '0.2.2'])
+    expect(r.refusal).toBe('pack 0.2.3 has not been released, so there is nothing to install yet')
+    expect(r.installable).toBe(false)
   })
 
   it('refuses a version that has not been released, with the sentence a customer reads', () => {

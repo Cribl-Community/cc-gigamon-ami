@@ -87,7 +87,25 @@ Both settings below were placeholders until owner-approved measurements settled 
 The samples are **synthetic**. `scripts/gen-pack-samples.mjs` in the app's repository generates
 them from a fixed seed. Internal hosts are in `10.20.0.0/16` (private address space). External peers
 are only in the documentation ranges `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24`.
-Hostnames are only under `example.com`, `example.net` and `example.org`.
+Hostnames are only under `example.com`, `example.net` and `example.org`. MAC addresses are only in
+the documentation block `00:00:5e:00:53:00/24`, and IPv6 answers only in `2001:db8::/32`.
+
+**From 0.2.3 the samples are shaped like a real Gigamon AMI feed** (added 2026-09-26): the demo
+DataGen of the workspace this app was built in. They carry every field name that feed sends, each at
+about the rate it appears for that application, with values sent as strings the way Gigamon sends
+them (the pipeline casts the numeric ones). They also carry that feed's application labels and
+Gigamon's own value lists: protocol numbers, DNS record types and reply codes, HTTP methods and
+codes, TLS versions and cipher names, SNMP methods. Sizes and timings fall in that feed's range for
+each application. Nothing in them was captured. The generator reads only statistics of that feed
+(`scripts/demo-profile.json` in the app's repository): field names, how often each appears, size ranges, and the value lists
+above. Every address, name, MAC, identifier, user agent, URI and piece of free text is made up.
+
+Each sample has two parts. **Scenario** events light every dashboard: a slow service, a resolver
+that fails, an expiring certificate, a port scan. **Lookalike** events follow the real feed's
+application mix. That feed sends 146 events a second (73 samples at 2 each). This DataGen sends 5,
+and each sample file stays under 235,000 bytes (Cribl's default limit on a sample file is 256 KB).
+So about 360 of the 938 events are lookalike, and the application mix follows the real feed's only in
+part. DNS is 86% of that feed's events and about 40% of these.
 
 Sample events go to their own dataset, `gigamon_ami_sample`, and never to `gigamon_ami` or
 `gigamon_ami_pq`. Each event carries `gigamon_origin=sample`. The DataGen replays five samples at
@@ -143,3 +161,7 @@ its sources. Version 0.2.1 fixes the filters and changes nothing else; upgrade f
   destinations are as they were in 0.2.1. Rows already in `gigamon_ami_pq` keep their `_raw`, since
   Lake rewrites nothing. An upgrade from 0.2.1 keeps the pack's `local/` settings; see "Not verified
   yet" for what that means if you changed the pack's routes.
+- **0.2.3** replaces the sample files with ones shaped like a real Gigamon AMI feed (see "Sample
+  data"). Nothing else changed: the sources, breaker, pipelines, routes and destinations are as they
+  were in 0.2.2, and the DataGen still sends 5 events a second, now about 560 MB of sample text a day
+  before compression (0.2.2's were about 280 MB).

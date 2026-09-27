@@ -6,33 +6,33 @@ gigamon_ami_services:
   isTemplate: false
   tsTemplateField: ""
   created: 1790812800000
-  size: 85476
-  numEvents: 126
+  size: 234981
+  numEvents: 208
 gigamon_ami_web_api:
   sampleName: gigamon_ami_web_api.json
   isTemplate: false
   tsTemplateField: ""
   created: 1790812800000
-  size: 96321
-  numEvents: 120
+  size: 234353
+  numEvents: 145
 gigamon_ami_dns:
   sampleName: gigamon_ami_dns.json
   isTemplate: false
   tsTemplateField: ""
   created: 1790812800000
-  size: 53294
-  numEvents: 97
+  size: 234530
+  numEvents: 201
 gigamon_ami_tls_apps:
   sampleName: gigamon_ami_tls_apps.json
   isTemplate: false
   tsTemplateField: ""
   created: 1790812800000
-  size: 112043
-  numEvents: 142
+  size: 234831
+  numEvents: 158
 gigamon_ami_security:
   sampleName: gigamon_ami_security.json
   isTemplate: false
   tsTemplateField: ""
   created: 1790812800000
-  size: 36224
-  numEvents: 88
+  size: 234705
+  numEvents: 226
