@@ -173,6 +173,14 @@ describe('the Data Flow counters count every stack, and each event once', () => 
     // STACKS: it is temporary, and nothing here should count it. Modelled
     // beside the demo's own path, from the same source, every figure must be
     // the demo's alone — the Parquet copy doubles nothing.
+    //
+    // WHAT THIS PINS: that the path is ABSENT from STACKS, and that queries
+    // built without it ignore its rows. It does not exercise COUNTED_PATHS'
+    // dataset filter on a global Parquet path — the queries are built once
+    // from STACKS at module load, so a variant with this path listed cannot be
+    // built here. Listing the path in STACKS (to name it on screen) fails the
+    // first assertion on purpose: that change must also show the filter keeps
+    // the figures, which this test does not.
     const demo = COUNTED_PATHS.find((p) => p.input === 'datagen:in_gigamon_datagen')!
     const pqDemo: StackPath = {
       route: null,

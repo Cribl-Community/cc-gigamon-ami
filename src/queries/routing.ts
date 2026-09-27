@@ -79,8 +79,12 @@ export const COMPLETENESS_QUERY = completenessQuery(PACK_JSON_OUTPUT_LABEL, PACK
 // stack shares (the demo, and the Syslog and Raw HTTP stacks earlier releases
 // created). Where anything else also writes through it — on another tenant, or
 // on this one later — `json_events` counts more than the demo's Parquet copy
-// was sent, the two columns disagree, and every window is refused: the safe
-// way round. And, as for the pack pair, whether `total.out_events` counts an
+// was sent. A bucket where that moves `json_events` by more than
+// COMPLETENESS_TOLERANCE (0.1 %, ../cribl/routing/completeness.ts) is a gap and
+// its window is refused: the safe way round. A smaller writer — a few events a
+// bucket against the demo's thousands — is NOT refused here; only the parity
+// run's control count, within its own tolerance, stands between those
+// JSON-only records and the comparison. And, as for the pack pair, whether `total.out_events` counts an
 // event the Parquet destination dropped is unmeasured.
 
 /** The demo feed's JSON destination (global), as cribl_metrics labels it. */

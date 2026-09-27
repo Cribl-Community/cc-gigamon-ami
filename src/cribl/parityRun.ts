@@ -706,9 +706,10 @@ export const PARITY_CONTROL_QUERY = CONTROL.query
 /**
  * Run the plan, one job at a time. Every stop is recorded, never thrown.
  * `feed` chooses only which destinations the completeness check compares
- * (`PARITY_FEEDS`); the pack's unless named.
+ * (`PARITY_FEEDS`). Required, with no default: a caller that dropped it would
+ * run, and record, the pack's check under a plan that named another feed.
  */
-export async function executeParityRun(windows: readonly RunWindow[], selected: readonly PlannedEntry[], deps: ParityRunDeps, feed: ParityFeed = PARITY_FEEDS[DEFAULT_PARITY_FEED]): Promise<RunResult> {
+export async function executeParityRun(windows: readonly RunWindow[], selected: readonly PlannedEntry[], deps: ParityRunDeps, feed: ParityFeed): Promise<RunResult> {
   const pq = PARITY_PARQUET_DATASET
   const jobs: ParityJobRecord[] = []
   const submit = async (purpose: string, w: RunWindow, query: string) => {

@@ -97,6 +97,15 @@ export interface RouteEvidence {
    * it. A `demo` run proves the two copies agree on the demo DataGen's
    * records, written through the demo's own Parquet destination and pipeline,
    * not through the pack's.
+   *
+   * RECORDED, NOT GATED: `tableProblems` and the router accept `demo` evidence
+   * exactly as they accept `pack` evidence; this field only says where it came
+   * from. The demo's Parquet pipeline lives on the owner's org alone, so
+   * nothing in this repo holds it to PARQUET_PIPELINE_SPEC (../packSpecs.ts),
+   * the pack's — the only Parquet writer on a customer's tenant. A person who
+   * pastes `demo` evidence onto a `parquet` entry is relying on the two
+   * pipelines agreeing, unchecked; re-running on `--feed pack` once the pack's
+   * source sends is what proves it on the pipeline customers run.
    */
   feed?: ParityFeedId
 }

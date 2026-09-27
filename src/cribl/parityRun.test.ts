@@ -72,6 +72,16 @@ describe('parityRunWindows', () => {
   it('the runner hands it the real clock', () => {
     expect(readFileSync(join(ROOT, 'scripts/parity-run.mjs'), 'utf8')).toMatch(/parityRunWindows\(nowSec, \{[^}]*clockSec: Math\.floor\(startedMs \/ 1000\)/)
   })
+
+  it('the runner hands the feed --feed chose to the run, which has no default of its own', () => {
+    // Dropped, `--feed demo` would print the demo plan and then run, and
+    // record, the pack's completeness check. `feed` is also a required
+    // parameter of executeParityRun, so a TypeScript caller cannot omit it.
+    const runner = readFileSync(join(ROOT, 'scripts/parity-run.mjs'), 'utf8')
+    expect(runner).toMatch(/const feed = P\.parityFeed\(args\.feed\)/)
+    expect(runner).toMatch(/P\.executeParityRun\(windows, plan\.selected, \{[\s\S]*?\n\}, feed\)/)
+    expect(readFileSync(join(ROOT, 'src/cribl/parityRun.ts'), 'utf8')).toMatch(/deps: ParityRunDeps, feed: ParityFeed\): Promise<RunResult>/)
+  })
 })
 
 describe('querySpec', () => {

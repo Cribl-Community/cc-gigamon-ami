@@ -96,6 +96,15 @@ describe('one bucket', () => {
   it('proves nothing when JSON wrote nothing', () => {
     expect(bucketVerdict(0, 0)).toBe('empty')
   })
+  it('on the demo feed, passes another gigamon_lake writer under the tolerance and refuses one over it', () => {
+    // gigamon_lake is shared by every global stack, so a leftover writer adds to
+    // json_events only. The check sees it only past COMPLETENESS_TOLERANCE: a
+    // trickle under 0.1 % of the demo's volume reads complete and is left to
+    // the control count (src/queries/routing.ts says so).
+    const demo = 17_000
+    expect(bucketVerdict(demo + 8, demo)).toBe('complete')
+    expect(bucketVerdict(demo + 18, demo)).toBe('gap')
+  })
 })
 
 describe('a window', () => {
