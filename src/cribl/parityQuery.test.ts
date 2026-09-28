@@ -15,13 +15,16 @@ import { buildTrendQuery } from '../queries/tcpHealth'
 import { SLOW } from '../queries/webApiHealth'
 import { PARITY_CHECKS, classify, classifyQuery, compareGrouped, summarizeColumns, type ClassHit, type GroupedSpec, type Row } from './parity'
 import { eligibility } from './routing/eligibility'
+import { ROUTES } from './routing/table'
+import { FIELD_TYPES } from '../data/fieldTypes'
 
 const has = (hits: ClassHit[], cls: string, field: string) => hits.some((h) => h.cls === cls && h.field === field)
 
 describe('classifyQuery — a whole dashboard query', () => {
-  it('finds F on a grouped key and D on its presence head (Capacity talkers)', () => {
+  it('finds F on a grouped key and A on its presence head (Capacity talkers)', () => {
     const { hits, fields } = classifyQuery(buildTalkersQuery('src_ip', ''))
-    expect(has(hits, 'D', 'src_ip')).toBe(true)
+    expect(has(hits, 'A', 'src_ip')).toBe(true)
+    expect(hits.some((h) => h.cls === 'D'), 'a presence term is A since 2026-09-27, not D').toBe(false)
     expect(has(hits, 'F', 'src_ip')).toBe(true)
     expect(fields.sort()).toEqual(['src_ip', 'total_bytes'])
   })
@@ -39,10 +42,10 @@ describe('classifyQuery — a whole dashboard query', () => {
     expect(hits.some((h) => h.cls === 'F' && h.field === 'flows'), 'a column the query made is not a raw field').toBe(false)
   })
 
-  it('finds E beside D and F in a grouped query (DNS per resolver)', () => {
+  it('finds E beside A and F in a grouped query (DNS per resolver)', () => {
     const { hits } = classifyQuery(PER_RESOLVER)
     expect(has(hits, 'E', 'dns_response_time')).toBe(true)
-    expect(has(hits, 'D', 'dns_host')).toBe(true)
+    expect(has(hits, 'A', 'dns_host')).toBe(true)
     expect(has(hits, 'F', 'dns_host')).toBe(true)
   })
 
@@ -80,9 +83,107 @@ describe('classifyQuery — a whole dashboard query', () => {
 
   it('reads every field of a two-field presence head (Web SLOW)', () => {
     const { hits } = classifyQuery(SLOW)
-    expect(has(hits, 'D', 'http_server_ms')).toBe(true)
-    expect(has(hits, 'D', 'http_host')).toBe(true)
+    expect(has(hits, 'A', 'http_server_ms')).toBe(true)
+    expect(has(hits, 'A', 'http_host')).toBe(true)
     expect(has(hits, 'E', 'http_server_ms')).toBe(true)
+  })
+})
+
+// The first real parity run (2026-09-27, parity.ts THE FIRST PARITY RUN): every
+// text that failed opens with a presence term `f=*`, which on Parquet matched
+// every row; neither text that passed has one. The term is class A.
+describe('classifyQuery — a presence term in the search head', () => {
+  const Q = (head: string, tail = '| summarize n=count()') => `dataset="gigamon_ami" ${head} ${tail}`
+
+  it.each([
+    ['web.trend', 'http_code'],
+    ['web.codes', 'http_code'],
+    ['web.hosts', 'http_host'],
+    ['web.h2', 'http2_host'],
+    ['pqc.groups', 'ssl_ext_ec_supported_groups_type'],
+    ['flowMap.serviceEdges', 'src_aws_flat_tags_name'],
+  ])('reads %s as class A on %s, and the table refuses it whatever the types', (id, field) => {
+    for (const q of ROUTES.find((e) => e.id === id)!.queries) {
+      expect(has(classifyQuery(q).hits, 'A', field), q).toBe(true)
+      const e = eligibility(q, FIELD_TYPES, { [field]: { present: 1, total: 1 } })
+      expect(e.eligible, q).toBe(false)
+      expect(e.refusals.some((r) => r.kind === 'class' && r.words.startsWith(`class A on ${field}`)), q).toBe(true)
+    }
+  })
+
+  it('reads both terms of flowMap.edges, on both of its texts', () => {
+    const [pairs, sources] = ROUTES.find((e) => e.id === 'flowMap.edges')!.queries
+    expect(has(classifyQuery(pairs).hits, 'A', 'src_aws_flat_tags_name')).toBe(true)
+    expect(has(classifyQuery(pairs).hits, 'A', 'dst_aws_flat_tags_name')).toBe(true)
+    expect(has(classifyQuery(sources).hits, 'A', 'src_aws_flat_tags_name')).toBe(true)
+  })
+
+  it('finds no presence term in either text that passed (dns.overall, tls.pqcByServer)', () => {
+    for (const id of ['dns.overall', 'tls.pqcByServer']) {
+      for (const q of ROUTES.find((e) => e.id === id)!.queries) expect(classifyQuery(q).hits.filter((h) => h.cls === 'A'), q).toEqual([])
+    }
+  })
+
+  it('reads the absence test f!=* as class A too: on Parquet it matches no row', () => {
+    expect(classifyQuery(Q('http_code!=*')).hits).toEqual([{ cls: 'A', field: 'http_code' }])
+    expect(classifyQuery(Q('app_name="dns" http_host != *')).hits).toEqual([{ cls: 'A', field: 'http_host' }])
+  })
+
+  it('reads a term inside parentheses or beside another term', () => {
+    expect(classifyQuery(Q('(http_code=* or http2_code=*)')).hits).toEqual([
+      { cls: 'A', field: 'http_code' },
+      { cls: 'A', field: 'http2_code' },
+    ])
+  })
+
+  it.each([
+    ['a double-quoted star', 'http_host="*"'],
+    ['a single-quoted star', "http_host='*'"],
+    ['a quoted run of stars, negated', 'http_host != "**"'],
+  ])('reads %s as the same presence term as a bare one', (_, head) => {
+    expect(classifyQuery(Q(head)).hits).toEqual([{ cls: 'A', field: 'http_host' }])
+    expect(classifyQuery(Q(head)).fields).toEqual(['http_host'])
+  })
+
+  it.each([
+    ['a quoted wildcard value', 'http_host="*.example.com"'],
+    // Each of these would be a term if the quotes were not blanked first: the
+    // spelled term is followed by a space or a parenthesis, which the term's
+    // own lookahead accepts.
+    ['a quoted value that spells a term', 'app_name="x http_code=* y"'],
+    ['a quoted value that spells a term in parentheses', 'app_name="(http_code=*)"'],
+    ['a single-quoted value that spells a term', "app_name='x http_code=* y'"],
+    ['a quoted star inside another quoted value', `app_name='x http_code="*" y'`],
+    ['the dataset selector, quoted', 'dataset="*"'],
+    ['a wildcard value', 'http_host=*.example.com'],
+    ['a comparison', 'http_code==*'],
+    ['the dataset selector, anywhere', 'dataset=*'],
+  ])('does not read %s as a presence term', (_, head) => {
+    expect(classifyQuery(Q(head)).hits.filter((h) => h.cls === 'A'), head).toEqual([])
+  })
+
+  it('reads a key after the first pipe as a key, not a term', () => {
+    expect(classifyQuery('dataset="gigamon_ami" | summarize n=count() by http_code').hits).toEqual([{ cls: 'F', field: 'http_code' }])
+  })
+
+  it('reads a presence term in a | search stage as class A, as in the head', () => {
+    expect(classifyQuery('dataset="gigamon_ami" | search http_code=* | summarize n=count()').hits).toEqual([{ cls: 'A', field: 'http_code' }])
+    expect(
+      classifyQuery('dataset="gigamon_ami" app_name="http" | search http_host!="*" | summarize total=count() by bin(_time,1m)').hits,
+    ).toEqual([{ cls: 'A', field: 'http_host' }])
+    // …and a quoted value there is still a value.
+    expect(classifyQuery('dataset="gigamon_ami" | search app_name="x http_code=* y" | summarize n=count()').hits).toEqual([])
+  })
+
+  it('refuses a | search presence term in the table check, whatever the types', () => {
+    const q = 'dataset="gigamon_ami" | search http_code=* | summarize total=count() by bin(_time,1m)'
+    const e = eligibility(q, FIELD_TYPES, { http_code: { present: 1, total: 1 } })
+    expect(e.eligible).toBe(false)
+    expect(e.refusals.some((r) => r.kind === 'class' && r.words.startsWith('class A on http_code'))).toBe(true)
+  })
+
+  it('still reads the field behind a term, so the type table sees it', () => {
+    expect(classifyQuery(Q('http2_host!=*')).fields).toEqual(['http2_host'])
   })
 })
 

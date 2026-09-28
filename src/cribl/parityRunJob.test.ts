@@ -31,10 +31,12 @@ import {
 import { ROUTES, tableProblems, type RouteEntry } from './routing/table'
 
 const NOW = Date.UTC(2026, 9, 1, 12, 7, 31) / 1000
-const TYPES: Record<string, FieldType> = { http_code: 'number' }
-const CODES = ROUTES.find((e) => e.id === 'web.codes')!.queries[0]
-/** What the runner submits for CODES: its `limit 12` raised, so a tie at rank 12 can be seen. */
-const CODES_SUBMITTED = comparisonText(CODES)
+// Capacity's application mix: a top N with no presence term, so eligible once its two fields are
+// typed. (web.codes served here until 2026-09-27, when its `http_code=*` head became class A.)
+const TYPES: Record<string, FieldType> = { total_bytes: 'number', app_name: 'string' }
+const TOP = ROUTES.find((e) => e.id === 'capacity.appmix')!.queries[0]
+/** What the runner submits for TOP: its `limit 8` raised, so a tie at rank 8 can be seen. */
+const TOP_SUBMITTED = comparisonText(TOP)
 
 interface Scenario {
   /** Parquet's completeness count for a bucket, given the JSON one; default: equal. */
@@ -84,7 +86,7 @@ function fakeCribl(s: Scenario = {}) {
     } else if (q.endsWith(PARITY_CONTROL_QUERY.slice('dataset="gigamon_ami" '.length))) {
       rows = [{ c: s.control?.(parquet, job.earliest) ?? 50_000 }]
     } else {
-      rows = s.rows?.(q, parquet) ?? [{ http_code: 200, n: 900 }, { http_code: 404, n: 40 }]
+      rows = s.rows?.(q, parquet) ?? [{ app_name: 'https', bytes: 900 }, { app_name: 'dns', bytes: 40 }]
     }
     const header = { totalEventCount: s.total?.(q) ?? rows.length, job: { id: m[1] } }
     return reply(200, [header, ...rows].map((r) => JSON.stringify(r)).join('\n'))
@@ -92,7 +94,7 @@ function fakeCribl(s: Scenario = {}) {
   return { fetch, posts }
 }
 
-function run(s: Scenario, windows: RunWindow[], plan = planEntries({ only: ['web.codes'], types: TYPES }), feed: ParityFeed = PARITY_FEEDS.pack) {
+function run(s: Scenario, windows: RunWindow[], plan = planEntries({ only: ['capacity.appmix'], types: TYPES }), feed: ParityFeed = PARITY_FEEDS.pack) {
   const cribl = fakeCribl(s)
   const sleep = async () => {}
   const api = makeApi({ base: 'http://fake/capi', fetch: cribl.fetch, sleep })
@@ -146,10 +148,10 @@ describe('a parity run against a fake transport', () => {
     expect(texts.filter((t) => t.startsWith('dataset="cribl_metrics"'))).toEqual(windows.map(() => PARITY_FEEDS.demo.completenessQuery))
     expect(report.windows.map((w) => w.status)).toEqual(['compared', 'compared', 'compared'])
     expect(report.feed).toEqual({ id: 'demo', what: PARITY_FEEDS.demo.what, jsonOutput: DEMO_JSON_OUTPUT_LABEL, parquetOutput: DEMO_PARQUET_OUTPUT_LABEL })
-    const ev = report.evidence['web.codes']
+    const ev = report.evidence['capacity.appmix']
     expect(ev).toEqual({ report: `.dev/parity-run/${stem}.json`, date: '2026-10-01', feed: 'demo', windows: windows.map((w) => ({ earliest: w.earliest, latest: w.latest })) })
-    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'web.codes')!, target: 'parquet', evidence: ev }
-    expect(tableProblems(ROUTES.map((e) => (e.id === 'web.codes' ? pasted : e)), TYPES)).toEqual([])
+    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'capacity.appmix')!, target: 'parquet', evidence: ev }
+    expect(tableProblems(ROUTES.map((e) => (e.id === 'capacity.appmix' ? pasted : e)), TYPES)).toEqual([])
     const md = readFileSync(join(dir!, `${stem}.md`), 'utf8')
     expect(md).toContain('Feed: **demo**')
     expect(md).toContain('TEMPORARY')
@@ -179,10 +181,10 @@ describe('a parity run against a fake transport', () => {
     const { plan, result } = run({}, windows)
     const { stem, report } = write(await result, plan, windows)
     expect(report.windows.map((w) => w.status)).toEqual(['compared', 'compared', 'compared'])
-    const ev = report.evidence['web.codes']
+    const ev = report.evidence['capacity.appmix']
     expect(ev).toEqual({ report: `.dev/parity-run/${stem}.json`, date: '2026-10-01', feed: 'pack', windows: windows.map((w) => ({ earliest: w.earliest, latest: w.latest })) })
-    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'web.codes')!, target: 'parquet', evidence: ev }
-    expect(tableProblems(ROUTES.map((e) => (e.id === 'web.codes' ? pasted : e)), TYPES)).toEqual([])
+    const pasted: RouteEntry = { ...ROUTES.find((e) => e.id === 'capacity.appmix')!, target: 'parquet', evidence: ev }
+    expect(tableProblems(ROUTES.map((e) => (e.id === 'capacity.appmix' ? pasted : e)), TYPES)).toEqual([])
     expect(report.billed).toEqual({ known: 1.5 * report.jobs.length, knownJobs: report.jobs.length, unknownJobs: 0, complete: true })
   })
 
@@ -190,11 +192,11 @@ describe('a parity run against a fake transport', () => {
     const windows = parityRunWindows(NOW)
     const { cribl, result } = run({}, windows)
     const r = await result
-    expect(CODES_SUBMITTED).toBe(CODES.replace(/limit 12$/, 'limit 62'))
-    expect(r.entries[0].texts[0]).toMatchObject({ query: CODES, submitted: CODES_SUBMITTED })
+    expect(TOP_SUBMITTED).toBe(TOP.replace(/limit 8$/, 'limit 58'))
+    expect(r.entries[0].texts[0]).toMatchObject({ query: TOP, submitted: TOP_SUBMITTED })
     const texts = cribl.posts.map((p) => p.query.replace(/^set max_running_time_per_search=300; /, ''))
-    expect(texts.filter((t) => t === CODES_SUBMITTED)).toHaveLength(3)
-    expect(texts.filter((t) => t === CODES_SUBMITTED.replace('dataset="gigamon_ami" ', 'dataset="gigamon_ami_pq" '))).toHaveLength(3)
+    expect(texts.filter((t) => t === TOP_SUBMITTED)).toHaveLength(3)
+    expect(texts.filter((t) => t === TOP_SUBMITTED.replace('dataset="gigamon_ami" ', 'dataset="gigamon_ami_pq" '))).toHaveLength(3)
     // The control count: once as written, once on the Parquet dataset, per window.
     expect(texts.filter((t) => t === PARITY_CONTROL_QUERY)).toHaveLength(3)
     expect(texts.filter((t) => t === PARITY_CONTROL_QUERY.replace('dataset="gigamon_ami" ', 'dataset="gigamon_ami_pq" '))).toHaveLength(3)
@@ -221,7 +223,7 @@ describe('a parity run against a fake transport', () => {
     // outside 1 % of 40 with no drift, and inside the one record a drifting
     // control allows: it passes only if the drift reached the comparison.
     const control = (pq: boolean) => (pq ? 50_200 : 50_000)
-    const rows = (_q: string, pq: boolean) => [{ http_code: 200, n: 900 }, { http_code: 404, n: pq ? 41 : 40 }]
+    const rows = (_q: string, pq: boolean) => [{ app_name: 'https', bytes: 900 }, { app_name: 'dns', bytes: pq ? 41 : 40 }]
     const drifting = run({ control, rows }, windows)
     const a = write(await drifting.result, drifting.plan, windows)
     expect(a.report.windows.every((w) => w.status === 'compared' && w.drift !== null && Math.abs(w.drift - 0.004) < 1e-9)).toBe(true)
@@ -259,7 +261,7 @@ describe('a parity run against a fake transport', () => {
     expect(report.windows[1].why).toMatch(/not proven complete: the Parquet copy is missing records .*400 of 1000/)
     expect(cribl.posts.filter((p) => p.earliest === gap.earliest)).toHaveLength(1)
     // Three other windows at different hours still pass, so the evidence stands on those.
-    expect(report.evidence['web.codes'].windows.map((w) => w.earliest)).toEqual([windows[0], windows[2], windows[3]].map((w) => w.earliest))
+    expect(report.evidence['capacity.appmix'].windows.map((w) => w.earliest)).toEqual([windows[0], windows[2], windows[3]].map((w) => w.earliest))
   })
 
   it('records no evidence when too few windows are proven complete', async () => {
@@ -272,12 +274,12 @@ describe('a parity run against a fake transport', () => {
 
   it('fails an entry whose Parquet rows differ, and never records a measurement as evidence', async () => {
     const windows = parityRunWindows(NOW)
-    const differ = run({ rows: (_q, pq) => (pq ? [{ http_code: 200, n: 900 }, { http_code: '', n: 500 }] : [{ http_code: 200, n: 900 }, { http_code: 404, n: 40 }]) }, windows)
+    const differ = run({ rows: (_q, pq) => (pq ? [{ app_name: 'https', bytes: 900 }, { app_name: '', bytes: 500 }] : [{ app_name: 'https', bytes: 900 }, { app_name: 'dns', bytes: 40 }]) }, windows)
     const a = write(await differ.result, differ.plan, windows)
     expect(a.report.entries[0]).toMatchObject({ verdict: 'failed', evidence: null })
 
     // On an empty type table, forced, the same passing rows are a measurement, never evidence.
-    const forced = run({}, windows, planEntries({ only: ['web.codes'], forceIneligible: true, types: {} }))
+    const forced = run({}, windows, planEntries({ only: ['capacity.appmix'], forceIneligible: true, types: {} }))
     const b = write(await forced.result, forced.plan, windows)
     expect(b.report.entries[0]).toMatchObject({ mode: 'measurement', verdict: 'measured-only', evidence: null })
     expect(b.report.entries[0].perWindow.map((p) => p.verdict)).toEqual(['pass', 'pass', 'pass'])
@@ -309,7 +311,7 @@ describe('a parity run against a fake transport', () => {
 
   it('does not compare a read cut short of the job\'s totalEventCount', async () => {
     const windows = parityRunWindows(NOW)
-    const { plan, result } = run({ total: (q) => (q === CODES_SUBMITTED ? 5000 : undefined) }, windows)
+    const { plan, result } = run({ total: (q) => (q === TOP_SUBMITTED ? 5000 : undefined) }, windows)
     const { report } = write(await result, plan, windows)
     const cmp = report.entries[0].texts[0].perWindow
     expect(cmp.map((c) => c.verdict)).toEqual(['notrun', 'notrun', 'notrun'])
