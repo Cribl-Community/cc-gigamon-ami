@@ -90,12 +90,15 @@ export type AccelTabKey =
   | 'tcp-health'
   | 'dns-health'
   | 'web-api'
+  | 'tls-posture'
+  | 'pqc'
   | 'ai-saas'
   | 'data-flow'
   | 'fields'
 
-/** In the tab bar's order. Tabs no schedule serves (TLS, PQC, Reference, Setup)
- *  are not here: a switch for a tab nothing accelerates would switch nothing. */
+/** In the tab bar's order. Tabs no schedule serves (Reference, Setup) are not
+ *  here: a switch for a tab nothing accelerates would switch nothing. TLS
+ *  Posture and PQC Readiness joined on 2026-09-27 (`feat/accel-tls-pqc`). */
 export const ACCEL_TABS: readonly AccelTab[] = Object.freeze([
   { key: 'findings', route: '/findings', label: 'Findings', prefix: 'findings-' },
   { key: 'security', route: '/security', label: 'Security', prefix: 'security-' },
@@ -104,6 +107,8 @@ export const ACCEL_TABS: readonly AccelTab[] = Object.freeze([
   { key: 'tcp-health', route: '/tcp-health', label: 'TCP Health', prefix: 'tcp-' },
   { key: 'dns-health', route: '/dns-health', label: 'DNS Health', prefix: 'dns-' },
   { key: 'web-api', route: '/web-api', label: 'Web & API', prefix: 'web-' },
+  { key: 'tls-posture', route: '/tls-posture', label: 'TLS Posture', prefix: 'tls-' },
+  { key: 'pqc', route: '/pqc', label: 'PQC Readiness', prefix: 'pqc-' },
   { key: 'ai-saas', route: '/ai-saas', label: 'Shadow AI', prefix: 'shadow-ai-' },
   { key: 'data-flow', route: '/data-flow', label: 'Data Flow', prefix: 'data-flow-' },
   { key: 'fields', route: '/fields', label: 'Field Explorer', prefix: 'field-explorer-' },

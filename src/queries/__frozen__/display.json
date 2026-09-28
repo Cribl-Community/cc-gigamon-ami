@@ -2091,10 +2091,10 @@
           "reads": [
             "serversQ"
           ],
-          "value": "serversQ.loading ? '…' : `${totals.score}`",
-          "unit": "/100",
+          "value": "tile(`${totals.score}`)",
+          "unit": "serversKnown ? '/100' : undefined",
           "info": "Composite: 0.55·(PQC share of TLS 1.3) + 0.25·(TLS 1.3 adoption) + 0.20·(servers offering ≥1 PQC session). Weighting is ours; the inputs track NIST FIPS 203 / CNSA 2.0 / EO 14144 (TLS 1.3 by 2030).",
-          "sub": "totals.stage"
+          "sub": "serversKnown ? totals.stage : NO_SERVER_ANSWER"
         },
         "KpiTile · TLS 1.3 adoption": {
           "ref": "SERVERS_Q",
@@ -2103,9 +2103,9 @@
           "reads": [
             "serversQ"
           ],
-          "value": "serversQ.loading ? '…' : fmtPct(totals.tls13Pct, 1)",
+          "value": "tile(fmtPct(totals.tls13Pct, 1))",
           "info": "Share of TLS sessions negotiating TLS 1.3 (ssl_server_supported_version=772). PQC key exchange requires TLS 1.3.",
-          "sub": "`${fmtCount(totals.tls13)} of ${fmtCount(totals.sessions)} · the PQC-capable floor`"
+          "sub": "serversKnown ? `${fmtCount(totals.tls13)} of ${fmtCount(totals.sessions)} · the PQC-capable floor` : NO_SERVER_ANSWER"
         },
         "KpiTile · PQC key exchange offered": {
           "ref": "SERVERS_Q",
@@ -2114,9 +2114,9 @@
           "reads": [
             "serversQ"
           ],
-          "value": "serversQ.loading ? '…' : fmtPct(totals.pqcPct, 1)",
+          "value": "tile(fmtPct(totals.pqcPct, 1))",
           "info": "Share of TLS 1.3 sessions whose ClientHello offered a hybrid ML-KEM group (X25519Kyber768 / X25519MLKEM768). Offered, not necessarily negotiated.",
-          "sub": "`${fmtCount(totals.pqc)} sessions offered hybrid ML-KEM`"
+          "sub": "serversKnown ? `${fmtCount(totals.pqc)} sessions offered hybrid ML-KEM` : NO_SERVER_ANSWER"
         },
         "KpiTile · Harvest-now exposure": {
           "ref": "SERVERS_Q",
@@ -2125,7 +2125,7 @@
           "reads": [
             "serversQ"
           ],
-          "value": "serversQ.loading ? '…' : fmtCount(totals.harvest)",
+          "value": "tile(fmtCount(totals.harvest))",
           "info": "Classical (non-PQC) sessions reaching a sensitivity-tagged destination (credential / pci / financial / phi). Recordable today, decryptable once a quantum computer exists. Sensitivity is a heuristic on the SNI.",
           "sub": "classical → sensitive destinations"
         },
@@ -2137,8 +2137,7 @@
             "groupsQ",
             "serversQ"
           ],
-          "info": "Named TLS supported-groups actually seen (GREASE placeholders removed). Hybrid ML-KEM groups are quantum-safe; x25519 / secp256r1 and finite-field DH are classical and quantum-vulnerable.",
-          "note": "`${totals.pqcServers} of ${servers.length} servers saw ≥1 PQC-offering session`"
+          "info": "Named TLS supported-groups actually seen (GREASE placeholders removed). Hybrid ML-KEM groups are quantum-safe; x25519 / secp256r1 and finite-field DH are classical and quantum-vulnerable."
         },
         "Panel · Server readiness worklist": {
           "ref": "SERVERS_Q",
@@ -2147,20 +2146,29 @@
           "reads": [
             "serversQ"
           ],
-          "info": "Every TLS server split by whether any session to it offered a hybrid ML-KEM group. Classical-only servers are the remediation worklist. % quantum-safe is PQC-offering sessions ÷ all sessions to that server. Data-sensitivity is a heuristic classification of the SNI, not a feed field.",
-          "note": "`${classical.length} classical-only · ${capable.length} PQC-capable`"
+          "info": "Every TLS server split by whether any session to it offered a hybrid ML-KEM group. Classical-only servers are the remediation worklist. % quantum-safe is PQC-offering sessions ÷ all sessions to that server. Data-sensitivity is a heuristic classification of the SNI, not a feed field."
         }
       },
       "searches": {
         "serversQ": {
           "ref": "SERVERS_Q",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" ssl_server_name=* | summarize sessions=count(), tls13=sum(iif(ssl_server_supported_version==\"772\",1,0)), pqc=sum(iif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\"),1,0)) by ssl_server_name, ssl_issuer | sort by sessions desc | limit 300"
+          "query": "dataset=\"gigamon_ami\" ssl_server_name=* | summarize sessions=count(), tls13=sum(iif(ssl_server_supported_version==\"772\",1,0)), pqc=sum(iif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\"),1,0)) by ssl_server_name, ssl_issuer | sort by sessions desc | limit 300",
+          "options": "{ accel: PQC_SERVERS_ACCEL, accelPanel: 'pqc-servers' }",
+          "optionsValue": {
+            "accel": "gno_pqc_servers_c1h",
+            "accelPanel": "pqc-servers"
+          }
         },
         "groupsQ": {
           "ref": "GROUPS_Q",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type=* | summarize sessions=count(), servers=dcount(ssl_server_name) by ssl_ext_ec_supported_groups_type | sort by sessions desc | limit 40"
+          "query": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type=* | summarize sessions=count(), servers=dcount(ssl_server_name) by ssl_ext_ec_supported_groups_type | sort by sessions desc | limit 40",
+          "options": "{ accel: PQC_GROUPS_ACCEL, accelPanel: 'pqc-groups' }",
+          "optionsValue": {
+            "accel": "gno_pqc_groups_c1h",
+            "accelPanel": "pqc-groups"
+          }
         }
       },
       "links": {
@@ -2168,7 +2176,7 @@
           "ref": "drillQuery(filter)",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" ssl_server_name=\"login.example.com\" | limit 200",
-          "window": "range.earliest"
+          "window": "drillEarliest"
         }
       },
       "briefs": {},
@@ -2495,9 +2503,9 @@
             "pqcServers",
             "servers"
           ],
-          "value": "servers.loading ? '…' : String(assessed.length)",
+          "value": "certTile(assessed.length)",
           "info": "Count of distinct TLS server names seen in the window. Posture is assessed client-side from each server's issuer, TLS version, and validity date.",
-          "sub": "unique ssl_server_name"
+          "sub": "serversUnknown ? serversGapSub : 'unique ssl_server_name'"
         },
         "KpiTile · At-risk certs / protocols": {
           "ref": "SERVERS",
@@ -2507,9 +2515,9 @@
             "pqcServers",
             "servers"
           ],
-          "value": "servers.loading ? '…' : String(atRisk)",
+          "value": "certTile(atRisk)",
           "info": "Rows that aren't OK: expired, weak protocol, self-signed / unknown CA, or expiring within 30 days.",
-          "sub": "expired, weak, untrusted, or expiring"
+          "sub": "serversUnknown ? serversGapSub : 'expired, weak, untrusted, or expiring'"
         },
         "KpiTile · Weak protocol": {
           "ref": "SERVERS",
@@ -2519,9 +2527,9 @@
             "pqcServers",
             "servers"
           ],
-          "value": "servers.loading ? '…' : String(weakCount)",
+          "value": "certTile(weakCount)",
           "info": "Servers negotiating TLS 1.1/1.0 or SSL — deprecated and insecure.",
-          "sub": "`TLS < 1.2 · ${withCert} rows have full certs`"
+          "sub": "serversUnknown ? serversGapSub : `TLS < 1.2 · ${withCert} rows have full certs`"
         },
         "KpiTile · Classical KEX (quantum-unsafe)": {
           "ref": "PQC_BY_SERVER",
@@ -2531,9 +2539,9 @@
             "pqcServers",
             "servers"
           ],
-          "value": "pqcUnavailable ? '—' : servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
+          "value": "pqcUnavailable || serversUnknown ? '—' : servers.loading || pqcServers.loading ? '…' : String(classicalKex)",
           "info": "Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab.",
-          "sub": "pqcUnavailable ? 'key-exchange search failed — see the panel below' : 'no hybrid ML-KEM offered'"
+          "sub": "serversUnknown ? serversGapSub : kexGap !== null ? KEX_GAP_SUB[kexGap] : 'no hybrid ML-KEM offered'"
         },
         "Panel · Servers": {
           "ref": "SERVERS",
@@ -2543,20 +2551,29 @@
             "pqcServers",
             "servers"
           ],
-          "info": "Each row: server name, issuer (when a cert chain is present), negotiated TLS version, days to expiry, a posture badge, and a key-exchange tag (PQC = offered hybrid ML-KEM; classical = quantum-vulnerable). CA trust is checked against a list of well-known public CAs; anything else is flagged Unknown CA / Self-signed.",
-          "note": "`${shown.length} of ${assessed.length} shown · worst first`"
+          "info": "Each row: server name, issuer (when a cert chain is present), negotiated TLS version, days to expiry, a posture badge, and a key-exchange tag (PQC = offered hybrid ML-KEM; classical = quantum-vulnerable). CA trust is checked against a list of well-known public CAs; anything else is flagged Unknown CA / Self-signed."
         }
       },
       "searches": {
         "servers": {
           "ref": "SERVERS",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" ssl_server_name=* | summarize flows=count(), ver=max(ssl_protocol_version), issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), cn=max(ssl_common_name) by ssl_server_name | sort by flows desc | limit 60"
+          "query": "dataset=\"gigamon_ami\" ssl_server_name=* | summarize flows=count(), ver=max(ssl_protocol_version), issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), cn=max(ssl_common_name) by ssl_server_name | sort by flows desc | limit 60",
+          "options": "{ accel: TLS_SERVERS_ACCEL, accelPanel: 'tls-servers' }",
+          "optionsValue": {
+            "accel": "gno_tls_servers_c1h",
+            "accelPanel": "tls-servers"
+          }
         },
         "pqcServers": {
           "ref": "PQC_BY_SERVER",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\") | summarize pqc=count() by ssl_server_name | limit 200"
+          "query": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\") | summarize pqc=count() by ssl_server_name | limit 200",
+          "options": "{ accel: TLS_PQC_ACCEL, accelPanel: 'tls-pqc-by-server' }",
+          "optionsValue": {
+            "accel": "gno_tls_pqc_c1h",
+            "accelPanel": "tls-pqc-by-server"
+          }
         }
       },
       "links": {
@@ -2564,7 +2581,7 @@
           "ref": "serverDrill(server)",
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" ssl_server_name=\"login.example.com\" | summarize flows=count(), ver=max(ssl_protocol_version), issuer=max(ssl_issuer), notafter=max(ssl_validity_not_after), notbefore=max(ssl_validity_not_before), subject=max(ssl_common_name), cipher=max(ssl_cipher_suite_id) by ssl_server_name",
-          "window": "range.earliest"
+          "window": "drillEarliest"
         }
       },
       "briefs": {},

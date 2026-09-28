@@ -46,6 +46,53 @@
 // of the things that re-runs the query. There is no marking that distinguishes
 // the two, so the error decides, whatever rows survive behind it.
 //
+// A STORED READ FAILS DIFFERENTLY, AND EACH WAY IS A THIRD ANSWER TOO
+// (2026-09-27, `feat/accel-tls-pqc`: both searches now read hourly scheduled
+// runs in Snapshot mode, `gno_tls_servers_c1h` and `gno_tls_pqc_c1h`). A stored
+// read does not only fail or succeed:
+//
+//   • it can come back STALE — flagged, not replaced (accel/read.ts), because
+//     falling back to live on staleness would reinstate the scan at the moment
+//     the schedule broke. A stale key-exchange run beside a fresh server list is
+//     the "unavailable beats stale" case above with a date on it: every server
+//     that appeared since that run reads as absent from it, which `?? 0` would
+//     have called classical. So a stale key-exchange read is not a fact here;
+//   • for a picked past moment it can answer NOTHING (`source: 'none'`) — no
+//     run of that entry at or before the moment, and a moment never falls back
+//     to live. No rows, no error, not loading: exactly the empty map a failure
+//     used to be. Not a fact either;
+//   • a MISS (no run yet, run failed, aged out, paused, drifted) falls back to
+//     the live query, and that path is the one this header already covers:
+//     pending first, then an answer or an error.
+//
+// THE JOIN NEEDS ONE WINDOW, NOT TWO FRESH ANSWERS (corrected 2026-09-27 on
+// `feat/accel-tls-pqc` after review). A server missing from the key-exchange
+// answer reads as classical only if both answers cover the same minutes. Each
+// can be individually fine and still describe another window:
+//
+//   • both from the schedule, but from different hours — for about a minute
+//     every hour the server list's :27 run is done and the newest key-exchange
+//     run is the previous hour's :28, an hour old and under the stale
+//     threshold; a failed :28 run stretches that to the hour; a picked moment
+//     in that minute pairs the two runs the same way;
+//   • one from its stored run (fifteen settled minutes, up to an hour old) and
+//     the other a live fallback over the picker's range;
+//   • a STALE server list beside a fresh key-exchange run — the reverse of the
+//     stale case above.
+//
+// Each is `misaligned`: both sides must come from the same place, neither may
+// be stale, and paired stored runs must have finished within
+// PAIRED_RUN_SLACK_MS of each other (their crons are a minute apart). Two live
+// answers read the same range and pass. It is judged only once neither side is
+// on its first load, so a fallback still running shows `checking`, not a gap.
+//
+// `kexGap` names which of these holds, and every place that used to read
+// `pqcUnavailable` reads it; each has its own sentence, all four the same
+// `unreadable` pill. If the SERVER list itself has no answer — no run for the
+// moment, or a failed search whose surviving rows may be another window's —
+// NO tile has servers to count: all four say `—` with no colour claim, rather
+// than a confident 0 in green.
+//
 // THE ALERT IS NOT A PAGE BANNER. `AppBanners` owns the page-level slot and says
 // so; this is a notice about one panel, rendered inside it, which is the shape
 // the design system calls an inline section notice. `warning`, not `danger`,
@@ -54,15 +101,58 @@
 
 import { useState } from 'react'
 import { Alert } from '@capra/core'
-import { useSearch } from '../cribl/useSearch'
+import { useSearch, type UseSearchState } from '../cribl/useSearch'
 import { searchUiUrl } from '../cribl/config'
+import { accelEntry, type AccelId } from '../cribl/accel/manifest'
+import { SNAPSHOT_WINDOW } from '../cribl/accel/words'
 import { useDashboard } from '../app/DashboardContext'
 import { Panel } from '../components/Panel'
 import { KpiTile } from '../components/KpiTile'
+import { type ComputedFrom } from '../components/PanelInfo'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { StatusPill } from '../components/StatusPill'
+import { mergeSnapshotStates, type PanelSnapshotState } from '../components/snapshotCensus'
 import { str, toNum, fmtCount } from '../lib/format'
 import { SERVERS, PQC_BY_SERVER, serverDrill } from '../queries/tlsPosture'
+
+/** The two scheduled searches behind this tab, one per query — never folded
+ *  (see src/queries/tlsPosture.ts). */
+const TLS_SERVERS_ACCEL: AccelId = 'gno_tls_servers_c1h'
+const TLS_PQC_ACCEL: AccelId = 'gno_tls_pqc_c1h'
+const SERVERS_ENTRY = accelEntry(TLS_SERVERS_ACCEL)
+/** The schedules in words, for the ⓘ. TlsPosture.test.tsx holds these against
+ *  the manifest's own crons, so moving one forces the other. */
+export const TLS_SERVERS_CADENCE = 'once an hour, at 27 minutes past, in UTC'
+export const TLS_PQC_CADENCE = 'once an hour, at 28 minutes past, in UTC'
+export const TLS_WINDOW = SNAPSHOT_WINDOW
+
+const computedFrom = (s: UseSearchState, cadence: string): ComputedFrom => ({
+  source: s.source, at: s.at, stale: s.stale, cadence, window: TLS_WINDOW, fallback: s.note,
+})
+const snapshotOf = (s: UseSearchState): PanelSnapshotState => ({
+  source: s.source, outcome: s.outcome, at: s.at, stale: s.stale, nearestAt: s.nearestAt,
+})
+
+/** Why key exchange is not a fact about the servers on screen, or null when it is. */
+type KexGap = 'failed' | 'no-run' | 'stale' | 'misaligned' | null
+
+/** How far apart two paired stored runs may finish and still be read as one
+ *  window. Their crons are a minute apart; the rest is slack for run time. The
+ *  previous hour's run is far outside it. */
+const PAIRED_RUN_SLACK_MS = 5 * 60_000
+
+const KEX_GAP_SUB: Record<Exclude<KexGap, null>, string> = {
+  failed: 'key-exchange search failed — see the panel below',
+  'no-run': 'no key-exchange run for this moment — see the panel below',
+  stale: 'key-exchange run is out of date — see the panel below',
+  misaligned: 'key-exchange answer is from another window — see the panel below',
+}
+const KEX_GAP_TEXT: Record<Exclude<KexGap, null>, string> = {
+  failed: 'The key-exchange search failed',
+  'no-run': 'No key-exchange run exists for the moment picked',
+  stale: 'The key-exchange run is older than its schedule promises',
+  misaligned: 'The key-exchange answer and the server list describe different windows',
+}
 
 const WEAK = new Set(['TLS_1_0', 'TLS_1_1', 'SSL_3_0', 'SSL_2_0'])
 const KNOWN_CA = ['digicert', 'let', 'globalsign', 'sectigo', 'comodo', 'geotrust', 'amazon', 'google trust',
@@ -99,13 +189,37 @@ const PQC_FAILED_ID = 'tls-pqc-unavailable'
 
 export function TlsPosture() {
   const { range } = useDashboard()
-  const servers = useSearch(SERVERS)
-  const pqcServers = useSearch(PQC_BY_SERVER)
+  const servers = useSearch(SERVERS, { accel: TLS_SERVERS_ACCEL, accelPanel: 'tls-servers' })
+  const pqcServers = useSearch(PQC_BY_SERVER, { accel: TLS_PQC_ACCEL, accelPanel: 'tls-pqc-by-server' })
   // Filter to servers whose sessions only ever offered classical key exchange —
   // quantum-vulnerable (harvest-now-decrypt-later). See the PQC Readiness tab.
   const [pqcUnsafeOnly, setPqcUnsafeOnly] = useState(false)
-  /** No key-exchange answer for this window. See the header: error beats rows. */
-  const pqcUnavailable = pqcServers.error !== null
+  /** Why there is no key-exchange answer for this window, if there is none.
+   *  See the header: an error beats surviving rows, and a stale or missing
+   *  stored run is no more a fact than a failed search. */
+  const firstLoad = (s: UseSearchState) => s.loading && s.rows.length === 0
+  /** The two answers do not describe one window. See the header. */
+  const misaligned = !firstLoad(servers) && !firstLoad(pqcServers) && servers.source !== 'none' && (
+    servers.source !== pqcServers.source
+    || servers.stale
+    || (servers.source === 'schedule' && (servers.at === null || pqcServers.at === null
+      || Math.abs(servers.at - pqcServers.at) > PAIRED_RUN_SLACK_MS))
+  )
+  const kexGap: KexGap =
+    pqcServers.error !== null ? 'failed'
+      : pqcServers.source === 'none' ? 'no-run'
+        : pqcServers.stale ? 'stale'
+          : misaligned ? 'misaligned'
+            : null
+  const pqcUnavailable = kexGap !== null
+  /** The server list has no run for the picked moment: nothing to count. */
+  const serversNoRun = servers.source === 'none'
+  /** No server answer to count over: no run, or a failed search whose surviving
+   *  rows may be another window's. Every tile says `—`. */
+  const serversUnknown = serversNoRun || servers.error !== null
+  const serversGapSub = serversNoRun ? 'no server-list run for this moment' : 'server-list search failed'
+  /** A certificate or protocol tile's value: loading, unknown, or the count. */
+  const certTile = (n: number) => (servers.loading ? '…' : serversUnknown ? '—' : String(n))
   /**
    * The same gap, before anything has failed: the first load, after SERVERS has
    * come back and while PQC_BY_SERVER is still running. `pqcMap` is empty, and
@@ -119,9 +233,21 @@ export function TlsPosture() {
   const pqcKnown = !pqcUnavailable && !pqcPending
   const pqcMap = new Map(pqcServers.rows.map((r) => [str(r, 'ssl_server_name'), toNum(r.pqc)]))
 
+  // The drill opens the window the ROW came from: a row read from the hourly
+  // run describes fifteen settled minutes, not the picker's range (which is not
+  // even on screen in Snapshot mode). DnsHealth.tsx makes the same decision.
+  const drillEarliest = servers.source === 'schedule' ? SERVERS_ENTRY.earliest : range.earliest
   const drillServer = (server: string) => {
-    window.open(searchUiUrl(serverDrill(server), range.earliest), '_blank', 'noopener')
+    window.open(searchUiUrl(serverDrill(server), drillEarliest), '_blank', 'noopener')
   }
+
+  // Where each figure came from, for block 4 of its ⓘ — two, because the two
+  // runs are read separately and one may fall back to live while the other
+  // answers from its run.
+  const serversComputed = computedFrom(servers, TLS_SERVERS_CADENCE)
+  const pqcComputed = computedFrom(pqcServers, TLS_PQC_CADENCE)
+  // The panel draws both, so its caption is the worse of the two.
+  const panelSnapshot = mergeSnapshotStates([snapshotOf(servers), snapshotOf(pqcServers)])
 
   const assessed = servers.rows.map((r) => {
     const ver = str(r, 'ver'), notafter = str(r, 'notafter'), issuer = str(r, 'issuer'), cn = str(r, 'cn')
@@ -160,22 +286,25 @@ export function TlsPosture() {
       </div>
 
       <div className="kpi-row kpi-row-4">
-        <KpiTile label="Distinct servers" value={servers.loading ? '…' : String(assessed.length)} accent="info" sub="unique ssl_server_name"
-          info="Count of distinct TLS server names seen in the window. Posture is assessed client-side from each server's issuer, TLS version, and validity date." query={SERVERS} />
-        <KpiTile label="At-risk certs / protocols" value={servers.loading ? '…' : String(atRisk)}
-          accent={atRisk > 0 ? 'warning' : 'success'} sub="expired, weak, untrusted, or expiring"
-          info="Rows that aren't OK: expired, weak protocol, self-signed / unknown CA, or expiring within 30 days." query={SERVERS} />
-        <KpiTile label="Weak protocol" value={servers.loading ? '…' : String(weakCount)}
-          accent={weakCount > 0 ? 'danger' : 'success'} sub={`TLS < 1.2 · ${withCert} rows have full certs`}
-          info="Servers negotiating TLS 1.1/1.0 or SSL — deprecated and insecure." query={SERVERS} />
-        <KpiTile label="Classical KEX (quantum-unsafe)" value={pqcUnavailable ? '—' : servers.loading || pqcServers.loading ? '…' : String(classicalKex)}
-          accent={pqcUnavailable ? 'neutral' : classicalKex > 0 ? 'warning' : 'success'}
-          sub={pqcUnavailable ? 'key-exchange search failed — see the panel below' : 'no hybrid ML-KEM offered'}
-          info="Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab." query={PQC_BY_SERVER} />
+        <KpiTile label="Distinct servers" value={certTile(assessed.length)} accent={serversUnknown ? 'neutral' : 'info'}
+          sub={serversUnknown ? serversGapSub : 'unique ssl_server_name'}
+          info="Count of distinct TLS server names seen in the window. Posture is assessed client-side from each server's issuer, TLS version, and validity date." query={SERVERS} computed={serversComputed} />
+        <KpiTile label="At-risk certs / protocols" value={certTile(atRisk)}
+          accent={serversUnknown ? 'neutral' : atRisk > 0 ? 'warning' : 'success'}
+          sub={serversUnknown ? serversGapSub : 'expired, weak, untrusted, or expiring'}
+          info="Rows that aren't OK: expired, weak protocol, self-signed / unknown CA, or expiring within 30 days." query={SERVERS} computed={serversComputed} />
+        <KpiTile label="Weak protocol" value={certTile(weakCount)}
+          accent={serversUnknown ? 'neutral' : weakCount > 0 ? 'danger' : 'success'}
+          sub={serversUnknown ? serversGapSub : `TLS < 1.2 · ${withCert} rows have full certs`}
+          info="Servers negotiating TLS 1.1/1.0 or SSL — deprecated and insecure." query={SERVERS} computed={serversComputed} />
+        <KpiTile label="Classical KEX (quantum-unsafe)" value={pqcUnavailable || serversUnknown ? '—' : servers.loading || pqcServers.loading ? '…' : String(classicalKex)}
+          accent={pqcUnavailable || serversUnknown ? 'neutral' : classicalKex > 0 ? 'warning' : 'success'}
+          sub={serversUnknown ? serversGapSub : kexGap !== null ? KEX_GAP_SUB[kexGap] : 'no hybrid ML-KEM offered'}
+          info="Servers exposed to harvest-now-decrypt-later: none of their sessions offered a post-quantum group in ssl_ext_ec_supported_groups_type. Counts the busiest 60 servers by flows that are missing from the query below. See the PQC Readiness tab." query={PQC_BY_SERVER} computed={pqcComputed} />
       </div>
 
-      <Panel tourId="tls-servers" title="Servers" info="Each row: server name, issuer (when a cert chain is present), negotiated TLS version, days to expiry, a posture badge, and a key-exchange tag (PQC = offered hybrid ML-KEM; classical = quantum-vulnerable). CA trust is checked against a list of well-known public CAs; anything else is flagged Unknown CA / Self-signed." query={SERVERS} onRefresh={() => { servers.refetch(); pqcServers.refetch() }} refreshing={servers.loading || pqcServers.loading} note={`${shown.length} of ${assessed.length} shown · worst first`}>
-        {pqcUnavailable && (
+      <Panel tourId="tls-servers" title="Servers" info="Each row: server name, issuer (when a cert chain is present), negotiated TLS version, days to expiry, a posture badge, and a key-exchange tag (PQC = offered hybrid ML-KEM; classical = quantum-vulnerable). CA trust is checked against a list of well-known public CAs; anything else is flagged Unknown CA / Self-signed." query={SERVERS} computed={serversComputed} snapshot={panelSnapshot} onRefresh={() => { servers.refetch(); pqcServers.refetch() }} refreshing={servers.loading || pqcServers.loading} note={serversUnknown ? undefined : `${shown.length} of ${assessed.length} shown · worst first`}>
+        {kexGap !== null && (
           // `.resolver-toolbar` is reused purely as the spacing wrapper this
           // panel already has — Capra components take their spacing from a
           // wrapper, never from a class on the component itself.
@@ -184,12 +313,12 @@ export function TlsPosture() {
               layout="section"
               appearance="warning"
               title="Key exchange could not be read"
-              action={<button type="button" className="btn" onClick={pqcServers.refetch}>Try again</button>}
+              action={<button type="button" className="btn" onClick={() => { if (kexGap === 'misaligned') servers.refetch(); pqcServers.refetch() }}>Try again</button>}
             >
               <span id={PQC_FAILED_ID}>
-                The key-exchange search failed, so no server below can be called PQC or classical in this window,
+                {KEX_GAP_TEXT[kexGap]}, so no server below can be called PQC or classical in this window,
                 and the filter is unavailable. Certificates and TLS versions are unaffected.
-                {' '}{pqcServers.errorTitle ? `${pqcServers.errorTitle}: ` : ''}{pqcServers.error}
+                {kexGap === 'failed' && <>{' '}{pqcServers.errorTitle ? `${pqcServers.errorTitle}: ` : ''}{pqcServers.error}</>}
               </span>
             </Alert>
           </div>
@@ -205,8 +334,8 @@ export function TlsPosture() {
             aria-disabled={pqcUnavailable || undefined}
             aria-describedby={pqcUnavailable ? PQC_FAILED_ID : undefined}
             onClick={() => { if (!pqcUnavailable) setPqcUnsafeOnly((v) => !v) }}
-            title={pqcUnavailable
-              ? 'Unavailable — the key-exchange search failed'
+            title={kexGap !== null
+              ? `Unavailable — ${KEX_GAP_TEXT[kexGap].charAt(0).toLowerCase()}${KEX_GAP_TEXT[kexGap].slice(1)}`
               : 'Show only servers with classical (quantum-vulnerable) key exchange'}>
             Quantum-unsafe KEX only
           </button>

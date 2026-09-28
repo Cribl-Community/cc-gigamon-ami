@@ -929,6 +929,10 @@ describe('what a confirmation is given to say', () => {
       'GNO TCP subnet pairs 16 (gno_tcp_subnet16_c1h) — create, running 41 * * * * UTC',
       'GNO App and L4 bytes (gno_app_l4_c1h) — create, running 47 * * * * UTC',
       'GNO Top talkers by source (gno_talkers_src_c1h) — create, running 49 * * * * UTC',
+      'GNO TLS servers (gno_tls_servers_c1h) — create, running 27 * * * * UTC',
+      'GNO TLS key exchange by server (gno_tls_pqc_c1h) — create, running 28 * * * * UTC',
+      'GNO PQC server readiness (gno_pqc_servers_c1h) — create, running 57 * * * * UTC',
+      'GNO PQC key exchange groups (gno_pqc_groups_c1h) — create, running 58 * * * * UTC',
     ])
     expect(plan.willDelete).toEqual([])
   })
