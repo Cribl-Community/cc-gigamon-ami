@@ -105,6 +105,10 @@ import { METRICS as TCP_METRICS, buildHeatQuery, subnetFields, type Mask } from 
 // Capacity's (application, transport) rollup: three of that tab's four panels
 // re-aggregate this one grouping along one key each.
 import { APP_L4_SNAPSHOT_QUERY } from '../../queries/snapshots'
+// TLS posture and PQC readiness: each panel's own query, one scan per query —
+// never folded. See the block above their four entries.
+import { SERVERS as TLS_SERVERS_QUERY, PQC_BY_SERVER as TLS_PQC_BY_SERVER_QUERY } from '../../queries/tlsPosture'
+import { SERVERS_Q as PQC_SERVERS_QUERY, GROUPS_Q as PQC_GROUPS_QUERY } from '../../queries/pqcReadiness'
 
 /**
  * The manifest's own version, stamped into every saved search's description.
@@ -143,6 +147,10 @@ export type AccelId =
   | 'gno_tcp_subnet24_c1h'
   | 'gno_tcp_subnet16_c1h'
   | 'gno_talkers_src_c1h'
+  | 'gno_tls_servers_c1h'
+  | 'gno_tls_pqc_c1h'
+  | 'gno_pqc_servers_c1h'
+  | 'gno_pqc_groups_c1h'
 
 /**
  * The shape ids take, and the ONLY thing that tells this app's scheduled
@@ -1216,6 +1224,126 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     keepLastN: 24,
     why:
       "The Capacity tab opens on its top talkers by SOURCE IP, and that view was the one panel in the tab's default screen with no stored run: the app/L4 rollup groups by application and protocol and cannot express a source address. So every open of the tab waited on a live scan for it — 2.4 to 3.0 seconds in the browser trace, the slowest thing on the tab. This stores exactly that view. Like every other Capacity hook it is served only unfiltered; typing a filter still runs live, because no stored run holds an answer for text nobody had typed.",
+  }),
+
+  // ── TLS POSTURE AND PQC READINESS: FOUR ENTRIES, ONE PER QUERY ────────────
+  //
+  // Owner decision 2026-09-27. These two tabs were the last that ran every
+  // panel live. They were "Tier 2" while acceleration was judged by the
+  // CPU-seconds it saved; the 2026-09-18 "every tab a snapshot" design proposed
+  // one shared TLS/PQC scan (N13) plus a key-exchange-group entry (N14), and
+  // neither was built. Phase 5, where they would have landed, was superseded on
+  // 2026-09-22/23 when a stored read measured no faster than a cheap live
+  // query; Phase 7 then made a stored read ~0.3 s with no job submitted, and
+  // nobody went back to Phase 5's verdict. That is how they were missed.
+  //
+  // NOT FOLDED, AND THAT IS THE ONE DECISION HERE. src/queries/tlsPosture.ts
+  // records that folding PQC_BY_SERVER into SERVERS (five max() aggregations)
+  // timed the search out interactively. A scheduled run is not interactive, but
+  // a run that times out stores nothing, and a union of these four would also
+  // need tails re-aggregating a two-key grouping (PQC's SERVERS_Q groups by
+  // server AND issuer). So each entry's body IS its panel's query, run verbatim
+  // with no tail — `display === body` on all four — at the price of four scans
+  // an hour instead of one.
+  //
+  // THE MINUTES ARE PAIRED PER TAB. TLS posture joins its two results by server
+  // name, so the two runs it reads should describe nearly the same fifteen
+  // minutes: :27 and :28, one minute apart like the two DNS runs. PQC
+  // readiness's two panels are read side by side: :57 and :58. All four are
+  // minutes no other entry uses (manifest.test.ts fails on a collision).
+  //
+  // THE COST BASIS IS MEASURED, not modelled: the parity run of 2026-09-27
+  // billed these query families 25–31 CPU-s per fifteen-minute JSON window (see
+  // accel/estimate.ts).
+
+  entry({
+    id: 'gno_tls_servers_c1h',
+    name: 'GNO TLS servers',
+    panels: [
+      {
+        queryId: 'tls-servers',
+        what: 'TLS posture — the server list and its certificate and protocol tiles',
+        display: TLS_SERVERS_QUERY,
+        // No tail: the body IS the panel's query, `limit 60` included.
+        reads: ['ssl_server_name', 'flows', 'ver', 'issuer', 'notafter', 'cn'],
+      },
+    ],
+    body: TLS_SERVERS_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    cron: '27 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "TLS posture opens on two whole-window scans and ran both live on every open, because the tab predates the snapshot work and was not revisited once stored reads became instant. This one is the server list — certificate issuer, expiry and negotiated protocol per server name — which every tile but the key-exchange one reads. Run hourly it is a stored read, and twenty-four retained runs give the tab a past: somebody chasing a certificate that expired overnight can ask what the list said at 04:27.",
+  }),
+
+  entry({
+    id: 'gno_tls_pqc_c1h',
+    name: 'GNO TLS key exchange by server',
+    panels: [
+      {
+        queryId: 'tls-pqc-by-server',
+        what: 'TLS posture — the key-exchange tag on each server and the quantum-unsafe tile',
+        display: TLS_PQC_BY_SERVER_QUERY,
+        // No tail: the body IS the panel's query, `limit 200` included.
+        reads: ['ssl_server_name', 'pqc'],
+      },
+    ],
+    body: TLS_PQC_BY_SERVER_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    // :28, one minute after the server list it is joined to.
+    cron: '28 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "The second of TLS posture's two scans, kept separate because folding it into the server list timed the search out. It says which servers were offered a hybrid ML-KEM group, and the tab joins it to the server list by name. A stored read fails differently from a live one — a stale run, a picked moment with no run — and the tab treats each of those as unknown key exchange rather than as classical, so a missing run can never print a count of quantum-unsafe servers.",
+  }),
+
+  entry({
+    id: 'gno_pqc_servers_c1h',
+    name: 'GNO PQC server readiness',
+    panels: [
+      {
+        queryId: 'pqc-servers',
+        what: 'PQC readiness — the four readiness tiles and the server worklist',
+        display: PQC_SERVERS_QUERY,
+        // No tail: the body IS the panel's query, `limit 300` included.
+        reads: ['ssl_server_name', 'ssl_issuer', 'sessions', 'tls13', 'pqc'],
+      },
+    ],
+    body: PQC_SERVERS_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    cron: '57 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "PQC readiness's score, TLS 1.3 adoption, PQC share and harvest-now exposure tiles, and its remediation worklist, all come from one per-server scan that ran live on every open. Run hourly it is a stored read. Twenty-four retained runs also give the migration a day of past states, which is the view a readiness figure is usually asked for.",
+  }),
+
+  entry({
+    id: 'gno_pqc_groups_c1h',
+    name: 'GNO PQC key exchange groups',
+    panels: [
+      {
+        queryId: 'pqc-groups',
+        what: 'PQC readiness — the key-exchange groups on the wire',
+        display: PQC_GROUPS_QUERY,
+        // No tail: the body IS the panel's query, `limit 40` included.
+        reads: ['ssl_ext_ec_supported_groups_type', 'sessions', 'servers'],
+      },
+    ],
+    body: PQC_GROUPS_QUERY,
+    earliest: '-18m',
+    latest: '-3m',
+    // :58, one minute after the worklist it is read beside.
+    cron: '58 * * * *',
+    tz: 'UTC',
+    keepLastN: 24,
+    why:
+      "The bar list of named key-exchange groups seen on the wire — classical x25519 and secp256r1 against hybrid ML-KEM — is the second of PQC readiness's two scans. It has its own entry rather than a tail of the worklist's scan, because it groups by key-exchange group rather than by server, and its distinct-server count cannot be rebuilt from per-server rows cut at 300.",
   }),
 ])
 

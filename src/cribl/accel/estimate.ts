@@ -164,15 +164,29 @@ export function estimateCpuSeconds(dataMinutes: number, shapeMultiplier = NARROW
 
 /** A figure somebody actually measured. No band: one run is one run, and
  *  inventing a spread for it would be inventing data. */
-export function measuredCpuSeconds(cpuSeconds: number): CpuEstimate {
+export function measuredCpuSeconds(cpuSeconds: number, provenance: string = MEASUREMENT_PROVENANCE): CpuEstimate {
   return {
     cpuSeconds,
     band: { low: cpuSeconds, high: cpuSeconds },
     basis: 'measured',
     extrapolated: false,
-    provenance: MEASUREMENT_PROVENANCE,
+    provenance,
   }
 }
+
+/**
+ * Where the TLS posture and PQC readiness figures come from — not Phase 2's
+ * measurement, so not MEASUREMENT_PROVENANCE's sentence.
+ *
+ * The Phase 8 parity run of 2026-09-27 submitted these query families on
+ * `gigamon_ami` over fifteen-minute windows, the exact window the hourly
+ * schedules read, and billed 25–31 CPU-s a job. The rows below take 31, the
+ * high end, on both sides: the schedule's cost is then not understated, and the
+ * break-even — the figure worth quoting — is the same ratio either way.
+ */
+export const PARITY_RUN_PROVENANCE =
+  'Measured on this workspace’s demo feed: 25–31 CPU-s for a fifteen-minute window of these ' +
+  'queries, the high end taken. A production tenant reads more data in the same window.'
 
 // ── What each entry costs today ─────────────────────────────────────────────
 
@@ -199,6 +213,9 @@ export interface MeasuredEntry {
    * window is inside the fit's domain, which is asserted in the tests.
    */
   scheduledRunCpuSeconds: number | null
+  /** Where `scheduledRunCpuSeconds` was measured, when that was not Phase 2's
+   *  run (MEASUREMENT_PROVENANCE, the default). */
+  measuredProvenance?: string
   /** Which shape multiplier the scheduled body takes, when it is modelled. */
   shapeMultiplier: number
   /** What a reader is being told about, in the panel's own words. */
@@ -570,6 +587,63 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
     what: 'Capacity & top talkers — the app mix, the L4 split and the top-apps bar list',
   },
+
+  // ── TLS posture and PQC readiness: four scans, MEASURED ───────────────────
+  // The one tranche whose live cost was measured before it was scheduled: the
+  // Phase 8 parity run of 2026-09-27 ran these exact query texts on
+  // `gigamon_ami` over fifteen-minute windows — the window each schedule reads —
+  // and billed 25–31 CPU-s a job. Which of the four sat at which end was not
+  // kept apart, so every row takes 31, on the live side and the scheduled side
+  // alike (PARITY_RUN_PROVENANCE). Both sides being the same query over the same
+  // window, the break-even (31 × 24 / 30.8 ≈ 24 views a day) is the honest
+  // figure; the absolute saving leans on the view count below.
+  //
+  // liveRunsPerDay is null, as on every operational tab nobody counted: 4 is the
+  // house assumption for a tab somebody opens when they are asking the question.
+
+  gno_tls_servers_c1h: {
+    liveRunCpuSeconds: 31,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: 31,
+    measuredProvenance: PARITY_RUN_PROVENANCE,
+    // Five max() aggregations by server, 60 rows out.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'TLS posture — the server list and its certificate and protocol tiles',
+  },
+
+  gno_tls_pqc_c1h: {
+    liveRunCpuSeconds: 31,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: 31,
+    measuredProvenance: PARITY_RUN_PROVENANCE,
+    // One count() by server over the sparse PQC-offering records.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'TLS posture — the key-exchange tag per server and the quantum-unsafe tile',
+  },
+
+  gno_pqc_servers_c1h: {
+    liveRunCpuSeconds: 31,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: 31,
+    measuredProvenance: PARITY_RUN_PROVENANCE,
+    // Three aggregates by (server, issuer), 300 rows out.
+    shapeMultiplier: WIDE_BODY_MULTIPLIER,
+    what: 'PQC readiness — the readiness tiles and the server worklist',
+  },
+
+  gno_pqc_groups_c1h: {
+    liveRunCpuSeconds: 31,
+    liveRunsPerDay: null,
+    assumedRunsPerDay: 4,
+    scheduledRunCpuSeconds: 31,
+    measuredProvenance: PARITY_RUN_PROVENANCE,
+    // count() and dcount() by key-exchange group, 40 rows out.
+    shapeMultiplier: NARROW_BODY_MULTIPLIER,
+    what: 'PQC readiness — the key-exchange groups on the wire',
+  },
 })
 
 // ── Windows ─────────────────────────────────────────────────────────────────
@@ -658,7 +732,7 @@ export function estimateEntrySaving(id: AccelId, runsPerDayOverride?: number): E
   const minutes = windowMinutes(entry) ?? 0
   const scheduledRun =
     measured.scheduledRunCpuSeconds !== null
-      ? measuredCpuSeconds(measured.scheduledRunCpuSeconds)
+      ? measuredCpuSeconds(measured.scheduledRunCpuSeconds, measured.measuredProvenance)
       : estimateCpuSeconds(minutes, measured.shapeMultiplier)
 
   const span: Span =

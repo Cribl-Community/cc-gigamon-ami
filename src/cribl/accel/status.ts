@@ -84,7 +84,9 @@ export const JOBS_PATH = '/m/default_search/search/jobs'
  * use it — see ENTRY_LIMIT.
  *
  * It is one request either way — this endpoint bills nothing. ~0.57 kB a row
- * measured, so the page is ~230 kB, read at most once per 15 s (PAGE_TTL_MS).
+ * measured, so at 2 + 3 + 20 × 24 + 64 = 549 rows (2026-09-27, with TLS
+ * posture's and PQC readiness's four hourly entries) the page is ~310 kB, read
+ * at most once per 15 s (PAGE_TTL_MS).
  */
 export const HISTORY_HEADROOM = 64
 export const HISTORY_LIMIT = MANIFEST.reduce((n, e) => n + e.keepLastN, 0) + HISTORY_HEADROOM

@@ -19,8 +19,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import type { Row } from '../cribl/search'
 import type { UseSearchState } from '../cribl/useSearch'
+import { accelEntry } from '../cribl/accel/manifest'
 import { PQC_BY_SERVER, SERVERS } from '../queries/tlsPosture'
-import { TlsPosture } from './TlsPosture'
+import { TlsPosture, TLS_PQC_CADENCE, TLS_SERVERS_CADENCE, TLS_WINDOW } from './TlsPosture'
 
 /** Keyed by query text, so the mock answers whichever search the tab runs. */
 const answers = vi.hoisted(() => ({ byQuery: new Map<string, unknown>() }))
@@ -43,8 +44,9 @@ function result(over: Partial<UseSearchState> = {}): UseSearchState {
     elapsedMs: null,
     refetch: () => {},
     // Phase 2 added the provenance half of a search result: where the rows came
-    // from, and when. Neither of this tab's searches is accelerated, so these
-    // are the values the hook returns for an ordinary live query.
+    // from, and when. These defaults are an ordinary live answer; the stored-read
+    // cases at the bottom override them (both searches are accelerated since
+    // 2026-09-27).
     source: 'live',
     outcome: null,
     at: null,
@@ -255,5 +257,102 @@ describe('TLS Posture, with the key-exchange search still running', () => {
     // `checking` on every range change would be its own kind of noise.
     show(result({ rows: SERVER_ROWS }), result({ rows: PQC_ROWS, loading: true }))
     expect(kexTags().sort()).toEqual(['PQC', 'classical', 'classical'])
+  })
+})
+
+// ── A STORED READ OF THE KEY-EXCHANGE RUN ───────────────────────────────────
+// Since 2026-09-27 (`feat/accel-tls-pqc`) both searches read hourly scheduled
+// runs in Snapshot mode. A stored read fails in ways a live one cannot — a run
+// flagged stale rather than replaced, a picked moment with no run, a miss that
+// falls back to the live query — and each of them hands the tab either old
+// rows or none, both of which `?? 0` would read as "classical". These hold that
+// none of them prints a quantum-unsafe count as if it were known.
+
+describe('TLS Posture, with the key-exchange run read from its schedule', () => {
+  const AT = Date.parse('2026-09-27T04:28:00Z')
+  const fromRun = (over: Partial<UseSearchState> = {}) =>
+    result({ source: 'schedule', outcome: 'fresh', at: AT, ...over })
+
+  it('counts from a fresh run exactly as from a live answer', () => {
+    show(fromRun({ rows: SERVER_ROWS }), fromRun({ rows: PQC_ROWS }))
+    expect(kpi(KEX).value).toBe('2')
+    expect(kexTags().sort()).toEqual(['PQC', 'classical', 'classical'])
+  })
+
+  it('prints no count from a STALE key-exchange run beside the server list', () => {
+    // The stale run's rows are real, but every server that appeared since it
+    // ran is absent from them — and absent reads as classical.
+    show(fromRun({ rows: SERVER_ROWS }), fromRun({ rows: PQC_ROWS, outcome: 'stale', stale: true }))
+    expect(kpi(KEX).value).toBe('—')
+    expect(kpi(KEX).sub).toContain('out of date')
+    expect(kpi(KEX).classes).not.toContain('kpi-warning')
+    expect(kexTags()).toEqual(['unreadable', 'unreadable', 'unreadable'])
+    expect(container.textContent).toContain('Key exchange could not be read')
+    expect(container.textContent).toContain('older than its schedule promises')
+    expect(filterButton().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('does not empty the filtered table into a false all-clear on a stale run', () => {
+    show(fromRun({ rows: SERVER_ROWS }), fromRun({ rows: PQC_ROWS }))
+    click(filterButton())
+    expect(rows()).toHaveLength(2)
+    show(fromRun({ rows: SERVER_ROWS }), fromRun({ rows: [], outcome: 'stale', stale: true }))
+    expect(rows()).toHaveLength(3)
+    expect(container.textContent).not.toContain('every server offered PQC key exchange')
+  })
+
+  it('prints no count for a picked moment the key-exchange entry has no run for', () => {
+    // `source: 'none'`: no rows, no error, not loading — the very shape a
+    // failure used to have, and a moment never falls back to live.
+    show(fromRun({ rows: SERVER_ROWS }), result({ source: 'none', outcome: 'aged-out', nearestAt: AT - 3_600_000 }))
+    expect(kpi(KEX).value).toBe('—')
+    expect(kpi(KEX).sub).toContain('no key-exchange run')
+    expect(kexTags()).toEqual(['unreadable', 'unreadable', 'unreadable'])
+    expect(container.textContent).toContain('No key-exchange run exists for the moment picked')
+  })
+
+  it('prints no count when the SERVER list has no run for the moment', () => {
+    // Nothing to count over. 0 would be a confident all-clear.
+    show(result({ source: 'none', outcome: 'aged-out' }), fromRun({ rows: PQC_ROWS }))
+    expect(kpi(KEX).value).toBe('—')
+    expect(kpi(KEX).classes).not.toContain('kpi-success')
+  })
+
+  it('waits, rather than counting, while a missed run falls back to the live query', () => {
+    // A miss (no run yet, failed, aged out, paused, drifted) goes live: the
+    // first-load gap the header already covers, now reached from a schedule.
+    show(fromRun({ rows: SERVER_ROWS }), result({ loading: true, outcome: 'no-run', note: 'no run yet' }))
+    expect(kpi(KEX).value).toBe('…')
+    expect(kexTags()).toEqual(['checking', 'checking', 'checking'])
+  })
+
+  it('prints no count when the missed run’s live fallback fails too', () => {
+    show(fromRun({ rows: SERVER_ROWS }), result({ outcome: 'run-failed', error: 'Cribl API 500 Internal Server Error' }))
+    expect(kpi(KEX).value).toBe('—')
+    expect(kpi(KEX).sub).toContain('search failed')
+    expect(kexTags()).toEqual(['unreadable', 'unreadable', 'unreadable'])
+  })
+
+  it('counts from the live fallback once it answers', () => {
+    show(fromRun({ rows: SERVER_ROWS }), result({ rows: PQC_ROWS, outcome: 'no-run', note: 'no run yet' }))
+    expect(kpi(KEX).value).toBe('2')
+  })
+})
+
+describe('TLS Posture’s schedules, in the words its ⓘ uses', () => {
+  it('quotes the crons and the window this app actually writes', () => {
+    const servers = accelEntry('gno_tls_servers_c1h')
+    const pqc = accelEntry('gno_tls_pqc_c1h')
+    expect(servers.cron).toBe('27 * * * *')
+    expect(TLS_SERVERS_CADENCE).toContain('27 minutes past')
+    expect(pqc.cron).toBe('28 * * * *')
+    expect(TLS_PQC_CADENCE).toContain('28 minutes past')
+    for (const e of [servers, pqc]) expect([e.earliest, e.latest]).toEqual(['-18m', '-3m'])
+    expect(TLS_WINDOW).toContain('fifteen minutes')
+  })
+
+  it('serves each query from its own entry', () => {
+    expect(accelEntry('gno_tls_servers_c1h').body).toBe(SERVERS)
+    expect(accelEntry('gno_tls_pqc_c1h').body).toBe(PQC_BY_SERVER)
   })
 })

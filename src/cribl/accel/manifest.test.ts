@@ -27,6 +27,8 @@ import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../querie
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
 import { APP_SRC_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
 import { buildTalkersQuery } from '../../queries/capacityTopTalkers'
+import { SERVERS as TLS_SERVERS, PQC_BY_SERVER } from '../../queries/tlsPosture'
+import { SERVERS_Q, GROUPS_Q } from '../../queries/pqcReadiness'
 import { APP_VERSION } from '../config'
 import { APP_SRC_CADENCE, APP_SRC_WINDOW, OVERVIEW_CADENCE, OVERVIEW_WINDOW } from './words'
 import {
@@ -89,6 +91,10 @@ describe('the manifest', () => {
       'gno_tcp_subnet16_c1h',
       'gno_app_l4_c1h',
       'gno_talkers_src_c1h',
+      'gno_tls_servers_c1h',
+      'gno_tls_pqc_c1h',
+      'gno_pqc_servers_c1h',
+      'gno_pqc_groups_c1h',
     ])
   })
 
@@ -313,6 +319,29 @@ describe('the bodies', () => {
     expect(overall.panels[0].tail).toBeUndefined()
   })
 
+  it('stores TLS posture and PQC readiness one query per entry, never folded, each ⓘ its own query', () => {
+    // TlsPosture's two queries were folded into one once and it timed out, so
+    // each of the four is its own scan, by identity against the module the ⓘ
+    // renders from, with no tail between the run and the panel.
+    const cases: [string, string, string][] = [
+      ['gno_tls_servers_c1h', 'tls-servers', TLS_SERVERS],
+      ['gno_tls_pqc_c1h', 'tls-pqc-by-server', PQC_BY_SERVER],
+      ['gno_pqc_servers_c1h', 'pqc-servers', SERVERS_Q],
+      ['gno_pqc_groups_c1h', 'pqc-groups', GROUPS_Q],
+    ]
+    for (const [id, queryId, query] of cases) {
+      const e = accelEntry(id as AccelEntry['id'])
+      expect(e.body, id).toBe(query)
+      expect(e.panels.map((p) => p.queryId), id).toEqual([queryId])
+      expect(e.panels[0].display, id).toBe(query)
+      expect(e.panels[0].tail, `${id}: a tail here would be a fold by another name`).toBeUndefined()
+    }
+    // Each tab's pair runs a minute apart, so the two results a tab reads
+    // side by side describe nearly the same fifteen minutes.
+    expect(['gno_tls_servers_c1h', 'gno_tls_pqc_c1h', 'gno_pqc_servers_c1h', 'gno_pqc_groups_c1h'].map((id) => accelEntry(id as AccelEntry['id']).cron))
+      .toEqual(['27 * * * *', '28 * * * *', '57 * * * *', '58 * * * *'])
+  })
+
   it('stores the Capacity tab’s default view — top talkers by source IP — exactly as it asks', () => {
     const talkers = accelEntry('gno_talkers_src_c1h')
     expect(talkers.body).toBe(buildTalkersQuery('src_ip', ''))
@@ -398,7 +427,7 @@ describe('the bodies', () => {
     expect(sample.earliest).toBe('-5m')
     expect(sample.latest).toBe('-3m')
     // Every hourly snapshot, not the three that existed when this was written.
-    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(16)
+    expect(HOURLY_SNAPSHOTS.length, 'the hourly snapshots stopped being derived').toBe(20)
     for (const e of HOURLY_SNAPSHOTS) {
       expect(e.earliest, `${e.id} does not read fifteen minutes`).toBe('-18m')
       expect(e.latest, `${e.id} reads up to a minute that is still landing`).toBe('-3m')

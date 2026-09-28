@@ -107,8 +107,6 @@ import { summariseRows, type Row } from '../cribl/search'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import { SOURCES } from '../queries/security'
 import { buildTrendQuery, latencyQuery } from '../queries/tcpHealth'
-import { SERVERS, PQC_BY_SERVER } from '../queries/tlsPosture'
-import { SERVERS_Q, GROUPS_Q } from '../queries/pqcReadiness'
 
 // ── The budget ──────────────────────────────────────────────────────────────
 
@@ -168,20 +166,11 @@ const BUDGET: Readonly<Record<string, TabBudget>> = {
   },
   '/dns-health': { served: 1, jobs: [] },
   '/web-api': { served: 5, jobs: [] },
-  '/tls-posture': {
-    served: 0,
-    jobs: [
-      live('TLS servers', SERVERS, NOT_IN_MANIFEST),
-      live('PQC groups by server', PQC_BY_SERVER, NOT_IN_MANIFEST),
-    ],
-  },
-  '/pqc': {
-    served: 0,
-    jobs: [
-      live('Servers', SERVERS_Q, NOT_IN_MANIFEST),
-      live('Supported groups', GROUPS_Q, NOT_IN_MANIFEST),
-    ],
-  },
+  // Both served since 2026-09-27 (`feat/accel-tls-pqc`), one schedule per
+  // query. TLS posture has ONE <Panel>, drawn from both of its runs (the merged
+  // caption); PQC readiness has two.
+  '/tls-posture': { served: 1, jobs: [] },
+  '/pqc': { served: 2, jobs: [] },
   '/ai-saas': { served: 3, jobs: [] },
   '/data-flow': { served: 2, jobs: [] },
   '/fields': {
