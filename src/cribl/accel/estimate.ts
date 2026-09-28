@@ -175,18 +175,28 @@ export function measuredCpuSeconds(cpuSeconds: number, provenance: string = MEAS
 }
 
 /**
- * Where the TLS posture and PQC readiness figures come from — not Phase 2's
- * measurement, so not MEASUREMENT_PROVENANCE's sentence.
+ * Where the two MEASURED TLS/PQC figures come from — not Phase 2's measurement,
+ * so not MEASUREMENT_PROVENANCE's sentence.
  *
- * The Phase 8 parity run of 2026-09-27 submitted these query families on
- * `gigamon_ami` over fifteen-minute windows, the exact window the hourly
- * schedules read, and billed 25–31 CPU-s a job. The rows below take 31, the
- * high end, on both sides: the schedule's cost is then not understated, and the
- * break-even — the figure worth quoting — is the same ratio either way.
+ * The Phase 8 parity run of 2026-09-27 (demo feed; report
+ * `parity-run-ref20260927T2340Z-ran20260927T234038Z`, gitignored) submitted
+ * exactly TWO of this tranche's four queries on `gigamon_ami`, over three
+ * fifteen-minute windows — the window the hourly schedules read:
+ *
+ *   • TLS PQC_BY_SERVER, its exact text: 21.8, 25.6 and 30.7 CPU-s;
+ *   • PQC GROUPS_Q with its `limit 40` raised to 90 (the runner's top-N rule),
+ *     otherwise its text: 19.5, 25.2 and 29.8 CPU-s.
+ *
+ * The rows below take 30.7, the highest of the six, on both sides: the
+ * schedule's cost is then not understated, and the break-even is the same ratio
+ * either way. TLS SERVERS and PQC SERVERS_Q were NOT submitted — both were
+ * ineligible under the type table — so their rows are modelled, not measured.
+ * (Corrected 2026-09-27, `feat/accel-tls-pqc` review: this said all four were
+ * measured at 25–31 CPU-s.)
  */
 export const PARITY_RUN_PROVENANCE =
-  'Measured on this workspace’s demo feed: 25–31 CPU-s for a fifteen-minute window of these ' +
-  'queries, the high end taken. A production tenant reads more data in the same window.'
+  'Measured on this workspace’s demo feed: 19.5–30.7 CPU-s for a fifteen-minute window of this ' +
+  'query, the highest taken. A production tenant reads more data in the same window.'
 
 // ── What each entry costs today ─────────────────────────────────────────────
 
@@ -588,35 +598,41 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     what: 'Capacity & top talkers — the app mix, the L4 split and the top-apps bar list',
   },
 
-  // ── TLS posture and PQC readiness: four scans, MEASURED ───────────────────
-  // The one tranche whose live cost was measured before it was scheduled: the
-  // Phase 8 parity run of 2026-09-27 ran these exact query texts on
-  // `gigamon_ami` over fifteen-minute windows — the window each schedule reads —
-  // and billed 25–31 CPU-s a job. Which of the four sat at which end was not
-  // kept apart, so every row takes 31, on the live side and the scheduled side
-  // alike (PARITY_RUN_PROVENANCE). Both sides being the same query over the same
-  // window, the break-even (31 × 24 / 30.8 ≈ 24 views a day) is the honest
-  // figure; the absolute saving leans on the view count below.
+  // ── TLS posture and PQC readiness: two scans measured, two modelled ─────
+  // The Phase 8 parity run of 2026-09-27 billed TWO of these four queries on
+  // `gigamon_ami` over fifteen-minute windows — the window each schedule reads:
+  // TLS PQC_BY_SERVER as written, and PQC GROUPS_Q with its limit raised from
+  // 40 to 90 — at 19.5–30.7 CPU-s a job (PARITY_RUN_PROVENANCE). Those two rows
+  // take 30.7, the highest, on the live side and the scheduled side alike.
+  //
+  // TLS SERVERS and PQC SERVERS_Q never ran there: both were ineligible under
+  // the type table, so the runner submitted neither. Their rows are MODELLED
+  // like every other hourly entry's — 2.6 × 15 × the shape multiplier, live and
+  // scheduled — and `liveCostModelled` says so. Nobody has measured them, and
+  // SERVERS' five max() aggregations may cost materially more than its sibling.
+  // (Corrected 2026-09-27, `feat/accel-tls-pqc` review: this block called all
+  // four measured at 25–31 CPU-s.)
   //
   // liveRunsPerDay is null, as on every operational tab nobody counted: 4 is the
   // house assumption for a tab somebody opens when they are asking the question.
 
   gno_tls_servers_c1h: {
-    liveRunCpuSeconds: 31,
+    // MODELLED: 2.6 × 15 × 1.43. Not in the parity run (see above).
+    liveRunCpuSeconds: 55.8,
+    liveCostModelled: true,
     liveRunsPerDay: null,
     assumedRunsPerDay: 4,
-    scheduledRunCpuSeconds: 31,
-    measuredProvenance: PARITY_RUN_PROVENANCE,
-    // Five max() aggregations by server, 60 rows out.
+    scheduledRunCpuSeconds: null,
+    // WIDE: five max() aggregations by server, 60 rows out.
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
     what: 'TLS posture — the server list and its certificate and protocol tiles',
   },
 
   gno_tls_pqc_c1h: {
-    liveRunCpuSeconds: 31,
+    liveRunCpuSeconds: 30.7,
     liveRunsPerDay: null,
     assumedRunsPerDay: 4,
-    scheduledRunCpuSeconds: 31,
+    scheduledRunCpuSeconds: 30.7,
     measuredProvenance: PARITY_RUN_PROVENANCE,
     // One count() by server over the sparse PQC-offering records.
     shapeMultiplier: NARROW_BODY_MULTIPLIER,
@@ -624,21 +640,24 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
   },
 
   gno_pqc_servers_c1h: {
-    liveRunCpuSeconds: 31,
+    // MODELLED: 2.6 × 15 × 1.43. Not in the parity run (see above).
+    liveRunCpuSeconds: 55.8,
+    liveCostModelled: true,
     liveRunsPerDay: null,
     assumedRunsPerDay: 4,
-    scheduledRunCpuSeconds: 31,
-    measuredProvenance: PARITY_RUN_PROVENANCE,
-    // Three aggregates by (server, issuer), 300 rows out.
+    scheduledRunCpuSeconds: null,
+    // WIDE: three aggregates by (server, issuer), 300 rows out.
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
     what: 'PQC readiness — the readiness tiles and the server worklist',
   },
 
   gno_pqc_groups_c1h: {
-    liveRunCpuSeconds: 31,
+    // Measured with its limit raised to 90; the 40 it runs with cuts the same
+    // scan's output shorter, so this does not understate the schedule.
+    liveRunCpuSeconds: 30.7,
     liveRunsPerDay: null,
     assumedRunsPerDay: 4,
-    scheduledRunCpuSeconds: 31,
+    scheduledRunCpuSeconds: 30.7,
     measuredProvenance: PARITY_RUN_PROVENANCE,
     // count() and dcount() by key-exchange group, 40 rows out.
     shapeMultiplier: NARROW_BODY_MULTIPLIER,

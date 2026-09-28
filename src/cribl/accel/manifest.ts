@@ -1252,9 +1252,12 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   // readiness's two panels are read side by side: :57 and :58. All four are
   // minutes no other entry uses (manifest.test.ts fails on a collision).
   //
-  // THE COST BASIS IS MEASURED, not modelled: the parity run of 2026-09-27
-  // billed these query families 25–31 CPU-s per fifteen-minute JSON window (see
-  // accel/estimate.ts).
+  // THE COST BASIS IS HALF MEASURED. The parity run of 2026-09-27 billed TWO of
+  // the four on `gigamon_ami` — TLS PQC_BY_SERVER as written and PQC GROUPS_Q
+  // with its limit raised to 90 — at 19.5–30.7 CPU-s per fifteen-minute JSON
+  // window. TLS SERVERS and PQC SERVERS_Q were ineligible there and never ran,
+  // so their rows in accel/estimate.ts are modelled. (Corrected 2026-09-27
+  // after review: this said all four were measured at 25–31 CPU-s.)
 
   entry({
     id: 'gno_tls_servers_c1h',

@@ -95,8 +95,18 @@ function kpi(label: string) {
   if (!tile) throw new Error(`no KPI tile labelled "${label}"`)
   return {
     value: tile.querySelector('.kpi-value')?.textContent?.trim() ?? '',
+    sub: tile.querySelector('.kpi-sub')?.textContent?.trim() ?? '',
     classes: tile.className,
   }
+}
+
+/** The panel notes, which are counts over the same server answer. */
+const notes = () => [...container.querySelectorAll('.panel-note')].map((n) => n.textContent?.trim() ?? '')
+
+/** No tile caption and no panel note may carry a figure the tile refused. */
+function expectNoFigureBesideTheDash() {
+  for (const t of TILES) expect(kpi(t).sub, t).not.toMatch(/[0-9]/)
+  for (const n of notes()) expect(n).not.toMatch(/[0-9]/)
 }
 
 const TILES = ['PQC readiness score', 'TLS 1.3 adoption', 'PQC key exchange offered', 'Harvest-now exposure']
@@ -125,11 +135,21 @@ describe('PQC readiness, served from its schedules', () => {
     show(result({ source: 'none', outcome: 'aged-out', at: null, nearestAt: AT - 3_600_000 }))
     for (const t of TILES) expect(kpi(t).value, t).toBe('—')
     expect(kpi('Harvest-now exposure').classes).not.toContain('kpi-danger')
+    expectNoFigureBesideTheDash()
   })
 
   it('prints no tile when the search failed, whatever rows survive it', () => {
     show(result({ rows: SERVER_ROWS, source: 'live', outcome: 'run-failed', at: null, error: 'Cribl API 500 Internal Server Error' }))
     for (const t of TILES) expect(kpi(t).value, t).toBe('—')
+    // The surviving rows would say "50 of 60" and "10 sessions" under the dash.
+    expectNoFigureBesideTheDash()
+  })
+
+  it('prints its tile captions and panel notes when the server answer is known', () => {
+    show(result({ rows: SERVER_ROWS }))
+    expect(kpi('TLS 1.3 adoption').sub).toBe('50 of 60 · the PQC-capable floor')
+    expect(kpi('PQC key exchange offered').sub).toBe('10 sessions offered hybrid ML-KEM')
+    expect(notes()).toEqual(['1 of 2 servers saw ≥1 PQC-offering session', '1 classical-only · 1 PQC-capable'])
   })
 
   it('waits while a missed run falls back to the live query', () => {

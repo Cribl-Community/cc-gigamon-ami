@@ -9,7 +9,10 @@
 // rows, possibly for another window), or a picked past moment with no run of
 // this entry (`source: 'none'`: no rows, no error, not loading). Summed over no
 // servers, every tile is a confident 0 — a readiness score of 0, a harvest-now
-// exposure of 0 — so `serversKnown` false prints `—` on all four instead. A
+// exposure of 0 — so `serversKnown` false prints `—` on all four instead — and no caption or
+// panel note beside them carries a figure either (corrected 2026-09-27 after
+// review: the captions and notes still printed "0 of 0" or the surviving
+// rows' counts under the dash). A
 // STALE run is different: its rows are one internally consistent answer, dated
 // by the panel's caption, so they are shown as the stale answer they are.
 
@@ -46,6 +49,9 @@ const computedFrom = (s: UseSearchState, cadence: string): ComputedFrom => ({
 const snapshotOf = (s: UseSearchState): PanelSnapshotState => ({
   source: s.source, outcome: s.outcome, at: s.at, stale: s.stale, nearestAt: s.nearestAt,
 })
+
+/** What a tile caption says in place of a figure it cannot compute. */
+const NO_SERVER_ANSWER = 'no server answer for this window'
 
 const SENS_LABEL: Record<Sensitivity, string> = {
   credential: 'credential', pci: 'pci', financial: 'financial', phi: 'phi', business: 'business', public: 'public',
@@ -166,13 +172,13 @@ export function PqcReadiness() {
       <div className="kpi-row kpi-row-4">
         <KpiTile label="PQC readiness score" value={tile(`${totals.score}`)} unit={serversKnown ? '/100' : undefined}
           accent={!serversKnown ? 'neutral' : totals.score >= 80 ? 'success' : totals.score >= 45 ? 'warning' : 'danger'}
-          sub={serversKnown ? totals.stage : 'no server answer for this window'} query={SERVERS_Q} computed={serversComputed}
+          sub={serversKnown ? totals.stage : NO_SERVER_ANSWER} query={SERVERS_Q} computed={serversComputed}
           info="Composite: 0.55·(PQC share of TLS 1.3) + 0.25·(TLS 1.3 adoption) + 0.20·(servers offering ≥1 PQC session). Weighting is ours; the inputs track NIST FIPS 203 / CNSA 2.0 / EO 14144 (TLS 1.3 by 2030)." />
         <KpiTile label="TLS 1.3 adoption" value={tile(fmtPct(totals.tls13Pct, 1))} accent="info"
-          sub={`${fmtCount(totals.tls13)} of ${fmtCount(totals.sessions)} · the PQC-capable floor`}
+          sub={serversKnown ? `${fmtCount(totals.tls13)} of ${fmtCount(totals.sessions)} · the PQC-capable floor` : NO_SERVER_ANSWER}
           info="Share of TLS sessions negotiating TLS 1.3 (ssl_server_supported_version=772). PQC key exchange requires TLS 1.3." query={SERVERS_Q} computed={serversComputed} />
         <KpiTile label="PQC key exchange offered" value={tile(fmtPct(totals.pqcPct, 1))} accent="warning"
-          sub={`${fmtCount(totals.pqc)} sessions offered hybrid ML-KEM`}
+          sub={serversKnown ? `${fmtCount(totals.pqc)} sessions offered hybrid ML-KEM` : NO_SERVER_ANSWER}
           info="Share of TLS 1.3 sessions whose ClientHello offered a hybrid ML-KEM group (X25519Kyber768 / X25519MLKEM768). Offered, not necessarily negotiated." query={SERVERS_Q} computed={serversComputed} />
         <KpiTile label="Harvest-now exposure" value={tile(fmtCount(totals.harvest))} accent={serversKnown ? 'danger' : 'neutral'}
           sub="classical → sensitive destinations"
@@ -181,7 +187,7 @@ export function PqcReadiness() {
 
       <Panel tourId="pqc-groups" title="Key-exchange groups on the wire" query={GROUPS_Q} computed={groupsComputed} snapshot={snapshotOf(groupsQ)} onRefresh={groupsQ.refetch} refreshing={groupsQ.loading}
         info="Named TLS supported-groups actually seen (GREASE placeholders removed). Hybrid ML-KEM groups are quantum-safe; x25519 / secp256r1 and finite-field DH are classical and quantum-vulnerable."
-        note={`${totals.pqcServers} of ${servers.length} servers saw ≥1 PQC-offering session`}>
+        note={serversKnown ? `${totals.pqcServers} of ${servers.length} servers saw ≥1 PQC-offering session` : undefined}>
         <QueryBoundary state={groupsQ} emptyLabel="No TLS supported-groups data in this window">
           <BarList items={groupItems} accent="info" />
         </QueryBoundary>
@@ -189,7 +195,7 @@ export function PqcReadiness() {
 
       <Panel tourId="pqc-worklist" title="Server readiness worklist" onRefresh={serversQ.refetch} refreshing={serversQ.loading}
         info="Every TLS server split by whether any session to it offered a hybrid ML-KEM group. Classical-only servers are the remediation worklist. % quantum-safe is PQC-offering sessions ÷ all sessions to that server. Data-sensitivity is a heuristic classification of the SNI, not a feed field."
-        query={SERVERS_Q} computed={serversComputed} snapshot={snapshotOf(serversQ)} note={`${classical.length} classical-only · ${capable.length} PQC-capable`}>
+        query={SERVERS_Q} computed={serversComputed} snapshot={snapshotOf(serversQ)} note={serversKnown ? `${classical.length} classical-only · ${capable.length} PQC-capable` : undefined}>
         <QueryBoundary state={serversQ} emptyLabel="No TLS servers in this window">
           <div className="pqc-worklist">
             <div className="pqc-group-head pqc-head-bad">

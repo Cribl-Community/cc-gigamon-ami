@@ -256,6 +256,26 @@ describe('provenance', () => {
     expect(m.band.high).toBe(9297.7)
     expect(m.basis).toBe('measured')
   })
+
+  it('calls measured only the TLS/PQC queries the parity run actually billed', () => {
+    // The 2026-09-27 parity run submitted TLS PQC_BY_SERVER and PQC GROUPS_Q
+    // (19.5–30.7 CPU-s on JSON); TLS SERVERS and PQC SERVERS_Q were ineligible
+    // and never ran. A 'measured' label on those two would be a figure nobody took.
+    for (const id of ['gno_tls_pqc_c1h', 'gno_pqc_groups_c1h'] as const) {
+      const s = estimateEntrySaving(id)
+      expect(s.scheduledRun.basis, id).toBe('measured')
+      expect(s.scheduledRun.cpuSeconds, id).toBe(30.7)
+      expect(s.provenance, id).toContain('19.5–30.7')
+      expect(s.modelledLiveCost, id).toBe(false)
+    }
+    for (const id of ['gno_tls_servers_c1h', 'gno_pqc_servers_c1h'] as const) {
+      const s = estimateEntrySaving(id)
+      expect(s.scheduledRun.basis, id).not.toBe('measured')
+      expect(s.scheduledRun.band.low, id).toBeLessThan(s.scheduledRun.band.high)
+      expect(s.modelledLiveCost, id).toBe(true)
+      expect(s.provenance, id).not.toContain('19.5–30.7')
+    }
+  })
 })
 
 describe('the manifest and the measurements stay in step', () => {
