@@ -137,8 +137,24 @@ describe('classifyQuery — a presence term in the search head', () => {
   })
 
   it.each([
-    ['a quoted value', 'http_host="*"'],
-    ['a quoted value that spells a term', 'app_name="x http_code=*"'],
+    ['a double-quoted star', 'http_host="*"'],
+    ['a single-quoted star', "http_host='*'"],
+    ['a quoted run of stars, negated', 'http_host != "**"'],
+  ])('reads %s as the same presence term as a bare one', (_, head) => {
+    expect(classifyQuery(Q(head)).hits).toEqual([{ cls: 'A', field: 'http_host' }])
+    expect(classifyQuery(Q(head)).fields).toEqual(['http_host'])
+  })
+
+  it.each([
+    ['a quoted wildcard value', 'http_host="*.example.com"'],
+    // Each of these would be a term if the quotes were not blanked first: the
+    // spelled term is followed by a space or a parenthesis, which the term's
+    // own lookahead accepts.
+    ['a quoted value that spells a term', 'app_name="x http_code=* y"'],
+    ['a quoted value that spells a term in parentheses', 'app_name="(http_code=*)"'],
+    ['a single-quoted value that spells a term', "app_name='x http_code=* y'"],
+    ['a quoted star inside another quoted value', `app_name='x http_code="*" y'`],
+    ['the dataset selector, quoted', 'dataset="*"'],
     ['a wildcard value', 'http_host=*.example.com'],
     ['a comparison', 'http_code==*'],
     ['the dataset selector, anywhere', 'dataset=*'],
@@ -146,9 +162,24 @@ describe('classifyQuery — a presence term in the search head', () => {
     expect(classifyQuery(Q(head)).hits.filter((h) => h.cls === 'A'), head).toEqual([])
   })
 
-  it('reads only the head: a term after the first pipe is not one', () => {
-    // Not a form any dashboard writes; the head is where Cribl's search terms sit.
+  it('reads a key after the first pipe as a key, not a term', () => {
     expect(classifyQuery('dataset="gigamon_ami" | summarize n=count() by http_code').hits).toEqual([{ cls: 'F', field: 'http_code' }])
+  })
+
+  it('reads a presence term in a | search stage as class A, as in the head', () => {
+    expect(classifyQuery('dataset="gigamon_ami" | search http_code=* | summarize n=count()').hits).toEqual([{ cls: 'A', field: 'http_code' }])
+    expect(
+      classifyQuery('dataset="gigamon_ami" app_name="http" | search http_host!="*" | summarize total=count() by bin(_time,1m)').hits,
+    ).toEqual([{ cls: 'A', field: 'http_host' }])
+    // …and a quoted value there is still a value.
+    expect(classifyQuery('dataset="gigamon_ami" | search app_name="x http_code=* y" | summarize n=count()').hits).toEqual([])
+  })
+
+  it('refuses a | search presence term in the table check, whatever the types', () => {
+    const q = 'dataset="gigamon_ami" | search http_code=* | summarize total=count() by bin(_time,1m)'
+    const e = eligibility(q, FIELD_TYPES, { http_code: { present: 1, total: 1 } })
+    expect(e.eligible).toBe(false)
+    expect(e.refusals.some((r) => r.kind === 'class' && r.words.startsWith('class A on http_code'))).toBe(true)
   })
 
   it('still reads the field behind a term, so the type table sees it', () => {

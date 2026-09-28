@@ -39,9 +39,11 @@
 //      §6), not a Parquet one.
 //   D  `b=*` read ≈2× the JSON value for one STRING field in the lab (proof
 //      (g), 2026-09-24). On the first real parity run (2026-09-27, THE FIRST
-//      PARITY RUN below) `f=*` matched EVERY Parquet row on each of the six
-//      string fields it was read on: an absent field is stored as "" (or 0 on
-//      a number; unmeasured under `=*`), and `=*` admits it. That is class A's failure — a presence test
+//      PARITY RUN below) `f=*` matched EVERY Parquet row on `http_code`
+//      (web.trend's total became the whole feed), and on the five other string
+//      fields it was read on a "" key appeared (its count not recorded): an
+//      absent field is stored as "" (or 0 on a number — unmeasured under
+//      `=*`), and `=*` admits it. That is class A's failure — a presence test
 //      that reads true everywhere — so a whole query's presence term is class
 //      A (`classifyQuery`, PRESENCE TERMS). This scalar check still files its
 //      two presence columns under D, which is what they measure.
@@ -69,7 +71,10 @@
 //     gained a "" key (both-"" and one-side-"" pairs on the flow map).
 //   * Billed 2,302 CPU-s over 69 jobs (3 completeness checks, 6 control
 //     counts, 60 query runs), against a printed floor of ≈6,383. Per query per
-//     15-minute window, JSON ≈25–31 CPU-s and Parquet ≈33–48.
+//     15-minute window, JSON ≈18–35 CPU-s (window means ≈22, 29, 29) and
+//     Parquet ≈28–49 (means ≈34, 41, 40) — the two overlap: Parquet's cheapest
+//     run is below JSON's dearest. The control counts: JSON ≈28–59, Parquet
+//     ≈40–65; the completeness checks ≈16–21.
 // Evidence objects exist in the report for the two passing families and are
 // NOT pasted into routing/table.ts: nothing is routed, and the reason to route
 // at all — Live-mode latency — has not been measured on either side.
@@ -225,7 +230,7 @@ export const NULL_CLASSES: Readonly<Record<NullClass, { pattern: string; underPa
   A: { pattern: 'isnotnull(f)', underParquet: 'is true on every row, so a rare signal counts the whole window' },
   B: { pattern: 'count(f)', underParquet: 'counts every row, so every detection fires' },
   C: { pattern: 'dcount(f)', underParquet: 'gains one distinct value, the empty string' },
-  D: { pattern: 'f=* presence filter', underParquet: 'admits every row, so a scoped panel stops being scoped' },
+  D: { pattern: 'f=* presence filter', underParquet: 'admits every row where the field was absent (measured on a string field, inferred on a number), so a scoped panel stops being scoped' },
   E: { pattern: 'percentile / avg / min(f)', underParquet: 'is dragged toward 0 by rows that never had a value' },
 })
 
@@ -941,17 +946,23 @@ export function compareParity(
 // `x` too (conservative: a made column carries every raw field its expression
 // read, whatever the function did to them).
 //
-// PRESENCE TERMS. A search-head term `f=*` is class A on `f`, and so is its
-// negation `f!=*` (measured 2026-09-27, THE FIRST PARITY RUN above): Parquet
-// stores an absent field as "" or 0, so `f=*` holds on every row and `f!=*` on
-// none — the same failure as `isnotnull(f)`/`isnull(f)`, and refused the same
-// way, whatever the field's density. A dense field would read the same on both
+// PRESENCE TERMS. A search term `f=*` is class A on `f`, and so is its
+// negation `f!=*`. Measured 2026-09-27 (THE FIRST PARITY RUN above) for `f=*`
+// on string fields: on `http_code` (web.trend) it matched every Parquet row,
+// and on five other string fields a "" key appeared (its count not recorded).
+// That `f!=*` then holds on no row, and that a numeric field's 0 fill behaves
+// the same under `=*`, are INFERRED, not measured. Either way it is the same
+// failure as `isnotnull(f)`/`isnull(f)`, and refused the same way, whatever
+// the field's density. A dense field would read the same on both
 // copies; that exemption is given up on purpose, because the fix for every
 // such text is the 8.2 rewrite rather than a density measurement, and an error
 // here must be towards "not eligible". Until 2026-09-27 the term was class D,
-// gated on density, which the table check does not see. Only the head (before
-// the first pipe) is read for it; a quoted value (`x="a=*"`), a wildcard value
-// (`f=*.example.com`), `f==*` and the dataset selector are not terms.
+// gated on density, which the table check does not see. It is read in the
+// head (before the first pipe) and in any `| search` stage, the two places
+// search-term syntax sits. A quoted value made only of `*` (`f="*"`, `f='*'`)
+// is the same wildcard as bare `*`, so it is a term too; any other quoted text
+// (`x="a=* b"`), a wildcard value (`f=*.example.com`), `f==*` and the dataset
+// selector are not.
 //
 // C is reported and is NEUTRAL (Phase 8 design §2.3): JSON already counts the
 // absent value as one distinct value on a sparse field (F-19), and Parquet's
@@ -1014,12 +1025,23 @@ function splitOutside(s: string, sep: string): string[] {
 }
 
 /**
- * A search-head presence term: `f=*` (present) or `f!=*` (absent), standing
- * alone — not `f==*`, not a wildcard value such as `f=*.example.com`, and never
- * inside quotes (the caller blanks those). Group 1 is what precedes it, group 2
- * the field.
+ * A presence term in search-term syntax: `f=*` (present) or `f!=*` (absent),
+ * standing alone — not `f==*`, not a wildcard value such as `f=*.example.com`,
+ * and never inside quotes (`searchTerms` blanks those first). Group 1 is what
+ * precedes it, group 2 the field.
  */
-const PRESENCE_TERM_RE = /(^|[\s(])([A-Za-z_][\w.]*)\s*!?=\s*\*(?=[\s)]|$)/g
+const PRESENCE_TERM_RE = /(^|[\s(])([A-Za-z_][\w.]*)\s*!?=\s*\*+(?=[\s)]|$)/g
+
+/**
+ * Search-term text with every quoted string blanked to `""` — except a quoted
+ * value made only of `*` (`f="*"`, `f='*'`), which is Cribl's wildcard in
+ * quotes as much as bare (`dataset="*"`, `host="web*"`), and so becomes `*`:
+ * the same presence term as `f=*`. A quoted value mixing `*` with other text
+ * (`"*.example.com"`) is blanked, as a bare one would not match either.
+ */
+function searchTerms(text: string): string {
+  return text.replace(/"[^"]*"|'[^']*'/g, (m) => (/^(["'])\*+\1$/.test(m) ? '*' : '""'))
+}
 
 const KEYWORDS = new Set(['and', 'or', 'not', 'in', 'by', 'asc', 'desc', 'true', 'false', 'null'])
 const NORMALISED_RE = /^iif\(\s*isnotnull\(\s*([\w.]+)\s*\)\s*,\s*\1\s*,\s*""\s*\)$/
@@ -1138,15 +1160,19 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
     for (const f of rawOf(expr)) hit('F', f)
   }
 
-  // A presence term in the search head — `f=*`, or its negation `f!=*` — is
-  // class A on `f`, not D (measured 2026-09-27; see PRESENCE TERMS above).
-  // Quoted text is blanked first, so `x="a=*"` is a value, not a term, and the
-  // dataset selector is never a field.
-  const bareHead = head.replace(/"[^"]*"|'[^']*'/g, '""')
-  for (const m of bareHead.matchAll(PRESENCE_TERM_RE)) {
-    if (m[2].toLowerCase() !== 'dataset') hit('A', m[2])
+  // A presence term in search-term text — the head, or a `| search` stage —
+  // `f=*`, `f="*"` or a negation `f!=*`, is class A on `f`, not D (see
+  // PRESENCE TERMS above). Quoted text is blanked first (`searchTerms`), so
+  // `x="a=* b"` is a value, not a term, and the dataset selector is never a
+  // field.
+  const presence = (text: string) => {
+    const bare = searchTerms(text)
+    for (const m of bare.matchAll(PRESENCE_TERM_RE)) {
+      if (m[2].toLowerCase() !== 'dataset') hit('A', m[2])
+    }
+    read(bare.replace(PRESENCE_TERM_RE, (_, lead: string, f: string) => `${lead}${f}`))
   }
-  read(bareHead.replace(PRESENCE_TERM_RE, (_, lead: string, f: string) => `${lead}${f}`))
+  presence(head)
 
   for (const stage of stages) {
     const verb = /^([\w-]+)/.exec(stage)?.[1] ?? ''
@@ -1184,6 +1210,10 @@ export function classifyQuery(query: string, types: Readonly<Record<string, Fiel
       // After a summarize only its own columns exist; each carries its lineage.
       const next = made.map(([n, e]) => [n, NORMALISED_RE.test(e) ? [] : rawOf(e)] as const)
       for (const [n, raw] of next) lineage.set(n, [...raw])
+    } else if (verb === 'search') {
+      // Search-term syntax after a pipe: its presence terms are the head's.
+      classes(body)
+      presence(body)
     } else if (verb === 'distinct') {
       for (const part of splitTopLevel(body)) {
         const [name, expr] = named(part)
