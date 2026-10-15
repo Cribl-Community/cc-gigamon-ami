@@ -323,7 +323,7 @@ describe('planEntries', () => {
   })
 
   it('selects an entry once its fields are typed, for evidence', () => {
-    const plan = planEntries({ only: ['capacity.appmix'], types: { total_bytes: 'number', app_name: 'string' } })
+    const plan = planEntries({ only: ['capacity.appmix'], types: { src_bytes: 'number', dst_bytes: 'number', app_name: 'string' } })
     expect(plan.selected).toEqual([expect.objectContaining({ id: 'capacity.appmix', mode: 'evidence', ineligible: [] })])
   })
 
@@ -349,11 +349,11 @@ describe('the evidence an entry earns', () => {
   const win = (h: number): RunWindow => ({ earliest: T0 + h * 3600, latest: T0 + h * 3600 + 900, label: `h${h}` })
   const compared = (w: RunWindow): WindowResult => ({ window: w, status: 'compared', why: null, completeness: { complete: true, why: null, checkedAt: 0, buckets: [] }, control: null, drift: 0 })
   const TEXT = ROUTES.find((e) => e.id === 'capacity.appmix')!.queries[0]
-  const TYPES: Record<string, FieldType> = { total_bytes: 'number', app_name: 'string' }
+  const TYPES: Record<string, FieldType> = { src_bytes: 'number', dst_bytes: 'number', app_name: 'string' }
   const entry = (verdicts: string[], windows: RunWindow[], mode: 'evidence' | 'measurement' = 'evidence'): RunResult['entries'][number] => ({
     id: 'capacity.appmix',
     mode,
-    ineligible: mode === 'measurement' ? ['type not measured: total_bytes, app_name'] : [],
+    ineligible: mode === 'measurement' ? ['type not measured: src_bytes, dst_bytes, app_name'] : [],
     texts: [{ query: TEXT, submitted: TEXT, perWindow: windows.map((w, i) => ({ window: w, verdict: verdicts[i] as 'pass', sentence: '', rows: { json: 1, parquet: 1 }, grouped: null, report: null, textDiffers: [] })) }],
   })
 

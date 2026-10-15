@@ -57,7 +57,7 @@
 // texts read that no census counted per type (fieldTypes.test.ts pins this
 // list, so it shrinks only with the table):
 //   never in any census: total_bytes, src_bytes, dst_bytes, total_packets,
-//     tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count, dst_ip, http_rtt,
+//     tcp_dup_ack, tcp_reset, tcp_flag_reset, tcp_wrong_crc, tcp_loss_count, dst_ip, http_rtt,
 //     ssl_mitm_score, ssl_issuer, ssl_common_name, ssl_protocol_version,
 //     ssl_server_supported_version, ssl_validity_not_after
 // A pipeline cast or derive is a claim about the code, not a measurement of

@@ -31,9 +31,9 @@ import {
 import { ROUTES, tableProblems, type RouteEntry } from './routing/table'
 
 const NOW = Date.UTC(2026, 9, 1, 12, 7, 31) / 1000
-// Capacity's application mix: a top N with no presence term, so eligible once its two fields are
+// Capacity's application mix: a top N with no presence term, so eligible once its input fields are
 // typed. (web.codes served here until 2026-09-27, when its `http_code=*` head became class A.)
-const TYPES: Record<string, FieldType> = { total_bytes: 'number', app_name: 'string' }
+const TYPES: Record<string, FieldType> = { src_bytes: 'number', dst_bytes: 'number', app_name: 'string' }
 const TOP = ROUTES.find((e) => e.id === 'capacity.appmix')!.queries[0]
 /** What the runner submits for TOP: its `limit 8` raised, so a tie at rank 8 can be seen. */
 const TOP_SUBMITTED = comparisonText(TOP)

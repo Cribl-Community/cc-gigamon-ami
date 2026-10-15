@@ -68,7 +68,7 @@ describe('per-install density', () => {
   // it matching every Parquet row, and A refuses whatever the density.
   const BY_SOURCE = 'dataset="gigamon_ami" | summarize bytes=sum(total_bytes) by src_ip | sort by bytes desc | limit 12'
   const TALKERS = buildTalkersQuery('src_ip', '')
-  const types = { src_ip: 'string', total_bytes: 'number' } as const
+  const types = { src_ip: 'string', total_bytes: 'number', src_bytes: 'number', dst_bytes: 'number' } as const
 
   it('refuses F while this install has not measured the key', () => {
     const e = eligibility(BY_SOURCE, types, NO_DENSITY)

@@ -26,7 +26,7 @@ describe('classifyQuery — a whole dashboard query', () => {
     expect(has(hits, 'A', 'src_ip')).toBe(true)
     expect(hits.some((h) => h.cls === 'D'), 'a presence term is A since 2026-09-27, not D').toBe(false)
     expect(has(hits, 'F', 'src_ip')).toBe(true)
-    expect(fields.sort()).toEqual(['src_ip', 'total_bytes'])
+    expect(fields.sort()).toEqual(['dst_bytes', 'src_bytes', 'src_ip'])
   })
 
   it('reports C on DNS OVERALL and nothing else — C is neutral, not a refusal', () => {
@@ -49,10 +49,10 @@ describe('classifyQuery — a whole dashboard query', () => {
     expect(has(hits, 'F', 'dns_host')).toBe(true)
   })
 
-  it('treats the normalised key iif(isnotnull(x), x, "") as neither A nor F (APP_L4)', () => {
+  it('exempts the normalised app key but tracks the protocol-derived L4 key (APP_L4)', () => {
     const { hits, fields } = classifyQuery(APP_L4_SNAPSHOT_QUERY)
-    expect(hits, 'app and l4 are made by the query and read "" for an absent value on both datasets').toEqual([])
-    expect(fields.sort()).toEqual(['app_name', 'l4_proto', 'total_bytes'])
+    expect(hits).toEqual([{ cls: 'F', field: 'protocol' }])
+    expect(fields.sort()).toEqual(['app_name', 'dst_bytes', 'protocol', 'src_bytes'])
   })
 
   it('still sees F on a raw key beside a normalised one (service edges)', () => {

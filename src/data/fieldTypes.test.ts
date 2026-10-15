@@ -60,7 +60,7 @@ describe('the table holds only measured types', () => {
     expect(sorted([...routedFields()].filter((f) => FIELD_TYPES[f] === undefined))).toEqual(sorted([
       'http_rtt',
       'total_bytes', 'src_bytes', 'dst_bytes', 'total_packets',
-      'tcp_dup_ack', 'tcp_reset', 'tcp_wrong_crc', 'tcp_loss_count', 'dst_ip',
+      'tcp_dup_ack', 'tcp_reset', 'tcp_flag_reset', 'tcp_wrong_crc', 'tcp_loss_count', 'dst_ip',
       'ssl_mitm_score', 'ssl_issuer', 'ssl_common_name', 'ssl_protocol_version',
       'ssl_server_supported_version', 'ssl_validity_not_after',
     ]))
