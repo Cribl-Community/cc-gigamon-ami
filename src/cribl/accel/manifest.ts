@@ -1177,8 +1177,8 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         // sentinel exists for: unclassified traffic still carries a protocol,
         // and dropping it here would take the TCP/UDP/ICMP totals down by
         // exactly the traffic a capacity reader is hunting for.
-        tail: '| summarize bytes=sum(bytes) by l4 | extend l4_proto=l4 | sort by bytes desc',
-        reads: ['l4_proto', 'bytes'],
+        tail: '| summarize bytes=sum(bytes) by l4 | extend l4_protocol=l4 | sort by bytes desc',
+        reads: ['l4_protocol', 'bytes'],
       },
     ],
     body: APP_L4_SNAPSHOT_QUERY,

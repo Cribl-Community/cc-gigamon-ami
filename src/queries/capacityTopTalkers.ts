@@ -33,13 +33,13 @@ function scopeFor(pivot: Pivot, applied: string) {
 /**
  * The six aggregates behind the KPI tiles, as a fragment.
  *
- * Exported so the hourly snapshot body (src/queries/snapshots.ts) can hold the
- * SAME characters rather than a retyped copy of them. The ⓘ over these tiles
- * claims this computation produced the number; if the scheduled body restated it
- * the two would drift the first time somebody edited one, silently, because both
- * would still return six numbers.
+ * The byte expression and remaining aggregates are shared with the hourly
+ * snapshot. It uses a separate byte column so Data Flow keeps its own meaning
+ * of total_bytes while Capacity computes the same total on both read paths.
  */
-export const KPI_AGGS = 'total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)'
+export const KPI_TOTAL_BYTES = 'coalesce(src_bytes, 0) + coalesce(dst_bytes, 0)'
+export const KPI_SOURCE_AGGS = 'tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)'
+export const KPI_AGGS = `total=sum(total_bytes), ${KPI_SOURCE_AGGS}`
 
 /**
  * The one aggregate the three byte panels below share: bytes, summed.
@@ -51,32 +51,33 @@ export const KPI_AGGS = 'total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(sr
  * they agree today and drift the first time somebody changes what "bytes"
  * means here — silently, because both still return a byte count.
  *
- * The builders below are composed from it and produce exactly the strings they
- * produced before; this is a fragment being named, not a query being edited.
+ * App Top Talkers, app mix and L4 split derive total_bytes from the two
+ * directions first, as does their shared snapshot.
  */
 export const BYTES_AGG = 'bytes=sum(total_bytes)'
+export const L4_PROTOCOL = 'case(protocol == 6, "TCP", protocol == 17, "UDP", protocol == 1, "ICMP", protocol == 58, "ICMPv6", protocol == 132, "SCTP", "Other")'
 
 /** Window totals behind the six KPI tiles. */
 export function buildKpiQuery(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| summarize ${KPI_AGGS}`)
+  return q(`${scope}| extend total_bytes = ${KPI_TOTAL_BYTES} | summarize ${KPI_AGGS}`)
 }
 
 /** Busiest entities by bytes, for the pivot in force. */
 export function buildTalkersQuery(pivot: Pivot, applied: string) {
   const p = pivotFor(pivot)
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}${p.field}=* | summarize ${BYTES_AGG} by ${p.field} | sort by bytes desc | limit 12`)
+  return q(`${scope}${p.field}=* | extend total_bytes = ${KPI_TOTAL_BYTES} | summarize ${BYTES_AGG} by ${p.field} | sort by bytes desc | limit 12`)
 }
 
 /** App protocol mix (donut + ranked list). */
 export function buildAppmixQuery(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| summarize ${BYTES_AGG} by app_name | sort by bytes desc | limit 8`)
+  return q(`${scope}| extend total_bytes = ${KPI_TOTAL_BYTES} | summarize ${BYTES_AGG} by app_name | sort by bytes desc | limit 8`)
 }
 
 /** Byte split across transport protocols. */
 export function buildL4Query(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| summarize ${BYTES_AGG} by l4_proto | sort by bytes desc`)
+  return q(`${scope}| extend l4_protocol = ${L4_PROTOCOL} | extend total_bytes = ${KPI_TOTAL_BYTES} | summarize ${BYTES_AGG} by l4_protocol | sort by bytes desc`)
 }

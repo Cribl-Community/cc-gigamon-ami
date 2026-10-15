@@ -72,8 +72,8 @@ const APPMIX_ROWS: Row[] = [
   { app_name: '', bytes: 1e8, ...virt(MIX) },
 ]
 const L4_ROWS: Row[] = [
-  { l4_proto: 'tcp', bytes: 9e8, ...virt(MIX) },
-  { l4_proto: '', bytes: 1e8, ...virt(MIX) },
+  { l4_protocol: 'tcp', bytes: 9e8, ...virt(MIX) },
+  { l4_protocol: '', bytes: 1e8, ...virt(MIX) },
 ]
 
 const run = (over: Record<string, unknown> = {}) => ({
@@ -233,7 +233,7 @@ describe('the default view', () => {
     const reads = storedReads().map((s) => s.query)
     expect(reads.filter((q) => q.includes(`jobName="${MIX}"`)), 'the mix panels did not read this entry').toHaveLength(2)
     expect(reads.some((q) => q.includes('by app | extend app_name=app')), 'the donut did not sum along the application key').toBe(true)
-    expect(reads.some((q) => q.includes('by l4 | extend l4_proto=l4')), 'the L4 split did not sum along the protocol key').toBe(true)
+    expect(reads.some((q) => q.includes('by l4 | extend l4_protocol=l4')), 'the L4 split did not sum along the protocol key').toBe(true)
   })
 
   it('keeps the unclassified traffic on screen, under the word the live path uses for it', async () => {
@@ -340,7 +340,7 @@ describe('the entry these panels read', () => {
     // `extend`, and the totals simply come back short. Two sentinels because
     // both keys are nullable and each panel sums along the other one.
     expect(entry.body).toContain('extend app=iif(isnotnull(app_name), app_name, "")')
-    expect(entry.body).toContain('l4=iif(isnotnull(l4_proto), l4_proto, "")')
+    expect(entry.body).toContain('l4=case(protocol == 6, "TCP", protocol == 17, "UDP", protocol == 1, "ICMP", protocol == 58, "ICMPv6", protocol == 132, "SCTP", "Other")')
     expect(appmix.tail, 'the donut must sum across every protocol, sentinel included').not.toContain('where l4')
     expect(l4.tail, 'the L4 split must sum across every application, sentinel included').not.toContain('where app')
     expect(talkers.tail, 'the bar list must exclude the sentinel, which is what its `app_name=*` head did').toContain('where app != ""')

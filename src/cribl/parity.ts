@@ -326,7 +326,7 @@ export const PARITY_CHECKS: readonly ParityCheck[] = Object.freeze([
     protects: {
       txns: 'Web & API · "HTTP transactions" tile',
       errors: 'Web & API · "Error rate" tile (its 4xx/5xx count)',
-      server_p95: 'Web & API · "Server think-time p95" tile',
+      server_p95_ms: 'Web & API · "Server think-time p95" tile',
       hosts: 'Web & API · distinct http_host (computed by the tile query, not drawn)',
       h2: 'Web & API · "HTTP/2 transactions" tile',
     },

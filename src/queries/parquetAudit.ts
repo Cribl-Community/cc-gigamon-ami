@@ -119,13 +119,13 @@ export const MEASURED_TYPES: Readonly<Record<string, 'number' | 'string'>> = Obj
  */
 export const CENSUS_FIELDS: readonly string[] = Object.freeze([
   // The fields the design names first (§1.2, §4 8.0b).
-  'http2_code', 'krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service',
+  'krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service',
   // The other Findings fields.
   'sip_from', 'http_cookie', 'ftp_data_content', 'snmp_processing_anomaly_type',
   'http_code', 'dns_reply_code', 'udp_wrong_crc', 'ip_wrong_crc',
   // Head filters (class D) and group keys the rewrites touch.
-  'app_name', 'src_ip', 'dst_aws_flat_tags_name', 'src_aws_flat_tags_name', 'dns_host',
-  'http_host', 'http2_host', 'ssl_server_name', 'ssl_ext_ec_supported_groups_type',
+  'app_name', 'src_ip', 'dst_ip', 'dst_aws_flat_tags_name', 'src_aws_flat_tags_name', 'dns_host',
+  'http_host', 'http2_host', 'http_rtt', 'ssl_server_name', 'ssl_ext_ec_supported_groups_type',
 ])
 
 /**
@@ -280,12 +280,10 @@ export type SentinelType = 'string' | 'number' | 'unknown'
  */
 export const SENTINEL_FIELDS: readonly string[] = Object.freeze([
   // Uncast: the census decides the form.
-  'http_code', 'http2_code', 'krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service',
+  'http_code', 'krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service',
   'sip_from', 'http_cookie', 'ftp_data_content', 'snmp_processing_anomaly_type',
-  'app_name', 'src_ip', 'dst_aws_flat_tags_name', 'src_aws_flat_tags_name', 'dns_host',
-  'http_host', 'http2_host', 'ssl_server_name', 'ssl_ext_ec_supported_groups_type',
-  // Computed strings.
-  'l4_proto', 'src_subnet', 'dst_subnet', 'src_subnet16', 'dst_subnet16',
+  'app_name', 'src_ip', 'dst_ip', 'dst_aws_flat_tags_name', 'src_aws_flat_tags_name', 'dns_host',
+  'http_host', 'http2_host', 'http_rtt', 'ssl_server_name', 'ssl_ext_ec_supported_groups_type',
   // Numbers (the design's list: §4 8.0c).
   'tcp_rtt', 'tcp_rtt_app', 'http_server_ms', 'dns_response_time', 'dst_port',
 ])

@@ -38,7 +38,7 @@
 // claim, and would double up with the one search.ts already adds.
 
 import { q } from '../cribl/search'
-import { KPI_AGGS as CAPACITY_KPI_AGGS } from './capacityTopTalkers'
+import { buildKpiQuery } from './capacityTopTalkers'
 import { OVERALL as DNS_OVERALL } from './dnsHealth'
 import { FINDINGS_QUERY } from './findings'
 import { COUNTS } from './security'
@@ -207,7 +207,7 @@ export const PARITY_FINDINGS_QUERY = FINDINGS_QUERY
 export const PARITY_DNS_QUERY = DNS_OVERALL
 
 /**
- * Class E (`server_p95`) and class B (`txns`, `h2`): the Web & API tab's tile
+ * Class E (`server_p95_ms`) and class B (`txns`): the Web & API tab's tile
  * query, as the tab runs it.
  */
 export const PARITY_WEB_KPI_QUERY = WEB_KPI
@@ -217,7 +217,7 @@ export const PARITY_WEB_KPI_QUERY = WEB_KPI
  * query with no filter typed — character for character what
  * `buildKpiQuery(pivot, '')` builds, which cribl/parity.test.ts pins.
  */
-export const PARITY_CAPACITY_KPI_QUERY = q('| summarize ' + CAPACITY_KPI_AGGS)
+export const PARITY_CAPACITY_KPI_QUERY = buildKpiQuery('src_ip', '')
 
 /**
  * Class E at its most exposed: the TCP tab's latency aggregates — percentile,

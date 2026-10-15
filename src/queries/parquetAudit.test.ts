@@ -157,7 +157,7 @@ describe('the census field list, derived', () => {
   })
 
   it('holds the fields the design names first', () => {
-    for (const f of ['http2_code', 'krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service']) expect(CENSUS_FIELDS).toContain(f)
+    for (const f of ['krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service']) expect(CENSUS_FIELDS).toContain(f)
   })
 
   it('checks the design\'s numeric sentinel fields and a numeric control, and nothing else typed', () => {
@@ -246,21 +246,21 @@ describe('the sentinel field list, derived', () => {
     expect(sorted(numeric)).toEqual(sorted(['tcp_rtt', 'tcp_rtt_app', 'http_server_ms', 'dns_response_time', 'dst_port']))
   })
 
-  it('takes http_code as a string, and leaves krb5_message_type and http2_code to the census', () => {
+  it('takes http_code as a string, and leaves krb5_message_type and http_rtt to the census', () => {
     expect(STATIC_FIELD_TYPES.http_code).toBe('string')
     expect(STATIC_FIELD_TYPES.krb5_message_type).toBe('unknown')
-    expect(STATIC_FIELD_TYPES.http2_code).toBe('unknown')
-    expect(STATIC_FIELD_TYPES.src_subnet).toBe('string')
+    expect(STATIC_FIELD_TYPES.http_rtt).toBe('unknown')
+    expect(STATIC_FIELD_TYPES.dst_ip).toBe('unknown')
   })
 })
 
 describe('sentinelAuditQuery', () => {
   it('emits the form the type says, and both for unknown', () => {
-    const text = sentinelAuditQuery({ http_code: 'string', tcp_rtt: 'number', http2_code: 'unknown' })
+    const text = sentinelAuditQuery({ http_code: 'string', tcp_rtt: 'number', http_rtt: 'unknown' })
     expect(text).toBe(
       'dataset="gigamon_ami" | summarize rows=count(), ' +
         'sn_http_code=count(http_code), se_http_code=countif(http_code==""), ' +
-        'sn_http2_code=count(http2_code), se_http2_code=countif(http2_code==""), sz_http2_code=countif(http2_code==0), ' +
+        'sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==""), sz_http_rtt=countif(http_rtt==0), ' +
         'sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0)',
     )
   })

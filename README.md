@@ -199,6 +199,46 @@ installed or in the in-UI Live Preview. See [`CLAUDE.md`](./CLAUDE.md) and [`AGE
 for the full developer guide (runtime detection, fetch proxy, KV store, `proxies.yml` /
 `policies.yml`, and Capra UI rules).
 
+Capacity's KPI query derives `total_bytes` from `coalesce(src_bytes, 0) +
+coalesce(dst_bytes, 0)`. Its hourly overview snapshot uses the same calculation
+without changing the other panels' byte aggregates. After installing this change,
+Re-apply `gno_overview_c1h` in Guided Setup's Acceleration panel to update its saved
+query. Source IP Top Talkers uses the same calculated byte total; Re-apply
+`gno_talkers_src_c1h` to update that saved query too. App Protocol Mix and Traffic
+by L4 Protocol also calculate bytes from the two directions; Re-apply
+`gno_app_l4_c1h` for their snapshots and for App Top Talkers, which now uses the
+same calculation while grouping by `app_name`. AWS-service Top Talkers also uses
+this calculation, grouped by `dst_aws_flat_tags_name`; it runs live and has no
+saved snapshot query to Re-apply.
+
+Traffic by L4 Protocol derives `l4_protocol` from `protocol`: 6 → TCP,
+17 → UDP, 1 → ICMP, 58 → ICMPv6, 132 → SCTP, and all other values → Other.
+Re-apply `gno_app_l4_c1h` after this mapping changes so its stored runs agree.
+
+TCP Health's /24 and /16 heatmaps derive subnet fields from the IPv4
+endpoints using Cribl Search's `extract()` and `strcat()`, with `.0/24` and
+`.0.0/16` labels respectively.
+Endpoints that do not match the dotted-quad pattern are excluded. All four metrics
+and their cell drill-downs use the same derivation. Re-apply
+`gno_tcp_subnet24_c1h` and `gno_tcp_subnet16_c1h` after installing these changes
+to update the snapshot queries.
+
+Resets over time sums `tcp_flag_reset` in one-minute bins alongside the flow
+count; the chart still displays resets per flow. This trend runs live, so no
+schedule Re-apply is needed. Reset heatmaps still sum `tcp_reset`.
+
+Web & API's KPI row uses `server_p95_ms=percentile(http_rtt,95)*1000` for the
+Server think-time p95 tile; HTTP/2 transactions reads `h2=sum(iif(app_name=="http2",1,0))`
+from the same query. Re-apply `gno_overview_c1h` after installing this change.
+The separate Slowest hosts panel still uses `http_server_ms`.
+HTTP/2 Hosts filters on `app_name="http2"` and `http2_host=*`, then counts by
+`http2_host`. Re-apply `gno_web_h2_c1h` after installing this filter change.
+
+All Shadow AI queries derive `total_bytes` from coalesced `src_bytes` plus
+`dst_bytes`: the apps query shared by AI & LLM Applications and SaaS Applications,
+the AI users/flows totals, and Top AI users. The shared snapshot uses the same
+calculation. Re-apply `gno_app_src_c1h` after installing this change.
+
 ## Releasing
 
 Releases are cut by pushing a `v*` tag. The workflow at

@@ -72,7 +72,7 @@ describe('auditWindows', () => {
 
 describe('auditCostEstimate', () => {
   it('reproduces the measured 2026-09-25 run for its own shape: 5,457 + 290 ≈ 5,747 CPU-s, not the flat ≈828', () => {
-    const e = auditCostEstimate(auditWindows(NOON))
+    const e = auditCostEstimate(auditWindows(NOON), DEFAULT_COST_BASIS, MEASURED_RUN.census.fields)
     expect(Math.round(e.census)).toBe(MEASURED_RUN.census.billed)
     expect(Math.round(e.sentinel)).toBe(290)
     expect(Math.round(e.total)).toBe(5_747)
@@ -83,7 +83,8 @@ describe('auditCostEstimate', () => {
     expect(DEFAULT_COST_BASIS.censusCpuPer1kRowsPerField).toBeCloseTo(5_457 / 1_049.258 / 28, 9)
     expect(DEFAULT_COST_BASIS.sentinelCpuPer1kRows).toBeCloseTo((51 + 111 + 128) / 786.522, 9)
     expect(DEFAULT_COST_BASIS.rowsPerHour).toBe(1_049_258)
-    expect(MEASURED_RUN.census.fields).toBe(CENSUS_COLUMNS_FIELDS.length)
+    expect(MEASURED_RUN.census.fields).toBe(28)
+    expect(CENSUS_COLUMNS_FIELDS.length).toBe(29)
   })
 
   it('states itself as a floor from the measured run, dated, and never as a bound', () => {
@@ -91,7 +92,7 @@ describe('auditCostEstimate', () => {
     expect(text).toContain('measured on the demo feed, 2026-09-25')
     expect(text).toContain('5,457 CPU-s')
     expect(text).toContain('51, 111, 128 CPU-s')
-    expect(text).toContain('Expected at least ≈5,747 CPU-s')
+    expect(text).toContain('Expected at least ≈5,942 CPU-s')
     expect(text).toContain('a floor, not a bound')
     expect(text).toContain('wall time only')
     expect(text).not.toMatch(/up to ≈/)
@@ -110,14 +111,14 @@ describe('auditCostEstimate', () => {
 
   it('scales with the install\'s own intake when given it', () => {
     const e = auditCostEstimate(auditWindows(NOON), { ...DEFAULT_COST_BASIS, rowsPerHour: 2 * 1_049_258 })
-    expect(Math.round(e.census)).toBe(2 * 5_457)
+    expect(e.census).toBeCloseTo(2 * 5_457 * CENSUS_COLUMNS_FIELDS.length / MEASURED_RUN.census.fields)
   })
 })
 
 describe('the type census', () => {
   it('types each field from which per-type counts are non-zero, and flags a contradiction of the pipeline', () => {
     const c = readTypeCensus(censusRow({
-      http2_code: { n: 5, l: 5 },
+      http_rtt: { n: 5, l: 5 },
       krb5_message_type: { n: 8, s: 3, i: 5 },
       sip_from: { n: 0 },
       ssl_ext_ec_supported_groups_type: { n: 4 },
@@ -126,7 +127,7 @@ describe('the type census', () => {
       tcp_rtt_app: { n: 9, i: 7, r: 2 },
     }))
     const by = Object.fromEntries(c.map((e) => [e.field, e]))
-    expect(by.http2_code).toMatchObject({ verdict: 'number', names: ['long'] })
+    expect(by.http_rtt).toMatchObject({ verdict: 'number', names: ['long'] })
     expect(by.krb5_message_type).toMatchObject({ verdict: 'mixed', names: ['string', 'int'] })
     expect(by.sip_from).toMatchObject({ verdict: 'absent', names: [], other: 0 })
     // Present values no counted name accounts for are never read as a number or a string.
@@ -162,11 +163,11 @@ describe('the type census', () => {
 
   it('resolves unknowns from a trusted census, keeps them unknown when mixed, and keeps static types when absent', () => {
     const t = censusTypeTable(readTypeCensus(censusRow({
-      http2_code: { n: 5, l: 5 },
+      http_rtt: { n: 5, l: 5 },
       krb5_message_type: { n: 8, s: 3, i: 5 },
       sip_from: { n: 0 },
     })))
-    expect(t.http2_code).toBe('number')
+    expect(t.http_rtt).toBe('number')
     expect(t.krb5_message_type).toBe('unknown')
     expect(t.sip_from).toBe(STATIC_FIELD_TYPES.sip_from)
     expect(t.snmp_community).toBe('string')
@@ -218,13 +219,13 @@ describe('density', () => {
 
 describe('sentinels', () => {
   it('reads the sentinel the type says, over every window, and refuses a verdict it cannot support', () => {
-    const w1: Row = { sn_http_code: 10, se_http_code: 0, sn_tcp_rtt: 50, sz_tcp_rtt: 2, sn_dst_port: 90, sz_dst_port: 0, sn_http2_code: 3, se_http2_code: 0, sz_http2_code: 1, sn_sip_from: 0, se_sip_from: 0, sz_sip_from: 0 }
+    const w1: Row = { sn_http_code: 10, se_http_code: 0, sn_tcp_rtt: 50, sz_tcp_rtt: 2, sn_dst_port: 90, sz_dst_port: 0, sn_http_rtt: 3, se_http_rtt: 0, sz_http_rtt: 1, sn_sip_from: 0, se_sip_from: 0, sz_sip_from: 0 }
     const w2: Row = { ...w1, sz_tcp_rtt: 0 }
-    const types = { ...STATIC_FIELD_TYPES, http2_code: 'number' as const, sip_from: 'string' as const, dcerpc_service: 'string' as const }
+    const types = { ...STATIC_FIELD_TYPES, http_rtt: 'number' as const, sip_from: 'string' as const, dcerpc_service: 'string' as const }
     const by = Object.fromEntries(readSentinels([w1, w2], types).map((e) => [e.field, e]))
     expect(by.http_code).toMatchObject({ applies: '""', present: 20, sentinels: 0, verdict: 'no real sentinel (R eligible)' })
     expect(by.tcp_rtt).toMatchObject({ applies: '0', sentinels: 2, verdict: 'real sentinels (P or J)' })
-    expect(by.http2_code).toMatchObject({ applies: '0', sentinels: 2, verdict: 'real sentinels (P or J)' })
+    expect(by.http_rtt).toMatchObject({ applies: '0', sentinels: 2, verdict: 'real sentinels (P or J)' })
     expect(by.sip_from.verdict).toBe('not exercised')
     expect(by.krb5_message_type).toMatchObject({ applies: null, verdict: 'type unresolved' })
     // A string type the query did not emit `""` for (it ran before the census): no verdict.
@@ -255,7 +256,7 @@ describe('the Markdown report', () => {
     for (const h of ['## Type table (8.0b)', '## Density table (8.0b)', '## Sentinel table (8.0c)', '## Jobs']) expect(md).toContain(h)
     expect(md).toContain('| `tcp_rtt` (check) | 6 | string 6 | string | number | **no** |')
     expect(md).toContain('set max_running_time_per_search=300; dataset="gigamon_ami"')
-    expect(md).toContain('Billed in total: 402 CPU-s, against an estimated floor of ≈5,747.')
+    expect(md).toContain('Billed in total: 402 CPU-s, against an estimated floor of ≈5,942.')
     // The two times are kept apart: when the jobs ran, and what the windows were measured from.
     expect(md).toContain('Taken 2026-09-26T08:15:02.000Z to 2026-09-26T08:21:40.000Z')
     expect(md).toContain('reference time 2026-09-25T12:00:30.000Z (given by `--at`, not when the jobs ran)')
@@ -356,7 +357,7 @@ describe('scripts/parquet-audit.mjs', () => {
     const r = spawnSync(process.execPath, ['scripts/parquet-audit.mjs', '--at', '2026-09-25T12:00:30Z', '--base', 'http://127.0.0.1:9/capi'], { cwd: ROOT, encoding: 'utf8' })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('pinned: measurement')
-    expect(r.stdout).toContain('Expected at least ≈5,747 CPU-s — a floor')
+    expect(r.stdout).toContain('Expected at least ≈5,942 CPU-s — a floor')
     expect(r.stdout).not.toContain('≈828')
     expect(r.stdout).toContain('Nothing submitted. Re-run with --run')
     expect(r.stdout).not.toContain('submitted\n  ')

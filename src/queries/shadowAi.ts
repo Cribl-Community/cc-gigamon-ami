@@ -33,8 +33,10 @@ const AI_IN = AI_APPS.map((a) => `"${a}"`).join(',')
  */
 export const AI_FILTER = `app_name in (${AI_IN})`
 
-export const appsQuery = q('| summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90')
+export const APP_TOTAL_BYTES = 'coalesce(src_bytes, 0) + coalesce(dst_bytes, 0)'
 
-export const aiOverallQuery = q(`| where ${AI_FILTER} | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)`)
+export const appsQuery = q(`| extend total_bytes = ${APP_TOTAL_BYTES} | summarize flows=count(), bytes=sum(total_bytes), users=dcount(src_ip) by app_name | sort by flows desc | limit 90`)
 
-export const aiUsersQuery = q(`| where ${AI_FILTER} | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15`)
+export const aiOverallQuery = q(`| where ${AI_FILTER} | extend total_bytes = ${APP_TOTAL_BYTES} | summarize users=dcount(src_ip), flows=count(), bytes=sum(total_bytes)`)
+
+export const aiUsersQuery = q(`| where ${AI_FILTER} | extend total_bytes = ${APP_TOTAL_BYTES} | summarize aiflows=count(), aiapps=dcount(app_name), bytes=sum(total_bytes) by src_ip | sort by aiflows desc | limit 15`)

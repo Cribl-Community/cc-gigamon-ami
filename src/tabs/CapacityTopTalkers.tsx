@@ -164,7 +164,7 @@ export function CapacityTopTalkers() {
     display: fmtBytes(r.bytes),
     note: `${pctOfLink(toNum(r.bytes)).toFixed(2)}% of ${linkGbps}G`,
   }))
-  const l4Items: BarItem[] = l4.rows.map((r) => ({ label: label(r, 'l4_proto', '?'), value: toNum(r.bytes), display: fmtBytes(r.bytes) }))
+  const l4Items: BarItem[] = l4.rows.map((r) => ({ label: label(r, 'l4_protocol', '?'), value: toNum(r.bytes), display: fmtBytes(r.bytes) }))
   const donutSlices = appmix.rows.map((r, i) => ({ label: label(r, 'app_name', '(none)'), value: toNum(r.bytes), color: MIX_COLORS[i % MIX_COLORS.length] }))
 
   const applyFilter = () => setApplied(filterInput.trim())
@@ -250,7 +250,7 @@ export function CapacityTopTalkers() {
           </QueryBoundary>
         </Panel>
 
-        <Panel anchorRef={l4Near.ref} snapshot={snapshotOf(l4)} computed={l4Computed} title="Traffic by L4 protocol" info="Byte split across transport protocols (l4_proto derived from the IP protocol number)." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="protocol 6=TCP 17=UDP 1=ICMP">
+        <Panel anchorRef={l4Near.ref} snapshot={snapshotOf(l4)} computed={l4Computed} title="Traffic by L4 protocol" info="Byte split by IP protocol number: TCP, UDP, ICMP, ICMPv6, SCTP, or Other; bytes are calculated from source and destination bytes." query={l4Query} onRefresh={l4.refetch} refreshing={l4.loading} note="6=TCP 17=UDP 1=ICMP 58=ICMPv6 132=SCTP; otherwise Other">
           <QueryBoundary state={l4} emptyLabel="No data">
             <BarList items={l4Items} accent="info" />
           </QueryBoundary>

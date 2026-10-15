@@ -225,7 +225,10 @@ describe('parity with Cribl on stored rows', () => {
     const reads = [...panel!.reads]
     const shape = (rs: Row[]) => rs.map((r) => Object.fromEntries(reads.map((k) => [k, r[k] ?? null])))
     const a = shape(mine!)
-    const b = shape(t.cribl)
+    // The recorded L4 results use the former output alias, not the new mapping.
+    const b = shape(queryId === 'capacity-l4'
+      ? t.cribl.map((r) => ({ ...r, l4_protocol: r.l4_proto }))
+      : t.cribl)
     if (t.order === 'exact') expect(a).toEqual(b)
     else {
       const key = (r: Row) => JSON.stringify(r)

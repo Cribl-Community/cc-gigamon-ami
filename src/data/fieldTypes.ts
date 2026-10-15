@@ -17,6 +17,8 @@
 // appearing in a query string (it decides which dataset answers), so the
 // display freeze holds it as a catalog. An entry is added with the census's
 // date and window in the commit that adds it.
+// http2_code's recorded type is no longer retained: no routable query reads it
+// after the HTTP/2 KPI switched to app_name.
 //
 // ── THE EVIDENCE (2026-09-25, branch feat/phase8-field-types) ───────────────
 // Both runs are `scripts/parquet-audit.mjs` on `gigamon_ami` (JSON), THE DEMO
@@ -54,10 +56,8 @@
 // Everything else stays unknown, deliberately. The fields the routing table's
 // texts read that no census counted per type (fieldTypes.test.ts pins this
 // list, so it shrinks only with the table):
-//   derived by the pipeline, never counted: l4_proto, src_subnet, dst_subnet,
-//     src_subnet16, dst_subnet16
 //   never in any census: total_bytes, src_bytes, dst_bytes, total_packets,
-//     tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count, dst_ip,
+//     tcp_dup_ack, tcp_reset, tcp_wrong_crc, tcp_loss_count, dst_ip, http_rtt,
 //     ssl_mitm_score, ssl_issuer, ssl_common_name, ssl_protocol_version,
 //     ssl_server_supported_version, ssl_validity_not_after
 // A pipeline cast or derive is a claim about the code, not a measurement of
@@ -77,7 +77,6 @@ export const FIELD_TYPES: Readonly<Record<string, FieldType>> = Object.freeze({
   protocol: 'number',
   app_name: 'string',
   // W — `ts_f == tn_f > 0`: every present value counted as a string.
-  http2_code: 'string',
   krb5_message_type: 'string',
   snmp_community: 'string',
   icmp_tunneling: 'string',

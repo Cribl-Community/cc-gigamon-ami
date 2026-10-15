@@ -89,10 +89,11 @@ describe('the parity checks', () => {
     expect(col('security', 'c_T1572').classes).toEqual(['A'])
     expect(col('findings', 'f2').classes).toEqual(['B'])
     expect(col('web-kpi', 'txns').classes).toEqual(['B'])
+    expect(col('web-kpi', 'h2').classes).toEqual([])
     expect(col('dns', 'resolvers').classes).toEqual(['C'])
     expect(col('host-presence', 'n').classes).toEqual(['D'])
     expect(col('code-presence', 'n').classes).toEqual(['D'])
-    expect(col('web-kpi', 'server_p95').classes).toEqual(['E'])
+    expect(col('web-kpi', 'server_p95_ms').classes).toEqual(['E'])
     expect(col('capacity-kpi', 'rtt').classes).toEqual(['E'])
     expect(col('latency', 'net').classes).toEqual(['E'])
     expect(col('latency', 'net_lo').classes).toEqual(['E'])
@@ -269,11 +270,11 @@ describe('class D — f=* presence filter', () => {
 
 describe('class E — percentile / avg / min(f)', () => {
   it('passes when the latency figures agree within their tolerance', () => {
-    const rows = withParquet(agreeing(), 'web-kpi', { server_p95: 0.042 * 1.03 })
+    const rows = withParquet(agreeing(), 'web-kpi', { server_p95_ms: 0.042 * 1.03 })
     expect(verdicts(rows).E).toBe('pass')
   })
   it('fails when a percentile collapses to 0', () => {
-    const r = compareParity(withParquet(agreeing(), 'web-kpi', { server_p95: 0 }), WINDOW, DATASETS)
+    const r = compareParity(withParquet(agreeing(), 'web-kpi', { server_p95_ms: 0 }), WINDOW, DATASETS)
     const e = r.classes.find((x) => x.cls === 'E')!
     expect(e.verdict).toBe('fail')
     expect(e.sentence).toContain('"Server think-time p95" tile')
@@ -285,7 +286,7 @@ describe('class E — percentile / avg / min(f)', () => {
     expect(verdicts(withParquet(agreeing(), 'capacity-kpi', { rtt: 0.042 * 0.6 })).E).toBe('fail')
   })
   it('fails when JSON had no value and Parquet reads 0 — "no value" and "0 ms" are different tiles', () => {
-    const rows = withParquet(withJson(agreeing(), 'web-kpi', { server_p95: null }), 'web-kpi', { server_p95: 0 })
+    const rows = withParquet(withJson(agreeing(), 'web-kpi', { server_p95_ms: null }), 'web-kpi', { server_p95_ms: 0 })
     expect(verdicts(rows).E).toBe('fail')
   })
   it('fails when JSON read 0 and Parquet reads a number — 0 on one side is not "nothing to compare"', () => {
@@ -403,7 +404,7 @@ describe('a min or max on a run whose control drifted', () => {
   })
   it('is not evidence for the class: with nothing else to compare, class E is not exercised', () => {
     let rows = withParquet(withJson(drifted(), 'latency', { net_lo: 0.004 }), 'latency', { net_lo: 0.003 })
-    for (const [check, column] of [['latency', 'net'], ['latency', 'app'], ['latency', 'app_lo'], ['web-kpi', 'server_p95'], ['capacity-kpi', 'rtt']]) {
+    for (const [check, column] of [['latency', 'net'], ['latency', 'app'], ['latency', 'app_lo'], ['web-kpi', 'server_p95_ms'], ['capacity-kpi', 'rtt']]) {
       rows = withParquet(withJson(rows, check, { [column]: 0 }), check, { [column]: 0 })
     }
     const r = compareParity(rows, WINDOW, DATASETS)

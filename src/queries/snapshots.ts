@@ -58,7 +58,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { q } from '../cribl/search'
-import { KPI_AGGS as CAPACITY_KPI_AGGS } from './capacityTopTalkers'
+import { APP_TOTAL_BYTES } from './shadowAi'
+import { KPI_SOURCE_AGGS, KPI_TOTAL_BYTES } from './capacityTopTalkers'
 import {
   KPI_AGGS as WEB_KPI_AGGS,
   HOST_ERR_AGG as WEB_HOST_ERR_AGG,
@@ -70,11 +71,11 @@ import { VOLUME_AGGS } from './dataFlow'
 // The byte aggregate Capacity's three byte panels are built from, imported for
 // the same reason: one scan rolls it up by (app_name, l4_proto) and all three
 // panels sum the stored rows back along one key. See capacityTopTalkers.ts.
-import { BYTES_AGG } from './capacityTopTalkers'
+import { BYTES_AGG, L4_PROTOCOL } from './capacityTopTalkers'
 // The four wire-error sums and the mask's column pair, imported for the same
 // reason: the scheduled body and the panel's own query have to agree about
 // which columns exist and what they are called. See tcpHealth.ts.
-import { HEAT_METRIC_AGGS, subnetFields, type Mask } from './tcpHealth'
+import { HEAT_METRIC_AGGS, SUBNET24_HEAD, SUBNET16_HEAD, subnetFields, type Mask } from './tcpHealth'
 
 /**
  * One unfiltered scan of the window, carrying every whole-window aggregate five
@@ -87,9 +88,10 @@ import { HEAT_METRIC_AGGS, subnetFields, type Mask } from './tcpHealth'
  * this and falls through to its live query, because the filter is not in here.
  */
 export const OVERVIEW_SNAPSHOT_QUERY = q(
-  '| summarize ' +
+  // Keep Data Flow's sum(total_bytes) on the original field.
+  `| extend capacity_total_bytes = ${KPI_TOTAL_BYTES} | summarize ` +
     [
-      CAPACITY_KPI_AGGS,
+      `total=sum(capacity_total_bytes), ${KPI_SOURCE_AGGS}`,
       WEB_KPI_AGGS,
       SECURITY_COUNT_AGGS,
       // `findings_total`, not `total` — see the alias rule above.
@@ -160,7 +162,7 @@ export const SERVICE_EDGES_SNAPSHOT_QUERY = q(
  * Snapshot and Live. It is written down here so that it is a known property
  * rather than a bug report.
  */
-export const APP_SRC_SNAPSHOT_QUERY = q('| summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip')
+export const APP_SRC_SNAPSHOT_QUERY = q(`| extend total_bytes = ${APP_TOTAL_BYTES} | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip`)
 
 /**
  * Every HTTP host seen in the window, with its transaction count, its error
@@ -256,7 +258,8 @@ export const WEB_HOST_SNAPSHOT_QUERY = q(
  * rows a coarser grouping exists to gather up. Two masks, two scans, two entries.
  *
  * ── THE HEAD IS THE PANEL'S OWN, CHARACTER FOR CHARACTER ────────────────────
- * `protocol=6 <src>=* <dst>=*`, the same filter `buildHeatQuery` writes. That is
+ * Both heads derive subnet labels from endpoint IPs, using the same head as
+ * `buildHeatQuery`. That is
  * what makes the empty-group question — the one SERVICE_EDGES_SNAPSHOT_QUERY and
  * the former DNS grouping each needed an `extend`/`iif` sentinel for — not
  * arise here: no panel on this entry sums across a group the live query filters
@@ -273,7 +276,8 @@ export const WEB_HOST_SNAPSHOT_QUERY = q(
  */
 const tcpSubnetSnapshot = (mask: Mask): string => {
   const { sf, df } = subnetFields(mask)
-  return q(`protocol=6 ${sf}=* ${df}=* | summarize ${HEAT_METRIC_AGGS}, flows=count() by ${sf}, ${df} | sort by flows desc | limit 120`)
+  const head = mask === '24' ? SUBNET24_HEAD : SUBNET16_HEAD
+  return q(`${head} | summarize ${HEAT_METRIC_AGGS}, flows=count() by ${sf}, ${df} | sort by flows desc | limit 120`)
 }
 
 export const TCP_SUBNET24_SNAPSHOT_QUERY = tcpSubnetSnapshot('24')
@@ -305,28 +309,26 @@ export const TCP_SUBNET16_SNAPSHOT_QUERY = tcpSubnetSnapshot('16')
  *
  * ── THE EMPTY-GROUP GUARD, WHICH IS THE CORRECTNESS OF THE CROSS PRODUCT ───
  * Neither live query has a head filter: `by app_name` counts every record in
- * the window including ones that name no protocol, and `by l4_proto` counts
+ * the window including ones that name no protocol, and `by l4_protocol` counts
  * every record including ones AMI could not classify into an application.
- * Group naively `by app_name, l4_proto` and whether a null key survives is
+ * Group naively `by app_name, l4_protocol` and whether a null key survives is
  * something this app has never measured — if it does not, EVERY panel here
  * loses those records. The L4 split would come back short by all the
  * unclassified traffic, which is exactly the traffic a capacity reader is
  * looking for; smaller, correctly formatted, and in the one direction nobody
  * can check.
  *
- * So both nulls become groups of their own before the grouping happens — the
- * same trick SERVICE_EDGES_SNAPSHOT_QUERY uses (and the former DNS grouping did),
- * on both keys because both keys are nullable. `app` and `l4` are empty for
- * exactly those records: the two mix panels sum across the sentinel (which is
- * what their unfiltered `count`/`sum` does live) and the top-talkers tail
- * filters it out (which is what that query's own `app_name=*` head does).
+ * A missing application becomes the empty `app` group before grouping.
+ * The protocol case expression always supplies a label, including Other for
+ * missing or unrecognized numbers. The mix and L4 panels keep both groups;
+ * the top-talkers tail filters out the empty app.
  *
  * ── THE ALIAS RULE ─────────────────────────────────────────────────────────
  * `bytes` is defined once, and every panel here re-aggregates it — `bytes` on
  * a stored row is one (app, protocol) cell, and the alias each panel reads is
  * the one its own tail defines. A panel added to this entry WITHOUT a tail
  * would read the cell rather than the total, so there must not be one. The
- * group keys are renamed `app`/`l4` rather than shadowing `app_name`/`l4_proto`
+ * group keys are renamed `app`/`l4` rather than shadowing `app_name`/`l4_protocol`
  * so that a tail restoring the panel's own column name is doing something
  * visible, not relying on a redefinition nobody has run.
  *
@@ -342,7 +344,7 @@ export const TCP_SUBNET16_SNAPSHOT_QUERY = tcpSubnetSnapshot('16')
  * does not carry.
  */
 export const APP_L4_SNAPSHOT_QUERY = q(
-  '| extend app=iif(isnotnull(app_name), app_name, ""), l4=iif(isnotnull(l4_proto), l4_proto, "") | summarize ' +
+  `| extend total_bytes = ${KPI_TOTAL_BYTES} | extend app=iif(isnotnull(app_name), app_name, ""), l4=${L4_PROTOCOL} | summarize ` +
     BYTES_AGG +
     ' by app, l4',
 )

@@ -154,8 +154,9 @@ export function WebApiHealth() {
         <h2 className="tab-h">Web &amp; API health</h2>
         <p className="tab-sub">
           The application layer, straight off the wire — status codes, per-host error rates and server think-time,
-          with no agent in the app. Server latency is <code>http_server_ms</code>, derived in the pipeline from{' '}
-          <code>http_response_ts − http_request_ts</code>. HTTP/2 is reported separately because Gigamon emits it
+          with no agent in the app. The server think-time tile uses <code>http_rtt</code>, converted to milliseconds;
+          the slowest-hosts panel uses <code>http_server_ms</code>, derived from response and request timestamps.
+          HTTP/2 is reported separately because Gigamon emits it
           under its own <code>http2_*</code> fields, which the <code>http_*</code> panels here do not see.
         </p>
       </div>
@@ -169,10 +170,10 @@ export function WebApiHealth() {
         <KpiTile label="Error rate" value={kpi.loading ? '…' : fmtPct(errRate, 2)}
           accent={errRate > 5 ? 'danger' : errRate > 1 ? 'warning' : 'success'}
           sub={`${fmtCount(errors)} × 4xx/5xx`} info="Share of HTTP transactions returning 4xx or 5xx. 5xx implicates the server; 4xx is usually the caller." query={KPI} computed={kpiComputed} />
-        <KpiTile label="Server think-time p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95))} accent="warning"
-          sub="http_server_ms" info="95th-percentile server processing time — request timestamp to response timestamp, measured on the wire." query={KPI} computed={kpiComputed} />
+        <KpiTile label="Server think-time p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95_ms))} accent="warning"
+          sub="http_rtt · milliseconds" info="95th percentile of http_rtt, multiplied by 1000 to convert seconds to milliseconds." query={KPI} computed={kpiComputed} />
         <KpiTile label="HTTP/2 transactions" value={kpi.loading ? '…' : fmtCount(toNum(k.h2))} accent="neutral"
-          sub="http2_code · separate field set" info="HTTP/2 flows. Gigamon reports these under http2_* fields, so they are invisible to the http_* panels on this page." query={KPI} computed={kpiComputed} />
+          sub='app_name == "http2"' info='Flows whose app_name is "http2", whether or not they carry an http2_code.' query={KPI} computed={kpiComputed} />
       </div>
 
       <div className="grid-2">
@@ -212,7 +213,7 @@ export function WebApiHealth() {
         </Panel>
 
         <Panel anchorRef={h2Near.ref} tourId="web-h2" title="HTTP/2 hosts" query={H2} computed={h2Computed} snapshot={snapshotOf(h2)} onRefresh={h2.refetch} refreshing={h2.loading} note="http2_host · by volume"
-          info="HTTP/2 traffic, reported by Gigamon under a separate field set (http2_host / http2_code / http2_method). Shown here so modern traffic is not silently missing from the page.">
+          info='Flows whose app_name is "http2" and that carry http2_host, grouped by host. HTTP/2 flows without a host are counted in the transactions tile but not in this list.'>
           <QueryBoundary state={h2} emptyLabel="No HTTP/2 traffic in this window">
             <BarList items={h2Items} accent="info" />
           </QueryBoundary>
