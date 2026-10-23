@@ -38,6 +38,7 @@ function scopeFor(pivot: Pivot, applied: string) {
  * of total_bytes while Capacity computes the same total on both read paths.
  */
 export const KPI_TOTAL_BYTES = 'coalesce(src_bytes, 0) + coalesce(dst_bytes, 0)'
+export const KPI_TOTAL_PACKETS = 'coalesce(src_packets, 0) + coalesce(dst_packets, 0)'
 export const KPI_SOURCE_AGGS = 'tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)'
 export const KPI_AGGS = `total=sum(total_bytes), ${KPI_SOURCE_AGGS}`
 
@@ -60,7 +61,7 @@ export const L4_PROTOCOL = 'case(protocol == 6, "TCP", protocol == 17, "UDP", pr
 /** Window totals behind the six KPI tiles. */
 export function buildKpiQuery(pivot: Pivot, applied: string) {
   const scope = scopeFor(pivot, applied)
-  return q(`${scope}| extend total_bytes = ${KPI_TOTAL_BYTES} | summarize ${KPI_AGGS}`)
+  return q(`${scope}| extend total_bytes = ${KPI_TOTAL_BYTES} | extend total_packets = ${KPI_TOTAL_PACKETS} | summarize ${KPI_AGGS}`)
 }
 
 /** Busiest entities by bytes, for the pivot in force. */

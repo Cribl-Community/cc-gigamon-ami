@@ -59,7 +59,7 @@
 
 import { q } from '../cribl/search'
 import { APP_TOTAL_BYTES } from './shadowAi'
-import { KPI_SOURCE_AGGS, KPI_TOTAL_BYTES } from './capacityTopTalkers'
+import { KPI_SOURCE_AGGS, KPI_TOTAL_BYTES, KPI_TOTAL_PACKETS } from './capacityTopTalkers'
 import {
   KPI_AGGS as WEB_KPI_AGGS,
   HOST_ERR_AGG as WEB_HOST_ERR_AGG,
@@ -88,15 +88,15 @@ import { HEAT_METRIC_AGGS, SUBNET24_HEAD, SUBNET16_HEAD, subnetFields, type Mask
  * this and falls through to its live query, because the filter is not in here.
  */
 export const OVERVIEW_SNAPSHOT_QUERY = q(
-  // Keep Data Flow's sum(total_bytes) on the original field.
-  `| extend capacity_total_bytes = ${KPI_TOTAL_BYTES} | summarize ` +
+  // Capacity and Data Flow share directional totals without rewriting other panels' fields.
+  `| extend capacity_total_bytes = ${KPI_TOTAL_BYTES} | extend capacity_total_packets = ${KPI_TOTAL_PACKETS} | summarize ` +
     [
-      `total=sum(capacity_total_bytes), ${KPI_SOURCE_AGGS}`,
+      `total=sum(capacity_total_bytes), ${KPI_SOURCE_AGGS.replace('pkts=sum(total_packets)', 'pkts=sum(capacity_total_packets)')}`,
       WEB_KPI_AGGS,
       SECURITY_COUNT_AGGS,
       // `findings_total`, not `total` — see the alias rule above.
       'findings_total=count(), ' + FINDING_AGGS,
-      VOLUME_AGGS,
+      VOLUME_AGGS.replace('sum(total_bytes)', 'sum(capacity_total_bytes)').replace('sum(total_packets)', 'sum(capacity_total_packets)'),
     ].join(', '),
 )
 

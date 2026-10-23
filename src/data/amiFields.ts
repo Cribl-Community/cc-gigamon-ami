@@ -55,11 +55,10 @@ export const AMI_CATALOG: AmiField[] = [
   { name: 'tcp_rtt_app', family: 'TCP / network performance', desc: 'Application response time (server think-time).', useCase: 'Application latency domain — the usual culprit.' },
   { name: 'http_rtt', family: 'TCP / network performance', desc: 'HTTP/server round-trip time.', useCase: 'Server latency domain in the four-domain triage.', derivedField: 'http_server_ms' },
   { name: 'tcp_retransmission_bytes', family: 'TCP / network performance', desc: 'Retransmitted bytes on the flow.', useCase: 'Retransmit % / wire-error heatmap; packet-loss evidence.', derivedField: 'tcp_dup_ack' },
-  { name: 'tcp_flag_reset', family: 'TCP / network performance', desc: 'Count of TCP RST (connection reset) flags.', useCase: 'Reset heatmap; abrupt-close detection.', derivedField: 'tcp_reset' },
   { name: 'tcp_dup_ack', family: 'TCP / network performance', desc: 'Duplicate ACKs — a retransmission signal.', useCase: 'Packet-health evidence.' },
   { name: 'tcp_loss_count', family: 'TCP / network performance', desc: 'Detected lost segments.', useCase: 'Loss heatmap.' },
   { name: 'tcp_wrong_crc', family: 'TCP / network performance', desc: 'Checksum errors (corruption on the wire).', useCase: 'Wire-error evidence.' },
-  { name: 'tcp_flags', family: 'TCP / network performance', desc: 'TCP flags bitmask.', useCase: 'Derive resets and other flag states.' },
+  { name: 'tcp_flags', family: 'TCP / network performance', desc: 'TCP flags bitmask.', useCase: 'Resets-over-time flag sum; derive resets and other flag states.', derivedField: 'tcp_reset' },
   { name: 'tcp_window_size', family: 'TCP / network performance', desc: 'TCP receive window size.', useCase: 'Flow-control / throughput analysis.' },
   { name: 'tcp_zero_window', family: 'TCP / network performance', desc: 'Zero-window events (receiver stalled).', useCase: 'Receiver-side backpressure detection.' },
 
@@ -171,7 +170,7 @@ export const AMI_USE_CASES: UseCase[] = [
   {
     name: 'NetOps — Performance',
     desc: 'Latency decomposition, retransmissions, loss and capacity — where the time goes and whether it is the network.',
-    fields: ['tcp_rtt', 'tcp_rtt_app', 'http_rtt', 'dns_response_time', 'tcp_retransmission_bytes', 'tcp_flag_reset', 'tcp_dup_ack', 'tcp_loss_count', 'tcp_wrong_crc', 'tcp_window_size', 'tcp_zero_window', 'rtp_lost', 'src_bytes', 'dst_bytes'],
+    fields: ['tcp_rtt', 'tcp_rtt_app', 'http_rtt', 'dns_response_time', 'tcp_retransmission_bytes', 'tcp_flags', 'tcp_dup_ack', 'tcp_loss_count', 'tcp_wrong_crc', 'tcp_window_size', 'tcp_zero_window', 'rtp_lost', 'src_bytes', 'dst_bytes'],
   },
   {
     name: 'Compliance',

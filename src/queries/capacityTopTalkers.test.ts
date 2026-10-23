@@ -7,12 +7,13 @@ import { evaluateTail } from '../cribl/accel/tail'
 
 describe('Capacity KPI byte totals', () => {
   const computation = 'coalesce(src_bytes, 0) + coalesce(dst_bytes, 0)'
+  const packets = 'coalesce(src_packets, 0) + coalesce(dst_packets, 0)'
   const aggregates = 'total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)'
 
   it('runs the requested query for every unfiltered pivot', () => {
     for (const pivot of PIVOTS) {
       expect(buildKpiQuery(pivot.key, '')).toBe(
-        `dataset="gigamon_ami" | extend total_bytes = ${computation} | summarize ${aggregates}`,
+        `dataset="gigamon_ami" | extend total_bytes = ${computation} | extend total_packets = ${packets} | summarize ${aggregates}`,
       )
     }
   })
@@ -97,17 +98,20 @@ describe('Capacity KPI byte totals', () => {
   it('keeps each pivot filter before the byte computation', () => {
     for (const pivot of PIVOTS) {
       expect(buildKpiQuery(pivot.key, 'example')).toBe(
-        `dataset="gigamon_ami" ${pivot.field}="*example*" | extend total_bytes = ${computation} | summarize ${aggregates}`,
+        `dataset="gigamon_ami" ${pivot.field}="*example*" | extend total_bytes = ${computation} | extend total_packets = ${packets} | summarize ${aggregates}`,
       )
     }
   })
 
-  it('uses the same computation in the scheduled overview without changing Data Flow bytes', () => {
+  it('shares the calculated totals with Data Flow in the scheduled overview', () => {
     expect(OVERVIEW_SNAPSHOT_QUERY).toContain(
-      `| extend capacity_total_bytes = ${computation} | summarize total=sum(capacity_total_bytes), `,
+      `| extend capacity_total_bytes = ${computation} | extend capacity_total_packets = ${packets} | summarize total=sum(capacity_total_bytes), `,
     )
-    expect(OVERVIEW_SNAPSHOT_QUERY).toContain('bytes=sum(total_bytes)')
+    expect(OVERVIEW_SNAPSHOT_QUERY).toContain('bytes=sum(capacity_total_bytes)')
     expect(OVERVIEW_SNAPSHOT_QUERY).not.toContain('| extend total_bytes')
+    expect(OVERVIEW_SNAPSHOT_QUERY).toContain('pkts=sum(capacity_total_packets)')
+    expect(OVERVIEW_SNAPSHOT_QUERY).toContain('packets=sum(capacity_total_packets)')
+    expect(OVERVIEW_SNAPSHOT_QUERY).not.toContain('| extend total_packets')
     expect(accelEntry('gno_overview_c1h').body).toBe(OVERVIEW_SNAPSHOT_QUERY)
   })
 

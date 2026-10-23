@@ -199,9 +199,17 @@ installed or in the in-UI Live Preview. See [`CLAUDE.md`](./CLAUDE.md) and [`AGE
 for the full developer guide (runtime detection, fetch proxy, KV store, `proxies.yml` /
 `policies.yml`, and Capra UI rules).
 
+Data Flow's record-derived network traffic and packet totals also use coalesced
+source plus destination fields, in both Live and the shared overview snapshot.
+Re-apply `gno_overview_c1h` after deployment. This does not change the separate
+Stream counters, which require `cribl_metrics` rows matching the object labels
+listed in `src/queries/stackIds.ts`.
+
 Capacity's KPI query derives `total_bytes` from `coalesce(src_bytes, 0) +
-coalesce(dst_bytes, 0)`. Its hourly overview snapshot uses the same calculation
-without changing the other panels' byte aggregates. After installing this change,
+coalesce(dst_bytes, 0)` and `total_packets` from `coalesce(src_packets, 0) +
+coalesce(dst_packets, 0)` for the Source IP, App and AWS service pivots, including
+filtered views. Its hourly overview snapshot uses the same calculations
+without changing unrelated panels' byte aggregates. After installing this change,
 Re-apply `gno_overview_c1h` in Guided Setup's Acceleration panel to update its saved
 query. Source IP Top Talkers uses the same calculated byte total; Re-apply
 `gno_talkers_src_c1h` to update that saved query too. App Protocol Mix and Traffic
@@ -218,13 +226,19 @@ Re-apply `gno_app_l4_c1h` after this mapping changes so its stored runs agree.
 TCP Health's /24 and /16 heatmaps derive subnet fields from the IPv4
 endpoints using Cribl Search's `extract()` and `strcat()`, with `.0/24` and
 `.0.0/16` labels respectively.
+The regex arguments use Cribl's documented `@'...'` syntax, with extraction and
+concatenation in separate stages and single-quoted suffixes and comparisons.
+On 2026-10-16 the owner confirmed this full /24 Resets query returned results in
+Search after the nested/mixed-quote form failed. Which of those differences caused
+the failure was not isolated. The /16 query and drill-downs still need workspace verification.
 Endpoints that do not match the dotted-quad pattern are excluded. All four metrics
 and their cell drill-downs use the same derivation. Re-apply
 `gno_tcp_subnet24_c1h` and `gno_tcp_subnet16_c1h` after installing these changes
 to update the snapshot queries.
 
-Resets over time sums `tcp_flag_reset` in one-minute bins alongside the flow
-count; the chart still displays resets per flow. This trend runs live, so no
+Resets over time sums `tcp_flags` in one-minute bins alongside the flow
+count, as requested. This is the full flags bitmask, not a reset-event count;
+the chart divides that sum by flows. This trend runs live, so no
 schedule Re-apply is needed. Reset heatmaps still sum `tcp_reset`.
 
 Web & API's KPI row uses `server_p95_ms=percentile(http_rtt,95)*1000` for the

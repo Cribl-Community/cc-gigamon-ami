@@ -24,14 +24,18 @@ export type MetricKey = (typeof METRICS)[number]['key']
 export type Mask = '24' | '16'
 
 export const SUBNET24_HEAD = 'protocol=6 src_ip=* dst_ip=*' +
-  ' | extend src_subnet = strcat(extract(@"^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$", 1, src_ip), ".0/24")' +
-  ' | extend dst_subnet = strcat(extract(@"^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$", 1, dst_ip), ".0/24")' +
-  ' | where src_subnet != ".0/24" and dst_subnet != ".0/24"'
+  ` | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, src_ip)` +
+  ` | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, dst_ip)` +
+  " | extend src_subnet = strcat(src_prefix, '.0/24')" +
+  " | extend dst_subnet = strcat(dst_prefix, '.0/24')" +
+  " | where src_subnet != '.0/24' and dst_subnet != '.0/24'"
 
 export const SUBNET16_HEAD = 'protocol=6 src_ip=* dst_ip=*' +
-  ' | extend src_subnet16 = strcat(extract(@"^([0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}[.][0-9]{1,3}$", 1, src_ip), ".0.0/16")' +
-  ' | extend dst_subnet16 = strcat(extract(@"^([0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}[.][0-9]{1,3}$", 1, dst_ip), ".0.0/16")' +
-  ' | where src_subnet16 != ".0.0/16" and dst_subnet16 != ".0.0/16"'
+  ` | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}[.][0-9]{1,3}$', 1, src_ip)` +
+  ` | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}[.][0-9]{1,3}$', 1, dst_ip)` +
+  " | extend src_subnet16 = strcat(src_prefix, '.0.0/16')" +
+  " | extend dst_subnet16 = strcat(dst_prefix, '.0.0/16')" +
+  " | where src_subnet16 != '.0.0/16' and dst_subnet16 != '.0.0/16'"
 
 export function metricFor(metric: MetricKey) {
   return METRICS.find((x) => x.key === metric)!
@@ -58,12 +62,12 @@ export function buildDrillQuery(sel: { row: string; col: string } | null, mask: 
   if (!sel) return ''
   const { sf, df } = subnetFields(mask)
   const head = mask === '24' ? SUBNET24_HEAD : SUBNET16_HEAD
-  return q(`${head} | where ${sf}=="${sel.row}" and ${df}=="${sel.col}" | summarize flows=count(), retrans=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95) by src_ip, dst_ip | sort by flows desc | limit 100`)
+  return q(`${head} | where ${sf}=='${sel.row}' and ${df}=='${sel.col}' | summarize flows=count(), retrans=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95) by src_ip, dst_ip | sort by flows desc | limit 100`)
 }
 
 /** Per-1m trend of the selected wire-error metric. */
 export function buildTrendQuery(metric: MetricKey) {
-  const field = metric === 'resets' ? 'tcp_flag_reset' : metricFor(metric).field
+  const field = metric === 'resets' ? 'tcp_flags' : metricFor(metric).field
   return q(`protocol=6 | summarize v=sum(${field}), flows=count() by bin(_time, 1m) | sort by _time asc`)
 }
 

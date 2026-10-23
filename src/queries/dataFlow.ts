@@ -97,9 +97,10 @@ const PROCESSED = 'namespace=="data_insights" and ' + anyOfAll([
 // The fragment, exported so the hourly snapshot body holds the same characters
 // rather than a retyped copy of them (see snapshots.ts).
 export const VOLUME_AGGS = 'events=count(), bytes=sum(total_bytes), packets=sum(total_packets)'
+export const VOLUME_DERIVATION = '| extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0)'
 
 /** Record-derived volume (what the AMI data itself says). */
-export const VOLUME_QUERY = q('| summarize ' + VOLUME_AGGS)
+export const VOLUME_QUERY = q(VOLUME_DERIVATION + ' | summarize ' + VOLUME_AGGS)
 
 /**
  * Real Cribl component telemetry, scoped to the paths into gigamon_ami
