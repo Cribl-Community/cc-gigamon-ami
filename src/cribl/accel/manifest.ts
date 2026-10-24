@@ -928,7 +928,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         queryId: 'web-slow',
         what: 'Web and API health — slowest hosts by server think-time p95',
         display: WEB_SLOW_QUERY,
-        // `| where srv_n > 0` is this panel's `http_server_ms=*` head, moved to
+        // `| where srv_n > 0` keeps hosts with a numeric http_rtt, moved to
         // where it belongs: keep hosts carrying no server timing at all out of a
         // ranking BY server timing. Left in the body it would have taken the
         // transaction counts the panel above reads with it.
@@ -1047,7 +1047,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         what: 'Web and API health — the HTTP/2 hosts',
         display: WEB_H2_QUERY,
         // No tail: the body IS the panel's query.
-        reads: ['http2_host', 'n'],
+        reads: ['http_host', 'n'],
       },
     ],
     body: WEB_H2_QUERY,
@@ -1056,19 +1056,10 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     cron: '54 * * * *',
     tz: 'UTC',
     keepLastN: 24,
-    // ── WHY THIS IS NOT FOLDED INTO EITHER ENTRY ABOVE, AND THE REASON IS
-    //    STRUCTURAL RATHER THAN CAUTIOUS ────────────────────────────────────
-    // Gigamon reports HTTP/2 under its own field set: these flows carry
-    // `http2_host` and NO `http_code`. Merging this into the host grouping or the
-    // status-code one means dropping both heads and grouping two nullable keys at
-    // once — a cross product of (http_host, http2_host) where most cells are the
-    // absence of one or the other. Whether `summarize … by` keeps a null group
-    // key is the behaviour SERVICE_EDGES_SNAPSHOT_QUERY and
-    // DNS_RESOLVER_SNAPSHOT_QUERY each wrote an `extend`/`iif` sentinel to avoid
-    // depending on, and this would need two of them, on a product, for one bar
-    // list below the fold. Its own scan costs a cron minute.
+    // Keep the app_name="http2" subset separate from the all-traffic host rollup.
+    // Both now group by http_host, but the latter cannot recover this subset.
     why:
-      "The HTTP/2 bar list is the last live query on Web and API health and the one most easily forgotten, because Gigamon reports HTTP/2 under a separate field set that none of the http_* panels above can see — which is exactly why it is on the page. It is a whole-window scan, deferred until the reader scrolls to it. Run hourly it is a stored read, and with it this tab reaches six of six: nothing on Web and API health scans the Lake on arrival.",
+      "The HTTP/2 bar list counts app_name=\"http2\" flows by http_host, separately from the all-traffic host rollup. It is a whole-window scan, deferred until the reader scrolls to it. Run hourly it is a stored read, and with it this tab reaches six of six: nothing on Web and API health scans the Lake on arrival.",
   }),
   // ── TCP health's subnet heatmap: two masks, eight panel states, two scans ──
   //

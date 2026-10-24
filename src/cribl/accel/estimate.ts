@@ -500,7 +500,7 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     liveRunsPerDay: null,
     assumedRunsPerDay: 4,
     scheduledRunCpuSeconds: null,
-    // NARROW: one count() by http2_host, capped at ten rows in the body itself.
+    // NARROW: one count() by http_host for HTTP/2, capped at ten rows in the body itself.
     shapeMultiplier: NARROW_BODY_MULTIPLIER,
     what: 'Web and API health — the HTTP/2 hosts',
   },

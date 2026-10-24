@@ -170,7 +170,7 @@ export const APP_SRC_SNAPSHOT_QUERY = q(`| extend total_bytes = ${APP_TOTAL_BYTE
  * that percentile was computed over.
  *
  * ONE SCAN FOR THE TWO HOST PANELS. "Top endpoints by requests" and "Slowest
- * hosts — server think-time p95" both group by `http_host` and both run on
+ * hosts — HTTP response RTT p95" both group by `http_host` and both run on
  * mount, so they are admitted ~1.6 s apart and the reader waits for the second
  * one to start. One grouping carries both.
  *
@@ -179,7 +179,7 @@ export const APP_SRC_SNAPSHOT_QUERY = q(`| extend total_bytes = ${APP_TOTAL_BYTE
  * single thing to get right here:
  *
  *   HOSTS's `n` is `count()` over `http_host=*`            — ALL transactions.
- *   SLOW's  `n` is `count()` over `http_server_ms=* http_host=*`
+ *   SLOW's `n` counts hosts' flows with a numeric http_rtt.
  *                                                          — only the ones that
  *                                                            carry a server-time
  *                                                            measurement.
@@ -197,12 +197,12 @@ export const APP_SRC_SNAPSHOT_QUERY = q(`| extend total_bytes = ${APP_TOTAL_BYTE
  * from this body, because there is no `n` in it to read. DO NOT MERGE THE TWO
  * COUNTS back into one alias, whatever the row looks like.
  *
- * `| where srv_n > 0` in the slow panel's tail is what its `http_server_ms=*`
+ * `| where srv_n > 0` in the slow panel's tail is what its numeric http_rtt
  * head did live: keep hosts with no server timing at all out of a ranking BY
  * server timing, where they would otherwise appear with a null p95.
  *
  * ── THE ONE UNVERIFIED BEHAVIOUR (M-8), STATED RATHER THAN HIDDEN ───────────
- * This body has no `http_server_ms=*` head — it cannot have one, because the
+ * This body has no `http_rtt=*` head — it cannot have one, because the
  * transaction counts the other panel reads are computed over every row. So `p95`
  * is computed over a group that includes rows carrying no server time, where
  * SLOW's live query computed it over only the rows that do. The two agree if and
@@ -224,7 +224,7 @@ export const WEB_HOST_SNAPSHOT_QUERY = q(
     WEB_HOST_ERR_AGG +
     ', ' +
     WEB_SERVER_P95_AGG +
-    ', srv_n=count(http_server_ms) by http_host',
+    ', srv_n=countif(isnotnull(toreal(http_rtt))) by http_host',
 )
 
 /**

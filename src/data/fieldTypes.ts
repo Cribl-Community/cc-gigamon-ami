@@ -19,6 +19,8 @@
 // date and window in the commit that adds it.
 // http2_code's recorded type is no longer retained: no routable query reads it
 // after the HTTP/2 KPI switched to app_name.
+// http2_host is likewise omitted now that the HTTP/2 host list reads http_host.
+// http_server_ms is omitted now that the routable host latency query reads http_rtt.
 //
 // ── THE EVIDENCE (2026-09-25, branch feat/phase8-field-types) ───────────────
 // Both runs are `scripts/parquet-audit.mjs` on `gigamon_ami` (JSON), THE DEMO
@@ -71,7 +73,6 @@ export const FIELD_TYPES: Readonly<Record<string, FieldType>> = Object.freeze({
   // N — per-type counts, a single kind.
   tcp_rtt: 'number',
   tcp_rtt_app: 'number',
-  http_server_ms: 'number',
   dns_response_time: 'number',
   dst_port: 'number',
   protocol: 'number',
@@ -94,7 +95,6 @@ export const FIELD_TYPES: Readonly<Record<string, FieldType>> = Object.freeze({
   src_aws_flat_tags_name: 'string',
   dns_host: 'string',
   http_host: 'string',
-  http2_host: 'string',
   ssl_server_name: 'string',
   ssl_ext_ec_supported_groups_type: 'string',
 })

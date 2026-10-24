@@ -133,7 +133,7 @@ export function WebApiHealth() {
   }))
 
   const h2Items: BarItem[] = h2.rows.map((r) => ({
-    label: str(r, 'http2_host', '(none)'),
+    label: str(r, 'http_host', '(none)'),
     value: toNum(r.n),
     display: fmtCount(r.n),
   }))
@@ -153,11 +153,10 @@ export function WebApiHealth() {
       <div className="tab-intro">
         <h2 className="tab-h">Web &amp; API health</h2>
         <p className="tab-sub">
-          The application layer, straight off the wire — status codes, per-host error rates and server think-time,
-          with no agent in the app. The server think-time tile uses <code>http_rtt</code>, converted to milliseconds;
-          the slowest-hosts panel uses <code>http_server_ms</code>, derived from response and request timestamps.
-          HTTP/2 is reported separately because Gigamon emits it
-          under its own <code>http2_*</code> fields, which the <code>http_*</code> panels here do not see.
+          The application layer, straight off the wire — status codes, per-host error rates and HTTP response RTT,
+          with no agent in the app. The latency tile and slowest-hosts panel use <code>http_rtt</code>,
+          converted from seconds to milliseconds; this does not isolate server processing time from network latency.
+          HTTP/2 hosts are counted separately using <code>app_name</code> and <code>http_host</code>.
         </p>
       </div>
 
@@ -170,7 +169,7 @@ export function WebApiHealth() {
         <KpiTile label="Error rate" value={kpi.loading ? '…' : fmtPct(errRate, 2)}
           accent={errRate > 5 ? 'danger' : errRate > 1 ? 'warning' : 'success'}
           sub={`${fmtCount(errors)} × 4xx/5xx`} info="Share of HTTP transactions returning 4xx or 5xx. 5xx implicates the server; 4xx is usually the caller." query={KPI} computed={kpiComputed} />
-        <KpiTile label="Server think-time p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95_ms))} accent="warning"
+        <KpiTile label="HTTP response RTT p95" value={kpi.loading ? '…' : fmtMs(toNum(k.server_p95_ms))} accent="warning"
           sub="http_rtt · milliseconds" info="95th percentile of http_rtt, multiplied by 1000 to convert seconds to milliseconds." query={KPI} computed={kpiComputed} />
         <KpiTile label="HTTP/2 transactions" value={kpi.loading ? '…' : fmtCount(toNum(k.h2))} accent="neutral"
           sub='app_name == "http2"' info='Flows whose app_name is "http2", whether or not they carry an http2_code.' query={KPI} computed={kpiComputed} />
@@ -185,13 +184,13 @@ export function WebApiHealth() {
         </Panel>
 
         {/* The bar note on each row is `<n> txns`, and `n` here is the count of
-            transactions THAT CARRIED A SERVER TIME — not the host's whole
+            transactions THAT CARRIED A NUMERIC HTTP RTT — not the host's whole
             traffic, which is what the panel below means by the same letter. The
             shared body defines `srv_n` and this panel's tail renames it; see
             src/queries/snapshots.ts. */}
-        <Panel tourId="web-slow" title="Slowest hosts — server think-time p95" query={SLOW} computed={slowComputed} snapshot={snapshotOf(slow)} onRefresh={slow.refetch} refreshing={slow.loading} note="http_server_ms · p95"
-          info="Hosts ranked by 95th-percentile server processing time. This is the server's own latency, isolated from network RTT — the 'is it the app or the network' split.">
-          <QueryBoundary state={slow} emptyLabel="No server-timing data in this window">
+        <Panel tourId="web-slow" title="Slowest hosts — HTTP response RTT p95" query={SLOW} computed={slowComputed} snapshot={snapshotOf(slow)} onRefresh={slow.refetch} refreshing={slow.loading} note="http_rtt · p95 milliseconds"
+          info="Hosts ranked by 95th-percentile HTTP response RTT, converted from seconds to milliseconds. Only flows with a numeric http_rtt are counted. This does not isolate server processing time from network latency.">
+          <QueryBoundary state={slow} emptyLabel="No HTTP RTT data in this window">
             <BarList items={slowItems} accent="accent" />
           </QueryBoundary>
         </Panel>
@@ -212,8 +211,8 @@ export function WebApiHealth() {
           </QueryBoundary>
         </Panel>
 
-        <Panel anchorRef={h2Near.ref} tourId="web-h2" title="HTTP/2 hosts" query={H2} computed={h2Computed} snapshot={snapshotOf(h2)} onRefresh={h2.refetch} refreshing={h2.loading} note="http2_host · by volume"
-          info='Flows whose app_name is "http2" and that carry http2_host, grouped by host. HTTP/2 flows without a host are counted in the transactions tile but not in this list.'>
+        <Panel anchorRef={h2Near.ref} tourId="web-h2" title="HTTP/2 hosts" query={H2} computed={h2Computed} snapshot={snapshotOf(h2)} onRefresh={h2.refetch} refreshing={h2.loading} note="http_host · by volume"
+          info='Flows whose app_name is "http2" and that carry http_host, grouped by host. HTTP/2 flows without a host are counted in the transactions tile but not in this list.'>
           <QueryBoundary state={h2} emptyLabel="No HTTP/2 traffic in this window">
             <BarList items={h2Items} accent="info" />
           </QueryBoundary>

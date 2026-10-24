@@ -28,13 +28,13 @@ describe('the table holds only measured types', () => {
     // N: the numeric census's per-type counts. W: the wide census's
     // ts_f == tn_f > 0 (every present value a string). See fieldTypes.ts.
     expect(FIELD_TYPES).toEqual({
-      tcp_rtt: 'number', tcp_rtt_app: 'number', http_server_ms: 'number', dns_response_time: 'number',
+      tcp_rtt: 'number', tcp_rtt_app: 'number', dns_response_time: 'number',
       dst_port: 'number', protocol: 'number', app_name: 'string',
       krb5_message_type: 'string', snmp_community: 'string', icmp_tunneling: 'string',
       dcerpc_service: 'string', sip_from: 'string', http_cookie: 'string', ftp_data_content: 'string',
       snmp_processing_anomaly_type: 'string', http_code: 'string', dns_reply_code: 'string',
       udp_wrong_crc: 'string', ip_wrong_crc: 'string', src_ip: 'string', dst_aws_flat_tags_name: 'string',
-      src_aws_flat_tags_name: 'string', dns_host: 'string', http_host: 'string', http2_host: 'string',
+      src_aws_flat_tags_name: 'string', dns_host: 'string', http_host: 'string',
       ssl_server_name: 'string', ssl_ext_ec_supported_groups_type: 'string',
     })
     expect(Object.isFrozen(FIELD_TYPES)).toBe(true)

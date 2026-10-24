@@ -21,12 +21,17 @@ describe('Web KPI server timing', () => {
     expect(panel?.reads).toContain('server_p95_ms')
   })
 
-  it('leaves the separate slowest-hosts query unchanged', () => {
-    expect(SLOW).toBe('dataset="gigamon_ami" http_server_ms=* http_host=* | summarize p95=percentile(http_server_ms,95), n=count() by http_host | sort by p95 desc | limit 10')
+  it('ranks hosts by numeric HTTP RTT in milliseconds without a derived ingestion field', () => {
+    expect(SLOW).toBe('dataset="gigamon_ami" http_rtt=* http_host=* | where isnotnull(toreal(http_rtt)) | summarize p95=percentile(toreal(http_rtt),95)*1000, n=count() by http_host | sort by p95 desc | limit 10')
+    const body = accelEntry('gno_web_host_c1h').body
+    expect(body).toContain('p95=percentile(toreal(http_rtt),95)*1000, srv_n=countif(isnotnull(toreal(http_rtt)))')
+    expect(SLOW).not.toContain('tonumber(')
+    expect(body).not.toContain('tonumber(')
+    expect(body).not.toContain('http_server_ms')
   })
 
   it('filters HTTP/2 hosts by application and uses the same query for its schedule', () => {
-    expect(H2).toBe('dataset="gigamon_ami" app_name="http2" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10')
+    expect(H2).toBe('dataset="gigamon_ami" app_name="http2" http_host=* | summarize n=count() by http_host | sort by n desc | limit 10')
     const entry = accelEntry('gno_web_h2_c1h')
     expect(entry.body).toBe(H2)
     expect(entry.panels[0].display).toBe(H2)

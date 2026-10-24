@@ -314,7 +314,7 @@ describe('planEntries', () => {
     expect(plan.selected.every((s) => s.mode === 'evidence')).toBe(true)
     expect(plan.refused.find((r) => r.id === 'tcp.trend')?.why).toMatch(/tcp_dup_ack/)
     for (const [id, field] of [
-      ['web.trend', 'http_code'], ['web.codes', 'http_code'], ['web.hosts', 'http_host'], ['web.h2', 'http2_host'],
+      ['web.trend', 'http_code'], ['web.codes', 'http_code'], ['web.hosts', 'http_host'], ['web.h2', 'http_host'],
       ['pqc.groups', 'ssl_ext_ec_supported_groups_type'], ['flowMap.edges', 'src_aws_flat_tags_name'],
       ['flowMap.serviceEdges', 'src_aws_flat_tags_name'],
     ]) {

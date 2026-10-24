@@ -83,9 +83,9 @@ describe('classifyQuery — a whole dashboard query', () => {
 
   it('reads every field of a two-field presence head (Web SLOW)', () => {
     const { hits } = classifyQuery(SLOW)
-    expect(has(hits, 'A', 'http_server_ms')).toBe(true)
+    expect(has(hits, 'A', 'http_rtt')).toBe(true)
     expect(has(hits, 'A', 'http_host')).toBe(true)
-    expect(has(hits, 'E', 'http_server_ms')).toBe(true)
+    expect(has(hits, 'E', 'http_rtt')).toBe(true)
   })
 })
 
@@ -99,7 +99,7 @@ describe('classifyQuery — a presence term in the search head', () => {
     ['web.trend', 'http_code'],
     ['web.codes', 'http_code'],
     ['web.hosts', 'http_host'],
-    ['web.h2', 'http2_host'],
+    ['web.h2', 'http_host'],
     ['pqc.groups', 'ssl_ext_ec_supported_groups_type'],
     ['flowMap.serviceEdges', 'src_aws_flat_tags_name'],
   ])('reads %s as class A on %s, and the table refuses it whatever the types', (id, field) => {

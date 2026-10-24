@@ -84,7 +84,7 @@ describe('auditCostEstimate', () => {
     expect(DEFAULT_COST_BASIS.sentinelCpuPer1kRows).toBeCloseTo((51 + 111 + 128) / 786.522, 9)
     expect(DEFAULT_COST_BASIS.rowsPerHour).toBe(1_049_258)
     expect(MEASURED_RUN.census.fields).toBe(28)
-    expect(CENSUS_COLUMNS_FIELDS.length).toBe(29)
+    expect(CENSUS_COLUMNS_FIELDS.length).toBe(28)
   })
 
   it('states itself as a floor from the measured run, dated, and never as a bound', () => {
@@ -92,7 +92,7 @@ describe('auditCostEstimate', () => {
     expect(text).toContain('measured on the demo feed, 2026-09-25')
     expect(text).toContain('5,457 CPU-s')
     expect(text).toContain('51, 111, 128 CPU-s')
-    expect(text).toContain('Expected at least ≈5,942 CPU-s')
+    expect(text).toContain('Expected at least ≈5,747 CPU-s')
     expect(text).toContain('a floor, not a bound')
     expect(text).toContain('wall time only')
     expect(text).not.toMatch(/up to ≈/)
@@ -256,7 +256,7 @@ describe('the Markdown report', () => {
     for (const h of ['## Type table (8.0b)', '## Density table (8.0b)', '## Sentinel table (8.0c)', '## Jobs']) expect(md).toContain(h)
     expect(md).toContain('| `tcp_rtt` (check) | 6 | string 6 | string | number | **no** |')
     expect(md).toContain('set max_running_time_per_search=300; dataset="gigamon_ami"')
-    expect(md).toContain('Billed in total: 402 CPU-s, against an estimated floor of ≈5,942.')
+    expect(md).toContain('Billed in total: 402 CPU-s, against an estimated floor of ≈5,747.')
     // The two times are kept apart: when the jobs ran, and what the windows were measured from.
     expect(md).toContain('Taken 2026-09-26T08:15:02.000Z to 2026-09-26T08:21:40.000Z')
     expect(md).toContain('reference time 2026-09-25T12:00:30.000Z (given by `--at`, not when the jobs ran)')
@@ -357,7 +357,7 @@ describe('scripts/parquet-audit.mjs', () => {
     const r = spawnSync(process.execPath, ['scripts/parquet-audit.mjs', '--at', '2026-09-25T12:00:30Z', '--base', 'http://127.0.0.1:9/capi'], { cwd: ROOT, encoding: 'utf8' })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('pinned: measurement')
-    expect(r.stdout).toContain('Expected at least ≈5,942 CPU-s — a floor')
+    expect(r.stdout).toContain('Expected at least ≈5,747 CPU-s — a floor')
     expect(r.stdout).not.toContain('≈828')
     expect(r.stdout).toContain('Nothing submitted. Re-run with --run')
     expect(r.stdout).not.toContain('submitted\n  ')

@@ -46,12 +46,12 @@ export const CODES = q(CODES_HEAD + ' | summarize n=count() by http_code | sort 
  * byte-identical to what they were.
  */
 export const HOST_ERR_AGG = 'err=sum(iif(http_code>=400,1,0))'
-export const SERVER_P95_AGG = 'p95=percentile(http_server_ms,95)'
+export const SERVER_P95_AGG = 'p95=percentile(toreal(http_rtt),95)*1000'
 
 export const HOSTS = q(HOSTS_HEAD + ' | summarize n=count(), ' + HOST_ERR_AGG + ' by http_host | sort by n desc | limit 12')
-export const SLOW = q('http_server_ms=* http_host=* | summarize ' + SERVER_P95_AGG + ', n=count() by http_host | sort by p95 desc | limit 10')
+export const SLOW = q('http_rtt=* http_host=* | where isnotnull(toreal(http_rtt)) | summarize ' + SERVER_P95_AGG + ', n=count() by http_host | sort by p95 desc | limit 10')
 export const TREND = q(CODES_HEAD + ' | summarize errors=sum(iif(http_code>=400,1,0)), total=count() by bin(_time,1m) | sort by _time asc')
-export const H2 = q('app_name="http2" http2_host=* | summarize n=count() by http2_host | sort by n desc | limit 10')
+export const H2 = q('app_name="http2" http_host=* | summarize n=count() by http_host | sort by n desc | limit 10')
 
 // The "open all 4xx/5xx responses" deep link at the foot of the tab — it lands
 // in the Cribl Search UI, so it is as customer-visible as the panels above.

@@ -67,7 +67,7 @@ const PINNED_MODULES = new Set([
 function touchedFields(): Set<string> {
   const frozen = JSON.parse(readFileSync(join(HERE, '__frozen__', 'display.json'), 'utf8')) as { modules: Record<string, Record<string, unknown>> }
   const out = new Set<string>()
-  const re = /\b(?:count|isnotnull|percentile|avg|min)\(([a-z][a-z0-9_]*)|\b([a-z][a-z0-9_]*)=\*/g
+  const re = /\b(?:count|isnotnull|percentile|avg|min)\((?:toreal\()?([a-z][a-z0-9_]*)\b(?!\s*\()|\b([a-z][a-z0-9_]*)=\*/g
   for (const [mod, entries] of Object.entries(frozen.modules)) {
     if (PINNED_MODULES.has(mod)) continue
     for (const v of Object.values(entries)) {

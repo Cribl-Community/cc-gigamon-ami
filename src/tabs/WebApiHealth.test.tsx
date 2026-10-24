@@ -75,7 +75,7 @@ const TOP_ROWS: Row[] = [{ http_host: 'api.example.com', n: 1000, err: 50, ...vi
 const SLOW_ROWS: Row[] = [{ http_host: 'api.example.com', p95: 250, n: 12, ...virt(HOSTS_ID) }]
 const CODE_ROWS: Row[] = [{ http_code: '502', n: 40, ...virt(CODE_ID) }]
 const TREND_ROWS: Row[] = [{ bin_time_1m: NOW - HOUR, errors: 4, total: 90, ...virt(TREND_ID) }]
-const H2_ROWS: Row[] = [{ http2_host: 'h2.example.com', n: 7, ...virt(H2_ID) }]
+const H2_ROWS: Row[] = [{ http_host: 'h2.example.com', n: 7, ...virt(H2_ID) }]
 const KPI_ROWS: Row[] = [{ txns: 1000, errors: 50, server_p95_ms: 250, h2: 7, ...virt('gno_overview_c1h') }]
 
 const run = (over: Record<string, unknown> = {}) => ({
@@ -223,7 +223,7 @@ describe('the tab, served from four scheduled runs and the overview scan', () =>
   it('renders the new millisecond KPI alias and retains the HTTP/2 count', async () => {
     stub()
     await render()
-    const tile = [...container.querySelectorAll('.kpi')].find((node) => node.textContent?.includes('Server think-time p95'))
+    const tile = [...container.querySelectorAll('.kpi')].find((node) => node.textContent?.includes('HTTP response RTT p95'))
     expect(tile?.textContent).toContain('250 ms')
     const h2 = [...container.querySelectorAll('.kpi')].find((node) => node.textContent?.includes('HTTP/2 transactions'))
     expect(h2?.textContent).toContain('7')
