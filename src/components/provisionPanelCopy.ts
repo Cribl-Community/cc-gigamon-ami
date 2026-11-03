@@ -185,12 +185,18 @@ export const HTTP_RESTART_PRECAUTION =
 export const ENDPOINT_LEAD = 'Configure Gigamon AMX to POST AMI records, as JSON arrays, to this URL with this token.'
 
 /**
- * The header AMX must send, exactly. openapi.json (InputHttpRaw.authTokensExt):
- * "Shared secrets to be provided by any client (Authorization: <token>)" — the
- * token is the whole header value. NOT CHECKED against a live source: that takes
- * a POST to one, which is a write this app's reviewers may not make.
+ * The header AMX must send. Owner decision 2026-10-24: the Bearer form, which
+ * is what Gigamon AMX is configured with. openapi.json (InputHttpRaw.authTokensExt)
+ * documents the bare form ("Authorization: <token>"); that the source also
+ * accepts `Bearer <token>` is NOT CHECKED against a live source: that takes a
+ * POST to one, which is a write this app's reviewers may not make.
  */
-export const AUTH_HEADER = 'Authorization: <token>'
+export const AUTH_HEADER = 'Authorization: Bearer <token>'
+
+/** The header with the generated token in it, for the one time it is shown. */
+export function authHeaderWith(token: string): string {
+  return `Authorization: Bearer ${token}`
+}
 
 /** Shown beside the token, the one time it is shown. */
 export const TOKEN_ONCE =

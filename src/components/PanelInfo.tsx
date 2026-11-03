@@ -40,6 +40,8 @@ interface Props {
   about?: string
   /** The exact Cribl Search (KQL) query behind the visualization. */
   query?: string
+  /** Match an asWritten Search read: neither display, prose nor links retarget. */
+  asWritten?: boolean
   /** Deep links to the corresponding Cribl pages (Stream / Lake / Search). */
   links?: Array<{ href: string; label: string }>
   /** Heading above `about` (defaults to "What this shows"). */
@@ -76,7 +78,7 @@ interface Props {
    * knows which Cribl page its expression belongs on — and a third
    * `searchUiUrl(…)` call in this file would change the pass-through count the
    * display freeze holds (src/queries/__frozen__/display.json records
-   * `searchUiUrl(query, range.earliest)` at exactly 2). Omitted, the block is
+   * exactly two calls). Omitted, the block is
    * plain text with a Copy button and no link.
    */
   promqlHref?: string
@@ -285,7 +287,7 @@ function pretty(q: string): string {
  *    query. Nothing dispatches for those, so the popover follows the anchor on
  *    an animation frame instead of waiting to be told.
  */
-export function PanelInfo({ about, query, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed, promql, promqlHref }: Props) {
+export function PanelInfo({ about, query, asWritten = false, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed, promql, promqlHref }: Props) {
   const { range } = useDashboard()
   // THE QUERY AS IT RAN. Callers pass the query as written, against
   // `gigamon_ami`; while only sample data exists the job ran against the sample
@@ -302,13 +304,13 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
   // With the shipped routing table nothing routes, so this is gigamon_ami.
   const routed = useRanOn(query)
   const storedRun = computed !== undefined && computed.source !== 'live'
-  const ranOnDataset = target.dataset !== REAL_DATASET ? target.dataset : storedRun ? REAL_DATASET : routed
-  const shown = query === undefined ? undefined : retargetQuery(query, ranOnDataset)
+  const ranOnDataset = asWritten ? REAL_DATASET : target.dataset !== REAL_DATASET ? target.dataset : storedRun ? REAL_DATASET : routed
+  const shown = query === undefined || asWritten ? query : retargetQuery(query, ranOnDataset)
   // The prose follows for the same reason: a stage that says its panels query
   // `dataset="gigamon_ami"` (Data Flow's Search stage) is the same claim. Only
   // a dataset SELECTOR moves (queries/datasets.ts) — prose naming gigamon_ami
   // as where the Lake destination writes stays true and is left alone.
-  const aboutShown = about === undefined ? undefined : retargetQuery(about, ranOnDataset)
+  const aboutShown = about === undefined || asWritten ? about : retargetQuery(about, ranOnDataset)
   const [open, setOpen] = useState(false)
   const [place, setPlace] = useState<Placement>({ top: 0, left: 0, side: 'below' })
   const [copied, setCopied] = useState(false)
@@ -479,7 +481,7 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
                 <span className="pinfo-actions">
                   <a
                     className="pinfo-open"
-                    href={searchUiUrl(query, range.earliest)}
+                    href={searchUiUrl(query, range.earliest, 'now', asWritten)}
                     target="_blank"
                     rel="noopener noreferrer"
                   >
@@ -490,7 +492,7 @@ export function PanelInfo({ about, query, links, aboutHeading = 'What this shows
               </div>
               <a
                 className="pinfo-code-link"
-                href={searchUiUrl(query, range.earliest)}
+                href={searchUiUrl(query, range.earliest, 'now', asWritten)}
                 target="_blank"
                 rel="noopener noreferrer"
                 /* Without this the link's accessible name is the whole query —

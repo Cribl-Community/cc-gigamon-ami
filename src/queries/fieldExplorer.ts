@@ -10,12 +10,12 @@
 // and src/data/* are the building blocks; components and hooks are not.
 
 import { q } from '../cribl/search'
-import { AMI_CATALOG } from '../data/amiFields'
+import { EXPLORER_CATALOG } from '../data/explorerFields'
 
 // Presence is checked with count(field) over the WHOLE window (accurate for
 // rare fields like ssl_issuer that a sampled field-summaries would miss).
 export const CHECK_FIELDS = Array.from(
-  new Set([...AMI_CATALOG.map((f) => f.name), ...AMI_CATALOG.map((f) => f.derivedField).filter((x): x is string => !!x)]),
+  new Set(EXPLORER_CATALOG.map((f) => f.name)),
 )
 export const PRESENCE_QUERY = q('| summarize ' + CHECK_FIELDS.map((n, i) => `c${i}=count(${n})`).join(', '))
 
@@ -31,6 +31,8 @@ export const FEED_SAMPLE_QUERY = q('| limit 5000')
 // into the family chips rather than assembling a query itself, but it lives here
 // so the snapshot freezes the grouping next to the queries it sits beside.
 export function familyOf(name: string): string {
+  const field = EXPLORER_CATALOG.find((f) => f.name === name)
+  if (field) return field.family
   if (name.startsWith('src_aws') || name.startsWith('dst_aws') || name.endsWith('workload_platform')) return 'AWS enrichment'
   if (name.startsWith('dns_')) return 'DNS'
   if (name.startsWith('snmp_')) return 'SNMP'

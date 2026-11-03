@@ -15,6 +15,8 @@ import {
   PACK_VERSION,
 } from '../cribl/pack'
 import type { SampleVolume } from '../cribl/onboarding/plan'
+import { GLOBAL_HTTP_INPUT_ID, GLOBAL_HTTP_PIPELINE_ID } from '../cribl/globalHttpIds'
+import { LAKE_DESTINATION_ID } from '../cribl/provision'
 
 const whole = (n: number) => Math.round(n).toLocaleString('en-US')
 
@@ -86,21 +88,98 @@ export const ONBOARDING_UNINSTALL =
   'Uninstalling this app does not remove the scheduled searches. Remove them in Acceleration first.'
 
 export const ONBOARDING_UNDO =
-  'Remove pack uninstalls the pack; its sources and the token go with it, and the datasets stay. ' +
+  'Remove pack uninstalls the pack; its sources go with it, and the datasets stay. ' +
+  `This app does not remove ${GLOBAL_HTTP_INPUT_ID} or the objects created with it; delete them in Cribl Stream. ` +
   'Acceleration’s Remove deletes the scheduled searches.'
+
+// ── The group's own Raw HTTP source ─────────────────────────────────────────
+
+/** The source's row in the Onboard confirmation. */
+export const globalSourceDetail = (port: number, hosting: 'managed' | 'hybrid'): string =>
+  `in the group’s own sources · port ${port} · a new auth token, shown once · ` +
+  `${hosting === 'managed' ? 'TLS with Cribl’s certificate' : 'no TLS (a hybrid group has no Cribl certificate)'} · started · ` +
+  `connected by QuickConnect to ${GLOBAL_HTTP_PIPELINE_ID} → ${LAKE_DESTINATION_ID} (${PACK_LAKE_DATASET_ID})`
+
+// ── The Onboard chooser ─────────────────────────────────────────────────────
+
+/** Above the chooser's source list. */
+export const SOURCE_PICK_TIP =
+  `The Raw HTTP sources in this worker group. The one you pick is connected to Cribl Lake ${PACK_LAKE_DATASET_ID} through the ` +
+  `${GLOBAL_HTTP_PIPELINE_ID} pipeline, beside anything it already sends to; its port, auth token and TLS stay as they are. ` +
+  'A source on Send to Routes cannot be picked: switching it to QuickConnect would cut off its routes.'
+
+/** One source in the chooser. Never a token. */
+export function sourceChoiceWords(s: {
+  port: number | null; tls: boolean; disabled: boolean; quickConnect: boolean; outputs: readonly string[]; connected: boolean
+}): string {
+  return [
+    `port ${s.port ?? 'unknown'}`,
+    s.tls ? 'TLS on' : 'TLS off',
+    s.disabled ? 'off' : 'on',
+    s.connected ? `already connected to ${LAKE_DESTINATION_ID}`
+      : !s.quickConnect ? 'Send to Routes'
+        : s.outputs.length ? `sends to ${s.outputs.join(', ')}` : 'sends nowhere yet',
+  ].join(' · ')
+}
+
+/** The chooser's last option. */
+export const NEW_SOURCE_LABEL = `Create a new source, ${GLOBAL_HTTP_INPUT_ID}`
+
+/** Where the token is, on the card, when it is not being shown. */
+export const tokenElsewhere = (id: string): string =>
+  `Use the auth token set on ${id} (its Authentication settings in Cribl). Rotate token sets a new one and shows it once.`
+
+/** A Lake object's row in the Onboard confirmation, when it is created. */
+export const globalObjectDetail = (o: 'breaker' | 'pipeline' | 'destination' | 'source'): string =>
+  o === 'destination' ? `writes ${PACK_LAKE_DATASET_ID}; created because the group has none`
+    : o === 'pipeline' ? 'casts numeric fields and derives the helper fields the dashboards read; created because the group has none'
+      : o === 'breaker' ? 'one event per record of a POSTed JSON array'
+        : 'the Raw HTTP source'
+
+/** A picked source's row: what connecting it changes, and what it keeps. */
+export const pickedSourceDetail = (): string =>
+  `adds the QuickConnect connection ${GLOBAL_HTTP_PIPELINE_ID} → ${LAKE_DESTINATION_ID} (${PACK_LAKE_DATASET_ID}) beside its others ` +
+  `(one already sending to ${LAKE_DESTINATION_ID} is replaced, so no record is written twice), ` +
+  'and the JSON-array event breaker first in its list · switched on if it is off (with a new auth token, shown once, if it has none) · ' +
+  'keeps its port, TLS and other connections'
+
+/** Said when the picked source is already connected: nothing is written to it. */
+export const pickedAlreadyConnectedSentence = (id: string): string =>
+  `${id} already sends to ${LAKE_DESTINATION_ID} through ${GLOBAL_HTTP_PIPELINE_ID}, so it is left exactly as it is.`
+
+/** Said when the source is already in the group: the run leaves it alone. */
+export const globalSourceExistsSentence = (group: string): string =>
+  `${GLOBAL_HTTP_INPUT_ID} is already in ${group}, so it is left exactly as it is: its port and auth token do not change. ` +
+  'Rotate token or Move port change them.'
+
+/** Why the pack's own Raw HTTP source is not used. */
+export const PACK_HTTP_UNUSED =
+  `The pack carries a Raw HTTP source of its own (also named ${PACK_HTTP_INPUT_ID}, listed inside the pack), which stays switched off: ` +
+  `Gigamon AMX sends to ${GLOBAL_HTTP_INPUT_ID} in the group’s own sources. If the pack’s source was started earlier, it keeps listening until it is stopped in Cribl Stream.`
+
+/** When an installed copy is not this app's current release: left alone. */
+export const packKeptSentence = (version: string): string =>
+  `${PACK_ID} ${version} stays installed exactly as it is: this run does not upgrade, change or commit it. ` +
+  `Sample data needs this app’s current pack (${PACK_VERSION}); Upgrade it when that is available.`
+
+/** When this build's pack release cannot be installed. */
+export const packSkippedSentence = (refusal: string): string =>
+  `The onboarding pack is not installed: ${refusal}. The Raw HTTP source and ${PACK_LAKE_DATASET_ID} do not need it; ` +
+  `sample data and the Parquet copy (${PACK_PARQUET_DATASET_ID}) do, so they wait for the pack.`
 
 // ── The panel ───────────────────────────────────────────────────────────────
 
 /** The one line under the panel title. */
 export const ONBOARDING_LEAD =
-  'Installs the Gigamon AMI pack in the worker group below and lands Gigamon AMX data in Cribl Lake.'
+  `Creates the Raw HTTP source ${GLOBAL_HTTP_INPUT_ID} in the worker group below, installs the Gigamon AMI pack, and lands Gigamon AMX data in Cribl Lake.`
 
 /** The rest, behind the ⓘ at the end of the lead. */
 export const ONBOARDING_LEAD_TIP =
   `The pack is ${PACK_ID}. The Leader installs it from the GitHub release this app pins, with custom functions refused. ` +
   'Onboard names every object it creates or changes, in one confirmation, before anything is written. It then creates the ' +
-  'Cribl Lake datasets, installs the pack, gives its Raw HTTP source a port, a new auth token and TLS for the group, commits ' +
-  'and deploys, and installs the scheduled searches that make the dashboards fast.'
+  `Cribl Lake datasets, installs the pack, creates ${GLOBAL_HTTP_INPUT_ID} in the group’s own Raw HTTP sources with your port, a new ` +
+  `auth token and TLS for the group, connected to ${LAKE_DESTINATION_ID} (${PACK_LAKE_DATASET_ID}), commits and deploys, and installs the ` +
+  'scheduled searches that make the dashboards fast. The pack carries the sample data and the Parquet copy.'
 
 /** Beside "Worker group" when this panel holds the picker. */
 export const ONBOARDING_GROUP_TIP =
@@ -124,8 +203,11 @@ export const onboardNote = (group: string): string => `Creates, commits and depl
 
 /** The trigger's label, by what the run would do. */
 export function onboardLabel(state: { installed: boolean; httpNeedsWork: boolean }): string {
-  if (!state.installed) return 'Onboard'
-  return state.httpNeedsWork ? 'Finish onboarding' : 'Run onboarding again'
+  // "Onboard" whenever the group's own Raw HTTP source still has to be
+  // created, pack installed or not. *(Until 2026-10-24 an installed pack made
+  // this "Finish onboarding", which read as something other than Onboard.)*
+  if (!state.installed || state.httpNeedsWork) return 'Onboard'
+  return 'Run onboarding again'
 }
 
 /** Why Onboard is refused, for an installed copy it may not onboard over. */
@@ -304,9 +386,10 @@ export function datasetWords(id: string, d: { format: string | null; retentionPe
 }
 
 /** The Raw HTTP source's row. Never the token: only whether one is set. */
-export function httpStatusWords(h: { port: number | null; tls: boolean; tokenSet: boolean; disabled: boolean } | null): string {
-  if (!h) return 'not installed'
+export function httpStatusWords(h: { port: number | null; tls: boolean; tokenSet: boolean; disabled: boolean } | null, id: string | null = null): string {
+  if (!h) return 'none connected to Cribl Lake yet'
   return [
+    id ?? GLOBAL_HTTP_INPUT_ID,
     `port ${h.port ?? 'unknown'}`,
     h.tls ? 'TLS on' : 'TLS off',
     h.tokenSet ? 'token set' : 'no token',
@@ -326,9 +409,8 @@ export function accelStatusWords(a: { total: number; installed: number; running:
 
 /** Behind the ⓘ on the card's lead. */
 export const PACK_ENDPOINT_TIP =
-  `Send the token as the whole header value, with no "Bearer" prefix. The records land in ${PACK_LAKE_DATASET_ID}, which the dashboards read; ` +
-  `the pack also writes a Parquet copy of each one to ${PACK_PARQUET_DATASET_ID}, which they do not. Point Gigamon AMX at one source only, ` +
-  'or each record is stored twice.'
+  `Send the token after "Bearer " in the Authorization header. The source is ${GLOBAL_HTTP_INPUT_ID}, in the group’s own Raw HTTP sources; ` +
+  `the records land in ${PACK_LAKE_DATASET_ID}, which the dashboards read. Point Gigamon AMX at one source only, or each record is stored twice.`
 
 /** What the card says instead of claiming data is arriving. */
 export const NOT_SEEN_YET = 'Configured and deployed. This app has not yet seen a record from this source.'

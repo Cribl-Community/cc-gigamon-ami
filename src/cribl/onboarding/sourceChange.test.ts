@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
-// The pack sources' own settings outside an onboarding run — Rotate token, Move
-// port, Start and Stop sample data — against a fake Leader stubbed at `fetch`.
+// The sources' own settings outside an onboarding run — Rotate token and Move
+// port on the group's own Raw HTTP source `in_gigamon_ami_http` (since
+// 2026-10-24, ../globalHttp.ts), Start and Stop sample data on the pack's — against a
+// fake Leader stubbed at `fetch`.
 //
 // What is held still:
 //   * each is ONE whole-body PATCH of the source: the live object, minus what
@@ -42,6 +44,13 @@ const OLD_TOKEN = 'e'.repeat(64)
 const P = `/m/${GROUP}/p/${PACK_ID}`
 const HTTP_INPUT = `${P}/system/inputs/${PACK_HTTP_INPUT_ID}`
 const SAMPLE_INPUT = `${P}/system/inputs/${PACK_SAMPLE_INPUT_ID}`
+const G_ID = 'in_gigamon_ami_http'
+const G_SOURCE = `/m/${GROUP}/system/inputs/${G_ID}`
+const G_FILE = `groups/${GROUP}/local/cribl/inputs.yml`
+/** The group's own Raw HTTP source, as the fake holds it. */
+let globalSource: Record<string, unknown> | null = null
+/** What onboarding leaves on the source it connects. */
+const ONBOARDED = { breakerRulesets: ['gigamon_ami_http_json_array'], sendToRoutes: false, connections: [{ pipeline: 'gigamon', output: 'gigamon_lake' }] }
 const DATASETS = '/products/lake/lakes/default/datasets'
 
 /** Each token the generator hands out, in order: the first is the dialog's
@@ -90,6 +99,7 @@ function leader(o: {
     [PACK_HTTP_INPUT_ID]: { id: PACK_HTTP_INPUT_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED },
     [PACK_SAMPLE_INPUT_ID]: { id: PACK_SAMPLE_INPUT_ID, ...structuredClone(SHIPPED[PACK_SAMPLE_INPUT_ID]), disabled: !o.sampleOn },
   }
+  globalSource = { id: G_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED, ...ONBOARDED }
   window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
   vi.stubGlobal('getCriblUser', async () => ({ id: 'auth0|me', username: 'me' }))
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -106,7 +116,16 @@ function leader(o: {
     if (at('GET', `/products/stream/groups/${GROUP}`)) return reply(200, { items: [{ id: GROUP, configVersion: 'aaaa1111' }] })
     if (at('GET', '/version')) return reply(200, { items: [{ hash: 'aaaa1111', refs: 'HEAD -> main' }] })
     if (at('GET', DATASETS)) return reply(200, { items: o.sampleDataset ? [{ id: PACK_SAMPLE_DATASET_ID, format: 'json' }] : [] })
-    if (at('GET', `/m/${GROUP}/system/inputs`)) return reply(200, { items: o.takenPort ? [{ id: 'in_other', type: 'http', port: o.takenPort }] : [] })
+    if (at('GET', `/m/${GROUP}/system/inputs`)) {
+      return reply(200, { items: [...(o.takenPort ? [{ id: 'in_other', type: 'http', port: o.takenPort }] : []), ...(globalSource ? [globalSource] : [])] })
+    }
+    if (at('GET', G_SOURCE)) return globalSource ? reply(200, { items: [globalSource] }) : reply(404, { message: 'not found' })
+    if (at('PATCH', G_SOURCE)) {
+      if (o.failPatch) return reply(500, { message: 'the Leader refused the source' })
+      globalSource = body as Record<string, unknown>
+      pending.push(G_FILE)
+      return reply(200, { items: [body] })
+    }
     if (at('GET', `/m/${GROUP}/packs`)) return reply(200, { items: packs })
     if (at('GET', `${P}/system/inputs`)) return reply(200, { items: Object.values(inputs) })
     for (const [id, item] of [[PACK_HTTP_INPUT_ID, HTTP_INPUT], [PACK_SAMPLE_INPUT_ID, SAMPLE_INPUT]] as const) {
@@ -184,11 +203,11 @@ describe('Rotate token', () => {
     const r = await change({ kind: 'token' })
     expect(r.afterPrepare).toBe(0)
     const d = r.dialog!
-    expect(d.title).toBe(`Rotate the auth token of ${PACK_HTTP_INPUT_ID} in ${GROUP}`)
-    expect(d.resources.find((x) => x.id === PACK_HTTP_INPUT_ID)).toMatchObject({ action: 'replace', group: GROUP })
+    expect(d.title).toBe(`Rotate the auth token of ${G_ID} in ${GROUP}`)
+    expect(d.resources.find((x) => x.id === G_ID)).toMatchObject({ action: 'replace', group: GROUP })
     expect(d.resources.some((x) => x.action === 'deploy' && x.id === GROUP)).toBe(true)
     expect(d.consequences.join(' ')).toMatch(/Gigamon AMX has to be given the new token/)
-    expect(d.diff).toEqual([{ resourceId: PACK_HTTP_INPUT_ID, key: 'authTokensExt', before: 'a token is set (not shown)', after: 'a new token (not shown)' }])
+    expect(d.diff).toEqual([{ resourceId: G_ID, key: 'authTokensExt', before: 'a token is set (not shown)', after: 'a new token (not shown)' }])
     expect(JSON.stringify(d)).not.toMatch(/[0-9a-f]{64}/)
   })
 
@@ -197,14 +216,16 @@ describe('Rotate token', () => {
     const r = await change({ kind: 'token' })
     expect(r.out?.stopped).toBeNull()
     expect(writes().map((c) => `${c.method} ${c.path}`)).toEqual([
-      `PATCH ${HTTP_INPUT}`, 'POST /version/commit', `PATCH /products/stream/groups/${GROUP}/deploy`,
+      `PATCH ${G_SOURCE}`, 'POST /version/commit', `PATCH /products/stream/groups/${GROUP}/deploy`,
     ])
     // The run's token, not the preview's.
     expect(minted).toHaveLength(2)
     const sent = writes()[0].body as Record<string, unknown>
     expect(sent.authTokensExt).toEqual([{ token: minted[1], authType: 'manual' }])
     // Whole body: every live key but the server-owned one, the rest unchanged.
-    const { criblSourceProvenance: _owned, ...rest } = { id: PACK_HTTP_INPUT_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED }
+    const { criblSourceProvenance: _owned, ...rest } = {
+      id: G_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED, ...ONBOARDED,
+    }
     expect(sent).toEqual({ ...rest, authTokensExt: [{ token: minted[1], authType: 'manual' }] })
     expect(r.tokens).toEqual([minted[1]])
     expect(r.undeployed).toEqual([false])
@@ -212,14 +233,15 @@ describe('Rotate token', () => {
       expect(r.steps.join(' ')).not.toContain(t)
       for (const p of kvPuts()) expect(String(p.body)).not.toContain(t)
     }
-    for (const f of committed[0]) expect(f).toContain(`/${PACK_ID}/`)
+    // Only the group's own config files: never the pack's.
+    expect(committed[0]).toEqual([G_FILE])
   })
 
   it('a failed PATCH: no token shown, nothing committed or deployed, and the step says to rotate again', async () => {
     leader({ failPatch: true })
     const r = await change({ kind: 'token' })
     expect(r.tokens).toEqual([])
-    expect(writes().map((c) => c.path)).toEqual([HTTP_INPUT])
+    expect(writes().map((c) => c.path)).toEqual([G_SOURCE])
     expect(r.out?.stopped?.detail).toMatch(/Rotate again/)
     for (const t of minted) expect(r.steps.join(' ')).not.toContain(t)
   })
@@ -232,20 +254,26 @@ describe('a rotation whose commit failed', () => {
     expect(r.out?.stopped?.key).toBe('commit')
     expect(r.tokens).toEqual([minted[1]])
     expect(r.undeployed).toEqual([true])
-    expect(writes().map((c) => c.path)).toEqual([HTTP_INPUT, '/version/commit'])
+    expect(writes().map((c) => c.path)).toEqual([G_SOURCE, '/version/commit'])
   })
 })
 
 describe('the pack’s own files uncommitted — an upgrade this app held, say', () => {
-  const each: Change[] = [{ kind: 'token' }, { kind: 'port', port: 20008 }, { kind: 'sample', enabled: false }]
+  it('the sample change does not open: it would commit and deploy the held upgrade with its own', async () => {
+    leader({ sampleOn: true, pendingAtStart: [HELD_MANIFEST] })
+    const r = await change({ kind: 'sample', enabled: false })
+    expect(r.prepared.ok).toBe(false)
+    if (!r.prepared.ok) expect(r.prepared.why).toContain('package.json')
+    expect(writes()).toEqual([])
+  })
 
-  it('no source change opens: it would commit and deploy the held upgrade with its own', async () => {
-    for (const c of each) {
-      leader({ sampleOn: true, pendingAtStart: [HELD_MANIFEST] })
+  it('Rotate token and Move port still run, and commit none of the pack’s files', async () => {
+    for (const c of [{ kind: 'token' }, { kind: 'port', port: 20008 }] as Change[]) {
+      leader({ pendingAtStart: [HELD_MANIFEST] })
       const r = await change(c)
-      expect(r.prepared.ok, c.kind).toBe(false)
-      if (!r.prepared.ok) expect(r.prepared.why).toContain('package.json')
-      expect(writes()).toEqual([])
+      expect(r.out?.stopped, c.kind).toBeNull()
+      expect(committed[0], c.kind).toEqual([G_FILE])
+      expect(pending, c.kind).toContain(HELD_MANIFEST)
     }
   })
 
@@ -286,11 +314,13 @@ describe('Move port', () => {
   it('sends exactly the live source with the new port, and says the exporter must follow', async () => {
     leader()
     const r = await change({ kind: 'port', port: 20008 })
-    expect(r.dialog?.diff).toEqual([{ resourceId: PACK_HTTP_INPUT_ID, key: 'port', before: '20007', after: '20008' }])
+    expect(r.dialog?.diff).toEqual([{ resourceId: G_ID, key: 'port', before: '20007', after: '20008' }])
     expect(r.dialog?.consequences.join(' ')).toMatch(/listens on 20008 and no longer on 20007/)
     expect(r.out?.stopped).toBeNull()
     const sent = writes()[0].body as Record<string, unknown>
-    const { criblSourceProvenance: _owned, ...rest } = { id: PACK_HTTP_INPUT_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED }
+    const { criblSourceProvenance: _owned, ...rest } = {
+      id: G_ID, ...structuredClone(SHIPPED[PACK_HTTP_INPUT_ID]), ...CONFIGURED, ...ONBOARDED,
+    }
     expect(sent).toEqual({ ...rest, port: 20008 })
     expect(r.tokens).toEqual([])
   })
@@ -304,7 +334,7 @@ describe('Move port', () => {
 
   it('a source that moved after the dialog sends nothing: the confirmed change is not what would be sent', async () => {
     leader()
-    const r = await change({ kind: 'port', port: 20008 }, () => { inputs[PACK_HTTP_INPUT_ID] = { ...inputs[PACK_HTTP_INPUT_ID], port: 20009 } })
+    const r = await change({ kind: 'port', port: 20008 }, () => { globalSource = { ...globalSource, port: 20009 } })
     expect(writes()).toEqual([])
     expect(r.out?.stopped?.detail).toMatch(/changed after this change was shown/)
   })

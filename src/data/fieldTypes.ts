@@ -50,7 +50,9 @@
 //      `ts_f == tn_f > 0`: every present value counted as a string, so no other
 //      kind can be present. All 22 uncast census fields met it (e.g.
 //      krb5_message_type 113 of 113, dns_reply_code 850,806 of 850,806;
-//      `app_name` is one of them, and N agrees), 28 fields in all. Its
+//      `app_name` is one of them, and N agrees), 28 fields in all — 26 since
+//      2026-11-02, when Flow Map stopped reading the two AWS Name tag fields
+//      and they left the table (no routable text reads them). Its
 //      numeric fields read `ts_f = 0`, which says only "not a string"; they
 //      are typed from N, not W.
 //
@@ -91,8 +93,6 @@ export const FIELD_TYPES: Readonly<Record<string, FieldType>> = Object.freeze({
   udp_wrong_crc: 'string',
   ip_wrong_crc: 'string',
   src_ip: 'string',
-  dst_aws_flat_tags_name: 'string',
-  src_aws_flat_tags_name: 'string',
   dns_host: 'string',
   http_host: 'string',
   ssl_server_name: 'string',

@@ -196,7 +196,7 @@ describe('Security: every technique tile lights', () => {
   }
 })
 
-describe('Flow Map: a graph with every health state', () => {
+describe('Pack samples: the AWS Name tag service graph (Flow Map has read app_name instead since 1.1.12)', () => {
   // FlowMap.tsx's healthOf thresholds: SLO 100 ms, danger at 3x or >=90% resets.
   const nodes = [...groupBy(events, 'dst_aws_flat_tags_name')].map(([name, evs]) => {
     const app = evs.filter((e) => present(e.tcp_rtt_app)).map((e) => num(e.tcp_rtt_app) * 1000)

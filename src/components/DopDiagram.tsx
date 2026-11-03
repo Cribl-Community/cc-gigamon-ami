@@ -27,7 +27,7 @@ import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type Rea
 import { AppsOutlined, Lake, Search, Stream } from '@capra/icons'
 
 
-export type HopState = 'on' | 'idle' | 'blocked'
+export type HopState = 'on' | 'idle' | 'blocked' | 'unavailable'
 
 export type Tier = 'gigamon' | 'cribl' | 'app'
 
@@ -49,7 +49,7 @@ export interface DopNode {
   value?: string
   /** Pre-wrapped metric caption lines. */
   label?: string[]
-  from?: 'cribl' | 'records'
+  from?: 'cribl' | 'records' | 'unavailable'
 }
 
 export type SlotId = 'sources' | 'stream' | 'destinations' | 'search' | 'lake' | 'app'
@@ -65,6 +65,7 @@ export type HopId = 'wire' | 'enriched' | 'ingest' | 'process' | 'store' | 'quer
 export interface DopFlowFigure {
   value: string
   label: string
+  from?: 'records' | 'unavailable'
 }
 
 export interface DopDiagramProps {
@@ -276,13 +277,14 @@ function ProductMark({ icon, cx, y }: { icon: IconKey; cx: number; y: number }) 
  * the two Gigamon-side ones — those are derived from the AMI records at rest in
  * Lake, not measured at the tap, and the diagram must not imply otherwise.
  */
-function ProvChip({ x, y, from, tone }: { x: number; y: number; from: 'cribl' | 'records'; tone: 'card' | 'canvas' }) {
+function ProvChip({ x, y, from, tone }: { x: number; y: number; from: 'cribl' | 'records' | 'unavailable'; tone: 'card' | 'canvas' }) {
+  const style = from === 'unavailable' ? 'records' : from
   return (
     <g transform={`translate(${x} ${y})`}>
       <rect x="-37" y="-9" width="74" height="14" rx="7"
-        className={`dop-prov-bg ${tone === 'card' ? `dop-prov-${from}` : 'dop-prov-canvas'}`} />
-      <text x="0" y="1.5" className={`dop-prov ${tone === 'card' ? `dop-prov-t-${from}` : 'dop-prov-t-canvas'}`}>
-        {from === 'cribl' ? 'Cribl metrics' : 'from records'}
+        className={`dop-prov-bg ${tone === 'card' ? `dop-prov-${style}` : 'dop-prov-canvas'}`} />
+      <text x="0" y="1.5" className={`dop-prov ${tone === 'card' ? `dop-prov-t-${style}` : 'dop-prov-t-canvas'}`}>
+        {from === 'cribl' ? 'Cribl metrics' : from === 'unavailable' ? 'unavailable' : 'from records'}
       </text>
     </g>
   )
@@ -309,8 +311,8 @@ function HopFlag({ d, state }: { d: string; state: HopState }) {
   const m = d.match(/M(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/)
   if (!m) return null
   return (
-    <text x={Number(m[1]) + 16} y={Number(m[2]) - 10} className={`dop-flag dop-flag-${state}`}>
-      {state === 'blocked' ? 'blocked' : 'no data'}
+    <text x={Number(m[1]) + 16} y={Number(m[2]) - 10} className={`dop-flag dop-flag-${state === 'unavailable' ? 'idle' : state}`}>
+      {state === 'blocked' ? 'blocked' : state === 'unavailable' ? 'unavailable' : 'no data'}
     </text>
   )
 }
@@ -320,7 +322,7 @@ function Hop({ id, d, state, reduced, brand = 'teal', arrow }: {
 }) {
   const pathId = `dop-hop-${id}`
   return (
-    <g className={`dop-hop dop-hop-${state} dop-hop-${brand}`}>
+    <g className={`dop-hop dop-hop-${state === 'unavailable' ? 'idle' : state} dop-hop-${brand}`}>
       <path
         id={pathId}
         d={d}
@@ -458,7 +460,7 @@ export function DopDiagram({ nodes, wire, enriched, hops, selected, onSelect, lo
           <>
             <text x={252} y={AXIS + 26} className="dop-flow-value">{wire.value}</text>
             <text x={252} y={AXIS + 40} className="dop-flow-label">{wire.label}</text>
-            <ProvChip x={252} y={AXIS + 58} from="records" tone="canvas" />
+            <ProvChip x={252} y={AXIS + 58} from={wire.from ?? 'records'} tone="canvas" />
           </>
         )}
 
@@ -525,7 +527,7 @@ export function DopDiagram({ nodes, wire, enriched, hops, selected, onSelect, lo
             <>
               <text x={855} y={AXIS + 26} className="dop-flow-value dop-flow-orange">{enriched.value}</text>
               <text x={855} y={AXIS + 40} className="dop-flow-label">{enriched.label}</text>
-              <ProvChip x={855} y={AXIS + 58} from="records" tone="canvas" />
+              <ProvChip x={855} y={AXIS + 58} from={enriched.from ?? 'records'} tone="canvas" />
             </>
           )}
         </g>

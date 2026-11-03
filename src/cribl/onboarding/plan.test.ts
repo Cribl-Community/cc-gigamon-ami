@@ -287,8 +287,9 @@ describe('onboardingDialog', () => {
     expect(ids).toEqual([
       'create:gigamon_ami', `create:${PACK_PARQUET_DATASET_ID}`, `create:${PACK_ID}`,
       ...packObjects.map((id) => `create:${id}`),
-      `replace:${PACK_HTTP_INPUT_ID}`, 'deploy:g1',
-      ...MANIFEST.map((e) => `create:${e.id}`),
+      'create:gigamon_ami_http_json_array', 'create:gigamon', 'create:gigamon_lake', 'create:in_gigamon_ami_http',
+      'deploy:g1',
+      ...MANIFEST.filter((e) => !e.legacyOnly).map((e) => `create:${e.id}`),
     ])
     expect(d.title).toBe('Onboard Gigamon AMI in g1')
     expect(d.undo).toBe(ONBOARDING_UNDO)
@@ -317,20 +318,33 @@ describe('onboardingDialog', () => {
     expect(d.resources.filter((r) => r.kind === 'Cribl Search saved search').every((r) => r.detail?.startsWith('installed paused'))).toBe(true)
   })
 
-  it('hands the run back exactly the diff it showed', () => {
+  it('the group’s own Raw HTTP source is a create row naming its port, TLS and where it lands — and no source diff', () => {
     const d = onboardingDialog(ctx({ hosting: 'hybrid', port: 10080 }))
-    expect(d.approvedHttp).toEqual(expectedConfigureDiff('hybrid', 10080))
-    expect(d.diff.map((r) => r.key)).toEqual(d.approvedHttp.map((r) => r.key))
-    expect(d.diff.every((r) => r.resourceId === PACK_HTTP_INPUT_ID)).toBe(true)
-    expect(d.diff.find((r) => r.key === 'authTokensExt')).toEqual({ resourceId: PACK_HTTP_INPUT_ID, key: 'authTokensExt', before: null, after: 'a new token (not shown)' })
+    const row = d.resources.find((r) => r.kind === 'Raw HTTP source')
+    expect(row).toMatchObject({ action: 'create', id: 'in_gigamon_ami_http', group: 'g1' })
+    expect(row?.detail).toMatch(/port 10080/)
+    expect(row?.detail).toMatch(/no TLS/)
+    expect(row?.detail).toMatch(/gigamon → gigamon_lake \(gigamon_ami\)/)
+    expect(d.approvedHttp).toEqual([])
+    expect(d.diff).toEqual([])
+    expect(d.consequences.join(' ')).toMatch(/stays switched off/)
   })
 
-  it('with the pack installed: no pack rows, and the live diff instead of the shipped one', () => {
-    const live = [{ key: 'disabled', kind: 'changed' as const, before: true, after: false }]
-    const d = onboardingDialog(ctx({ packInstalled: true, liveHttpDiff: live, datasets: ['gigamon_ami', PACK_PARQUET_DATASET_ID] }))
+  it('with the pack installed and the source there: no pack rows, no source rows', () => {
+    const d = onboardingDialog(ctx({
+      packInstalled: true, httpAction: 'none', globalPresent: ['breaker', 'pipeline', 'destination', 'source'],
+      datasets: ['gigamon_ami', PACK_PARQUET_DATASET_ID],
+    }))
     expect(d.resources.some((r) => r.id === PACK_ID)).toBe(false)
-    expect(d.resources[0].id).toBe(PACK_HTTP_INPUT_ID)
-    expect(d.approvedHttp).toEqual(live)
+    expect(d.resources.some((r) => r.id === 'in_gigamon_ami_http')).toBe(false)
+    expect(d.steps.some((s) => s.key === 'pack')).toBe(false)
+  })
+
+  it('a pack release that cannot be installed: no pack rows, the reason said, and the source still created', () => {
+    const d = onboardingDialog(ctx({ packRefusal: 'pack 0.2.3 has not been released, so there is nothing to install yet' }))
+    expect(d.resources.some((r) => r.kind === 'Pack' || r.detail === `in pack ${PACK_ID}`)).toBe(false)
+    expect(d.resources.some((r) => r.kind === 'Raw HTTP source' && r.action === 'create')).toBe(true)
+    expect(d.consequences.join(' ')).toMatch(/The onboarding pack is not installed: pack 0\.2\.3 has not been released/)
     expect(d.steps.some((s) => s.key === 'pack')).toBe(false)
   })
 
@@ -368,7 +382,7 @@ describe('onboardingDialog', () => {
     const paused = onboardingDialog(ctx({ sample: true, accel: accel({ state: 'differs', enabled: true }) }))
     expect(paused.accelMode).toBe('paused')
     const replaced = (d: ReturnType<typeof onboardingDialog>) => d.resources.filter((r) => r.kind === SAVED_KIND && r.action === 'replace')
-    expect(replaced(paused)).toHaveLength(MANIFEST.length)
+    expect(replaced(paused)).toHaveLength(MANIFEST.filter((e) => !e.legacyOnly).length)
     for (const r of replaced(paused)) {
       expect(r.detail).not.toMatch(/installed paused/)
       expect(r.detail).toMatch(/^running · Overwritten/)
@@ -376,7 +390,7 @@ describe('onboardingDialog', () => {
     // The reverse: running mode over a paused schedule that drifted — it stays paused.
     const running = onboardingDialog(ctx({ target: target('has-data'), accel: accel({ state: 'differs', enabled: false }) }))
     expect(running.accelMode).toBe('running')
-    expect(replaced(running)).toHaveLength(MANIFEST.length)
+    expect(replaced(running)).toHaveLength(MANIFEST.filter((e) => !e.legacyOnly).length)
     for (const r of replaced(running)) expect(r.detail).toMatch(/^paused · Overwritten/)
     // A drifted schedule with no readable flag is PATCHed enabled (applyAcceleration), so it reads running.
     for (const r of replaced(onboardingDialog(ctx({ sample: true, accel: accel({ state: 'differs', enabled: null }) })))) {
@@ -441,15 +455,6 @@ describe('httpActionOf — configure, start, or leave alone', () => {
     [{ tokenSet: true, disabled: false }, 'none'],
   ] as const)('%j → %s', (http, want) => {
     expect(httpActionOf(http)).toBe(want)
-  })
-
-  it('a source that is only stopped is started, keeping its token: no token row, and no "new auth token" claim', () => {
-    const live = [{ key: 'disabled', kind: 'changed' as const, before: true, after: false }]
-    const d = onboardingDialog(ctx({ packInstalled: true, httpAction: 'enable', liveHttpDiff: live, datasets: ['gigamon_ami', PACK_PARQUET_DATASET_ID] }))
-    const row = d.resources.find((r) => r.id === PACK_HTTP_INPUT_ID)
-    expect(row?.detail).toBe('started, keeping its auth token, port and TLS as they are')
-    expect(d.approvedHttp).toEqual(live)
-    expect(d.diff.some((r) => r.key === 'authTokensExt')).toBe(false)
   })
 
   it('a source that has a token and runs is not named, and nothing is approved for it', () => {

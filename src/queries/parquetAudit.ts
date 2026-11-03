@@ -124,7 +124,7 @@ export const CENSUS_FIELDS: readonly string[] = Object.freeze([
   'sip_from', 'http_cookie', 'ftp_data_content', 'snmp_processing_anomaly_type',
   'http_code', 'dns_reply_code', 'udp_wrong_crc', 'ip_wrong_crc',
   // Head filters (class D) and group keys the rewrites touch.
-  'app_name', 'src_ip', 'dst_ip', 'dst_aws_flat_tags_name', 'src_aws_flat_tags_name', 'dns_host',
+  'app_name', 'src_ip', 'dst_ip', 'dns_host',
   'http_host', 'http_rtt', 'ssl_server_name', 'ssl_ext_ec_supported_groups_type',
 ])
 
@@ -282,15 +282,20 @@ export const SENTINEL_FIELDS: readonly string[] = Object.freeze([
   // Uncast: the census decides the form.
   'http_code', 'krb5_message_type', 'snmp_community', 'icmp_tunneling', 'dcerpc_service',
   'sip_from', 'http_cookie', 'ftp_data_content', 'snmp_processing_anomaly_type',
-  'app_name', 'src_ip', 'dst_ip', 'dst_aws_flat_tags_name', 'src_aws_flat_tags_name', 'dns_host',
+  'app_name', 'src_ip', 'dst_ip', 'dns_host',
   'http_host', 'http_rtt', 'ssl_server_name', 'ssl_ext_ec_supported_groups_type',
+  // Flow Map's duplicate-ACK share (2026-11-03); not yet ingested on the live
+  // feed, so its type is unmeasured and the census decides the form.
+  'tcp_dup_ack',
   // Numbers (the design's list: §4 8.0c).
   'tcp_rtt', 'tcp_rtt_app', 'http_server_ms', 'dns_response_time', 'dst_port',
 ])
 
 /** The fields in `SENTINEL_FIELDS` that no rewrite touches, each named in the
  *  design for the reason given above. The derivation test allows exactly these. */
-export const SENTINEL_EXTRA_FIELDS: readonly string[] = Object.freeze(['dst_port'])
+// `http_server_ms` has been read by no query since Flow Map moved to `http_rtt`
+// (2026-11-03); it stays so the 2026-09-25 reports' sentinel rows still re-read.
+export const SENTINEL_EXTRA_FIELDS: readonly string[] = Object.freeze(['dst_port', 'http_server_ms'])
 
 /**
  * What the sentinel query assumes before any census has run: the pipeline's

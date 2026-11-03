@@ -12,14 +12,14 @@
     "Do not hand-edit: change src/, re-run `npm run queries:extract`, and review the diff."
   ],
   "counts": {
-    "surfaces": 85,
-    "searches": 38,
+    "surfaces": 88,
+    "searches": 40,
     "links": 23,
     "briefs": 17,
-    "prose": 19,
-    "modules": 248,
-    "catalogs": 15,
-    "states": 44,
+    "prose": 27,
+    "modules": 245,
+    "catalogs": 19,
+    "states": 45,
     "passthrough": 3,
     "unbound": 30
   },
@@ -31,13 +31,19 @@
       }
     },
     "src/tabs/DataFlow.tsx": {
-      "lake": {
-        "from": "({ window: LAKE_DEFAULT_WINDOW, storedBytes: null, storedAsOf: null, error: null })",
-        "value": "4 keys · sha256 08bbd72f7a0004e7"
+      "flow": {
+        "group": "default",
+        "sourceId": "in_gigamon_ami_http",
+        "pipeline": "gigamon",
+        "destination": "gigamon_lake"
       },
       "s": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "7 entries · sha256 07f0426a27dc551c"
+        "value": "8 entries · sha256 6625104512f9b8e2"
+      },
+      "selected": {
+        "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
+        "value": "8 entries · sha256 6625104512f9b8e2"
       }
     },
     "src/tabs/DnsHealth.tsx": {
@@ -45,12 +51,12 @@
     },
     "src/tabs/FieldExplorer.tsx": {
       "rows": {
-        "from": "AMI_FAMILIES.map((fam) => ({ label: fam, value: AMI_CATALOG.filter((f) => f.family === fam).map((f) => ({ f })) }))",
-        "value": "7 entries · sha256 63e664c0523c2613"
+        "from": "EXPLORER_FAMILIES.map((fam) => ({ label: fam, value: EXPLORER_CATALOG.filter((f) => f.family === fam).map((f) => ({ f })) }))",
+        "value": "6 entries · sha256 c83d05562b564082"
       },
       "uc": {
-        "from": "AMI_USE_CASES.map((x) => ({ label: x.name, value: x }))",
-        "value": "11 entries · sha256 6fff5e2b56ed5cc8"
+        "from": "EXPLORER_USE_CASES.map((x) => ({ label: x.name, value: x }))",
+        "value": "10 entries · sha256 c2f262127f3a6b05"
       }
     },
     "src/tabs/Findings.tsx": {
@@ -66,6 +72,12 @@
     },
     "src/tabs/FlowMap.tsx": {
       "service": "donot_delete_Postgres_Sql_GEM"
+    },
+    "src/tabs/FlowMapDeps.tsx": {
+      "view": {
+        "from": "(['dns', 'web', 'subnets'] as const).map((x) => ({ label: x, value: x }))",
+        "value": "3 entries · sha256 a607d6d198ac1292"
+      }
     },
     "src/tabs/PqcReadiness.tsx": {
       "filter": {
@@ -148,7 +160,8 @@
     },
     "src/tabs/FlowMap.tsx": {
       "sel": "null",
-      "snOpen": "false"
+      "snOpen": "false",
+      "view": "'destinations'"
     },
     "src/tabs/Security.tsx": {
       "sel": "null",
@@ -166,14 +179,18 @@
   "passthrough": {
     "src/components/KpiTile.tsx › <PanelInfo query={query}>": 1,
     "src/components/Panel.tsx › <PanelInfo query={query}>": 1,
-    "src/components/PanelInfo.tsx › searchUiUrl(query, range.earliest)": 2
+    "src/components/PanelInfo.tsx › searchUiUrl(query, range.earliest, 'now', asWritten)": 2
   },
   "catalogs": {
     "src/data/aiApps.ts › AI_APPS": "35 entries · sha256 4b541f0494e99133",
     "src/data/amiFields.ts › AMI_CATALOG": "93 entries · sha256 3cb31757cac5f643",
     "src/data/amiFields.ts › AMI_FAMILIES": "7 entries · sha256 e5f2d01d4ff0566f",
     "src/data/amiFields.ts › AMI_USE_CASES": "11 entries · sha256 9fdf0b89a7279738",
-    "src/data/fieldTypes.ts › FIELD_TYPES": "25 keys · sha256 186f7985ec590ec6",
+    "src/data/explorerFields.ts › APP_QUERY_FIELDS": "44 entries · sha256 f3150818f981e096",
+    "src/data/explorerFields.ts › EXPLORER_CATALOG": "44 entries · sha256 1b6225b991acd868",
+    "src/data/explorerFields.ts › EXPLORER_FAMILIES": "6 entries · sha256 3d767402582972d5",
+    "src/data/explorerFields.ts › EXPLORER_USE_CASES": "10 entries · sha256 3c080e6c86f1ad3a",
+    "src/data/fieldTypes.ts › FIELD_TYPES": "23 keys · sha256 6cd333fd8ef17929",
     "src/data/findings.ts › FINDINGS": "17 entries · sha256 0d59f3fc5cd62c84",
     "src/data/pqc.ts › PQC_GROUP_CODES": "4 entries · sha256 ab96d69df7799ad1",
     "src/data/pqc.ts › SENSITIVE": "4 entries · sha256 2c5a2cce0bd15f8c",
@@ -202,42 +219,40 @@
       "KPI_TOTAL_BYTES": "coalesce(src_bytes, 0) + coalesce(dst_bytes, 0)",
       "KPI_TOTAL_PACKETS": "coalesce(src_packets, 0) + coalesce(dst_packets, 0)",
       "L4_PROTOCOL": "case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\")",
-      "PIVOTS": "3 entries · sha256 391cc2ad78ec29ac",
+      "PIVOTS": "2 entries · sha256 6dcd3b68640eaafe",
       "buildAppmixQuery(\"app_name\", \"\")": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
       "buildAppmixQuery(\"app_name\", \"openai\")": "dataset=\"gigamon_ami\" app_name=\"*openai*\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
-      "buildAppmixQuery(\"dst_aws_flat_tags_name\", \"\")": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
-      "buildAppmixQuery(\"dst_aws_flat_tags_name\", \"openai\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"*openai*\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
       "buildAppmixQuery(\"src_ip\", \"\")": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
       "buildAppmixQuery(\"src_ip\", \"openai\")": "dataset=\"gigamon_ami\" src_ip=\"*openai*\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 8",
       "buildKpiQuery(\"app_name\", \"\")": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
       "buildKpiQuery(\"app_name\", \"openai\")": "dataset=\"gigamon_ami\" app_name=\"*openai*\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
-      "buildKpiQuery(\"dst_aws_flat_tags_name\", \"\")": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
-      "buildKpiQuery(\"dst_aws_flat_tags_name\", \"openai\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"*openai*\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
       "buildKpiQuery(\"src_ip\", \"\")": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
       "buildKpiQuery(\"src_ip\", \"openai\")": "dataset=\"gigamon_ami\" src_ip=\"*openai*\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack)",
       "buildL4Query(\"app_name\", \"\")": "dataset=\"gigamon_ami\" | extend l4_protocol = case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by l4_protocol | sort by bytes desc",
       "buildL4Query(\"app_name\", \"openai\")": "dataset=\"gigamon_ami\" app_name=\"*openai*\" | extend l4_protocol = case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by l4_protocol | sort by bytes desc",
-      "buildL4Query(\"dst_aws_flat_tags_name\", \"\")": "dataset=\"gigamon_ami\" | extend l4_protocol = case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by l4_protocol | sort by bytes desc",
-      "buildL4Query(\"dst_aws_flat_tags_name\", \"openai\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"*openai*\" | extend l4_protocol = case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by l4_protocol | sort by bytes desc",
       "buildL4Query(\"src_ip\", \"\")": "dataset=\"gigamon_ami\" | extend l4_protocol = case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by l4_protocol | sort by bytes desc",
       "buildL4Query(\"src_ip\", \"openai\")": "dataset=\"gigamon_ami\" src_ip=\"*openai*\" | extend l4_protocol = case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by l4_protocol | sort by bytes desc",
       "buildTalkersQuery(\"app_name\", \"\")": "dataset=\"gigamon_ami\" app_name=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 12",
       "buildTalkersQuery(\"app_name\", \"openai\")": "dataset=\"gigamon_ami\" app_name=\"*openai*\" app_name=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by app_name | sort by bytes desc | limit 12",
-      "buildTalkersQuery(\"dst_aws_flat_tags_name\", \"\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by dst_aws_flat_tags_name | sort by bytes desc | limit 12",
-      "buildTalkersQuery(\"dst_aws_flat_tags_name\", \"openai\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"*openai*\" dst_aws_flat_tags_name=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by dst_aws_flat_tags_name | sort by bytes desc | limit 12",
       "buildTalkersQuery(\"src_ip\", \"\")": "dataset=\"gigamon_ami\" src_ip=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by src_ip | sort by bytes desc | limit 12",
       "buildTalkersQuery(\"src_ip\", \"openai\")": "dataset=\"gigamon_ami\" src_ip=\"*openai*\" src_ip=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by src_ip | sort by bytes desc | limit 12",
       "pivotFor(\"app_name\")": "{\"key\":\"app_name\",\"field\":\"app_name\",\"label\":\"App\",\"ph\":\"e.g. https / dns / openai\",\"noun\":\"apps\"}",
-      "pivotFor(\"dst_aws_flat_tags_name\")": "{\"key\":\"dst_aws_flat_tags_name\",\"field\":\"dst_aws_flat_tags_name\",\"label\":\"AWS service\",\"ph\":\"e.g. Postgres_Sql_GEM\",\"noun\":\"services\"}",
       "pivotFor(\"src_ip\")": "{\"key\":\"src_ip\",\"field\":\"src_ip\",\"label\":\"Source IP\",\"ph\":\"e.g. 10.0.0.168\",\"noun\":\"talkers\"}"
     },
     "src/queries/dataFlow.ts": {
+      "DATASET_RECORDS_QUERY": "dataset=\"gigamon_ami\" | extend flow_src_bytes=toreal(src_bytes), flow_dst_bytes=toreal(dst_bytes), flow_src_packets=toreal(src_packets), flow_dst_packets=toreal(dst_packets) | summarize events=count(), byte_records=countif(isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0), bytes=sum(iif(isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0, flow_src_bytes+flow_dst_bytes, 0)), packet_records=countif(isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0), packets=sum(iif(isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0, flow_src_packets+flow_dst_packets, 0))",
       "LAKE_HELD_QUERY": "dataset=\"gigamon_ami\" | summarize total_events=count()",
       "LAKE_TOTAL_QUERY": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0))",
-      "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and (id==\"gigamon_ami\")) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "METRICS_QUERY": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
       "VOLUME_AGGS": "events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "VOLUME_DERIVATION": "| extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0)",
-      "VOLUME_QUERY": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)"
+      "VOLUME_QUERY": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
+      "metricsQueryFor(a picked source of another id)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\" or input==\"http_raw:amx_feed\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "metricsQueryFor(in_gigamon_ami_http, already listed)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "metricsQueryFor(none onboarded)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
+      "onboardedMetricsQueryFor(created source)": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
+      "onboardedMetricsQueryFor(picked source)": "dataset=\"default_metrics\" | where group==\"other\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:amx_feed\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:amx_feed\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
+      "onboardedMetricsQueryFor(quoted identifier)": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:feed\\\"name\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:feed\\\"name\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))"
     },
     "src/queries/datasets.ts": {
       "REAL_DATASET": "gigamon_ami",
@@ -257,28 +272,26 @@
       "resolverDrillQuery(\"10.0.0.53\")": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=\"10.0.0.53\" | summarize count() by dns_reply_code, dns_query | sort by dns_query desc | limit 200"
     },
     "src/queries/fieldExplorer.ts": {
-      "CHECK_FIELDS": "95 entries · sha256 eafa1f17e935fda2",
+      "CHECK_FIELDS": "44 entries · sha256 f3150818f981e096",
       "FEED_SAMPLE_QUERY": "dataset=\"gigamon_ami\" | limit 5000",
-      "PRESENCE_QUERY": "dataset=\"gigamon_ami\" | summarize c0=count(app_name), c1=count(app_id), c2=count(protocol), c3=count(src_ip), c4=count(dst_ip), c5=count(src_port), c6=count(dst_port), c7=count(src_bytes), c8=count(dst_bytes), c9=count(src_packets), c10=count(dst_packets), c11=count(vlan_id), c12=count(tcp_rtt), c13=count(tcp_rtt_app), c14=count(http_rtt), c15=count(tcp_retransmission_bytes), c16=count(tcp_dup_ack), c17=count(tcp_loss_count), c18=count(tcp_wrong_crc), c19=count(tcp_flags), c20=count(tcp_window_size), c21=count(tcp_zero_window), c22=count(http_host), c23=count(http_uri), c24=count(http_method), c25=count(http_code), c26=count(http_user_agent), c27=count(http_content_type), c28=count(http_request_ts), c29=count(http_response_ts), c30=count(http_referer), c31=count(http_cookie), c32=count(http_server), c33=count(http_version), c34=count(dns_query), c35=count(dns_host), c36=count(dns_reply_code), c37=count(dns_response_time), c38=count(dns_query_type), c39=count(dns_ttl), c40=count(dns_host_addr), c41=count(dns_ancount), c42=count(dns_arcount), c43=count(dns_reverse_addr), c44=count(ssl_server_name), c45=count(ssl_issuer), c46=count(ssl_common_name), c47=count(ssl_protocol_version), c48=count(ssl_validity_not_after), c49=count(ssl_validity_not_before), c50=count(ssl_serial_number), c51=count(ssl_cipher_suite_id), c52=count(ssl_alert_level), c53=count(ssl_alert_description), c54=count(ssl_ja3), c55=count(ssl_ja3s), c56=count(ssl_mitm_score), c57=count(ssl_certif_sha1), c58=count(ssl_subject_alt_name), c59=count(ssl_certificate_subject_key_size), c60=count(ssl_cipher_suite_list), c61=count(ssl_ext_ec_supported_groups_type), c62=count(ssl_server_supported_version), c63=count(ssl_client_supported_version), c64=count(ssl_certificate_subject_key_algo_oid), c65=count(dst_aws_instance_id), c66=count(dst_aws_vpc_id), c67=count(dst_aws_flat_tags_name), c68=count(dst_aws_flat_tags_service_type), c69=count(dst_k8s_pod_name), c70=count(src_k8s_pod_name), c71=count(k8s_namespace), c72=count(k8s_container_name), c73=count(snmp_oid), c74=count(snmp_community), c75=count(snmp_processing_anomaly_type), c76=count(ssh_version), c77=count(ssh_tsp_alg_encrypt_cts), c78=count(ssh_server_agent), c79=count(dhcp_message_type), c80=count(dhcp_host_name), c81=count(dhcp_yiaddr), c82=count(krb5_realm), c83=count(krb5_message_type), c84=count(dcerpc_service), c85=count(rtp_codec_name), c86=count(rtp_lost), c87=count(rtp_service), c88=count(icmp_type), c89=count(icmp_tunneling), c90=count(sip_from), c91=count(sip_contact), c92=count(sip_callee_domain), c93=count(http_server_ms), c94=count(tcp_reset)",
-      "familyOf(…)": "95 cases · sha256 af3f0bed1913f109",
-      "sectionQuery(AI App governance)": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), app_id=count(app_id), ssl_server_name=count(ssl_server_name), http_host=count(http_host), http_uri=count(http_uri), http_user_agent=count(http_user_agent), http_referer=count(http_referer), dns_query=count(dns_query), dns_host=count(dns_host), src_ip=count(src_ip)",
-      "sectionQuery(Capacity & top talkers)": "dataset=\"gigamon_ami\" | summarize src_ip=count(src_ip), dst_ip=count(dst_ip), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets), protocol=count(protocol), src_port=count(src_port), dst_port=count(dst_port), vlan_id=count(vlan_id)",
-      "sectionQuery(Cloud & container context)": "dataset=\"gigamon_ami\" | summarize dst_aws_instance_id=count(dst_aws_instance_id), dst_aws_vpc_id=count(dst_aws_vpc_id), dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), dst_aws_flat_tags_service_type=count(dst_aws_flat_tags_service_type), dst_k8s_pod_name=count(dst_k8s_pod_name), src_k8s_pod_name=count(src_k8s_pod_name), k8s_namespace=count(k8s_namespace), k8s_container_name=count(k8s_container_name)",
-      "sectionQuery(Cloud & k8s enrichment)": "dataset=\"gigamon_ami\" | summarize dst_aws_instance_id=count(dst_aws_instance_id), dst_aws_vpc_id=count(dst_aws_vpc_id), dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), dst_aws_flat_tags_service_type=count(dst_aws_flat_tags_service_type), dst_k8s_pod_name=count(dst_k8s_pod_name), src_k8s_pod_name=count(src_k8s_pod_name), k8s_namespace=count(k8s_namespace), k8s_container_name=count(k8s_container_name)",
-      "sectionQuery(Compliance)": "dataset=\"gigamon_ami\" | summarize ssl_protocol_version=count(ssl_protocol_version), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_validity_not_after=count(ssl_validity_not_after), ssl_certificate_subject_key_size=count(ssl_certificate_subject_key_size), ssl_issuer=count(ssl_issuer), ssl_subject_alt_name=count(ssl_subject_alt_name), ssh_tsp_alg_encrypt_cts=count(ssh_tsp_alg_encrypt_cts), snmp_community=count(snmp_community), http_cookie=count(http_cookie), vlan_id=count(vlan_id)",
-      "sectionQuery(Core / 5-tuple)": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), app_id=count(app_id), protocol=count(protocol), src_ip=count(src_ip), dst_ip=count(dst_ip), src_port=count(src_port), dst_port=count(dst_port), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets), vlan_id=count(vlan_id)",
-      "sectionQuery(DNS health)": "dataset=\"gigamon_ami\" | summarize dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time), dns_query_type=count(dns_query_type), dns_ttl=count(dns_ttl), dns_ancount=count(dns_ancount), dns_arcount=count(dns_arcount), dns_reverse_addr=count(dns_reverse_addr)",
-      "sectionQuery(DNS)": "dataset=\"gigamon_ami\" | summarize dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time), dns_query_type=count(dns_query_type), dns_ttl=count(dns_ttl), dns_host_addr=count(dns_host_addr), dns_ancount=count(dns_ancount), dns_arcount=count(dns_arcount), dns_reverse_addr=count(dns_reverse_addr)",
-      "sectionQuery(HTTP)": "dataset=\"gigamon_ami\" | summarize http_host=count(http_host), http_uri=count(http_uri), http_method=count(http_method), http_code=count(http_code), http_user_agent=count(http_user_agent), http_content_type=count(http_content_type), http_request_ts=count(http_request_ts), http_response_ts=count(http_response_ts), http_referer=count(http_referer), http_cookie=count(http_cookie), http_server=count(http_server), http_version=count(http_version)",
-      "sectionQuery(Identity & asset inventory)": "dataset=\"gigamon_ami\" | summarize dhcp_host_name=count(dhcp_host_name), dhcp_yiaddr=count(dhcp_yiaddr), dhcp_message_type=count(dhcp_message_type), krb5_realm=count(krb5_realm), krb5_message_type=count(krb5_message_type), snmp_community=count(snmp_community), ssh_server_agent=count(ssh_server_agent)",
-      "sectionQuery(Media / VoIP quality)": "dataset=\"gigamon_ami\" | summarize rtp_codec_name=count(rtp_codec_name), rtp_lost=count(rtp_lost), rtp_service=count(rtp_service), sip_from=count(sip_from), sip_contact=count(sip_contact), sip_callee_domain=count(sip_callee_domain)",
-      "sectionQuery(NetOps — Performance)": "dataset=\"gigamon_ami\" | summarize tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), http_rtt=count(http_rtt), dns_response_time=count(dns_response_time), tcp_retransmission_bytes=count(tcp_retransmission_bytes), tcp_flags=count(tcp_flags), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), tcp_window_size=count(tcp_window_size), tcp_zero_window=count(tcp_zero_window), rtp_lost=count(rtp_lost), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes)",
-      "sectionQuery(Other protocols)": "dataset=\"gigamon_ami\" | summarize snmp_oid=count(snmp_oid), snmp_community=count(snmp_community), snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), ssh_version=count(ssh_version), ssh_tsp_alg_encrypt_cts=count(ssh_tsp_alg_encrypt_cts), ssh_server_agent=count(ssh_server_agent), dhcp_message_type=count(dhcp_message_type), dhcp_host_name=count(dhcp_host_name), dhcp_yiaddr=count(dhcp_yiaddr), krb5_realm=count(krb5_realm), krb5_message_type=count(krb5_message_type), dcerpc_service=count(dcerpc_service), rtp_codec_name=count(rtp_codec_name), rtp_lost=count(rtp_lost), rtp_service=count(rtp_service), icmp_type=count(icmp_type), icmp_tunneling=count(icmp_tunneling), sip_from=count(sip_from), sip_contact=count(sip_contact), sip_callee_domain=count(sip_callee_domain)",
-      "sectionQuery(Post-quantum (PQC) readiness)": "dataset=\"gigamon_ami\" | summarize ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version), ssl_client_supported_version=count(ssl_client_supported_version), ssl_protocol_version=count(ssl_protocol_version), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_certificate_subject_key_algo_oid=count(ssl_certificate_subject_key_algo_oid), ssl_server_name=count(ssl_server_name)",
-      "sectionQuery(SSL / TLS)": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_serial_number=count(ssl_serial_number), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_alert_level=count(ssl_alert_level), ssl_alert_description=count(ssl_alert_description), ssl_ja3=count(ssl_ja3), ssl_ja3s=count(ssl_ja3s), ssl_mitm_score=count(ssl_mitm_score), ssl_certif_sha1=count(ssl_certif_sha1), ssl_subject_alt_name=count(ssl_subject_alt_name), ssl_certificate_subject_key_size=count(ssl_certificate_subject_key_size), ssl_cipher_suite_list=count(ssl_cipher_suite_list), ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version), ssl_client_supported_version=count(ssl_client_supported_version), ssl_certificate_subject_key_algo_oid=count(ssl_certificate_subject_key_algo_oid)",
-      "sectionQuery(Security)": "dataset=\"gigamon_ami\" | summarize ssl_ja3=count(ssl_ja3), ssl_ja3s=count(ssl_ja3s), ssl_mitm_score=count(ssl_mitm_score), ssl_alert_level=count(ssl_alert_level), ssl_issuer=count(ssl_issuer), ssl_cipher_suite_list=count(ssl_cipher_suite_list), snmp_community=count(snmp_community), icmp_tunneling=count(icmp_tunneling), dcerpc_service=count(dcerpc_service), krb5_message_type=count(krb5_message_type), ssh_tsp_alg_encrypt_cts=count(ssh_tsp_alg_encrypt_cts), dns_ancount=count(dns_ancount), http_server=count(http_server), sip_from=count(sip_from)",
-      "sectionQuery(TCP / network performance)": "dataset=\"gigamon_ami\" | summarize tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), http_rtt=count(http_rtt), tcp_retransmission_bytes=count(tcp_retransmission_bytes), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), tcp_flags=count(tcp_flags), tcp_window_size=count(tcp_window_size), tcp_zero_window=count(tcp_zero_window)",
-      "sectionQuery(TLS / certificate posture)": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_serial_number=count(ssl_serial_number), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_certif_sha1=count(ssl_certif_sha1), ssl_subject_alt_name=count(ssl_subject_alt_name), ssl_certificate_subject_key_size=count(ssl_certificate_subject_key_size), ssl_ja3=count(ssl_ja3), ssl_ja3s=count(ssl_ja3s), ssl_mitm_score=count(ssl_mitm_score)"
+      "PRESENCE_QUERY": "dataset=\"gigamon_ami\" | summarize c0=count(_time), c1=count(app_name), c2=count(protocol), c3=count(src_ip), c4=count(dst_ip), c5=count(dst_port), c6=count(src_bytes), c7=count(dst_bytes), c8=count(src_packets), c9=count(dst_packets), c10=count(tcp_rtt), c11=count(tcp_rtt_app), c12=count(tcp_dup_ack), c13=count(tcp_loss_count), c14=count(tcp_wrong_crc), c15=count(tcp_flags), c16=count(tcp_reset), c17=count(udp_wrong_crc), c18=count(ip_wrong_crc), c19=count(http_host), c20=count(http_code), c21=count(http_rtt), c22=count(http_cookie), c23=count(dns_query), c24=count(dns_host), c25=count(dns_reply_code), c26=count(dns_response_time), c27=count(ssl_server_name), c28=count(ssl_issuer), c29=count(ssl_common_name), c30=count(ssl_protocol_version), c31=count(ssl_validity_not_after), c32=count(ssl_validity_not_before), c33=count(ssl_cipher_suite_id), c34=count(ssl_mitm_score), c35=count(ssl_ext_ec_supported_groups_type), c36=count(ssl_server_supported_version), c37=count(snmp_community), c38=count(snmp_processing_anomaly_type), c39=count(krb5_message_type), c40=count(dcerpc_service), c41=count(icmp_tunneling), c42=count(sip_from), c43=count(ftp_data_content)",
+      "familyOf(…)": "44 cases · sha256 5e2a535ea18fbe03",
+      "sectionQuery(AI App governance)": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), src_ip=count(src_ip), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes)",
+      "sectionQuery(Capacity & top talkers)": "dataset=\"gigamon_ami\" | summarize _time=count(_time), app_name=count(app_name), src_ip=count(src_ip), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets), protocol=count(protocol), tcp_rtt=count(tcp_rtt), tcp_dup_ack=count(tcp_dup_ack)",
+      "sectionQuery(Compliance)": "dataset=\"gigamon_ami\" | summarize ssl_protocol_version=count(ssl_protocol_version), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_issuer=count(ssl_issuer), snmp_community=count(snmp_community), http_cookie=count(http_cookie)",
+      "sectionQuery(Core / 5-tuple)": "dataset=\"gigamon_ami\" | summarize _time=count(_time), app_name=count(app_name), protocol=count(protocol), src_ip=count(src_ip), dst_ip=count(dst_ip), dst_port=count(dst_port), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets)",
+      "sectionQuery(DNS health)": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time)",
+      "sectionQuery(DNS)": "dataset=\"gigamon_ami\" | summarize dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time)",
+      "sectionQuery(Data Flow volume)": "dataset=\"gigamon_ami\" | summarize src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets)",
+      "sectionQuery(HTTP)": "dataset=\"gigamon_ami\" | summarize http_host=count(http_host), http_code=count(http_code), http_rtt=count(http_rtt), http_cookie=count(http_cookie)",
+      "sectionQuery(NetOps — Performance)": "dataset=\"gigamon_ami\" | summarize _time=count(_time), tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), http_rtt=count(http_rtt), dns_response_time=count(dns_response_time), tcp_flags=count(tcp_flags), tcp_reset=count(tcp_reset), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), udp_wrong_crc=count(udp_wrong_crc), ip_wrong_crc=count(ip_wrong_crc)",
+      "sectionQuery(Other protocols)": "dataset=\"gigamon_ami\" | summarize snmp_community=count(snmp_community), snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), krb5_message_type=count(krb5_message_type), dcerpc_service=count(dcerpc_service), icmp_tunneling=count(icmp_tunneling), sip_from=count(sip_from), ftp_data_content=count(ftp_data_content)",
+      "sectionQuery(Post-quantum (PQC) readiness)": "dataset=\"gigamon_ami\" | summarize ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version), ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer)",
+      "sectionQuery(SSL / TLS)": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_mitm_score=count(ssl_mitm_score), ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version)",
+      "sectionQuery(Security)": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), src_ip=count(src_ip), dst_ip=count(dst_ip), dst_port=count(dst_port), ssl_mitm_score=count(ssl_mitm_score), snmp_community=count(snmp_community), snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), icmp_tunneling=count(icmp_tunneling), dcerpc_service=count(dcerpc_service), krb5_message_type=count(krb5_message_type), http_cookie=count(http_cookie), sip_from=count(sip_from), ftp_data_content=count(ftp_data_content)",
+      "sectionQuery(TCP / network performance)": "dataset=\"gigamon_ami\" | summarize tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), tcp_flags=count(tcp_flags), tcp_reset=count(tcp_reset), udp_wrong_crc=count(udp_wrong_crc), ip_wrong_crc=count(ip_wrong_crc)",
+      "sectionQuery(TLS / certificate posture)": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_mitm_score=count(ssl_mitm_score)",
+      "sectionQuery(Web & API health)": "dataset=\"gigamon_ami\" | summarize _time=count(_time), app_name=count(app_name), http_host=count(http_host), http_code=count(http_code), http_rtt=count(http_rtt)"
     },
     "src/queries/findings.ts": {
       "FINDINGS_QUERY": "dataset=\"gigamon_ami\" | summarize total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0))",
@@ -302,11 +315,13 @@
       "findingFlowsQuery(#udpcrc)": "dataset=\"gigamon_ami\" udp_wrong_crc>0 | limit 200"
     },
     "src/queries/flowMap.ts": {
-      "buildDomainsQuery(\"donot_delete_Postgres_Sql_GEM\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
-      "buildTrendQuery(\"donot_delete_Postgres_Sql_GEM\")": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
-      "edgesQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* dst_aws_flat_tags_name=* | summarize flows=count() by src_aws_flat_tags_name, dst_aws_flat_tags_name | sort by flows desc | limit 40",
-      "nodesQuery": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
-      "srcQuery": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | summarize out=count() by src_aws_flat_tags_name | sort by out desc | limit 20"
+      "DNS_DEPS_QUERY": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=* | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), p95=percentile(dns_response_time,95) by src_ip, dns_host | sort by total desc | limit 500",
+      "SUBNET_DEPS_QUERY": "dataset=\"gigamon_ami\" protocol=6 src_ip=* dst_ip=* | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, src_ip) | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, dst_ip) | extend src_subnet = strcat(src_prefix, '.0/24') | extend dst_subnet = strcat(dst_prefix, '.0/24') | where src_subnet != '.0/24' and dst_subnet != '.0/24' | summarize flows=count(), net=percentile(tcp_rtt,95), net_n=count(tcp_rtt), dupack_flows=countif(toreal(tcp_dup_ack)>0), dupack_n=count(tcp_dup_ack) by src_subnet, dst_subnet | sort by flows desc | limit 500",
+      "WEB_DEPS_QUERY": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)), p95=percentile(toreal(http_rtt),95)*1000 by src_ip, http_host | sort by n desc | limit 500",
+      "buildDomainsQuery(\"https\")": "dataset=\"gigamon_ami\" dst_ip=\"https\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(toreal(http_rtt),95)*1000, srvn=countif(isnotnull(toreal(http_rtt))), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
+      "buildTrendQuery(\"https\")": "dataset=\"gigamon_ami\" dst_ip=\"https\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(toreal(http_rtt),95)*1000, dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
+      "nodesQuery": "dataset=\"gigamon_ami\" | summarize net=percentile(tcp_rtt,95), net_n=count(tcp_rtt), dupack_flows=countif(toreal(tcp_dup_ack)>0), dupack_n=count(tcp_dup_ack), host=max(http_host), flows=count() by dst_ip | sort by flows desc | limit 12",
+      "pairsQuery": "dataset=\"gigamon_ami\" | summarize flows=count() by src_ip, dst_ip | sort by flows desc | limit 1000"
     },
     "src/queries/lakeLanding.ts": {
       "LAG_CPU_SECONDS": "number · sha256 9f14025af0065b30",
@@ -341,9 +356,9 @@
       "AUDIT_DATASET": "gigamon_ami",
       "AUDIT_PIN": "measurement",
       "CAST_CHECK_FIELDS": "5 entries · sha256 b7171432cf5550bc",
-      "CENSUS_COLUMNS_FIELDS": "28 entries · sha256 71a965b961d9284c",
+      "CENSUS_COLUMNS_FIELDS": "26 entries · sha256 1f5d42eac2e88d7e",
       "CENSUS_CONTROLS": "2 keys · sha256 af09f1a099e0e7b9",
-      "CENSUS_FIELDS": "22 entries · sha256 e94f1d85de1b8050",
+      "CENSUS_FIELDS": "20 entries · sha256 0af4e3213cb53536",
       "DENSITY_CHECKS": "7 entries · sha256 f50230f76230cf8d",
       "DENSITY_SCOPES": "4 keys · sha256 878d5278cc0a8f9f",
       "GETTYPE_COLUMN": "4 keys · sha256 398d7e9ea927b6cc",
@@ -353,15 +368,15 @@
       "NUMERIC_CENSUS_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), tn_tcp_rtt=countif(isnotnull(tcp_rtt)), ts_tcp_rtt=countif(gettype(tcp_rtt)==\"string\"), ti_tcp_rtt=countif(gettype(tcp_rtt)==\"int\"), tl_tcp_rtt=countif(gettype(tcp_rtt)==\"long\"), tr_tcp_rtt=countif(gettype(tcp_rtt)==\"real\"), tn_tcp_rtt_app=countif(isnotnull(tcp_rtt_app)), ts_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"string\"), ti_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"int\"), tl_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"long\"), tr_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"real\"), tn_http_server_ms=countif(isnotnull(http_server_ms)), ts_http_server_ms=countif(gettype(http_server_ms)==\"string\"), ti_http_server_ms=countif(gettype(http_server_ms)==\"int\"), tl_http_server_ms=countif(gettype(http_server_ms)==\"long\"), tr_http_server_ms=countif(gettype(http_server_ms)==\"real\"), tn_dns_response_time=countif(isnotnull(dns_response_time)), ts_dns_response_time=countif(gettype(dns_response_time)==\"string\"), ti_dns_response_time=countif(gettype(dns_response_time)==\"int\"), tl_dns_response_time=countif(gettype(dns_response_time)==\"long\"), tr_dns_response_time=countif(gettype(dns_response_time)==\"real\"), tn_dst_port=countif(isnotnull(dst_port)), ts_dst_port=countif(gettype(dst_port)==\"string\"), ti_dst_port=countif(gettype(dst_port)==\"int\"), tl_dst_port=countif(gettype(dst_port)==\"long\"), tr_dst_port=countif(gettype(dst_port)==\"real\"), tn_protocol=countif(isnotnull(protocol)), ts_protocol=countif(gettype(protocol)==\"string\"), ti_protocol=countif(gettype(protocol)==\"int\"), tl_protocol=countif(gettype(protocol)==\"long\"), tr_protocol=countif(gettype(protocol)==\"real\"), tn_app_name=countif(isnotnull(app_name)), ts_app_name=countif(gettype(app_name)==\"string\"), ti_app_name=countif(gettype(app_name)==\"int\"), tl_app_name=countif(gettype(app_name)==\"long\"), tr_app_name=countif(gettype(app_name)==\"real\")",
       "NUMERIC_GETTYPE_NAMES": "3 entries · sha256 61ccc77e287c8819",
       "PQC_IN_LIST": "(\"4587\", \"4588\", \"4589\", \"25497\")",
-      "SENTINEL_AUDIT_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sz_src_ip=countif(src_ip==0), sn_dst_ip=count(dst_ip), se_dst_ip=countif(dst_ip==\"\"), sz_dst_ip=countif(dst_ip==0), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), se_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==\"\"), sz_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==0), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), se_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==\"\"), sz_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==0), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sz_http_host=countif(http_host==0), sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==\"\"), sz_http_rtt=countif(http_rtt==0), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
-      "SENTINEL_EXTRA_FIELDS": "1 entries · sha256 e265a0532e15f688",
-      "SENTINEL_FIELDS": "24 entries · sha256 e81b27f8dfb68d33",
-      "STATIC_FIELD_TYPES": "24 keys · sha256 33e226d19880c44e",
+      "SENTINEL_AUDIT_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sz_src_ip=countif(src_ip==0), sn_dst_ip=count(dst_ip), se_dst_ip=countif(dst_ip==\"\"), sz_dst_ip=countif(dst_ip==0), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sz_http_host=countif(http_host==0), sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==\"\"), sz_http_rtt=countif(http_rtt==0), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_tcp_dup_ack=count(tcp_dup_ack), se_tcp_dup_ack=countif(tcp_dup_ack==\"\"), sz_tcp_dup_ack=countif(tcp_dup_ack==0), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
+      "SENTINEL_EXTRA_FIELDS": "2 entries · sha256 6521b7c354885433",
+      "SENTINEL_FIELDS": "23 entries · sha256 8b45f694006ae51d",
+      "STATIC_FIELD_TYPES": "23 keys · sha256 05063921e6284323",
       "TYPED_BY_CODE": "11 keys · sha256 b71964f7bd65cc9f",
-      "TYPE_DENSITY_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), d_tcp=countif(protocol==6), d_web=countif(isnotnull(http_host)), d_icmp=countif(protocol==1), d_pqc=countif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\")), d_tcp_dst_subnet=countif(protocol==6 and isnotnull(dst_subnet)), d_tcp_src_subnet16=countif(protocol==6 and isnotnull(src_subnet16)), d_tcp_dst_subnet16=countif(protocol==6 and isnotnull(dst_subnet16)), d_dst_ip=count(dst_ip), d_web_http_server_ms=countif(isnotnull(http_host) and isnotnull(http_server_ms)), d_icmp_dst_port=countif(protocol==1 and isnotnull(dst_port)), d_pqc_ssl_server_name=countif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\") and isnotnull(ssl_server_name)), tn_krb5_message_type=countif(isnotnull(krb5_message_type)), ts_krb5_message_type=countif(gettype(krb5_message_type)==\"string\"), ti_krb5_message_type=countif(gettype(krb5_message_type)==\"int\"), tl_krb5_message_type=countif(gettype(krb5_message_type)==\"long\"), tr_krb5_message_type=countif(gettype(krb5_message_type)==\"real\"), tn_snmp_community=countif(isnotnull(snmp_community)), ts_snmp_community=countif(gettype(snmp_community)==\"string\"), ti_snmp_community=countif(gettype(snmp_community)==\"int\"), tl_snmp_community=countif(gettype(snmp_community)==\"long\"), tr_snmp_community=countif(gettype(snmp_community)==\"real\"), tn_icmp_tunneling=countif(isnotnull(icmp_tunneling)), ts_icmp_tunneling=countif(gettype(icmp_tunneling)==\"string\"), ti_icmp_tunneling=countif(gettype(icmp_tunneling)==\"int\"), tl_icmp_tunneling=countif(gettype(icmp_tunneling)==\"long\"), tr_icmp_tunneling=countif(gettype(icmp_tunneling)==\"real\"), tn_dcerpc_service=countif(isnotnull(dcerpc_service)), ts_dcerpc_service=countif(gettype(dcerpc_service)==\"string\"), ti_dcerpc_service=countif(gettype(dcerpc_service)==\"int\"), tl_dcerpc_service=countif(gettype(dcerpc_service)==\"long\"), tr_dcerpc_service=countif(gettype(dcerpc_service)==\"real\"), tn_sip_from=countif(isnotnull(sip_from)), ts_sip_from=countif(gettype(sip_from)==\"string\"), ti_sip_from=countif(gettype(sip_from)==\"int\"), tl_sip_from=countif(gettype(sip_from)==\"long\"), tr_sip_from=countif(gettype(sip_from)==\"real\"), tn_http_cookie=countif(isnotnull(http_cookie)), ts_http_cookie=countif(gettype(http_cookie)==\"string\"), ti_http_cookie=countif(gettype(http_cookie)==\"int\"), tl_http_cookie=countif(gettype(http_cookie)==\"long\"), tr_http_cookie=countif(gettype(http_cookie)==\"real\"), tn_ftp_data_content=countif(isnotnull(ftp_data_content)), ts_ftp_data_content=countif(gettype(ftp_data_content)==\"string\"), ti_ftp_data_content=countif(gettype(ftp_data_content)==\"int\"), tl_ftp_data_content=countif(gettype(ftp_data_content)==\"long\"), tr_ftp_data_content=countif(gettype(ftp_data_content)==\"real\"), tn_snmp_processing_anomaly_type=countif(isnotnull(snmp_processing_anomaly_type)), ts_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"string\"), ti_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"int\"), tl_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"long\"), tr_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"real\"), tn_http_code=countif(isnotnull(http_code)), ts_http_code=countif(gettype(http_code)==\"string\"), ti_http_code=countif(gettype(http_code)==\"int\"), tl_http_code=countif(gettype(http_code)==\"long\"), tr_http_code=countif(gettype(http_code)==\"real\"), tn_dns_reply_code=countif(isnotnull(dns_reply_code)), ts_dns_reply_code=countif(gettype(dns_reply_code)==\"string\"), ti_dns_reply_code=countif(gettype(dns_reply_code)==\"int\"), tl_dns_reply_code=countif(gettype(dns_reply_code)==\"long\"), tr_dns_reply_code=countif(gettype(dns_reply_code)==\"real\"), tn_udp_wrong_crc=countif(isnotnull(udp_wrong_crc)), ts_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"string\"), ti_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"int\"), tl_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"long\"), tr_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"real\"), tn_ip_wrong_crc=countif(isnotnull(ip_wrong_crc)), ts_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"string\"), ti_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"int\"), tl_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"long\"), tr_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"real\"), tn_app_name=countif(isnotnull(app_name)), ts_app_name=countif(gettype(app_name)==\"string\"), ti_app_name=countif(gettype(app_name)==\"int\"), tl_app_name=countif(gettype(app_name)==\"long\"), tr_app_name=countif(gettype(app_name)==\"real\"), tn_src_ip=countif(isnotnull(src_ip)), ts_src_ip=countif(gettype(src_ip)==\"string\"), ti_src_ip=countif(gettype(src_ip)==\"int\"), tl_src_ip=countif(gettype(src_ip)==\"long\"), tr_src_ip=countif(gettype(src_ip)==\"real\"), tn_dst_ip=countif(isnotnull(dst_ip)), ts_dst_ip=countif(gettype(dst_ip)==\"string\"), ti_dst_ip=countif(gettype(dst_ip)==\"int\"), tl_dst_ip=countif(gettype(dst_ip)==\"long\"), tr_dst_ip=countif(gettype(dst_ip)==\"real\"), tn_dst_aws_flat_tags_name=countif(isnotnull(dst_aws_flat_tags_name)), ts_dst_aws_flat_tags_name=countif(gettype(dst_aws_flat_tags_name)==\"string\"), ti_dst_aws_flat_tags_name=countif(gettype(dst_aws_flat_tags_name)==\"int\"), tl_dst_aws_flat_tags_name=countif(gettype(dst_aws_flat_tags_name)==\"long\"), tr_dst_aws_flat_tags_name=countif(gettype(dst_aws_flat_tags_name)==\"real\"), tn_src_aws_flat_tags_name=countif(isnotnull(src_aws_flat_tags_name)), ts_src_aws_flat_tags_name=countif(gettype(src_aws_flat_tags_name)==\"string\"), ti_src_aws_flat_tags_name=countif(gettype(src_aws_flat_tags_name)==\"int\"), tl_src_aws_flat_tags_name=countif(gettype(src_aws_flat_tags_name)==\"long\"), tr_src_aws_flat_tags_name=countif(gettype(src_aws_flat_tags_name)==\"real\"), tn_dns_host=countif(isnotnull(dns_host)), ts_dns_host=countif(gettype(dns_host)==\"string\"), ti_dns_host=countif(gettype(dns_host)==\"int\"), tl_dns_host=countif(gettype(dns_host)==\"long\"), tr_dns_host=countif(gettype(dns_host)==\"real\"), tn_http_host=countif(isnotnull(http_host)), ts_http_host=countif(gettype(http_host)==\"string\"), ti_http_host=countif(gettype(http_host)==\"int\"), tl_http_host=countif(gettype(http_host)==\"long\"), tr_http_host=countif(gettype(http_host)==\"real\"), tn_http_rtt=countif(isnotnull(http_rtt)), ts_http_rtt=countif(gettype(http_rtt)==\"string\"), ti_http_rtt=countif(gettype(http_rtt)==\"int\"), tl_http_rtt=countif(gettype(http_rtt)==\"long\"), tr_http_rtt=countif(gettype(http_rtt)==\"real\"), tn_ssl_server_name=countif(isnotnull(ssl_server_name)), ts_ssl_server_name=countif(gettype(ssl_server_name)==\"string\"), ti_ssl_server_name=countif(gettype(ssl_server_name)==\"int\"), tl_ssl_server_name=countif(gettype(ssl_server_name)==\"long\"), tr_ssl_server_name=countif(gettype(ssl_server_name)==\"real\"), tn_ssl_ext_ec_supported_groups_type=countif(isnotnull(ssl_ext_ec_supported_groups_type)), ts_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"string\"), ti_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"int\"), tl_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"long\"), tr_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"real\"), tn_tcp_rtt=countif(isnotnull(tcp_rtt)), ts_tcp_rtt=countif(gettype(tcp_rtt)==\"string\"), ti_tcp_rtt=countif(gettype(tcp_rtt)==\"int\"), tl_tcp_rtt=countif(gettype(tcp_rtt)==\"long\"), tr_tcp_rtt=countif(gettype(tcp_rtt)==\"real\"), tn_tcp_rtt_app=countif(isnotnull(tcp_rtt_app)), ts_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"string\"), ti_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"int\"), tl_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"long\"), tr_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"real\"), tn_http_server_ms=countif(isnotnull(http_server_ms)), ts_http_server_ms=countif(gettype(http_server_ms)==\"string\"), ti_http_server_ms=countif(gettype(http_server_ms)==\"int\"), tl_http_server_ms=countif(gettype(http_server_ms)==\"long\"), tr_http_server_ms=countif(gettype(http_server_ms)==\"real\"), tn_dns_response_time=countif(isnotnull(dns_response_time)), ts_dns_response_time=countif(gettype(dns_response_time)==\"string\"), ti_dns_response_time=countif(gettype(dns_response_time)==\"int\"), tl_dns_response_time=countif(gettype(dns_response_time)==\"long\"), tr_dns_response_time=countif(gettype(dns_response_time)==\"real\"), tn_dst_port=countif(isnotnull(dst_port)), ts_dst_port=countif(gettype(dst_port)==\"string\"), ti_dst_port=countif(gettype(dst_port)==\"int\"), tl_dst_port=countif(gettype(dst_port)==\"long\"), tr_dst_port=countif(gettype(dst_port)==\"real\"), tn_protocol=countif(isnotnull(protocol)), ts_protocol=countif(gettype(protocol)==\"string\"), ti_protocol=countif(gettype(protocol)==\"int\"), tl_protocol=countif(gettype(protocol)==\"long\"), tr_protocol=countif(gettype(protocol)==\"real\")",
-      "sentinelAuditQuery(before the census)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sz_src_ip=countif(src_ip==0), sn_dst_ip=count(dst_ip), se_dst_ip=countif(dst_ip==\"\"), sz_dst_ip=countif(dst_ip==0), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), se_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==\"\"), sz_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==0), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), se_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==\"\"), sz_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==0), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sz_http_host=countif(http_host==0), sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==\"\"), sz_http_rtt=countif(http_rtt==0), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
-      "sentinelAuditQuery(every unknown a number)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), sz_src_ip=countif(src_ip==0), sn_dst_ip=count(dst_ip), sz_dst_ip=countif(dst_ip==0), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), sz_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==0), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), sz_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==0), sn_dns_host=count(dns_host), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), sz_http_host=countif(http_host==0), sn_http_rtt=count(http_rtt), sz_http_rtt=countif(http_rtt==0), sn_ssl_server_name=count(ssl_server_name), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
-      "sentinelAuditQuery(every unknown a string)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sn_dst_ip=count(dst_ip), se_dst_ip=countif(dst_ip==\"\"), sn_dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), se_dst_aws_flat_tags_name=countif(dst_aws_flat_tags_name==\"\"), sn_src_aws_flat_tags_name=count(src_aws_flat_tags_name), se_src_aws_flat_tags_name=countif(src_aws_flat_tags_name==\"\"), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==\"\"), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)"
+      "TYPE_DENSITY_QUERY": "dataset=\"gigamon_ami\" | summarize rows=count(), d_tcp=countif(protocol==6), d_web=countif(isnotnull(http_host)), d_icmp=countif(protocol==1), d_pqc=countif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\")), d_tcp_dst_subnet=countif(protocol==6 and isnotnull(dst_subnet)), d_tcp_src_subnet16=countif(protocol==6 and isnotnull(src_subnet16)), d_tcp_dst_subnet16=countif(protocol==6 and isnotnull(dst_subnet16)), d_dst_ip=count(dst_ip), d_web_http_server_ms=countif(isnotnull(http_host) and isnotnull(http_server_ms)), d_icmp_dst_port=countif(protocol==1 and isnotnull(dst_port)), d_pqc_ssl_server_name=countif(ssl_ext_ec_supported_groups_type in (\"4587\", \"4588\", \"4589\", \"25497\") and isnotnull(ssl_server_name)), tn_krb5_message_type=countif(isnotnull(krb5_message_type)), ts_krb5_message_type=countif(gettype(krb5_message_type)==\"string\"), ti_krb5_message_type=countif(gettype(krb5_message_type)==\"int\"), tl_krb5_message_type=countif(gettype(krb5_message_type)==\"long\"), tr_krb5_message_type=countif(gettype(krb5_message_type)==\"real\"), tn_snmp_community=countif(isnotnull(snmp_community)), ts_snmp_community=countif(gettype(snmp_community)==\"string\"), ti_snmp_community=countif(gettype(snmp_community)==\"int\"), tl_snmp_community=countif(gettype(snmp_community)==\"long\"), tr_snmp_community=countif(gettype(snmp_community)==\"real\"), tn_icmp_tunneling=countif(isnotnull(icmp_tunneling)), ts_icmp_tunneling=countif(gettype(icmp_tunneling)==\"string\"), ti_icmp_tunneling=countif(gettype(icmp_tunneling)==\"int\"), tl_icmp_tunneling=countif(gettype(icmp_tunneling)==\"long\"), tr_icmp_tunneling=countif(gettype(icmp_tunneling)==\"real\"), tn_dcerpc_service=countif(isnotnull(dcerpc_service)), ts_dcerpc_service=countif(gettype(dcerpc_service)==\"string\"), ti_dcerpc_service=countif(gettype(dcerpc_service)==\"int\"), tl_dcerpc_service=countif(gettype(dcerpc_service)==\"long\"), tr_dcerpc_service=countif(gettype(dcerpc_service)==\"real\"), tn_sip_from=countif(isnotnull(sip_from)), ts_sip_from=countif(gettype(sip_from)==\"string\"), ti_sip_from=countif(gettype(sip_from)==\"int\"), tl_sip_from=countif(gettype(sip_from)==\"long\"), tr_sip_from=countif(gettype(sip_from)==\"real\"), tn_http_cookie=countif(isnotnull(http_cookie)), ts_http_cookie=countif(gettype(http_cookie)==\"string\"), ti_http_cookie=countif(gettype(http_cookie)==\"int\"), tl_http_cookie=countif(gettype(http_cookie)==\"long\"), tr_http_cookie=countif(gettype(http_cookie)==\"real\"), tn_ftp_data_content=countif(isnotnull(ftp_data_content)), ts_ftp_data_content=countif(gettype(ftp_data_content)==\"string\"), ti_ftp_data_content=countif(gettype(ftp_data_content)==\"int\"), tl_ftp_data_content=countif(gettype(ftp_data_content)==\"long\"), tr_ftp_data_content=countif(gettype(ftp_data_content)==\"real\"), tn_snmp_processing_anomaly_type=countif(isnotnull(snmp_processing_anomaly_type)), ts_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"string\"), ti_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"int\"), tl_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"long\"), tr_snmp_processing_anomaly_type=countif(gettype(snmp_processing_anomaly_type)==\"real\"), tn_http_code=countif(isnotnull(http_code)), ts_http_code=countif(gettype(http_code)==\"string\"), ti_http_code=countif(gettype(http_code)==\"int\"), tl_http_code=countif(gettype(http_code)==\"long\"), tr_http_code=countif(gettype(http_code)==\"real\"), tn_dns_reply_code=countif(isnotnull(dns_reply_code)), ts_dns_reply_code=countif(gettype(dns_reply_code)==\"string\"), ti_dns_reply_code=countif(gettype(dns_reply_code)==\"int\"), tl_dns_reply_code=countif(gettype(dns_reply_code)==\"long\"), tr_dns_reply_code=countif(gettype(dns_reply_code)==\"real\"), tn_udp_wrong_crc=countif(isnotnull(udp_wrong_crc)), ts_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"string\"), ti_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"int\"), tl_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"long\"), tr_udp_wrong_crc=countif(gettype(udp_wrong_crc)==\"real\"), tn_ip_wrong_crc=countif(isnotnull(ip_wrong_crc)), ts_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"string\"), ti_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"int\"), tl_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"long\"), tr_ip_wrong_crc=countif(gettype(ip_wrong_crc)==\"real\"), tn_app_name=countif(isnotnull(app_name)), ts_app_name=countif(gettype(app_name)==\"string\"), ti_app_name=countif(gettype(app_name)==\"int\"), tl_app_name=countif(gettype(app_name)==\"long\"), tr_app_name=countif(gettype(app_name)==\"real\"), tn_src_ip=countif(isnotnull(src_ip)), ts_src_ip=countif(gettype(src_ip)==\"string\"), ti_src_ip=countif(gettype(src_ip)==\"int\"), tl_src_ip=countif(gettype(src_ip)==\"long\"), tr_src_ip=countif(gettype(src_ip)==\"real\"), tn_dst_ip=countif(isnotnull(dst_ip)), ts_dst_ip=countif(gettype(dst_ip)==\"string\"), ti_dst_ip=countif(gettype(dst_ip)==\"int\"), tl_dst_ip=countif(gettype(dst_ip)==\"long\"), tr_dst_ip=countif(gettype(dst_ip)==\"real\"), tn_dns_host=countif(isnotnull(dns_host)), ts_dns_host=countif(gettype(dns_host)==\"string\"), ti_dns_host=countif(gettype(dns_host)==\"int\"), tl_dns_host=countif(gettype(dns_host)==\"long\"), tr_dns_host=countif(gettype(dns_host)==\"real\"), tn_http_host=countif(isnotnull(http_host)), ts_http_host=countif(gettype(http_host)==\"string\"), ti_http_host=countif(gettype(http_host)==\"int\"), tl_http_host=countif(gettype(http_host)==\"long\"), tr_http_host=countif(gettype(http_host)==\"real\"), tn_http_rtt=countif(isnotnull(http_rtt)), ts_http_rtt=countif(gettype(http_rtt)==\"string\"), ti_http_rtt=countif(gettype(http_rtt)==\"int\"), tl_http_rtt=countif(gettype(http_rtt)==\"long\"), tr_http_rtt=countif(gettype(http_rtt)==\"real\"), tn_ssl_server_name=countif(isnotnull(ssl_server_name)), ts_ssl_server_name=countif(gettype(ssl_server_name)==\"string\"), ti_ssl_server_name=countif(gettype(ssl_server_name)==\"int\"), tl_ssl_server_name=countif(gettype(ssl_server_name)==\"long\"), tr_ssl_server_name=countif(gettype(ssl_server_name)==\"real\"), tn_ssl_ext_ec_supported_groups_type=countif(isnotnull(ssl_ext_ec_supported_groups_type)), ts_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"string\"), ti_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"int\"), tl_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"long\"), tr_ssl_ext_ec_supported_groups_type=countif(gettype(ssl_ext_ec_supported_groups_type)==\"real\"), tn_tcp_rtt=countif(isnotnull(tcp_rtt)), ts_tcp_rtt=countif(gettype(tcp_rtt)==\"string\"), ti_tcp_rtt=countif(gettype(tcp_rtt)==\"int\"), tl_tcp_rtt=countif(gettype(tcp_rtt)==\"long\"), tr_tcp_rtt=countif(gettype(tcp_rtt)==\"real\"), tn_tcp_rtt_app=countif(isnotnull(tcp_rtt_app)), ts_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"string\"), ti_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"int\"), tl_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"long\"), tr_tcp_rtt_app=countif(gettype(tcp_rtt_app)==\"real\"), tn_http_server_ms=countif(isnotnull(http_server_ms)), ts_http_server_ms=countif(gettype(http_server_ms)==\"string\"), ti_http_server_ms=countif(gettype(http_server_ms)==\"int\"), tl_http_server_ms=countif(gettype(http_server_ms)==\"long\"), tr_http_server_ms=countif(gettype(http_server_ms)==\"real\"), tn_dns_response_time=countif(isnotnull(dns_response_time)), ts_dns_response_time=countif(gettype(dns_response_time)==\"string\"), ti_dns_response_time=countif(gettype(dns_response_time)==\"int\"), tl_dns_response_time=countif(gettype(dns_response_time)==\"long\"), tr_dns_response_time=countif(gettype(dns_response_time)==\"real\"), tn_dst_port=countif(isnotnull(dst_port)), ts_dst_port=countif(gettype(dst_port)==\"string\"), ti_dst_port=countif(gettype(dst_port)==\"int\"), tl_dst_port=countif(gettype(dst_port)==\"long\"), tr_dst_port=countif(gettype(dst_port)==\"real\"), tn_protocol=countif(isnotnull(protocol)), ts_protocol=countif(gettype(protocol)==\"string\"), ti_protocol=countif(gettype(protocol)==\"int\"), tl_protocol=countif(gettype(protocol)==\"long\"), tr_protocol=countif(gettype(protocol)==\"real\")",
+      "sentinelAuditQuery(before the census)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sz_src_ip=countif(src_ip==0), sn_dst_ip=count(dst_ip), se_dst_ip=countif(dst_ip==\"\"), sz_dst_ip=countif(dst_ip==0), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sz_http_host=countif(http_host==0), sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==\"\"), sz_http_rtt=countif(http_rtt==0), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_tcp_dup_ack=count(tcp_dup_ack), se_tcp_dup_ack=countif(tcp_dup_ack==\"\"), sz_tcp_dup_ack=countif(tcp_dup_ack==0), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
+      "sentinelAuditQuery(every unknown a number)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), sz_krb5_message_type=countif(krb5_message_type==0), sn_snmp_community=count(snmp_community), sz_snmp_community=countif(snmp_community==0), sn_icmp_tunneling=count(icmp_tunneling), sz_icmp_tunneling=countif(icmp_tunneling==0), sn_dcerpc_service=count(dcerpc_service), sz_dcerpc_service=countif(dcerpc_service==0), sn_sip_from=count(sip_from), sz_sip_from=countif(sip_from==0), sn_http_cookie=count(http_cookie), sz_http_cookie=countif(http_cookie==0), sn_ftp_data_content=count(ftp_data_content), sz_ftp_data_content=countif(ftp_data_content==0), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), sz_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==0), sn_app_name=count(app_name), sz_app_name=countif(app_name==0), sn_src_ip=count(src_ip), sz_src_ip=countif(src_ip==0), sn_dst_ip=count(dst_ip), sz_dst_ip=countif(dst_ip==0), sn_dns_host=count(dns_host), sz_dns_host=countif(dns_host==0), sn_http_host=count(http_host), sz_http_host=countif(http_host==0), sn_http_rtt=count(http_rtt), sz_http_rtt=countif(http_rtt==0), sn_ssl_server_name=count(ssl_server_name), sz_ssl_server_name=countif(ssl_server_name==0), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), sz_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==0), sn_tcp_dup_ack=count(tcp_dup_ack), sz_tcp_dup_ack=countif(tcp_dup_ack==0), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)",
+      "sentinelAuditQuery(every unknown a string)": "dataset=\"gigamon_ami\" | summarize rows=count(), sn_http_code=count(http_code), se_http_code=countif(http_code==\"\"), sn_krb5_message_type=count(krb5_message_type), se_krb5_message_type=countif(krb5_message_type==\"\"), sn_snmp_community=count(snmp_community), se_snmp_community=countif(snmp_community==\"\"), sn_icmp_tunneling=count(icmp_tunneling), se_icmp_tunneling=countif(icmp_tunneling==\"\"), sn_dcerpc_service=count(dcerpc_service), se_dcerpc_service=countif(dcerpc_service==\"\"), sn_sip_from=count(sip_from), se_sip_from=countif(sip_from==\"\"), sn_http_cookie=count(http_cookie), se_http_cookie=countif(http_cookie==\"\"), sn_ftp_data_content=count(ftp_data_content), se_ftp_data_content=countif(ftp_data_content==\"\"), sn_snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), se_snmp_processing_anomaly_type=countif(snmp_processing_anomaly_type==\"\"), sn_app_name=count(app_name), se_app_name=countif(app_name==\"\"), sn_src_ip=count(src_ip), se_src_ip=countif(src_ip==\"\"), sn_dst_ip=count(dst_ip), se_dst_ip=countif(dst_ip==\"\"), sn_dns_host=count(dns_host), se_dns_host=countif(dns_host==\"\"), sn_http_host=count(http_host), se_http_host=countif(http_host==\"\"), sn_http_rtt=count(http_rtt), se_http_rtt=countif(http_rtt==\"\"), sn_ssl_server_name=count(ssl_server_name), se_ssl_server_name=countif(ssl_server_name==\"\"), sn_ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), se_ssl_ext_ec_supported_groups_type=countif(ssl_ext_ec_supported_groups_type==\"\"), sn_tcp_dup_ack=count(tcp_dup_ack), se_tcp_dup_ack=countif(tcp_dup_ack==\"\"), sn_tcp_rtt=count(tcp_rtt), sz_tcp_rtt=countif(tcp_rtt==0), sn_tcp_rtt_app=count(tcp_rtt_app), sz_tcp_rtt_app=countif(tcp_rtt_app==0), sn_http_server_ms=count(http_server_ms), sz_http_server_ms=countif(http_server_ms==0), sn_dns_response_time=count(dns_response_time), sz_dns_response_time=countif(dns_response_time==0), sn_dst_port=count(dst_port), sz_dst_port=countif(dst_port==0)"
     },
     "src/queries/pqcReadiness.ts": {
       "GROUPS_Q": "dataset=\"gigamon_ami\" ssl_ext_ec_supported_groups_type=* | summarize sessions=count(), servers=dcount(ssl_server_name) by ssl_ext_ec_supported_groups_type | sort by sessions desc | limit 40",
@@ -402,7 +417,6 @@
       "APP_L4_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend app=iif(isnotnull(app_name), app_name, \"\"), l4=case(protocol == 6, \"TCP\", protocol == 17, \"UDP\", protocol == 1, \"ICMP\", protocol == 58, \"ICMPv6\", protocol == 132, \"SCTP\", \"Other\") | summarize bytes=sum(total_bytes) by app, l4",
       "APP_SRC_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize flows=count(), bytes=sum(total_bytes) by app_name, src_ip",
       "OVERVIEW_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" | extend capacity_total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend capacity_total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize total=sum(capacity_total_bytes), tin=sum(dst_bytes), tout=sum(src_bytes), pkts=sum(capacity_total_packets), rtt=avg(tcp_rtt), retrans=sum(tcp_dup_ack), txns=count(http_code), errors=sum(iif(http_code>=400,1,0)), server_p95_ms=percentile(http_rtt,95)*1000, hosts=dcount(http_host), h2=sum(iif(app_name==\"http2\",1,0)), c_T1572=sum(iif(isnotnull(icmp_tunneling),1,0)), c_T1570=sum(iif(isnotnull(dcerpc_service),1,0)), c_T1021=sum(iif(app_name==\"ssh\",1,0)), c_T1018=sum(iif((dst_port in (\"389\",\"636\")) or isnotnull(krb5_message_type),1,0)), c_T1110=sum(iif(isnotnull(snmp_community),1,0)), findings_total=count(), f0=sum(iif(ssl_mitm_score>0,1,0)), f1=count(snmp_community), f2=count(icmp_tunneling), f3=count(sip_from), f4=count(dcerpc_service), f5=count(krb5_message_type), f6=count(http_cookie), f7=count(ftp_data_content), f8=count(snmp_processing_anomaly_type), f9=sum(iif(tcp_wrong_crc>0,1,0)), f10=sum(tcp_reset), f11=sum(iif(tcp_loss_count>0,1,0)), f12=sum(iif(http_code>=400,1,0)), f13=sum(iif(dns_reply_code==3,1,0)), f14=sum(iif(dns_reply_code==2,1,0)), f15=sum(iif(udp_wrong_crc>0,1,0)), f16=sum(iif(ip_wrong_crc>0,1,0)), events=count(), bytes=sum(capacity_total_bytes), packets=sum(capacity_total_packets)",
-      "SERVICE_EDGES_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
       "TCP_SUBNET16_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" protocol=6 src_ip=* dst_ip=* | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}[.][0-9]{1,3}$', 1, src_ip) | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}[.][0-9]{1,3}$', 1, dst_ip) | extend src_subnet16 = strcat(src_prefix, '.0.0/16') | extend dst_subnet16 = strcat(dst_prefix, '.0.0/16') | where src_subnet16 != '.0.0/16' and dst_subnet16 != '.0.0/16' | summarize dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), flows=count() by src_subnet16, dst_subnet16 | sort by flows desc | limit 120",
       "TCP_SUBNET24_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" protocol=6 src_ip=* dst_ip=* | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, src_ip) | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, dst_ip) | extend src_subnet = strcat(src_prefix, '.0/24') | extend dst_subnet = strcat(dst_prefix, '.0/24') | where src_subnet != '.0/24' and dst_subnet != '.0/24' | summarize dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count), flows=count() by src_subnet, dst_subnet | sort by flows desc | limit 120",
       "WEB_HOST_SNAPSHOT_QUERY": "dataset=\"gigamon_ami\" http_host=* | summarize all_n=count(), err=sum(iif(http_code>=400,1,0)), p95=percentile(toreal(http_rtt),95)*1000, srv_n=countif(isnotnull(toreal(http_rtt))) by http_host"
@@ -410,20 +424,20 @@
     "src/queries/stackIds.ts": {
       "COUNTED_DATASET": "gigamon_ami",
       "COUNTED_DESTINATIONS_PROSE": "The write counters add up only the destinations that write gigamon_ami: gigamon_lake, plus the onboarding pack's once it is installed. A copy written to any other dataset is not counted.",
-      "COUNTED_INPUTS": "3 entries · sha256 b94e0e0c2697e729",
+      "COUNTED_INPUTS": "4 entries · sha256 33680e3537f4ece8",
       "COUNTED_OUTPUTS": "3 entries · sha256 47c1f2bf3eaf997e",
-      "COUNTED_PATHS": "3 entries · sha256 5dd85e50dd73a8bc",
-      "COUNTED_PIPELINES_PROSE": "The Processing figure adds up the pipelines on those paths: gigamon_ami, plus the onboarding pack's once it is installed, counted as what its destination writes to gigamon_ami. Each event is counted once.",
-      "COUNTED_SOURCES_PROSE": "The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
+      "COUNTED_PATHS": "4 entries · sha256 ba014793585b8556",
+      "COUNTED_PIPELINES_PROSE": "The Processing figure adds up the pipelines on those paths: gigamon_ami and gigamon, plus the onboarding pack's once it is installed, counted as what its destination writes to gigamon_ami. Each event is counted once.",
+      "COUNTED_SOURCES_PROSE": "The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen and in_gigamon_ami_http, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
       "DESTINATION_COUNTED_PATHS": "2 entries · sha256 876dd99cf6920ab7",
       "METRIC_ALIASES": "0 entries · sha256 4f53cda18c2baa0c",
-      "PIPELINE_COUNTED_PATHS": "1 entries · sha256 0853690af6182b9d",
-      "SHARED_OUTPUTS": "0 entries · sha256 4f53cda18c2baa0c",
+      "PIPELINE_COUNTED_PATHS": "2 entries · sha256 111f3d4d1fd25ea0",
+      "SHARED_OUTPUTS": "1 entries · sha256 0b4cf50502e30a48",
       "SHARED_PIPELINES": "0 entries · sha256 4f53cda18c2baa0c",
-      "SHOWN_INPUTS": "1 entries · sha256 775e9962fdebfee8",
+      "SHOWN_INPUTS": "2 entries · sha256 7ad4630370af390b",
       "SHOWN_OUTPUTS": "1 entries · sha256 4e9df7934ccf10f3",
-      "SHOWN_PIPELINES": "1 entries · sha256 a0daa038f18d9acc",
-      "STACKS": "3 entries · sha256 a0f7d868d0ec6fec"
+      "SHOWN_PIPELINES": "2 entries · sha256 0ab80a4d9235d751",
+      "STACKS": "4 entries · sha256 8274f598207b4b29"
     },
     "src/queries/tcpHealth.ts": {
       "HEAT_METRIC_AGGS": "dupacks=sum(tcp_dup_ack), resets=sum(tcp_reset), crc=sum(tcp_wrong_crc), loss=sum(tcp_loss_count)",
@@ -508,14 +522,6 @@
       "evidence": null,
       "queries": 1
     },
-    "capacity.talkers.dst_aws_flat_tags_name": {
-      "from": "capacityTopTalkers.ts › buildTalkersQuery(\"dst_aws_flat_tags_name\", \"\")",
-      "target": "json",
-      "pin": null,
-      "eligible": "no — class A on dst_aws_flat_tags_name reads true on every Parquet row (needs a portable rewrite, 8.2); class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: src_bytes, dst_bytes",
-      "evidence": null,
-      "queries": 1
-    },
     "capacity.talkers.src_ip": {
       "from": "capacityTopTalkers.ts › buildTalkersQuery(\"src_ip\", \"\")",
       "target": "json",
@@ -529,6 +535,14 @@
       "target": "json",
       "pin": "measurement",
       "eligible": "pinned to JSON (measurement)",
+      "evidence": null,
+      "queries": 1
+    },
+    "dataFlow.records": {
+      "from": "dataFlow.ts › DATASET_RECORDS_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class A on src_bytes reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dst_bytes reads true on every Parquet row (needs a portable rewrite, 8.2); class A on src_packets reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dst_packets reads true on every Parquet row (needs a portable rewrite, 8.2); type not measured: src_bytes, dst_bytes, src_packets, dst_packets",
       "evidence": null,
       "queries": 1
     },
@@ -596,45 +610,61 @@
       "evidence": null,
       "queries": 0
     },
+    "flowMap.dnsDeps": {
+      "from": "flowMap.ts › DNS_DEPS_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class A on dns_host reads true on every Parquet row (needs a portable rewrite, 8.2); class E on dns_response_time is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class F on src_ip: how many rows carry it is not measured; class F on dns_host: how many rows carry it is not measured",
+      "evidence": null,
+      "queries": 1
+    },
     "flowMap.domains": {
-      "from": "flowMap.ts › buildDomainsQuery(service), built per clicked service",
+      "from": "flowMap.ts › buildDomainsQuery(service), built per clicked destination IP",
       "target": "json",
       "pin": null,
       "eligible": "no text listed: built at run time, so it never routes",
       "evidence": null,
       "queries": 0
-    },
-    "flowMap.edges": {
-      "from": "flowMap.ts › edgesQuery, srcQuery",
-      "target": "json",
-      "pin": null,
-      "eligible": "no — class A on src_aws_flat_tags_name reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dst_aws_flat_tags_name reads true on every Parquet row (needs a portable rewrite, 8.2); class F on src_aws_flat_tags_name: how many rows carry it is not measured; class F on dst_aws_flat_tags_name: how many rows carry it is not measured",
-      "evidence": null,
-      "queries": 2
     },
     "flowMap.nodes": {
       "from": "flowMap.ts › nodesQuery",
       "target": "json",
       "pin": null,
-      "eligible": "no — class A on dst_aws_flat_tags_name reads true on every Parquet row (needs a portable rewrite, 8.2); class E on tcp_rtt_app is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on tcp_rtt_app counts every Parquet row (needs a portable rewrite, 8.2); class E on dns_response_time is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on dns_response_time counts every Parquet row (needs a portable rewrite, 8.2); class F on dst_aws_flat_tags_name: how many rows carry it is not measured; type not measured: tcp_reset",
+      "eligible": "no — class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on tcp_rtt counts every Parquet row (needs a portable rewrite, 8.2); class B on tcp_dup_ack counts every Parquet row (needs a portable rewrite, 8.2); class F on dst_ip: how many rows carry it is not measured; type not measured: tcp_dup_ack, dst_ip",
       "evidence": null,
       "queries": 1
     },
-    "flowMap.serviceEdges": {
-      "from": "snapshots.ts › SERVICE_EDGES_SNAPSHOT_QUERY",
+    "flowMap.pairs": {
+      "from": "flowMap.ts › pairsQuery",
       "target": "json",
       "pin": null,
-      "eligible": "no — class A on src_aws_flat_tags_name reads true on every Parquet row (needs a portable rewrite, 8.2); class F on src_aws_flat_tags_name: how many rows carry it is not measured",
+      "eligible": "no — class F on src_ip: how many rows carry it is not measured; class F on dst_ip: how many rows carry it is not measured; type not measured: dst_ip",
+      "evidence": null,
+      "queries": 1
+    },
+    "flowMap.subnetDeps": {
+      "from": "flowMap.ts › SUBNET_DEPS_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class A on src_ip reads true on every Parquet row (needs a portable rewrite, 8.2); class A on dst_ip reads true on every Parquet row (needs a portable rewrite, 8.2); class E on tcp_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class B on tcp_rtt counts every Parquet row (needs a portable rewrite, 8.2); class B on tcp_dup_ack counts every Parquet row (needs a portable rewrite, 8.2); class F on src_ip: how many rows carry it is not measured; class F on dst_ip: how many rows carry it is not measured; type not measured: dst_ip, tcp_dup_ack",
       "evidence": null,
       "queries": 1
     },
     "flowMap.trend": {
-      "from": "flowMap.ts › buildTrendQuery(service), built per clicked service",
+      "from": "flowMap.ts › buildTrendQuery(service), built per clicked destination IP",
       "target": "json",
       "pin": null,
       "eligible": "no text listed: built at run time, so it never routes",
       "evidence": null,
       "queries": 0
+    },
+    "flowMap.webDeps": {
+      "from": "flowMap.ts › WEB_DEPS_QUERY",
+      "target": "json",
+      "pin": null,
+      "eligible": "no — class A on http_host reads true on every Parquet row (needs a portable rewrite, 8.2); class E on http_rtt is pulled toward 0 by Parquet's filled zeros (stays on JSON, 8.3); class F on src_ip: how many rows carry it is not measured; class F on http_host: how many rows carry it is not measured; type not measured: http_rtt",
+      "evidence": null,
+      "queries": 1
     },
     "lakeLanding.landingLag": {
       "from": "lakeLanding.ts › LANDING_LAG_QUERY",
@@ -1225,37 +1255,37 @@
       "prose": {}
     },
     "src/tabs/DataFlow.tsx": {
-      "surfaces": {},
+      "surfaces": {
+        "PanelInfo · t.name": {
+          "ref": "metricsQuery",
+          "shape": "query",
+          "query": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
+          "reads": "(unbound)"
+        },
+        "PanelInfo · r.name": {
+          "ref": "recordsQuery",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" | extend flow_src_bytes=toreal(src_bytes), flow_dst_bytes=toreal(dst_bytes), flow_src_packets=toreal(src_packets), flow_dst_packets=toreal(dst_packets) | summarize events=count(), byte_records=countif(isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0), bytes=sum(iif(isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0, flow_src_bytes+flow_dst_bytes, 0)), packet_records=countif(isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0), packets=sum(iif(isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0, flow_src_packets+flow_dst_packets, 0))",
+          "reads": "(unbound)"
+        }
+      },
       "searches": {
-        "agg": {
-          "ref": "VOLUME_QUERY",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
-          "options": "{ accel: 'gno_overview_c1h', accelPanel: 'data-flow-volume', accelEnabled }",
-          "optionsValue": {
-            "accel": "gno_overview_c1h",
-            "accelPanel": "data-flow-volume"
-          }
-        },
         "met": {
-          "ref": "METRICS_QUERY",
+          "ref": "metricsQuery",
           "shape": "query",
-          "query": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and (id==\"gigamon_ami\")) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
-          "options": "{ accel: PIPELINE_ACCEL, accelEnabled }",
+          "query": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
+          "options": "{ enabled: flow !== null, deferred: connection.loading, asWritten: true }",
           "optionsValue": {
-            "accel": "gno_pipeline_c1h"
+            "enabled": true,
+            "asWritten": true
           }
         },
-        "lakeTotal": {
-          "ref": "lakeRead.query",
+        "records": {
+          "ref": "recordsQuery",
           "shape": "query",
-          "query": "dataset=\"cribl_metrics\" | summarize total_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), total_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0))",
-          "options": "{ earliest: lakeEarliest, accel: LAKE_ACCEL, snapshotInLive: true, deferred: lake === undefined, asWritten: true, }",
+          "query": "dataset=\"gigamon_ami\" | extend flow_src_bytes=toreal(src_bytes), flow_dst_bytes=toreal(dst_bytes), flow_src_packets=toreal(src_packets), flow_dst_packets=toreal(dst_packets) | summarize events=count(), byte_records=countif(isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0), bytes=sum(iif(isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0, flow_src_bytes+flow_dst_bytes, 0)), packet_records=countif(isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0), packets=sum(iif(isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0, flow_src_packets+flow_dst_packets, 0))",
+          "options": "{ asWritten: true }",
           "optionsValue": {
-            "earliest": "-30d",
-            "accel": "gno_lake_30d_c1d",
-            "snapshotInLive": true,
-            "deferred": false,
             "asWritten": true
           }
         }
@@ -1265,67 +1295,118 @@
       "prose": {
         "PanelInfo · s.purpose · gigasmart": {
           "ref": "s.purpose",
-          "about": "The packet broker — the Deep Observability Pipeline itself. GigaSMART accesses, brokers, transforms and enriches mirrored traffic, extracting application-layer metadata. No agent runs on the workloads, so it sees east-west traffic that host-based tooling misses. This is where every field in this app originates.",
+          "about": "Network Traffic is src_bytes + dst_bytes and src_packets + dst_packets summed over every AMI record in gigamon_ami during the selected event-time window. These are record-derived totals, not measured physical-link throughput. Only records with numeric, nonnegative values in both directions are summed; the coverage line says how many records that is. Every writer to gigamon_ami is included.",
           "aboutHeading": "What this stage does",
+          "label": "s.name",
           "links": [
-            "Gigamon docs ↗ → https://docs.gigamon.com/"
+            "Gigamon docs → https://docs.gigamon.com/"
           ]
         },
         "PanelInfo · s.purpose · amx": {
           "ref": "s.purpose",
-          "about": "Gigamon exports AMI records as IPFIX/CEF. AMX converts them to JSON and ships that enriched metadata downstream into Cribl — that JSON is exactly the shape of the sample data this app replays.",
+          "about": "Enriched Metadata counts every AMI record searchable in gigamon_ami during the selected event-time window. It is the same population counted in Lake and Search, not an AMX delivery acknowledgment or a separate upstream measurement. Every writer to gigamon_ami is included, not only the onboarded source.",
           "aboutHeading": "What this stage does",
+          "label": "s.name",
           "links": [
-            "Gigamon docs ↗ → https://docs.gigamon.com/"
+            "Gigamon docs → https://docs.gigamon.com/"
           ]
         },
         "PanelInfo · s.purpose · datagen": {
           "ref": "s.purpose",
-          "about": "Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a \"last 15 minutes\" window is always populated. The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
+          "about": "Counts events received by the source shown in Guided Setup’s Onboard page. Demo sources, pack sources and other Raw HTTP sources are excluded. A missing telemetry series is unavailable, not zero.",
           "aboutHeading": "What this stage does",
-          "links": [
-            "DataGen source → /stream/m/default/inputs/datagen/in_gigamon_datagen"
-          ]
+          "label": "s.name",
+          "links": []
         },
         "PanelInfo · s.purpose · pipeline": {
           "ref": "s.purpose",
-          "about": "Shapes the raw AMI JSON for analytics. Gigamon exports everything as strings, so the pipeline casts numerics and derives the fields the dashboards need but the feed does not carry directly. The Processing figure adds up the pipelines on those paths: gigamon_ami, plus the onboarding pack's once it is installed, counted as what its destination writes to gigamon_ami. Each event is counted once.",
+          "about": "Counts events leaving the named pipeline in the selected worker group, from default_metrics raw Stream counters. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.",
           "aboutHeading": "What this stage does",
-          "links": [
-            "Pipeline editor → /stream/m/default/pipelines/gigamon_ami"
-          ]
+          "label": "s.name",
+          "links": []
+        },
+        "PanelInfo · s.purpose · destination": {
+          "ref": "s.purpose",
+          "about": "Counts events and bytes written by the named destination in the selected worker group, from default_metrics raw Stream counters. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.",
+          "aboutHeading": "What this stage does",
+          "label": "s.name",
+          "links": []
         },
         "PanelInfo · s.purpose · lake": {
           "ref": "s.purpose",
-          "about": "Durable, queryable storage. A Cribl Lake destination writes the shaped JSON into the gigamon_ami Lake dataset on a ~60s flush, so Search sees data almost immediately while keeping history for the dataset’s retention period. The diagram splits the two halves: the Destinations plate reports what the selected window wrote; the Cribl Lake card reports what the dataset HOLDS over its whole retention period, independent of the range picker — the events counted over that period, and the size Cribl Lake reports the dataset occupies on disk. The write counters add up only the destinations that write gigamon_ami: gigamon_lake, plus the onboarding pack's once it is installed. A copy written to any other dataset is not counted.",
+          "about": "Counts every searchable record in gigamon_ami within the selected event-time window, from every writer to the dataset, not only the onboarded source. This is not a lifetime count or a Stream write counter, and records still being written to Lake may not be searchable yet. Compressed storage size is not shown.",
           "aboutHeading": "What this stage does",
+          "label": "s.name",
           "links": [
-            "Lake destination → /stream/m/default/outputs/cribl_lake/gigamon_lake",
             "Lake datasets → /lake/datasets"
           ]
         },
         "PanelInfo · s.purpose · search": {
           "ref": "s.purpose",
-          "about": "The query engine behind every panel. Each visualization submits a KQL job against dataset=\"gigamon_ami\" and polls for results — the same query you can open yourself from any panel's ⓘ.",
+          "about": "Uses the same gigamon_ami record count and event-time window as the Lake card: what Cribl Search can read from the dataset. Every writer to gigamon_ami is included, not only the onboarded source.",
           "aboutHeading": "What this stage does",
+          "label": "s.name",
           "links": [
             "Cribl Search → /search"
           ]
         },
         "PanelInfo · s.purpose · app": {
           "ref": "s.purpose",
-          "about": "The presentation layer you are looking at. It runs inside Cribl as a sandboxed app and calls Cribl Search through the platform fetch proxy — no separate credentials, no data leaving the workspace.",
+          "about": "Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Two live queries read Stream telemetry and the gigamon_ami records for the selected range; combined demo and pack snapshots are not used. These searches consume Search credits; this dashboard never changes ingestion configuration.",
           "aboutHeading": "What this stage does",
+          "label": "s.name",
           "links": [
             "Cribl Apps → /apps"
           ]
         },
-        "PanelInfo · selected.purpose": {
+        "PanelInfo · selected.purpose · gigasmart": {
           "ref": "selected.purpose",
-          "about": "Stands in for a live Gigamon feed. 73 sample files replay a diversity-maximized slice of the real AMI capture, covering all 319 fields and every distinct resolver. Rate is 2 events/sec per file per worker node — with 2 workers that is ~290/s. It stamps _time = now, so a \"last 15 minutes\" window is always populated. The Sources figure adds up every source with a path into gigamon_ami: in_gigamon_datagen, plus the onboarding pack's once it is installed. Each event is counted once, where it arrives.",
-          "aboutHeading": "What this stage does",
+          "about": "Network Traffic is src_bytes + dst_bytes and src_packets + dst_packets summed over every AMI record in gigamon_ami during the selected event-time window. These are record-derived totals, not measured physical-link throughput. Only records with numeric, nonnegative values in both directions are summed; the coverage line says how many records that is. Every writer to gigamon_ami is included.",
           "links": [
-            "DataGen source → /stream/m/default/inputs/datagen/in_gigamon_datagen"
+            "Gigamon docs → https://docs.gigamon.com/"
+          ]
+        },
+        "PanelInfo · selected.purpose · amx": {
+          "ref": "selected.purpose",
+          "about": "Enriched Metadata counts every AMI record searchable in gigamon_ami during the selected event-time window. It is the same population counted in Lake and Search, not an AMX delivery acknowledgment or a separate upstream measurement. Every writer to gigamon_ami is included, not only the onboarded source.",
+          "links": [
+            "Gigamon docs → https://docs.gigamon.com/"
+          ]
+        },
+        "PanelInfo · selected.purpose · datagen": {
+          "ref": "selected.purpose",
+          "about": "Counts events received by the source shown in Guided Setup’s Onboard page. Demo sources, pack sources and other Raw HTTP sources are excluded. A missing telemetry series is unavailable, not zero.",
+          "links": []
+        },
+        "PanelInfo · selected.purpose · pipeline": {
+          "ref": "selected.purpose",
+          "about": "Counts events leaving the named pipeline in the selected worker group, from default_metrics raw Stream counters. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.",
+          "links": []
+        },
+        "PanelInfo · selected.purpose · destination": {
+          "ref": "selected.purpose",
+          "about": "Counts events and bytes written by the named destination in the selected worker group, from default_metrics raw Stream counters. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.",
+          "links": []
+        },
+        "PanelInfo · selected.purpose · lake": {
+          "ref": "selected.purpose",
+          "about": "Counts every searchable record in gigamon_ami within the selected event-time window, from every writer to the dataset, not only the onboarded source. This is not a lifetime count or a Stream write counter, and records still being written to Lake may not be searchable yet. Compressed storage size is not shown.",
+          "links": [
+            "Lake datasets → /lake/datasets"
+          ]
+        },
+        "PanelInfo · selected.purpose · search": {
+          "ref": "selected.purpose",
+          "about": "Uses the same gigamon_ami record count and event-time window as the Lake card: what Cribl Search can read from the dataset. Every writer to gigamon_ami is included, not only the onboarded source.",
+          "links": [
+            "Cribl Search → /search"
+          ]
+        },
+        "PanelInfo · selected.purpose · app": {
+          "ref": "selected.purpose",
+          "about": "Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Two live queries read Stream telemetry and the gigamon_ami records for the selected range; combined demo and pack snapshots are not used. These searches consume Search credits; this dashboard never changes ingestion configuration.",
+          "links": [
+            "Cribl Apps → /apps"
           ]
         }
       }
@@ -1415,86 +1496,75 @@
         "Panel · fam · Core / 5-tuple": {
           "ref": "sectionQuery(rows.map((r) => r.f.name))",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), app_id=count(app_id), protocol=count(protocol), src_ip=count(src_ip), dst_ip=count(dst_ip), src_port=count(src_port), dst_port=count(dst_port), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets), vlan_id=count(vlan_id)",
+          "query": "dataset=\"gigamon_ami\" | summarize _time=count(_time), app_name=count(app_name), protocol=count(protocol), src_ip=count(src_ip), dst_ip=count(dst_ip), dst_port=count(dst_port), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets)",
           "renderedOver": [
-            "AMI_FAMILIES"
+            "EXPLORER_FAMILIES"
           ],
           "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
+          "info": "`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
           "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
         },
         "Panel · fam · TCP / network performance": {
           "ref": "sectionQuery(rows.map((r) => r.f.name))",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), http_rtt=count(http_rtt), tcp_retransmission_bytes=count(tcp_retransmission_bytes), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), tcp_flags=count(tcp_flags), tcp_window_size=count(tcp_window_size), tcp_zero_window=count(tcp_zero_window)",
+          "query": "dataset=\"gigamon_ami\" | summarize tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), tcp_flags=count(tcp_flags), tcp_reset=count(tcp_reset), udp_wrong_crc=count(udp_wrong_crc), ip_wrong_crc=count(ip_wrong_crc)",
           "renderedOver": [
-            "AMI_FAMILIES"
+            "EXPLORER_FAMILIES"
           ],
           "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
+          "info": "`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
           "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
         },
         "Panel · fam · HTTP": {
           "ref": "sectionQuery(rows.map((r) => r.f.name))",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize http_host=count(http_host), http_uri=count(http_uri), http_method=count(http_method), http_code=count(http_code), http_user_agent=count(http_user_agent), http_content_type=count(http_content_type), http_request_ts=count(http_request_ts), http_response_ts=count(http_response_ts), http_referer=count(http_referer), http_cookie=count(http_cookie), http_server=count(http_server), http_version=count(http_version)",
+          "query": "dataset=\"gigamon_ami\" | summarize http_host=count(http_host), http_code=count(http_code), http_rtt=count(http_rtt), http_cookie=count(http_cookie)",
           "renderedOver": [
-            "AMI_FAMILIES"
+            "EXPLORER_FAMILIES"
           ],
           "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
+          "info": "`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
           "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
         },
         "Panel · fam · DNS": {
           "ref": "sectionQuery(rows.map((r) => r.f.name))",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time), dns_query_type=count(dns_query_type), dns_ttl=count(dns_ttl), dns_host_addr=count(dns_host_addr), dns_ancount=count(dns_ancount), dns_arcount=count(dns_arcount), dns_reverse_addr=count(dns_reverse_addr)",
+          "query": "dataset=\"gigamon_ami\" | summarize dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time)",
           "renderedOver": [
-            "AMI_FAMILIES"
+            "EXPLORER_FAMILIES"
           ],
           "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
+          "info": "`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
           "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
         },
         "Panel · fam · SSL / TLS": {
           "ref": "sectionQuery(rows.map((r) => r.f.name))",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_serial_number=count(ssl_serial_number), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_alert_level=count(ssl_alert_level), ssl_alert_description=count(ssl_alert_description), ssl_ja3=count(ssl_ja3), ssl_ja3s=count(ssl_ja3s), ssl_mitm_score=count(ssl_mitm_score), ssl_certif_sha1=count(ssl_certif_sha1), ssl_subject_alt_name=count(ssl_subject_alt_name), ssl_certificate_subject_key_size=count(ssl_certificate_subject_key_size), ssl_cipher_suite_list=count(ssl_cipher_suite_list), ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version), ssl_client_supported_version=count(ssl_client_supported_version), ssl_certificate_subject_key_algo_oid=count(ssl_certificate_subject_key_algo_oid)",
+          "query": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_mitm_score=count(ssl_mitm_score), ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version)",
           "renderedOver": [
-            "AMI_FAMILIES"
+            "EXPLORER_FAMILIES"
           ],
           "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
-          "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
-        },
-        "Panel · fam · Cloud & k8s enrichment": {
-          "ref": "sectionQuery(rows.map((r) => r.f.name))",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize dst_aws_instance_id=count(dst_aws_instance_id), dst_aws_vpc_id=count(dst_aws_vpc_id), dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), dst_aws_flat_tags_service_type=count(dst_aws_flat_tags_service_type), dst_k8s_pod_name=count(dst_k8s_pod_name), src_k8s_pod_name=count(src_k8s_pod_name), k8s_namespace=count(k8s_namespace), k8s_container_name=count(k8s_container_name)",
-          "renderedOver": [
-            "AMI_FAMILIES"
-          ],
-          "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
+          "info": "`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
           "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
         },
         "Panel · fam · Other protocols": {
           "ref": "sectionQuery(rows.map((r) => r.f.name))",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize snmp_oid=count(snmp_oid), snmp_community=count(snmp_community), snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), ssh_version=count(ssh_version), ssh_tsp_alg_encrypt_cts=count(ssh_tsp_alg_encrypt_cts), ssh_server_agent=count(ssh_server_agent), dhcp_message_type=count(dhcp_message_type), dhcp_host_name=count(dhcp_host_name), dhcp_yiaddr=count(dhcp_yiaddr), krb5_realm=count(krb5_realm), krb5_message_type=count(krb5_message_type), dcerpc_service=count(dcerpc_service), rtp_codec_name=count(rtp_codec_name), rtp_lost=count(rtp_lost), rtp_service=count(rtp_service), icmp_type=count(icmp_type), icmp_tunneling=count(icmp_tunneling), sip_from=count(sip_from), sip_contact=count(sip_contact), sip_callee_domain=count(sip_callee_domain)",
+          "query": "dataset=\"gigamon_ami\" | summarize snmp_community=count(snmp_community), snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), krb5_message_type=count(krb5_message_type), dcerpc_service=count(dcerpc_service), icmp_tunneling=count(icmp_tunneling), sip_from=count(sip_from), ftp_data_content=count(ftp_data_content)",
           "renderedOver": [
-            "AMI_FAMILIES"
+            "EXPLORER_FAMILIES"
           ],
           "reads": "(unbound)",
-          "info": "`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
+          "info": "`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`",
           "note": "`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`"
         },
         "Panel · uc.name · AI App governance": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), app_id=count(app_id), ssl_server_name=count(ssl_server_name), http_host=count(http_host), http_uri=count(http_uri), http_user_agent=count(http_user_agent), http_referer=count(http_referer), dns_query=count(dns_query), dns_host=count(dns_host), src_ip=count(src_ip)",
+          "query": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), src_ip=count(src_ip), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1503,9 +1573,9 @@
         "Panel · uc.name · Security": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize ssl_ja3=count(ssl_ja3), ssl_ja3s=count(ssl_ja3s), ssl_mitm_score=count(ssl_mitm_score), ssl_alert_level=count(ssl_alert_level), ssl_issuer=count(ssl_issuer), ssl_cipher_suite_list=count(ssl_cipher_suite_list), snmp_community=count(snmp_community), icmp_tunneling=count(icmp_tunneling), dcerpc_service=count(dcerpc_service), krb5_message_type=count(krb5_message_type), ssh_tsp_alg_encrypt_cts=count(ssh_tsp_alg_encrypt_cts), dns_ancount=count(dns_ancount), http_server=count(http_server), sip_from=count(sip_from)",
+          "query": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), src_ip=count(src_ip), dst_ip=count(dst_ip), dst_port=count(dst_port), ssl_mitm_score=count(ssl_mitm_score), snmp_community=count(snmp_community), snmp_processing_anomaly_type=count(snmp_processing_anomaly_type), icmp_tunneling=count(icmp_tunneling), dcerpc_service=count(dcerpc_service), krb5_message_type=count(krb5_message_type), http_cookie=count(http_cookie), sip_from=count(sip_from), ftp_data_content=count(ftp_data_content)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1514,9 +1584,9 @@
         "Panel · uc.name · NetOps — Performance": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), http_rtt=count(http_rtt), dns_response_time=count(dns_response_time), tcp_retransmission_bytes=count(tcp_retransmission_bytes), tcp_flags=count(tcp_flags), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), tcp_window_size=count(tcp_window_size), tcp_zero_window=count(tcp_zero_window), rtp_lost=count(rtp_lost), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes)",
+          "query": "dataset=\"gigamon_ami\" | summarize _time=count(_time), tcp_rtt=count(tcp_rtt), tcp_rtt_app=count(tcp_rtt_app), http_rtt=count(http_rtt), dns_response_time=count(dns_response_time), tcp_flags=count(tcp_flags), tcp_reset=count(tcp_reset), tcp_dup_ack=count(tcp_dup_ack), tcp_loss_count=count(tcp_loss_count), tcp_wrong_crc=count(tcp_wrong_crc), udp_wrong_crc=count(udp_wrong_crc), ip_wrong_crc=count(ip_wrong_crc)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1525,9 +1595,9 @@
         "Panel · uc.name · Compliance": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize ssl_protocol_version=count(ssl_protocol_version), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_validity_not_after=count(ssl_validity_not_after), ssl_certificate_subject_key_size=count(ssl_certificate_subject_key_size), ssl_issuer=count(ssl_issuer), ssl_subject_alt_name=count(ssl_subject_alt_name), ssh_tsp_alg_encrypt_cts=count(ssh_tsp_alg_encrypt_cts), snmp_community=count(snmp_community), http_cookie=count(http_cookie), vlan_id=count(vlan_id)",
+          "query": "dataset=\"gigamon_ami\" | summarize ssl_protocol_version=count(ssl_protocol_version), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_issuer=count(ssl_issuer), snmp_community=count(snmp_community), http_cookie=count(http_cookie)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1536,9 +1606,9 @@
         "Panel · uc.name · Post-quantum (PQC) readiness": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version), ssl_client_supported_version=count(ssl_client_supported_version), ssl_protocol_version=count(ssl_protocol_version), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_certificate_subject_key_algo_oid=count(ssl_certificate_subject_key_algo_oid), ssl_server_name=count(ssl_server_name)",
+          "query": "dataset=\"gigamon_ami\" | summarize ssl_ext_ec_supported_groups_type=count(ssl_ext_ec_supported_groups_type), ssl_server_supported_version=count(ssl_server_supported_version), ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1547,9 +1617,9 @@
         "Panel · uc.name · DNS health": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time), dns_query_type=count(dns_query_type), dns_ttl=count(dns_ttl), dns_ancount=count(dns_ancount), dns_arcount=count(dns_arcount), dns_reverse_addr=count(dns_reverse_addr)",
+          "query": "dataset=\"gigamon_ami\" | summarize app_name=count(app_name), dns_query=count(dns_query), dns_host=count(dns_host), dns_reply_code=count(dns_reply_code), dns_response_time=count(dns_response_time)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1558,9 +1628,9 @@
         "Panel · uc.name · TLS / certificate posture": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_serial_number=count(ssl_serial_number), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_certif_sha1=count(ssl_certif_sha1), ssl_subject_alt_name=count(ssl_subject_alt_name), ssl_certificate_subject_key_size=count(ssl_certificate_subject_key_size), ssl_ja3=count(ssl_ja3), ssl_ja3s=count(ssl_ja3s), ssl_mitm_score=count(ssl_mitm_score)",
+          "query": "dataset=\"gigamon_ami\" | summarize ssl_server_name=count(ssl_server_name), ssl_issuer=count(ssl_issuer), ssl_common_name=count(ssl_common_name), ssl_protocol_version=count(ssl_protocol_version), ssl_validity_not_after=count(ssl_validity_not_after), ssl_validity_not_before=count(ssl_validity_not_before), ssl_cipher_suite_id=count(ssl_cipher_suite_id), ssl_mitm_score=count(ssl_mitm_score)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1569,42 +1639,31 @@
         "Panel · uc.name · Capacity & top talkers": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize src_ip=count(src_ip), dst_ip=count(dst_ip), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets), protocol=count(protocol), src_port=count(src_port), dst_port=count(dst_port), vlan_id=count(vlan_id)",
+          "query": "dataset=\"gigamon_ami\" | summarize _time=count(_time), app_name=count(app_name), src_ip=count(src_ip), src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets), protocol=count(protocol), tcp_rtt=count(tcp_rtt), tcp_dup_ack=count(tcp_dup_ack)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
           "note": "`${avail}/${rows.length} fields ${full ? '· fully supported' : '· partial'}`"
         },
-        "Panel · uc.name · Cloud & container context": {
+        "Panel · uc.name · Web & API health": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize dst_aws_instance_id=count(dst_aws_instance_id), dst_aws_vpc_id=count(dst_aws_vpc_id), dst_aws_flat_tags_name=count(dst_aws_flat_tags_name), dst_aws_flat_tags_service_type=count(dst_aws_flat_tags_service_type), dst_k8s_pod_name=count(dst_k8s_pod_name), src_k8s_pod_name=count(src_k8s_pod_name), k8s_namespace=count(k8s_namespace), k8s_container_name=count(k8s_container_name)",
+          "query": "dataset=\"gigamon_ami\" | summarize _time=count(_time), app_name=count(app_name), http_host=count(http_host), http_code=count(http_code), http_rtt=count(http_rtt)",
           "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
           "note": "`${avail}/${rows.length} fields ${full ? '· fully supported' : '· partial'}`"
         },
-        "Panel · uc.name · Media / VoIP quality": {
+        "Panel · uc.name · Data Flow volume": {
           "ref": "sectionQuery(uc.fields)",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize rtp_codec_name=count(rtp_codec_name), rtp_lost=count(rtp_lost), rtp_service=count(rtp_service), sip_from=count(sip_from), sip_contact=count(sip_contact), sip_callee_domain=count(sip_callee_domain)",
+          "query": "dataset=\"gigamon_ami\" | summarize src_bytes=count(src_bytes), dst_bytes=count(dst_bytes), src_packets=count(src_packets), dst_packets=count(dst_packets)",
           "renderedOver": [
-            "AMI_USE_CASES"
-          ],
-          "reads": "(unbound)",
-          "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
-          "note": "`${avail}/${rows.length} fields ${full ? '· fully supported' : '· partial'}`"
-        },
-        "Panel · uc.name · Identity & asset inventory": {
-          "ref": "sectionQuery(uc.fields)",
-          "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize dhcp_host_name=count(dhcp_host_name), dhcp_yiaddr=count(dhcp_yiaddr), dhcp_message_type=count(dhcp_message_type), krb5_realm=count(krb5_realm), krb5_message_type=count(krb5_message_type), snmp_community=count(snmp_community), ssh_server_agent=count(ssh_server_agent)",
-          "renderedOver": [
-            "AMI_USE_CASES"
+            "EXPLORER_USE_CASES"
           ],
           "reads": "(unbound)",
           "info": "`${uc.desc} Field presence is checked with count(field) over the whole window; open the query in Search to see the per-field counts.`",
@@ -1615,8 +1674,8 @@
           "shape": "query",
           "query": "dataset=\"gigamon_ami\" | limit 5000",
           "reads": "(unbound)",
-          "info": "The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values.",
-          "note": "`${sampleNote(state, { following: liveOnly, label: range.label })} · ${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`"
+          "info": "Only app query input attributes returned by the sample’s field summaries are listed: type, fill rate (% of sampled events carrying it), distinct-value count and top values. Cribl’s field-summaries API returns at most 200 fields before this list is filtered, so a query-used field may be absent from the sample list. AMI coverage checks every query-used field with uncapped count(field). Click a field for its top values.",
+          "note": "`${sampleNote(state, { following: liveOnly, label: range.label })} · ${visible.length} of ${feedFields.length} query-used fields shown · summaries capped at 200`"
         }
       },
       "searches": {
@@ -1629,7 +1688,7 @@
         "runSearch(PRESENCE_QUERY)": {
           "ref": "PRESENCE_QUERY",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" | summarize c0=count(app_name), c1=count(app_id), c2=count(protocol), c3=count(src_ip), c4=count(dst_ip), c5=count(src_port), c6=count(dst_port), c7=count(src_bytes), c8=count(dst_bytes), c9=count(src_packets), c10=count(dst_packets), c11=count(vlan_id), c12=count(tcp_rtt), c13=count(tcp_rtt_app), c14=count(http_rtt), c15=count(tcp_retransmission_bytes), c16=count(tcp_dup_ack), c17=count(tcp_loss_count), c18=count(tcp_wrong_crc), c19=count(tcp_flags), c20=count(tcp_window_size), c21=count(tcp_zero_window), c22=count(http_host), c23=count(http_uri), c24=count(http_method), c25=count(http_code), c26=count(http_user_agent), c27=count(http_content_type), c28=count(http_request_ts), c29=count(http_response_ts), c30=count(http_referer), c31=count(http_cookie), c32=count(http_server), c33=count(http_version), c34=count(dns_query), c35=count(dns_host), c36=count(dns_reply_code), c37=count(dns_response_time), c38=count(dns_query_type), c39=count(dns_ttl), c40=count(dns_host_addr), c41=count(dns_ancount), c42=count(dns_arcount), c43=count(dns_reverse_addr), c44=count(ssl_server_name), c45=count(ssl_issuer), c46=count(ssl_common_name), c47=count(ssl_protocol_version), c48=count(ssl_validity_not_after), c49=count(ssl_validity_not_before), c50=count(ssl_serial_number), c51=count(ssl_cipher_suite_id), c52=count(ssl_alert_level), c53=count(ssl_alert_description), c54=count(ssl_ja3), c55=count(ssl_ja3s), c56=count(ssl_mitm_score), c57=count(ssl_certif_sha1), c58=count(ssl_subject_alt_name), c59=count(ssl_certificate_subject_key_size), c60=count(ssl_cipher_suite_list), c61=count(ssl_ext_ec_supported_groups_type), c62=count(ssl_server_supported_version), c63=count(ssl_client_supported_version), c64=count(ssl_certificate_subject_key_algo_oid), c65=count(dst_aws_instance_id), c66=count(dst_aws_vpc_id), c67=count(dst_aws_flat_tags_name), c68=count(dst_aws_flat_tags_service_type), c69=count(dst_k8s_pod_name), c70=count(src_k8s_pod_name), c71=count(k8s_namespace), c72=count(k8s_container_name), c73=count(snmp_oid), c74=count(snmp_community), c75=count(snmp_processing_anomaly_type), c76=count(ssh_version), c77=count(ssh_tsp_alg_encrypt_cts), c78=count(ssh_server_agent), c79=count(dhcp_message_type), c80=count(dhcp_host_name), c81=count(dhcp_yiaddr), c82=count(krb5_realm), c83=count(krb5_message_type), c84=count(dcerpc_service), c85=count(rtp_codec_name), c86=count(rtp_lost), c87=count(rtp_service), c88=count(icmp_type), c89=count(icmp_tunneling), c90=count(sip_from), c91=count(sip_contact), c92=count(sip_callee_domain), c93=count(http_server_ms), c94=count(tcp_reset)",
+          "query": "dataset=\"gigamon_ami\" | summarize c0=count(_time), c1=count(app_name), c2=count(protocol), c3=count(src_ip), c4=count(dst_ip), c5=count(dst_port), c6=count(src_bytes), c7=count(dst_bytes), c8=count(src_packets), c9=count(dst_packets), c10=count(tcp_rtt), c11=count(tcp_rtt_app), c12=count(tcp_dup_ack), c13=count(tcp_loss_count), c14=count(tcp_wrong_crc), c15=count(tcp_flags), c16=count(tcp_reset), c17=count(udp_wrong_crc), c18=count(ip_wrong_crc), c19=count(http_host), c20=count(http_code), c21=count(http_rtt), c22=count(http_cookie), c23=count(dns_query), c24=count(dns_host), c25=count(dns_reply_code), c26=count(dns_response_time), c27=count(ssl_server_name), c28=count(ssl_issuer), c29=count(ssl_common_name), c30=count(ssl_protocol_version), c31=count(ssl_validity_not_after), c32=count(ssl_validity_not_before), c33=count(ssl_cipher_suite_id), c34=count(ssl_mitm_score), c35=count(ssl_ext_ec_supported_groups_type), c36=count(ssl_server_supported_version), c37=count(snmp_community), c38=count(snmp_processing_anomaly_type), c39=count(krb5_message_type), c40=count(dcerpc_service), c41=count(icmp_tunneling), c42=count(sip_from), c43=count(ftp_data_content)",
           "options": "{ earliest: accelOn ? PRESENCE_ENTRY.earliest : range.earliest, latest: accelOn ? PRESENCE_ENTRY.latest : 'now', signal: ctrl.signal, costSlot: presenceCost, }"
         }
       },
@@ -1637,8 +1696,8 @@
       "briefs": {},
       "prose": {
         "KpiTile · Present": {
-          "info": "Documented AMI fields found in this feed by their canonical name.",
-          "sub": "`of ${AMI_CATALOG.length} key AMI fields`",
+          "info": "App query input attributes found in this feed by name, including persisted helper and provenance fields.",
+          "sub": "`of ${EXPLORER_CATALOG.length} query-used fields`",
           "value": "String(coverage.present)"
         },
         "KpiTile · Derived": {
@@ -1647,7 +1706,7 @@
           "value": "String(coverage.derived)"
         },
         "KpiTile · Missing": {
-          "info": "Documented AMI fields absent from this feed — features that depend on them can't be fully built.",
+          "info": "Query input attributes absent from this feed. Analytics depending on them may be unavailable or incomplete.",
           "sub": "not in this feed",
           "value": "String(coverage.missing)"
         }
@@ -2022,19 +2081,18 @@
         "Panel · Dependency graph": {
           "ref": "nodesQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
+          "query": "dataset=\"gigamon_ami\" | summarize net=percentile(tcp_rtt,95), net_n=count(tcp_rtt), dupack_flows=countif(toreal(tcp_dup_ack)>0), dupack_n=count(tcp_dup_ack), host=max(http_host), flows=count() by dst_ip | sort by flows desc | limit 12",
           "reads": [
-            "domains",
             "graphQ",
             "nodesQ"
           ],
-          "info": "Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage.",
-          "note": "`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`"
+          "info": "`Nodes are the twelve busiest destination IPs (dst_ip), named by an http_host seen on their flows where there is one, plus up to ${TOP_CLIENTS} busy source IPs that are not among them ('client only'). Each node is coloured by p95 tcp_rtt (amber over ${GRAPH_RTT_SLO} ms, red over ${GRAPH_RTT_SLO * 3} ms) and by the share of its flows carrying duplicate ACKs (amber at ${Math.round(DUPACK_WARN * 100)}%, red at ${Math.round(DUPACK_DANGER * 100)}%); a destination with no tcp_dup_ack values is judged on latency alone. Solid lines are the top ${TOP_EDGES} source → destination pairs between drawn nodes, width by flow count and coloured by the worse endpoint. Dashed spokes carry each drawn node's remaining flows to destinations not drawn. Pairs, totals and spokes are computed over the 1,000 busiest source → destination pairs. The ⓘ query is the node query; the pair query is shown in the Searches list.`",
+          "note": "`${destCount} destinations · ${clientCount} clients · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to other` : ''}`"
         },
         "Panel · Latency decomposition over time": {
           "ref": "trendQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
+          "query": "dataset=\"gigamon_ami\" dst_ip=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(toreal(http_rtt),95)*1000, dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
           "reads": [
             "trend"
           ],
@@ -2044,11 +2102,11 @@
         "Panel · Triage · ${label} — where is the time, and is it the network?": {
           "ref": "domainsQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
+          "query": "dataset=\"gigamon_ami\" dst_ip=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(toreal(http_rtt),95)*1000, srvn=countif(isnotnull(toreal(http_rtt))), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
           "reads": [
             "domains"
           ],
-          "info": "id-join + packet evidence: p95 across all flows to this service, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_server_ms vs dns_response_time), plus packet-health counters that exonerate or implicate the network.",
+          "info": "id-join + packet evidence: p95 across all flows to this destination IP, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_rtt vs dns_response_time; http_rtt is converted from seconds to milliseconds and does not isolate server processing time from network latency), plus packet-health counters that exonerate or implicate the network.",
           "note": "id-join + packet evidence"
         }
       },
@@ -2056,7 +2114,7 @@
         "nodesQ": {
           "ref": "nodesQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=* | summarize app=percentile(tcp_rtt_app,95), app_n=count(tcp_rtt_app), dns=percentile(dns_response_time,95), dns_n=count(dns_response_time), resets=sum(tcp_reset), flows=count() by dst_aws_flat_tags_name | sort by flows desc | limit 12",
+          "query": "dataset=\"gigamon_ami\" | summarize net=percentile(tcp_rtt,95), net_n=count(tcp_rtt), dupack_flows=countif(toreal(tcp_dup_ack)>0), dupack_n=count(tcp_dup_ack), host=max(http_host), flows=count() by dst_ip | sort by flows desc | limit 12",
           "options": "{ accel: 'gno_svc_nodes_c1h', accelPanel: 'flow-map-nodes' }",
           "optionsValue": {
             "accel": "gno_svc_nodes_c1h",
@@ -2064,9 +2122,9 @@
           }
         },
         "graphQ": {
-          "ref": "SERVICE_EDGES_SNAPSHOT_QUERY",
+          "ref": "pairsQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, \"\") | summarize flows=count() by src_aws_flat_tags_name, dst_svc",
+          "query": "dataset=\"gigamon_ami\" | summarize flows=count() by src_ip, dst_ip | sort by flows desc | limit 1000",
           "options": "{ accel: 'gno_svc_edges_c1h', accelPanel: 'flow-map-edges' }",
           "optionsValue": {
             "accel": "gno_svc_edges_c1h",
@@ -2076,14 +2134,68 @@
         "domains": {
           "ref": "domainsQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), srvn=count(http_server_ms), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
+          "query": "dataset=\"gigamon_ami\" dst_ip=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(toreal(http_rtt),95)*1000, srvn=countif(isnotnull(toreal(http_rtt))), dns=percentile(dns_response_time,95), dupack=sum(tcp_dup_ack), crc=sum(tcp_wrong_crc), reset=sum(tcp_reset), flows=count()",
           "options": "{ deps: [service] }"
         },
         "trend": {
           "ref": "trendQuery",
           "shape": "query",
-          "query": "dataset=\"gigamon_ami\" dst_aws_flat_tags_name=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(http_server_ms,95), dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
+          "query": "dataset=\"gigamon_ami\" dst_ip=\"donot_delete_Postgres_Sql_GEM\" | summarize net=percentile(tcp_rtt,95), app=percentile(tcp_rtt_app,95), srv=percentile(toreal(http_rtt),95)*1000, dns=percentile(dns_response_time,95) by bin(_time,1m) | sort by _time asc",
           "options": "{ deps: [service], deferred: !trendNear.near }"
+        }
+      },
+      "links": {},
+      "briefs": {},
+      "prose": {}
+    },
+    "src/tabs/FlowMapDeps.tsx": {
+      "surfaces": {
+        "Panel · spec.title · dns": {
+          "ref": "spec.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=* | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), p95=percentile(dns_response_time,95) by src_ip, dns_host | sort by total desc | limit 500",
+          "reads": [
+            "q"
+          ],
+          "info": "spec.info",
+          "note": "`${g.sourceCount} ${spec.sourceLabel.toLowerCase()} · ${g.targetCount} ${spec.targetLabel.toLowerCase()} · ${breaching} breaching${elevated ? `, ${elevated} elevated` : ''} · showing top ${g.sources.length} × ${g.targets.length}, ${g.edges.length} lines`"
+        },
+        "Panel · spec.title · web": {
+          "ref": "spec.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)), p95=percentile(toreal(http_rtt),95)*1000 by src_ip, http_host | sort by n desc | limit 500",
+          "reads": [
+            "q"
+          ],
+          "info": "spec.info",
+          "note": "`${g.sourceCount} ${spec.sourceLabel.toLowerCase()} · ${g.targetCount} ${spec.targetLabel.toLowerCase()} · ${breaching} breaching${elevated ? `, ${elevated} elevated` : ''} · showing top ${g.sources.length} × ${g.targets.length}, ${g.edges.length} lines`"
+        },
+        "Panel · spec.title · subnets": {
+          "ref": "spec.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" protocol=6 src_ip=* dst_ip=* | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, src_ip) | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, dst_ip) | extend src_subnet = strcat(src_prefix, '.0/24') | extend dst_subnet = strcat(dst_prefix, '.0/24') | where src_subnet != '.0/24' and dst_subnet != '.0/24' | summarize flows=count(), net=percentile(tcp_rtt,95), net_n=count(tcp_rtt), dupack_flows=countif(toreal(tcp_dup_ack)>0), dupack_n=count(tcp_dup_ack) by src_subnet, dst_subnet | sort by flows desc | limit 500",
+          "reads": [
+            "q"
+          ],
+          "info": "spec.info",
+          "note": "`${g.sourceCount} ${spec.sourceLabel.toLowerCase()} · ${g.targetCount} ${spec.targetLabel.toLowerCase()} · ${breaching} breaching${elevated ? `, ${elevated} elevated` : ''} · showing top ${g.sources.length} × ${g.targets.length}, ${g.edges.length} lines`"
+        }
+      },
+      "searches": {
+        "q · dns": {
+          "ref": "spec.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" app_name=\"dns\" dns_host=* | summarize total=count(), noerr=sum(iif(dns_reply_code==\"0\",1,0)), sf=sum(iif(dns_reply_code==\"2\",1,0)), nx=sum(iif(dns_reply_code==\"3\",1,0)), p95=percentile(dns_response_time,95) by src_ip, dns_host | sort by total desc | limit 500"
+        },
+        "q · web": {
+          "ref": "spec.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" http_host=* | summarize n=count(), err=sum(iif(http_code>=400,1,0)), p95=percentile(toreal(http_rtt),95)*1000 by src_ip, http_host | sort by n desc | limit 500"
+        },
+        "q · subnets": {
+          "ref": "spec.query",
+          "shape": "query",
+          "query": "dataset=\"gigamon_ami\" protocol=6 src_ip=* dst_ip=* | extend src_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, src_ip) | extend dst_prefix = extract(@'^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3})[.][0-9]{1,3}$', 1, dst_ip) | extend src_subnet = strcat(src_prefix, '.0/24') | extend dst_subnet = strcat(dst_prefix, '.0/24') | where src_subnet != '.0/24' and dst_subnet != '.0/24' | summarize flows=count(), net=percentile(tcp_rtt,95), net_n=count(tcp_rtt), dupack_flows=countif(toreal(tcp_dup_ack)>0), dupack_n=count(tcp_dup_ack) by src_subnet, dst_subnet | sort by flows desc | limit 500"
         }
       },
       "links": {},

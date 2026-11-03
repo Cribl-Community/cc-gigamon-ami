@@ -40,12 +40,12 @@
 // so a routing change shows in the freeze diff beside the query it moves.
 
 import { PIVOTS, buildAppmixQuery, buildKpiQuery, buildL4Query, buildTalkersQuery } from '../../queries/capacityTopTalkers'
-import { LAKE_HELD_QUERY, VOLUME_QUERY } from '../../queries/dataFlow'
+import { DATASET_RECORDS_QUERY, LAKE_HELD_QUERY, VOLUME_QUERY } from '../../queries/dataFlow'
 import { REAL_DATA_PROBE_QUERY } from '../../queries/datasets'
 import { OVERALL, PER_RESOLVER } from '../../queries/dnsHealth'
 import { FEED_SAMPLE_QUERY, PRESENCE_QUERY } from '../../queries/fieldExplorer'
 import { FINDINGS_QUERY } from '../../queries/findings'
-import { edgesQuery, nodesQuery, srcQuery } from '../../queries/flowMap'
+import { nodesQuery, pairsQuery, DNS_DEPS_QUERY, WEB_DEPS_QUERY, SUBNET_DEPS_QUERY } from '../../queries/flowMap'
 import {
   LANDING_LAG_QUERY,
   PARITY_CODE_PRESENCE_QUERY,
@@ -61,7 +61,6 @@ import {
   APP_L4_SNAPSHOT_QUERY,
   APP_SRC_SNAPSHOT_QUERY,
   OVERVIEW_SNAPSHOT_QUERY,
-  SERVICE_EDGES_SNAPSHOT_QUERY,
   TCP_SUBNET16_SNAPSHOT_QUERY,
   TCP_SUBNET24_SNAPSHOT_QUERY,
   WEB_HOST_SNAPSHOT_QUERY,
@@ -138,25 +137,26 @@ const pivots = (build: (p: (typeof PIVOTS)[number]['key'], applied: string) => s
 
 /**
  * Every query family, in the order of the Phase 8 inventory (design §1.4).
- * Capacity's talkers are split by pivot because their verdicts differ: two
- * pivots are dense keys and the AWS tag is 6.7 % present (design row 2).
+ * Capacity's talkers are split by pivot because their verdicts may differ.
  */
 export const ROUTES: readonly RouteEntry[] = Object.freeze([
   entry('capacity.kpi', 'capacityTopTalkers.ts › buildKpiQuery(pivot, "")', pivots(buildKpiQuery)),
   entry('capacity.talkers.src_ip', 'capacityTopTalkers.ts › buildTalkersQuery("src_ip", "")', [buildTalkersQuery('src_ip', '')]),
   entry('capacity.talkers.app_name', 'capacityTopTalkers.ts › buildTalkersQuery("app_name", "")', [buildTalkersQuery('app_name', '')]),
-  entry('capacity.talkers.dst_aws_flat_tags_name', 'capacityTopTalkers.ts › buildTalkersQuery("dst_aws_flat_tags_name", "")', [buildTalkersQuery('dst_aws_flat_tags_name', '')]),
   entry('capacity.appmix', 'capacityTopTalkers.ts › buildAppmixQuery(pivot, "")', pivots(buildAppmixQuery)),
   entry('capacity.l4', 'capacityTopTalkers.ts › buildL4Query(pivot, "")', pivots(buildL4Query)),
   entry('dataFlow.volume', 'dataFlow.ts › VOLUME_QUERY', [VOLUME_QUERY]),
+  entry('dataFlow.records', 'dataFlow.ts › DATASET_RECORDS_QUERY', [DATASET_RECORDS_QUERY]),
   entry('dns.overall', 'dnsHealth.ts › OVERALL', [OVERALL]),
   entry('dns.perResolver', 'dnsHealth.ts › PER_RESOLVER', [PER_RESOLVER]),
   entry('findings.counts', 'findings.ts › FINDINGS_QUERY', [FINDINGS_QUERY]),
   entry('flowMap.nodes', 'flowMap.ts › nodesQuery', [nodesQuery]),
-  entry('flowMap.edges', 'flowMap.ts › edgesQuery, srcQuery', [edgesQuery, srcQuery]),
-  entry('flowMap.serviceEdges', 'snapshots.ts › SERVICE_EDGES_SNAPSHOT_QUERY', [SERVICE_EDGES_SNAPSHOT_QUERY]),
-  entry('flowMap.domains', 'flowMap.ts › buildDomainsQuery(service), built per clicked service', []),
-  entry('flowMap.trend', 'flowMap.ts › buildTrendQuery(service), built per clicked service', []),
+  entry('flowMap.pairs', 'flowMap.ts › pairsQuery', [pairsQuery]),
+  entry('flowMap.dnsDeps', 'flowMap.ts › DNS_DEPS_QUERY', [DNS_DEPS_QUERY]),
+  entry('flowMap.webDeps', 'flowMap.ts › WEB_DEPS_QUERY', [WEB_DEPS_QUERY]),
+  entry('flowMap.subnetDeps', 'flowMap.ts › SUBNET_DEPS_QUERY', [SUBNET_DEPS_QUERY]),
+  entry('flowMap.domains', 'flowMap.ts › buildDomainsQuery(service), built per clicked destination IP', []),
+  entry('flowMap.trend', 'flowMap.ts › buildTrendQuery(service), built per clicked destination IP', []),
   entry('pqc.servers', 'pqcReadiness.ts › SERVERS_Q', [SERVERS_Q]),
   entry('pqc.groups', 'pqcReadiness.ts › GROUPS_Q', [GROUPS_Q]),
   entry('security.counts', 'security.ts › COUNTS', [COUNTS]),

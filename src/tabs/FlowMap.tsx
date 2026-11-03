@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react'
 import { useSearch } from '../cribl/useSearch'
 import { useNearViewport } from '../components/nearViewport'
-import { nodesQuery, buildDomainsQuery, buildTrendQuery } from '../queries/flowMap'
-import { SERVICE_EDGES_SNAPSHOT_QUERY } from '../queries/snapshots'
+import { nodesQuery, pairsQuery, buildDomainsQuery, buildTrendQuery } from '../queries/flowMap'
 import { Panel } from '../components/Panel'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { mergeSnapshotStates } from '../components/snapshotCensus'
@@ -10,139 +9,162 @@ import { TimeChart, type Series } from '../components/TimeChart'
 import { InfoTip } from '../components/InfoTip'
 import { ServiceNowModal } from '../components/ServiceNowModal'
 import { toNum, str, fmtMs, fmtCount } from '../lib/format'
+import { TabLoading } from '../components/TabLoading'
+import type { DepView } from './FlowMapDeps'
 
-// Per-domain SLOs (ms) — the server path is allowed more headroom, like the reference.
+// Flow Map is the eager landing tab; the dependency views mount only when chosen,
+// so they load as their own chunk rather than growing the first page load.
+const DependencyView = lazy(() => import('./FlowMapDeps').then((m) => ({ default: m.DependencyView })))
+
+// Per-domain SLOs (ms) — the HTTP response path is allowed more headroom, like the reference.
 const SLO = { network: 100, application: 100, server: 200, dns: 100 }
 
-const cleanName = (n: string) =>
-  n.replace(/^donot_delete_/i, '').replace(/_GEM$/i, '').replace(/_6_13$/i, '').replace(/_/g, ' ').trim() || n
+/** p95 tcp_rtt (ms) the graph colours against: amber above it, red above 3×. */
+const GRAPH_RTT_SLO = 200
+/** Share of a destination's flows with duplicate ACKs: amber at 5 %, red at 25 %. */
+const DUPACK_WARN = 0.05
+const DUPACK_DANGER = 0.25
+/** How many busiest sources that are not drawn destinations join as "client only". */
+const TOP_CLIENTS = 8
+/** How many source → destination edges the map draws. */
+const TOP_EDGES = 40
 
 type Health = 'success' | 'warning' | 'danger' | 'unknown'
-function healthOf(appMs: number, appN: number, resets: number, flows: number, dnsMs: number, dnsN: number): Health {
-  const resetRate = flows > 0 ? resets / flows : 0
-  if (appN > 0 && appMs > SLO.application * 3) return 'danger'
-  if (resetRate >= 0.9) return 'danger'
-  if (appN > 0 && appMs > SLO.application) return 'warning'
-  if (dnsN > 0 && dnsMs > SLO.dns) return 'warning' // DNS elevated
-  if (resetRate >= 0.4) return 'warning'
-  if (appN === 0 && dnsN === 0) return 'unknown'
+interface Figures { netMs: number; netN: number; dupRate: number; dupN: number }
+function healthOf(f: Figures): Health {
+  if (f.netN > 0 && f.netMs > GRAPH_RTT_SLO * 3) return 'danger'
+  if (f.dupN > 0 && f.dupRate >= DUPACK_DANGER) return 'danger'
+  if (f.netN > 0 && f.netMs > GRAPH_RTT_SLO) return 'warning'
+  if (f.dupN > 0 && f.dupRate >= DUPACK_WARN) return 'warning'
+  if (f.netN === 0 && f.dupN === 0) return 'unknown'
   return 'success'
 }
 const HEALTH_COLOR: Record<Health, string> = { success: '#37b24d', warning: '#f59f00', danger: '#f03e3e', unknown: '#5c6773' }
-/** Hub aggregating peers that carry no AWS name tag (external / untagged). */
-const EXTERNAL_ID = '__external__'
 const SEVERITY: Record<Health, number> = { unknown: 0, success: 1, warning: 2, danger: 3 }
+const worse = (a: Health, b: Health): Health => (SEVERITY[a] >= SEVERITY[b] ? a : b)
 
-interface Node { id: string; label: string; flows: number; appMs: number; appN: number; dnsMs: number; dnsN: number; resets: number; resetRate: number; health: Health; status: string; r: number; x: number; y: number; srcOnly?: boolean }
-
-function statusOf(n: { appN: number; appMs: number; dnsN: number; dnsMs: number; resetRate: number }): string {
-  if (n.appN > 0 && n.appMs > SLO.application * 3) return `app ${fmtMs(n.appMs)} · breaching`
-  if (n.resetRate >= 0.9) return `${Math.round(n.resetRate * 100)}% resets`
-  if (n.appN > 0 && n.appMs > SLO.application) return `app ${fmtMs(n.appMs)} · elevated`
-  if (n.dnsN > 0 && n.dnsMs > SLO.dns) return 'DNS elevated'
-  if (n.resetRate >= 0.4) return `${Math.round(n.resetRate * 100)}% resets`
-  if (n.appN === 0 && n.dnsN === 0) return 'no latency data'
-  return 'healthy'
+function statusOf(f: Figures): string {
+  const pct = `${Math.round(f.dupRate * 100)}% dup-ACK`
+  if (f.netN > 0 && f.netMs > GRAPH_RTT_SLO * 3) return `rtt ${fmtMs(f.netMs)} · breaching`
+  if (f.dupN > 0 && f.dupRate >= DUPACK_DANGER) return `${pct} · breaching`
+  if (f.netN > 0 && f.netMs > GRAPH_RTT_SLO) return `rtt ${fmtMs(f.netMs)} · elevated`
+  if (f.dupN > 0 && f.dupRate >= DUPACK_WARN) return `${pct} · elevated`
+  if (f.netN === 0 && f.dupN === 0) return 'no latency data'
+  return f.netN > 0 ? `rtt ${fmtMs(f.netMs)}` : 'healthy'
 }
 
+interface Node extends Figures { id: string; label: string; flows: number; health: Health; status: string; r: number; x: number; y: number; client: boolean }
+
+type FlowView = 'destinations' | DepView
+const VIEWS: ReadonlyArray<{ key: FlowView; label: string }> = [
+  { key: 'destinations', label: 'Destinations' },
+  { key: 'dns', label: 'DNS' },
+  { key: 'web', label: 'Web/API' },
+  { key: 'subnets', label: 'Subnets' },
+]
+const DEP_INTRO: Record<DepView, string> = {
+  dns: 'Which clients depend on which DNS resolvers, and which resolvers are failing them (SERVFAIL + NXDOMAIN share) or answering slowly. Hover a line or node for its figures.',
+  web: 'Which clients call which HTTP hosts and APIs, and which hosts are returning errors (http_code ≥ 400) or responding slowly (p95 http_rtt). Hover a line or node for its figures.',
+  subnets: 'Which /24 networks talk to which over TCP, coloured by p95 tcp_rtt and duplicate-ACK share — the segment-level view for spotting a congested path. Hover a line or node for its figures.',
+}
+
+/**
+ * The tab: the destinations graph by default, and three alternative dependency
+ * views. Only the view on screen is mounted, so only its searches run.
+ */
 export function FlowMap() {
+  const [view, setView] = useState<FlowView>('destinations')
+  const switcher = (
+    <div className="pivot-toggle" role="group" aria-label="Flow map view">
+      {VIEWS.map((v) => (
+        <button key={v.key} type="button" aria-pressed={view === v.key} className={`seg ${view === v.key ? 'seg-active' : ''}`} onClick={() => setView(v.key)}>{v.label}</button>
+      ))}
+    </div>
+  )
+  if (view === 'destinations') return <DestinationsMap switcher={switcher} />
+  return (
+    <div className="tab">
+      <div className="tab-intro">
+        <h2 className="tab-h">Flow map</h2>
+        {switcher}
+        <p className="tab-sub">{DEP_INTRO[view]}</p>
+      </div>
+      <Suspense fallback={<TabLoading />}>
+        <DependencyView key={view} view={view} />
+      </Suspense>
+    </div>
+  )
+}
+
+function DestinationsMap({ switcher }: { switcher: ReactNode }) {
   const [sel, setSel] = useState<string | null>(null)
   const [snOpen, setSnOpen] = useState(false)
 
-  // TWO SCANS BEHIND THE GRAPH, AND IT USED TO BE THREE. This tab is the default
-  // route, so these are what "opening the app in the morning" costs — and with
-  // twenty-four retained runs they are also what lets the map show 04:20 rather
-  // than only the last fifteen minutes.
-  //
-  // The edges and the per-source outbound totals were two hooks naming two
-  // panels of the SAME entry, which meant two `$vt_results` jobs for one stored
-  // result: read.ts submits one per served panel, and its memo caches the read
-  // key rather than the rows. They are one hook now, over the un-tailed body,
-  // and the two views are cut out of it below. Nothing new is scanned — in Live
-  // mode this submits the union body once where it used to submit two narrower
-  // queries, and in Snapshot mode it reads one stored result instead of two.
+  // Two scans behind the graph: the twelve busiest destination IPs with their
+  // health figures, and the busiest source IP → destination IP pairs. This tab is the
+  // default route, so both are hourly snapshots (gno_svc_nodes_c1h,
+  // gno_svc_edges_c1h) as well as live queries.
   const nodesQ = useSearch(nodesQuery, { accel: 'gno_svc_nodes_c1h', accelPanel: 'flow-map-nodes' })
-  const graphQ = useSearch(SERVICE_EDGES_SNAPSHOT_QUERY, { accel: 'gno_svc_edges_c1h', accelPanel: 'flow-map-edges' })
+  const graphQ = useSearch(pairsQuery, { accel: 'gno_svc_edges_c1h', accelPanel: 'flow-map-edges' })
 
-  const { nodes, edges, extEdges, external, extTotal } = useMemo(() => {
-    const raw = nodesQ.rows.map((r) => {
-      const flows = toNum(r.flows), resets = toNum(r.resets)
-      return { id: str(r, 'dst_aws_flat_tags_name'), flows, appMs: toNum(r.app) * 1000, appN: toNum(r.app_n), dnsMs: toNum(r.dns) * 1000, dnsN: toNum(r.dns_n), resets, resetRate: flows > 0 ? resets / flows : 0, srcOnly: false }
+  const { nodes, edges, extEdges, extTotal, destCount, clientCount } = useMemo(() => {
+    const dests = nodesQ.rows.map((r) => {
+      const flows = toNum(r.flows), dupN = toNum(r.dupack_n)
+      const ip = str(r, 'dst_ip'), host = str(r, 'host')
+      return { id: ip, label: host || ip, flows, netMs: toNum(r.net) * 1000, netN: toNum(r.net_n), dupN, dupRate: dupN > 0 ? toNum(r.dupack_flows) / dupN : 0 }
     }).filter((n) => n.id)
+    const destIds = new Set(dests.map((n) => n.id))
 
-    // ONE READ, THREE DERIVATIONS. `graphQ` holds the un-tailed grouping: a row
-    // per (source service, destination service), with flows to peers carrying no
-    // AWS name tag kept as an empty-string sentinel group rather than dropped
-    // (src/queries/snapshots.ts says why that sentinel has to exist). The drawn
-    // edges, the per-source outbound totals and the external spokes are all
-    // arithmetic over these rows.
     const pairs = graphQ.rows
-      .map((r) => ({ s: str(r, 'src_aws_flat_tags_name'), d: str(r, 'dst_svc'), flows: toNum(r.flows) }))
-      .filter((p) => p.s)
+      .map((r) => ({ s: str(r, 'src_ip'), d: str(r, 'dst_ip'), flows: toNum(r.flows) }))
+      .filter((p) => p.s && p.d)
+    const outBySource = new Map<string, number>()
+    for (const p of pairs) outBySource.set(p.s, (outBySource.get(p.s) ?? 0) + p.flows)
+    // Sources that are not drawn destinations, which a destination-grouped
+    // query alone would never show.
+    const clients = [...outBySource.entries()]
+      .filter(([id]) => !destIds.has(id))
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, TOP_CLIENTS)
 
-    // Outbound flow count per source service, summed across EVERY destination
-    // group INCLUDING the sentinel — which is exactly what the `count() by src`
-    // query this replaces did. Top 20, the limit that query carried, kept so the
-    // set of client-only nodes below does not silently widen.
-    const totalOut = new Map<string, number>()
-    for (const p of pairs) totalOut.set(p.s, (totalOut.get(p.s) ?? 0) + p.flows)
-    const outByService = new Map([...totalOut.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20))
-
-    // A service that only ORIGINATES traffic never appears in the destination-
-    // grouped node query — add it so client-only workloads aren't invisible.
-    const dstIds = new Set(raw.map((n) => n.id))
-    const srcOnly = [...outByService.entries()]
-      .filter(([id]) => !dstIds.has(id))
-      .map(([id, out]) => ({ id, flows: out, appMs: 0, appN: 0, dnsMs: 0, dnsN: 0, resets: 0, resetRate: 0, srcOnly: true }))
-
-    const allRaw = [...raw, ...srcOnly]
-    const maxFlows = allRaw.reduce((m, n) => Math.max(m, n.flows), 1)
-    // Ellipse, not a circle: the panel is ~2.8:1, so spreading nodes wider than
-    // tall uses the available width and keeps neighbouring labels from colliding.
+    const all = [
+      ...dests.map((n) => ({ ...n, client: false })),
+      ...clients.map(([id, flows]) => ({ id, label: id, flows, netMs: 0, netN: 0, dupN: 0, dupRate: 0, client: true })),
+    ]
+    const maxFlows = all.reduce((m, n) => Math.max(m, n.flows), 1)
     const cx = 500, cy = 180, RX = 380, RY = 130
-    const nodes: Node[] = allRaw.map((n, i) => {
-      const a = (2 * Math.PI * i) / allRaw.length - Math.PI / 2
-      const health = healthOf(n.appMs, n.appN, n.resets, n.flows, n.dnsMs, n.dnsN)
-      return { ...n, label: cleanName(n.id), health, status: n.srcOnly ? 'client only' : statusOf(n), r: 9 + 9 * Math.sqrt(n.flows / maxFlows), x: cx + RX * Math.cos(a), y: cy + RY * Math.sin(a) }
+    const placed: Node[] = all.map((n, i) => {
+      const angle = (2 * Math.PI * i) / Math.max(all.length, 1) - Math.PI / 2
+      const health: Health = n.client ? 'unknown' : healthOf(n)
+      return {
+        ...n, health, status: n.client ? 'client only' : statusOf(n),
+        r: 9 + 9 * Math.sqrt(n.flows / maxFlows), x: cx + RX * Math.cos(angle), y: cy + RY * Math.sin(angle),
+      }
     })
-    const pos = new Map(nodes.map((n) => [n.id, n]))
-    // The drawn edges: tagged destinations only, top 40 by flows. That is the
-    // `| where dst_svc != "" | sort by flows desc | limit 40` the manifest used
-    // to apply server-side, moved here so one read feeds both views. The order
-    // matters: the limit was always applied before the drawability filter below,
-    // and narrowing it first would change which edges survive.
-    const edges = pairs
-      .filter((p) => p.d)
-      .sort((a, b) => b.flows - a.flows)
-      .slice(0, 40)
-      .filter((e) => pos.has(e.s) && pos.has(e.d) && e.s !== e.d)
-      .map((e) => { const a = pos.get(e.s)!, b = pos.get(e.d)!; return { ...e, a, b, health: SEVERITY[a.health] >= SEVERITY[b.health] ? a.health : b.health } })
+    const pos = new Map(placed.map((n) => [n.id, n]))
 
-    // Only ~12 hosts in this feed carry an AWS name tag, so most flows have a
-    // peer we can't name. Aggregate each service's traffic to those unnamed
-    // peers (total outbound − outbound to named services) into one hub.
-    // Sum from the UNFILTERED rows: traffic to any named peer counts as named,
-    // even if that edge was dropped from the drawing (self-loop / outside top-N).
-    // Summed over EVERY tagged pair, not only the forty that get drawn — a
-    // correction the merged read made possible. This hook used to receive the
-    // already-limited top 40, so traffic to a named peer outside that cut
-    // counted as unnamed and inflated the external spoke. The comment above has
-    // always said that traffic to any named peer counts as named even if the
-    // edge was dropped from the drawing; it is now true.
-    const namedOut = new Map<string, number>()
-    for (const p of pairs) if (p.d) namedOut.set(p.s, (namedOut.get(p.s) ?? 0) + p.flows)
-    const external = { id: EXTERNAL_ID, label: 'External / unnamed', x: cx, y: cy, r: 13 }
-    const extEdges = nodes
-      .map((n) => ({ s: n.id, a: n, flows: Math.max(0, (outByService.get(n.id) ?? 0) - (namedOut.get(n.id) ?? 0)) }))
+    const edges = pairs
+      .filter((p) => p.s !== p.d && pos.has(p.s) && destIds.has(p.d))
+      .sort((x, y) => y.flows - x.flows)
+      .slice(0, TOP_EDGES)
+      .map((e) => { const a = pos.get(e.s)!, b = pos.get(e.d)!; return { ...e, a, b, health: worse(a.health, b.health) } })
+
+    // Each drawn source's flows to destinations the map does not draw.
+    const toDrawn = new Map<string, number>()
+    for (const p of pairs) if (pos.has(p.s) && destIds.has(p.d)) toDrawn.set(p.s, (toDrawn.get(p.s) ?? 0) + p.flows)
+    const extEdges = placed
+      .map((n) => ({ a: n, flows: (outBySource.get(n.id) ?? 0) - (toDrawn.get(n.id) ?? 0) }))
       .filter((e) => e.flows > 0)
     const extTotal = extEdges.reduce((t, e) => t + e.flows, 0)
-    return { nodes, edges, extEdges, external, extTotal }
+    return { nodes: placed, edges, extEdges, extTotal, destCount: dests.length, clientCount: clients.length }
   }, [nodesQ.rows, graphQ.rows])
 
+  const external = { x: 500, y: 180, r: 13, label: 'Other destinations' }
   const maxEdge = edges.reduce((m, e) => Math.max(m, e.flows), 1)
   const maxExt = extEdges.reduce((m, e) => Math.max(m, e.flows), 1)
-  const breachingCount = nodes.filter((n) => n.health === 'danger').length
-  const elevatedCount = nodes.filter((n) => n.health === 'warning').length
+  const breachingCount = nodes.filter((n) => !n.client && n.health === 'danger').length
+  const elevatedCount = nodes.filter((n) => !n.client && n.health === 'warning').length
+  const selNode = nodes.find((n) => n.id === sel)
 
   // Two searches, one card. Merged to the worse of the two: a graph drawn half
   // from 04:20 and half from now would look completely normal, and is the one
@@ -156,42 +178,53 @@ export function FlowMap() {
     <div className="tab">
       <div className="tab-intro">
         <h2 className="tab-h">Flow map</h2>
+        {switcher}
         <p className="tab-sub">
-          Service-to-service dependencies from flow metadata — no sidecar, no eBPF.{' '}
-          <strong className="d-danger">Pulsing red</strong> = breaching epicenter (&gt;90% resets or 3× SLO) →
-          click to drill the four latency domains; <strong className="d-warn">amber</strong> = latency / reset
-          elevated, <span className="d-grey">grey</span> = no latency measured. Sized by flow volume.{' '}
-          <strong>{breachingCount} service{breachingCount === 1 ? '' : 's'} breaching</strong>
-          {elevatedCount > 0 ? `, ${elevatedCount} elevated` : ''}. Dashed spokes aggregate traffic to peers
-          that carry no AWS name tag (external or untagged), since only ~12 hosts in this feed are tagged.
+          Which hosts talk to which destinations, from flow metadata — no sidecar, no eBPF.{' '}
+          <strong className="d-danger">Pulsing red</strong> = breaching destination (p95 tcp_rtt over {fmtMs(GRAPH_RTT_SLO * 3)}, or
+          {' '}{Math.round(DUPACK_DANGER * 100)}%+ of flows with duplicate ACKs) → click it to drill the latency domains;{' '}
+          <strong className="d-warn">amber</strong> = over {fmtMs(GRAPH_RTT_SLO)} or {Math.round(DUPACK_WARN * 100)}%+ dup-ACK,{' '}
+          <span className="d-grey">grey</span> = no latency data. Sized by flow volume.{' '}
+          <strong>{breachingCount} destination{breachingCount === 1 ? '' : 's'} breaching</strong>
+          {elevatedCount > 0 ? `, ${elevatedCount} elevated` : ''}. Dashed spokes aggregate traffic to destinations the map does not draw.
         </p>
       </div>
 
-      <Panel snapshot={graphSnapshot} tourId="service-graph" onRefresh={() => { nodesQ.refetch(); graphQ.refetch() }} refreshing={nodesQ.loading || graphQ.loading} title="Dependency graph" info="Solid edges are src→dst service pairs (both endpoints AWS name-tagged), width by flow count and color by the worse endpoint's health. Only ~12 hosts in this feed carry a name tag, so service↔service edges are limited to those — the dashed grey spokes aggregate each service's remaining traffic to peers we can't name (external or untagged hosts). Nodes include services that only originate traffic ('client only'), which a destination-grouped query alone would miss. Breaching (red) nodes pulse to mark critical epicenters. Note: the reference dashboard flagged TLS-outage epicenters via ssl_alert_level=2, but that field isn't in this AMI feed (0 records) — so red here means latency/reset breaching, not a TLS outage." query={nodesQuery} note={`${nodes.length} services · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to unnamed` : ''}`}>
-        <QueryBoundary state={nodesQ} emptyLabel="No AWS-enriched flows in this window">
+      <Panel snapshot={graphSnapshot} tourId="service-graph" onRefresh={() => { nodesQ.refetch(); graphQ.refetch() }} refreshing={nodesQ.loading || graphQ.loading} title="Dependency graph" info={`Nodes are the twelve busiest destination IPs (dst_ip), named by an http_host seen on their flows where there is one, plus up to ${TOP_CLIENTS} busy source IPs that are not among them ('client only'). Each node is coloured by p95 tcp_rtt (amber over ${GRAPH_RTT_SLO} ms, red over ${GRAPH_RTT_SLO * 3} ms) and by the share of its flows carrying duplicate ACKs (amber at ${Math.round(DUPACK_WARN * 100)}%, red at ${Math.round(DUPACK_DANGER * 100)}%); a destination with no tcp_dup_ack values is judged on latency alone. Solid lines are the top ${TOP_EDGES} source → destination pairs between drawn nodes, width by flow count and coloured by the worse endpoint. Dashed spokes carry each drawn node's remaining flows to destinations not drawn. Pairs, totals and spokes are computed over the 1,000 busiest source → destination pairs. The ⓘ query is the node query; the pair query is shown in the Searches list.`} query={nodesQuery} note={`${destCount} destinations · ${clientCount} clients · ${edges.length} edges${extEdges.length ? ` · ${extEdges.length} to other` : ''}`}>
+        <QueryBoundary state={nodesQ} emptyLabel="No flows in this window">
           <div className="svc-graph-wrap">
             <svg viewBox="0 0 1000 360" className="svc-graph" role="img">
               {extEdges.map((e, i) => (
                 <line key={`ext-${i}`} className="svc-ext-edge" x1={e.a.x} y1={e.a.y} x2={external.x} y2={external.y}
                   strokeWidth={1 + (e.flows / maxExt) * 3}>
-                  <title>{`${e.a.label} → unnamed / external peers — ${fmtCount(e.flows)} flows`}</title>
+                  <title>{`${e.a.label} → other destinations — ${fmtCount(e.flows)} flows`}</title>
                 </line>
               ))}
               {extEdges.length > 0 && (
                 <g className="svc-ext-node" transform={`translate(${external.x},${external.y})`}>
-                  <title>{`Peers with no AWS name tag (external or untagged hosts) — ${fmtCount(extTotal)} flows aggregated`}</title>
+                  <title>{`Destinations the map does not draw — ${fmtCount(extTotal)} flows aggregated`}</title>
                   <circle r={external.r} />
                   <text y={external.r + 15} textAnchor="middle" className="svc-ext-label">{external.label}</text>
                 </g>
               )}
               {edges.map((e, i) => (
                 <line key={i} x1={e.a.x} y1={e.a.y} x2={e.b.x} y2={e.b.y} stroke={HEALTH_COLOR[e.health]}
-                  opacity={e.health === 'success' || e.health === 'unknown' ? 0.28 : 0.7} strokeWidth={1 + (e.flows / maxEdge) * 4} />
+                  opacity={e.health === 'success' || e.health === 'unknown' ? 0.28 : 0.7} strokeWidth={1 + (e.flows / maxEdge) * 4}>
+                  <title>{`${e.a.label} → ${e.b.label} — ${fmtCount(e.flows)} flows`}</title>
+                </line>
               ))}
               {nodes.map((n) => (
+                n.client ? (
+                  <g key={n.id} className="svc-node svc-node-source" transform={`translate(${n.x},${n.y})`}>
+                    <title>{`${n.label} — client only · ${fmtCount(n.flows)} flows out`}</title>
+                    <circle r={n.r} fill={HEALTH_COLOR.unknown} />
+                    <text y={-(n.r + 8)} textAnchor="middle" className="svc-label">{n.label}</text>
+                    <text y={n.r + 17} textAnchor="middle" className="svc-status svc-status-unknown">{n.status}</text>
+                  </g>
+                ) : (
                 <g key={n.id} className="svc-node" onClick={() => setSel(n.id)} transform={`translate(${n.x},${n.y})`}
                   tabIndex={0} onKeyDown={(ev) => ev.key === 'Enter' && setSel(n.id)}>
-                  <title>{`${n.label} — app p95 ${n.appN > 0 ? fmtMs(n.appMs) : 'no data'} · resets ${(n.resetRate * 100).toFixed(0)}% of ${fmtCount(n.flows)} flows`}</title>
+                  <title>{`${n.label}${n.label !== n.id ? ` (${n.id})` : ''} — tcp_rtt p95 ${n.netN > 0 ? fmtMs(n.netMs) : 'no data'} · dup-ACK ${n.dupN > 0 ? `${(n.dupRate * 100).toFixed(0)}% of ${fmtCount(n.dupN)}` : 'no data'} · ${fmtCount(n.flows)} flows`}</title>
                   {n.health === 'danger' && (
                     <>
                       <circle className="svc-pulse-ring" r={n.r} fill={HEALTH_COLOR.danger} />
@@ -202,23 +235,24 @@ export function FlowMap() {
                   <text y={-(n.r + 8)} textAnchor="middle" className="svc-label">{n.label}</text>
                   <text y={n.r + 17} textAnchor="middle" className={`svc-status svc-status-${n.health}`}>{n.status}</text>
                 </g>
+                )
               ))}
             </svg>
             <div className="svc-legend">
               <span><span className="dot dot-success" /> healthy</span>
-              <span><span className="dot dot-warning" /> elevated (latency or reset rate)</span>
-              <span><span className="dot dot-danger dot-pulse" /> breaching · pulsing (&gt;90% resets or 3× SLO)</span>
+              <span><span className="dot dot-warning" /> elevated (rtt &gt; {GRAPH_RTT_SLO} ms or dup-ACK ≥ {Math.round(DUPACK_WARN * 100)}%)</span>
+              <span><span className="dot dot-danger dot-pulse" /> breaching · pulsing (rtt &gt; {GRAPH_RTT_SLO * 3} ms or dup-ACK ≥ {Math.round(DUPACK_DANGER * 100)}%)</span>
               <span><span className="dot dot-unknown" /> no latency data / client only</span>
-              <span><span className="dash-line" /> traffic to unnamed / external peers</span>
+              <span><span className="dash-line" /> traffic to destinations not drawn</span>
             </div>
           </div>
         </QueryBoundary>
       </Panel>
 
       {sel ? (
-        <LatencyDomains service={sel} onIncident={() => setSnOpen(true)} onBack={() => setSel(null)} />
+        <LatencyDomains service={sel} label={selNode?.label ?? sel} onIncident={() => setSnOpen(true)} onBack={() => setSel(null)} />
       ) : (
-        <p className="svc-hint">Select a service above to see its four latency domains and packet-evidence triage.</p>
+        <p className="svc-hint">Select a destination above to see its latency domains and packet-evidence triage.</p>
       )}
 
       {/* Mounted for as long as a service is selected, and opened by `isOpen`
@@ -226,12 +260,12 @@ export function FlowMap() {
           lock and the `inert` it puts on #root when it CLOSES; unmounting it
           while it is still open would skip that and leave the app behind it
           unscrollable. Same shape as <ConfirmDialog> in OnboardingPanel. */}
-      {sel && <ServiceNowModal isOpen={snOpen} service={cleanName(sel)} onClose={() => setSnOpen(false)} />}
+      {sel && <ServiceNowModal isOpen={snOpen} service={sel} onClose={() => setSnOpen(false)} />}
     </div>
   )
 }
 
-function LatencyDomains({ service, onIncident, onBack }: { service: string; onIncident: () => void; onBack: () => void }) {
+function LatencyDomains({ service, label: name, onIncident, onBack }: { service: string; label: string; onIncident: () => void; onBack: () => void }) {
   const domainsQuery = buildDomainsQuery(service)
   const domains = useSearch(domainsQuery, { deps: [service] })
   // The four domain cards answer the question this view was opened to ask; the
@@ -245,12 +279,12 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
   const netMs = toNum(d.net) * 1000
   const appMs = toNum(d.app) * 1000
   const dnsMs = toNum(d.dns) * 1000
-  const srvMs = toNum(d.srv) // already ms
+  const srvMs = toNum(d.srv) // http_rtt seconds × 1000 in the query
   const srvN = toNum(d.srvn)
   const dupack = toNum(d.dupack)
   const crc = toNum(d.crc)
   const resets = toNum(d.reset)
-  const label = cleanName(service)
+  const label = name !== service ? `${name} (${service})` : service
 
   const netClean = dupack === 0 && crc === 0 && resets === 0
 
@@ -259,7 +293,7 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
     { key: 'APPLICATION', field: 'tcp_rtt_app', ms: appMs, slo: SLO.application, ratio: appMs / SLO.application, phrase: 'slow app response', owner: 'the app team' },
     { key: 'NETWORK', field: 'tcp_rtt', ms: netMs, slo: SLO.network, ratio: netMs / SLO.network, phrase: 'network latency', owner: 'NetOps' },
     { key: 'DNS', field: 'dns_response_time', ms: dnsMs, slo: SLO.dns, ratio: dnsMs / SLO.dns, phrase: 'slow name resolution', owner: 'the DNS / platform team' },
-    ...(srvN > 0 ? [{ key: 'SERVER', field: 'http_server_ms', ms: srvMs, slo: SLO.server, ratio: srvMs / SLO.server, phrase: 'slow server response', owner: 'the service owner' }] : []),
+    ...(srvN > 0 ? [{ key: 'HTTP RTT', field: 'http_rtt', ms: srvMs, slo: SLO.server, ratio: srvMs / SLO.server, phrase: 'slow HTTP response', owner: 'the service owner' }] : []),
   ]
   const worstD = DOMAINS.reduce((a, b) => (b.ratio > a.ratio ? b : a))
   const worst = worstD.key
@@ -272,13 +306,13 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
       ? `Network is implicated: tcp_rtt p95 = ${fmtMs(netMs)} (${worstD.ratio.toFixed(1)}× SLO) with ${evidenceSummary}. Inspect the path before routing to the app team.`
       : `${worst} owns the time (${fmtMs(worstD.ms)}, ${worstD.ratio.toFixed(1)}× SLO), but packet health shows ${evidenceSummary} — clear the wire errors, then route to ${worstD.owner}.`
 
-  const identityReads = worst === 'APPLICATION' ? 'the breaching service' : 'the scoped service'
+  const identityReads = 'the selected destination'
   interface TriRow { rec: string; field: string; value: string; domain: string; dcls: string; reads: string; rcls: string }
   const rows: TriRow[] = [
-    { rec: 'identity', field: 'dst_aws_flat_tags_name', value: label, domain: '—', dcls: 'd-none', reads: identityReads, rcls: 'tri-dim' },
+    { rec: 'identity', field: 'dst_ip', value: label, domain: '—', dcls: 'd-none', reads: identityReads, rcls: 'tri-dim' },
     { rec: 'domain', field: 'tcp_rtt_app', value: fmtMs(appMs), domain: 'application', dcls: 'd-app', reads: appMs > SLO.application ? 'breaching · this is the cause' : 'within SLO', rcls: appMs > SLO.application ? 'tri-bad' : 'tri-ok' },
     { rec: 'domain', field: 'tcp_rtt', value: fmtMs(netMs), domain: 'network', dcls: 'd-net', reads: netMs > SLO.network ? 'network slow' : 'within SLO', rcls: netMs > SLO.network ? 'tri-bad' : 'tri-ok' },
-    { rec: 'domain', field: 'http_server_ms', value: srvN > 0 ? fmtMs(srvMs) : '—', domain: 'server', dcls: 'd-srv', reads: srvN === 0 ? 'no HTTP flows' : srvMs > SLO.server ? 'server slow' : 'server fine', rcls: srvN === 0 ? 'tri-warn' : srvMs > SLO.server ? 'tri-bad' : 'tri-ok' },
+    { rec: 'domain', field: 'http_rtt', value: srvN > 0 ? fmtMs(srvMs) : '—', domain: 'http response', dcls: 'd-srv', reads: srvN === 0 ? 'no HTTP RTT' : srvMs > SLO.server ? 'HTTP slow' : 'HTTP fine', rcls: srvN === 0 ? 'tri-warn' : srvMs > SLO.server ? 'tri-bad' : 'tri-ok' },
     { rec: 'domain', field: 'dns_response_time', value: fmtMs(dnsMs), domain: 'DNS', dcls: 'd-dns', reads: dnsMs > SLO.dns ? 'DNS slow' : 'DNS fine', rcls: dnsMs > SLO.dns ? 'tri-bad' : 'tri-ok' },
     { rec: 'evidence', field: 'tcp_dup_ack', value: fmtCount(dupack), domain: 'network health', dcls: 'd-net', reads: dupack === 0 ? 'clean' : 'retransmits', rcls: dupack === 0 ? 'tri-ok' : 'tri-warn' },
     { rec: 'evidence', field: 'tcp_reset', value: fmtCount(resets), domain: 'network health', dcls: 'd-net', reads: resets === 0 ? 'clean' : 'RST seen', rcls: resets === 0 ? 'tri-ok' : 'tri-warn' },
@@ -289,10 +323,10 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
     if (na) {
       return (
         <div className="domain domain-na">
-          <div className="kpi-label">{name}<InfoTip text="No HTTP request/response timestamps to this service in the window, so server latency can't be computed here." /></div>
+          <div className="kpi-label">{name}<InfoTip text="No flow to this destination carries a numeric http_rtt in the window, so HTTP response RTT can't be computed here." /></div>
           <div className="kpi-value">n/a</div>
-          <span className="pill pill-neutral">no HTTP flows</span>
-          <div className="kpi-sub">http_server_ms · SLO {slo}ms</div>
+          <span className="pill pill-neutral">no HTTP RTT</span>
+          <div className="kpi-sub">http_rtt · SLO {slo}ms</div>
         </div>
       )
     }
@@ -311,7 +345,7 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
   const latSeries: Series[] = [
     { name: 'network', color: '#4dabf7', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.net) * 1000 })) },
     { name: 'application', color: '#ffa94d', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.app) * 1000 })) },
-    { name: 'server', color: '#f783ac', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.srv) })) },
+    { name: 'http rtt', color: '#f783ac', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.srv) })) },
     { name: 'dns', color: '#63e6be', points: trend.rows.map((r) => ({ t: toNum(r.bin_time_1m), v: toNum(r.dns) * 1000 })) },
   ]
 
@@ -323,11 +357,11 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
         <button type="button" className="btn btn-primary" onClick={onIncident}>Create ServiceNow incident</button>
       </div>
 
-      <QueryBoundary state={domains} emptyLabel="No flows to this service in the window">
+      <QueryBoundary state={domains} emptyLabel="No flows to this destination in the window">
         <div className="domain-row">
           <DomainCard name="NETWORK" ms={netMs} slo={SLO.network} field="tcp_rtt" />
           <DomainCard name="APPLICATION" ms={appMs} slo={SLO.application} field="tcp_rtt_app" />
-          <DomainCard name="SERVER" ms={srvMs} slo={SLO.server} field="http_server_ms" na={srvN === 0} />
+          <DomainCard name="HTTP RTT" ms={srvMs} slo={SLO.server} field="http_rtt" na={srvN === 0} />
           <DomainCard name="DNS" ms={dnsMs} slo={SLO.dns} field="dns_response_time" />
         </div>
 
@@ -338,7 +372,7 @@ function LatencyDomains({ service, onIncident, onBack }: { service: string; onIn
             </QueryBoundary>
           </Panel>
 
-          <Panel onRefresh={domains.refetch} refreshing={domains.loading} title={`Triage · ${label} — where is the time, and is it the network?`} info="id-join + packet evidence: p95 across all flows to this service, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_server_ms vs dns_response_time), plus packet-health counters that exonerate or implicate the network." query={domainsQuery} note="id-join + packet evidence">
+          <Panel onRefresh={domains.refetch} refreshing={domains.loading} title={`Triage · ${label} — where is the time, and is it the network?`} info="id-join + packet evidence: p95 across all flows to this destination IP, joined per id and scored by domain (tcp_rtt_app vs tcp_rtt vs http_rtt vs dns_response_time; http_rtt is converted from seconds to milliseconds and does not isolate server processing time from network latency), plus packet-health counters that exonerate or implicate the network." query={domainsQuery} note="id-join + packet evidence">
             <div className="triage-scope">SCOPE <code>{label}</code> · p95 across all flows · joined per id, scored by domain</div>
             <div className="triage-wrap">
               <table className="dtable dtable-mono">

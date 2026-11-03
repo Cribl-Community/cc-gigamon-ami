@@ -62,6 +62,7 @@ import {
   PACK_SAMPLE_INPUT_ID,
 } from './pack'
 import { LAKE_DATASET_ID, LAKE_DESTINATION_ID } from './provision'
+import { GLOBAL_HTTP_BREAKER_ID, GLOBAL_HTTP_INPUT_ID, GLOBAL_HTTP_PIPELINE_ID } from './globalHttpIds'
 
 export type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -90,7 +91,7 @@ export type Scope =
  * earlier release created and this one could remove. Guided Setup no longer
  * removes them, and the type is gone.)*
  */
-export type Provisioned = 'dataset' | 'commit' | 'accel_saved_search' | 'pack'
+export type Provisioned = 'dataset' | 'commit' | 'accel_saved_search' | 'pack' | 'stream_object'
 
 export interface ApiCall {
   method: Method
@@ -405,7 +406,7 @@ export const API_CALLS: readonly ApiCall[] = [
     method: 'GET',
     path: '/m/:gid/system/inputs',
     scope: 'product',
-    site: 'lake.ts listInputs',
+    site: 'lake.ts listInputs (also globalHttp.ts rawHttpLive)',
     why: `List the group's sources, to work out what actually writes through the '${LAKE_DESTINATION_ID}' destination. The routing table is not the whole answer: on the workspace this was measured against, a source reaches Cribl Lake through a QuickConnect binding on the source itself and appears in no route at all — so a confirmation built on routes alone would under-report the feeds a destination change affects. Guided Setup reads the same list for the ports the group's sources already listen on, so it offers a free port for the onboarding pack's Raw HTTP source and checks it again just before setting it, and — before Remove deletes the old breaker ruleset — for any other source that still names it.`,
   },
   {
@@ -631,11 +632,78 @@ export const API_CALLS: readonly ApiCall[] = [
   // the routing-table PATCH that took their routes out — went on 2026-09-26
   // with Guided Setup's Remove of them (owner decision: tenants that still hold
   // those objects keep them, orphaned).
+  // ── The group's own Raw HTTP source for Gigamon AMX (src/cribl/globalHttp.ts)
+  // Owner decision 2026-10-24: Onboard creates `in_gigamon_ami_http` in the
+  // group's own sources, with its breaker ruleset and pipeline, and the
+  // `gigamon_lake` destination where the group lacks it — each created only
+  // when absent, never edited by the run, and wired by QuickConnect (no route).
+  // Each GET is its own exact id; the POSTs are the collections Cribl creates
+  // in. Rotate token and Move port PATCH the source whole.
+  {
+    method: 'GET',
+    path: `/m/:gid/lib/breakers/${GLOBAL_HTTP_BREAKER_ID}`,
+    scope: 'product',
+    site: 'globalHttp.ts readObject',
+    why: `See whether the '${GLOBAL_HTTP_BREAKER_ID}' event breaker ruleset is already in the group before Onboard creates it, so one already there is left exactly as it is. Read only; this exact id.`,
+  },
+  {
+    method: 'POST',
+    path: '/m/:gid/lib/breakers',
+    scope: 'product',
+    site: 'globalHttp.ts createObject',
+    why: `Create the '${GLOBAL_HTTP_BREAKER_ID}' event breaker ruleset — one event per record of a JSON array Gigamon AMX POSTs — from Guided Setup's Onboard confirmation, which names it, only when the group does not have it. The app sends no other body here.`,
+    creates: 'stream_object',
+  },
+  {
+    method: 'GET',
+    path: `/m/:gid/pipelines/${GLOBAL_HTTP_PIPELINE_ID}`,
+    scope: 'product',
+    site: 'globalHttp.ts readObject',
+    why: `See whether the '${GLOBAL_HTTP_PIPELINE_ID}' pipeline is already in the group before Onboard creates it. Read only; this exact id.`,
+  },
+  {
+    method: 'POST',
+    path: '/m/:gid/pipelines',
+    scope: 'product',
+    site: 'globalHttp.ts createObject',
+    why: `Create the '${GLOBAL_HTTP_PIPELINE_ID}' pipeline — casts numeric fields and derives the helper fields the dashboards read — from Guided Setup's Onboard confirmation, which names it, only when the group does not have it.`,
+    creates: 'stream_object',
+  },
+  {
+    method: 'POST',
+    path: '/m/:gid/system/outputs',
+    scope: 'product',
+    site: 'globalHttp.ts createObject',
+    why: `Create the '${LAKE_DESTINATION_ID}' Cribl Lake destination, writing '${LAKE_DATASET_ID}', from Guided Setup's Onboard confirmation, which names it — only in a group that does not have one. A destination already there is never replaced.`,
+    creates: 'stream_object',
+  },
+  {
+    method: 'GET',
+    path: '/m/:gid/system/inputs/:inputId',
+    scope: 'product',
+    site: 'globalHttp.ts readObject (also globalHttp.ts readSource)',
+    why: `Read one of the group's own Raw HTTP sources whole: whether '${GLOBAL_HTTP_INPUT_ID}' is already there before Onboard creates it, and — for the source the person picked in Onboard, or the one already connected to Cribl Lake — the whole body a PATCH is built from. Its port, TLS and whether it has a token (never the token) are shown; the token never leaves the request. ':inputId' because the person picks the source from the group's own list.`,
+  },
+  {
+    method: 'POST',
+    path: '/m/:gid/system/inputs',
+    scope: 'product',
+    site: 'globalHttp.ts createObject',
+    why: `Create the '${GLOBAL_HTTP_INPUT_ID}' Raw HTTP source Gigamon AMX POSTs to — the port the person picked, an auth token this app generates and shows once, TLS for the group's hosting, connected by QuickConnect to '${GLOBAL_HTTP_PIPELINE_ID}' and '${LAKE_DESTINATION_ID}' — from Guided Setup's Onboard confirmation, which names it, only when the group does not have it.`,
+    creates: 'stream_object',
+  },
+  {
+    method: 'PATCH',
+    path: '/m/:gid/system/inputs/:inputId',
+    scope: 'product',
+    site: 'globalHttp.ts connectSource (also globalHttp.ts applyGlobalHttpChange)',
+    why: `Connect the Raw HTTP source the person picked in Onboard to Cribl Lake — one QuickConnect connection '${GLOBAL_HTTP_PIPELINE_ID}' → '${LAKE_DESTINATION_ID}' added beside its others, and the JSON-array breaker put first — and later rotate that source's auth token or move its port, each from its own confirmation showing the before→after. Never its other connections, port, token or TLS unless that is the change shown. The body is the whole live source with those keys changed, because this endpoint deletes any field a PATCH omits. ':inputId' because the person picks the source.`,
+  },
   {
     method: 'GET',
     path: `/m/:gid/system/outputs/${LAKE_DESTINATION_ID}`,
     scope: 'product',
-    site: 'lake.ts getDestination',
+    site: 'lake.ts getDestination (also globalHttp.ts readObject)',
     why: `Read the '${LAKE_DESTINATION_ID}' Cribl Lake destination whole, for the Lake landing panel: how it writes objects, its health, and — because a destination PATCH replaces the object — the body an edit is built from.`,
   },
   {
@@ -737,6 +805,11 @@ export const LEFT_BEHIND: readonly LeftBehind[] = [
   // creates it. Remove still leaves it, for the reason that entry gave — the app
   // cannot prove it made a destination named after the dataset, and anything
   // else may write through it — and the Lake landing panel still edits it.
+  {
+    resource: 'stream_object',
+    reason:
+      `Onboard creates the '${GLOBAL_HTTP_INPUT_ID}' Raw HTTP source, its '${GLOBAL_HTTP_BREAKER_ID}' breaker ruleset and '${GLOBAL_HTTP_PIPELINE_ID}' pipeline, and the '${LAKE_DESTINATION_ID}' destination where a group lacks one (owner decision 2026-10-24). The source is the live endpoint Gigamon AMX sends to, and '${LAKE_DESTINATION_ID}' is shared with any other feed writing '${LAKE_DATASET_ID}', so this app does not delete them: a person removes them in Cribl Stream, where they can see what still sends to them. Remove pack says so. Not built yet, and the next thing to decide if these should go with the pack.`,
+  },
   {
     resource: 'commit',
     reason:

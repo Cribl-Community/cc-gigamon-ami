@@ -145,7 +145,7 @@ describe('the endpoint card', () => {
   it('gives the exact header line, not just the header name', () => {
     // openapi.json, InputHttpRaw.authTokensExt: "Shared secrets to be provided
     // by any client (Authorization: <token>)" — the whole value, no scheme.
-    expect(AUTH_HEADER).toBe('Authorization: <token>')
+    expect(AUTH_HEADER).toBe('Authorization: Bearer <token>')
   })
 })
 

@@ -58,7 +58,7 @@ into the raw Cribl Search UI whenever you want to go deeper.
 
 The dashboard is organized into tabs, each answering a different operational question:
 
-- **Flow Map** — service-to-service dependencies and traffic relationships (default landing tab)
+- **Flow Map** — the twelve busiest destination IPs, their busiest clients, and RTT / dup-ACK health (default landing tab)
 - **Capacity & Top Talkers** — throughput, byte volumes, and the busiest hosts/services
 - **TCP Health** — retransmits, resets, and connection-quality signals
 - **DNS Health** — query volumes, response codes, and latency
@@ -66,9 +66,9 @@ The dashboard is organized into tabs, each answering a different operational que
 - **TLS Posture** — protocol versions, cipher suites, and certificate signals
 - **PQC Readiness** — post-quantum cryptography readiness of observed TLS
 - **Shadow AI** — shadow-AI and unsanctioned SaaS application usage
-- **Data Flow** — end-to-end flow-level view of the traffic
+- **Data Flow** — live counters for the Raw HTTP connection shown on Onboard
 - **Security** & **Findings** — security-relevant observations surfaced from the metadata
-- **Field Explorer** — browse the AMI field schema and per-field summaries
+- **Field Explorer** — query-used input attributes grouped by application, with coverage and per-field summaries
 - **AMI Reference** — reference documentation for the Gigamon AMI dataset
 - **Guided Setup** — provision (or tear down) the Raw HTTP → Lake onboarding stack
 
@@ -199,15 +199,75 @@ installed or in the in-UI Live Preview. See [`CLAUDE.md`](./CLAUDE.md) and [`AGE
 for the full developer guide (runtime detection, fetch proxy, KV store, `proxies.yml` /
 `policies.yml`, and Capra UI rules).
 
-Data Flow's record-derived network traffic and packet totals also use coalesced
-source plus destination fields, in both Live and the shared overview snapshot.
-Re-apply `gno_overview_c1h` after deployment. This does not change the separate
-Stream counters, which require `cribl_metrics` rows matching the object labels
-listed in `src/queries/stackIds.ts`.
+### Field Explorer: only attributes used by app analytics
+
+All three views — **AMI coverage**, **By use case** and **In feed** — are
+restricted to the 44 input attributes referenced by the app's dashboard queries,
+scheduled analytics bodies and drill-downs. Fields retain application groups
+(for example `http_host` and `http_rtt` under HTTP). Missing
+query-used attributes are still listed in coverage; an attribute does not have
+to appear in a sample to be included.
+
+The list includes persisted helpers such as `tcp_reset`, but not temporary aliases such as `flows` or `p95`. Explorer's
+own coverage queries, dataset probes, Stream metrics and offline/installation
+audits do not expand the list. The broader AMI/sample-generation catalog and the
+onboarding pack are unchanged.
+
+**After installing this change, Re-apply `gno_presence_c1h` in Guided Setup.**
+Its counted field list and ordinal columns changed, so an older stored run must
+not answer the new coverage catalog. Until the corrected schedule has run,
+coverage may run live or report the old-catalog mismatch. **Run live** remains
+available in the In feed view. The sample query itself is unchanged: its
+summaries are filtered in the app, after Cribl's 200-field cap, so use coverage
+to check a query-used field missing from the sampled list.
+
+### Data Flow: the onboarded connection
+
+Data Flow follows the worker group and connected Raw HTTP source shown in Guided
+Setup's Onboard page. It reads each named object's raw Stream counters from
+`default_metrics`, filtered by the selected worker `group`: `_metric` names
+`cribl.logstream.total.in_events`, `cribl.logstream.pipe.out_events` and
+`cribl.logstream.total.out_events` / `total.out_bytes`; `_value` supplies the count.
+The source is matched by exact `input`, pipeline by `id`, destination by `output`.
+Processing includes every source using that pipeline, and Destinations includes
+every writer using that destination — these are object totals, not source-only
+connection totals. Equal counts are not assumed. Refresh also re-reads the connection.
+Missing metric series show **unavailable**, not zero.
+The Sources rate is an average over the selected window, not an instantaneous
+ingestion rate. It shows up to two decimal places; positive rates below 0.01/s
+show `<0.01/s` rather than rounding to zero.
+
+The diagram is unchanged. One additional live Search query counts the **whole
+`gigamon_ami` dataset** over the selected event-time window (owner decision: the
+live pipeline adds no source tags, so records cannot be attributed to one
+source). **Every writer into `gigamon_ami` is included**, not only the onboarded
+source. **Cribl Lake** and **Cribl Search** show the same landed, searchable
+event count, not a lifetime total. **Enriched Metadata** shows that AMI record
+count, not an AMX delivery acknowledgment. **Network Traffic** sums
+`src_bytes + dst_bytes` and `src_packets + dst_packets` over the records that
+carry numeric, nonnegative values in both directions — not physical-link
+throughput. When only some records carry them, the totals cover those records
+and a coverage note says how many; with no covered record the figure is
+unavailable. An empty window shows zero. Lake compressed storage size remains
+unavailable. Lake/Search may lag Stream writes and use event time.
+
+Both queries run live in either header mode and consume Search credits on a
+visit, refresh, time-range change or configured auto-refresh. They never use
+sample data in place of `gigamon_ami`. Data Flow does not use combined snapshots. Its legacy
+acceleration controls remain available for existing installs; they do not control
+the new live counters. New onboarding and Apply runs no longer create/reapply the
+unused standalone Data Flow searches; existing ones can still be paused or
+removed manually. The shared overview continues serving other dashboards.
+No ingestion settings or existing schedules change automatically.
+This live object query no longer reads `cribl_metrics`' normalized
+`namespace="data_insights"` records. On the inspected workspace, current raw
+metrics land in `default_metrics`; there is no silent fallback to a different
+dataset or to stale normalized counters. Other dashboards' queries and existing
+saved-search bodies are unchanged.
 
 Capacity's KPI query derives `total_bytes` from `coalesce(src_bytes, 0) +
 coalesce(dst_bytes, 0)` and `total_packets` from `coalesce(src_packets, 0) +
-coalesce(dst_packets, 0)` for the Source IP, App and AWS service pivots, including
+coalesce(dst_packets, 0)` for the Source IP and App pivots, including
 filtered views. Its hourly overview snapshot uses the same calculations
 without changing unrelated panels' byte aggregates. After installing this change,
 Re-apply `gno_overview_c1h` in Guided Setup's Acceleration panel to update its saved
@@ -215,9 +275,47 @@ query. Source IP Top Talkers uses the same calculated byte total; Re-apply
 `gno_talkers_src_c1h` to update that saved query too. App Protocol Mix and Traffic
 by L4 Protocol also calculate bytes from the two directions; Re-apply
 `gno_app_l4_c1h` for their snapshots and for App Top Talkers, which now uses the
-same calculation while grouping by `app_name`. AWS-service Top Talkers also uses
-this calculation, grouped by `dst_aws_flat_tags_name`; it runs live and has no
-saved snapshot query to Re-apply.
+same calculation while grouping by `app_name`. The AWS service pivot was removed
+from this tab.
+
+Flow Map is a service-dependency graph keyed by **destination IP**. Its nodes are
+the twelve busiest `dst_ip` values, labelled with an `http_host` seen for them
+where one exists, plus up to eight client-only source IPs. Edges are the 40
+busiest `src_ip` → `dst_ip` pairs between drawn nodes, taken from the 1,000
+busiest pairs in the window; traffic to undrawn destinations runs as dashed
+spokes to an "Other destinations" hub. Health is p95 `tcp_rtt` against a 200 ms
+target (amber above 200 ms, red above 600 ms) and the share of measured flows
+with `tcp_dup_ack > 0` (amber at 5 %, red at 25 %); red nodes pulse. Until
+`tcp_dup_ack` is ingested, the dup-ACK figure reads "no data". The feed carries no
+AWS Name tags, `ssl_server_name`, `tcp_reset` or `tcp_rtt_app`, so the graph does
+not use them. After installing this change, Re-apply `gno_svc_nodes_c1h` and
+`gno_svc_edges_c1h` in Guided Setup's Acceleration panel; until then they read as
+drifted and Flow Map runs live.
+
+Flow Map's latency triage reads **HTTP RTT** — `percentile(toreal(http_rtt),95)*1000`,
+the same field Web & API Health uses — instead of `http_server_ms`. `http_rtt` is
+recorded in seconds and converted to ms; it is the HTTP request/response round
+trip and does not isolate server processing time. The domains and trend queries
+run live, so this needs no Re-apply.
+
+Flow Map also offers three **alternative dependency views**, chosen with the
+Destinations · DNS · Web/API · Subnets switcher (Destinations stays the default):
+
+- **DNS** — client `src_ip` → resolver `dns_host`, coloured by the failure share
+  (SERVFAIL + NXDOMAIN; amber at 1 %, red at 5 %) and p95 `dns_response_time`
+  (target 100 ms, red above 300 ms).
+- **Web/API** — client `src_ip` → `http_host`, coloured by the error share
+  (`http_code` ≥ 400; amber at 1 %, red at 5 %) and p95 `http_rtt` (target 200 ms,
+  red above 600 ms).
+- **Subnets** — /24 → /24 over TCP, coloured by p95 `tcp_rtt` (200 ms / 600 ms)
+  and the dup-ACK share (5 % / 25 %).
+
+Each view is **one live query** over the 500 busiest pairs, submitted only while
+that view is selected; none has a schedule, so nothing needs Re-apply and the
+default view's cost is unchanged. Each draws the 10 busiest clients, 12 busiest
+dependencies and 40 busiest edges, and says how much traffic that leaves out. A
+node's p95 is its worst pair's p95, because percentiles cannot be combined. The
+thresholds are this app's own defaults, not Gigamon's.
 
 Traffic by L4 Protocol derives `l4_protocol` from `protocol`: 6 → TCP,
 17 → UDP, 1 → ICMP, 58 → ICMPv6, 132 → SCTP, and all other values → Other.
@@ -244,7 +342,7 @@ schedule Re-apply is needed. Reset heatmaps still sum `tcp_reset`.
 Web & API's KPI row uses `server_p95_ms=percentile(http_rtt,95)*1000` for the
 Server think-time p95 tile; HTTP/2 transactions reads `h2=sum(iif(app_name=="http2",1,0))`
 from the same query. Re-apply `gno_overview_c1h` after installing this change.
-The separate Slowest hosts panel still uses `http_server_ms`.
+No dashboard query reads `http_server_ms` any more.
 HTTP/2 Hosts filters on `app_name="http2"` and `http2_host=*`, then counts by
 `http2_host`. Re-apply `gno_web_h2_c1h` after installing this filter change.
 

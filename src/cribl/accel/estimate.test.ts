@@ -27,7 +27,6 @@ import {
   FIT,
   MEASURED,
   NARROW_BODY_MULTIPLIER,
-  STORED_READ_CPU_SECONDS,
   WIDE_BODY_MULTIPLIER,
   creditsFor,
   estimateCpuSeconds,
@@ -129,17 +128,15 @@ describe('credits', () => {
 })
 
 describe('what each entry saves', () => {
-  it('measures the manifest’s frequency where it was measured', () => {
+  it('charges existing legacy schedules without inventing live-query savings', () => {
     const s = estimateEntrySaving('gno_lake_30d_c1d')
     expect(s.assumedFrequency).toBe(false)
     expect(s.scheduledRunsPerDay).toBe(1)
-    // 9,297.7 × 15 a day now; one run plus fifteen stored reads after.
-    expect(s.beforeCpuSeconds.low).toBeCloseTo(139465.5, 4)
-    expect(s.beforeCpuSeconds.high).toBeCloseTo(223144.8, 4)
-    expect(s.afterCpuSeconds.low).toBeCloseTo(9297.7 + 15 * STORED_READ_CPU_SECONDS, 6)
-    expect(s.savedCpuSeconds.low).toBeCloseTo(130164.8, 4)
-    expect(s.savedCredits.low).toBeCloseTo(130164.8 / 3600, 6)
-    expect(s.savedCredits.high).toBeCloseTo((223144.8 - (9297.7 + 24 * 0.2)) / 3600, 6)
+    expect(s.beforeCpuSeconds).toEqual({ low: 0, high: 0 })
+    expect(s.afterCpuSeconds.low).toBeCloseTo(9297.7, 6)
+    expect(s.savedCpuSeconds.low).toBeCloseTo(-9297.7, 4)
+    expect(s.savedCredits.low).toBeCloseTo(-9297.7 / 3600, 6)
+    expect(s.provenance).toContain('No dashboard reads this legacy snapshot')
   })
 
   it('flags the entry whose frequency nobody measured', () => {
@@ -169,7 +166,7 @@ describe('what each entry saves', () => {
     // The number that makes "turn it off" a supportable answer. Below it the
     // schedule bills more than the live queries it replaces.
     const lake = estimateEntrySaving('gno_lake_30d_c1d')
-    expect(lake.breakEvenRunsPerDay as number).toBeCloseTo(1.00002, 4)
+    expect(lake.breakEvenRunsPerDay).toBeNull()
     const sample = estimateEntrySaving('gno_sample_2m_c1h')
     expect(sample.breakEvenRunsPerDay as number).toBeCloseTo(0.2365, 3)
     // …and that it is really a break-even: at exactly that rate, saving is zero.
@@ -182,7 +179,7 @@ describe('what each entry saves', () => {
 
 describe('the workspace total', () => {
   it('adds the entries up and inherits their honesty', () => {
-    const w = estimateWorkspaceSaving()
+    const w = estimateWorkspaceSaving(MANIFEST.map((e) => e.id))
     expect(w.entries.map((e) => e.id)).toEqual(MANIFEST.map((e) => e.id))
     const sum = w.entries.reduce((n, e) => n + e.savedCpuSeconds.low, 0)
     expect(w.savedCpuSeconds.low).toBeCloseTo(sum, 6)
@@ -194,13 +191,14 @@ describe('the workspace total', () => {
     expect(w.provenance).toContain('assumed')
   })
 
-  it('lands in the region the plan claimed, without asserting the plan’s number', () => {
-    // The plan says ≈52.5 → ≈20 credits/day, i.e. ≈32.5 saved. That total also
-    // covers work outside Phase 2, so this checks the order of magnitude rather
-    // than pinning somebody else's arithmetic.
-    const w = estimateWorkspaceSaving()
-    expect(w.savedCredits.low).toBeGreaterThan(20)
-    expect(w.savedCredits.high).toBeLessThan(100)
+  it('does not count the retired Data Flow scans as savings', () => {
+    const w = estimateWorkspaceSaving(MANIFEST.map((e) => e.id))
+    const active = estimateWorkspaceSaving()
+    expect(w.savedCredits.low).toBeLessThan(active.savedCredits.low)
+    expect(MEASURED.gno_overview_c1h.liveRunCpuSeconds).toBe(4 * 39)
+    for (const e of MANIFEST.filter((e) => e.legacyOnly)) {
+      expect(estimateEntrySaving(e.id, 1000).beforeCpuSeconds).toEqual({ low: 0, high: 0 })
+    }
   })
 })
 

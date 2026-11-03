@@ -996,7 +996,7 @@ body {
 .svc-label { fill: token('color.foreground.default'); font-size: 12.5px; font-family: var(--gm-mono); pointer-events: none; }
 .svc-legend { display: flex; gap: var(--gm-sp-18); font-size: var(--gm-fs-12); color: var(--gm-fg-subtle); flex-wrap: wrap; }
 .svc-legend span { display: inline-flex; align-items: center; gap: var(--gm-sp-6); }
-/* Aggregated peers that carry no AWS name tag — dashed to read as "not a real service". */
+/* The "Other destinations" hub — dashed to read as an aggregate, not one destination. */
 .svc-ext-edge { stroke: var(--gm-fg-subtle); stroke-dasharray: 5 5; opacity: 0.3; }
 .svc-ext-node circle { fill: none; stroke: var(--gm-fg-subtle); stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.75; }
 .svc-ext-label { fill: var(--gm-fg-subtle); font-size: 11px; font-family: var(--gm-mono); pointer-events: none; }

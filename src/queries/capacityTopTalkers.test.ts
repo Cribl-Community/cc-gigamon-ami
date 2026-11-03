@@ -86,12 +86,8 @@ describe('Capacity KPI byte totals', () => {
       expect(accelEntry('gno_app_l4_c1h').panels.find((p) => p.queryId === 'capacity-talkers-app')?.display).toBe(appQuery)
     })
 
-    it('calculates AWS-service bytes while preserving the service grouping and filter', () => {
-      const serviceQuery = 'dataset="gigamon_ami" dst_aws_flat_tags_name=* | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | summarize bytes=sum(total_bytes) by dst_aws_flat_tags_name | sort by bytes desc | limit 12'
-      expect(buildTalkersQuery('dst_aws_flat_tags_name', '')).toBe(serviceQuery)
-      expect(buildTalkersQuery('dst_aws_flat_tags_name', 'example')).toBe(
-        serviceQuery.replace('dst_aws_flat_tags_name=*', 'dst_aws_flat_tags_name="*example*" dst_aws_flat_tags_name=*'),
-      )
+    it('offers only the Source IP and App pivots', () => {
+      expect(PIVOTS.map((p) => p.key)).toEqual(['src_ip', 'app_name'])
     })
   })
 

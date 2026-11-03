@@ -33,7 +33,7 @@ import { datasetTarget, resetDatasetTarget, subscribeDatasetTarget } from '../cr
 import { resetSnapshotCensus } from '../components/snapshotCensus'
 import { SAMPLE_TITLE } from '../components/sampleDataCopy'
 import { REAL_DATA_PROBE_QUERY } from '../queries/datasets'
-import { LAKE_HELD_QUERY } from '../queries/dataFlow'
+import { DATASET_RECORDS_QUERY } from '../queries/dataFlow'
 import { TABS } from '../app/tabs'
 
 /** Every route in the tab bar's TABS (src/app/tabs.tsx), so a new tab is covered the day it lands. */
@@ -181,7 +181,10 @@ const EXEC_PREFIX = /^(?:set [^;]+;\s*)+/
 const bare = (q: string) => q.replace(EXEC_PREFIX, '')
 
 /** Every submitted query that is not the probe. */
-const panelSubmits = () => submits.map(bare).filter((q) => q !== REAL_DATA_PROBE_QUERY)
+/** Data Flow's Lake/Search/AMI figures describe the customer's gigamon_ami
+ *  itself (`asWritten`), so they stay on it while the app reads the sample. */
+const AS_WRITTEN = new Set([REAL_DATA_PROBE_QUERY, DATASET_RECORDS_QUERY])
+const panelSubmits = () => submits.map(bare).filter((q) => !AS_WRITTEN.has(q))
 
 /** Tabs with no ⓘ at all: the AMI field reference (AmiReference.tsx) is a static table and runs no query. */
 const NO_INFO = new Set(['/reference'])
@@ -231,6 +234,11 @@ describe('every tab, while only sample data exists', () => {
         await act(async () => { b.click() })
         const pop = document.body.querySelector('.pinfo-pop')
         expect(pop, `${b.getAttribute('aria-label')}: the ⓘ opened nothing`).not.toBeNull()
+        // Data Flow's record ⓘs show DATASET_RECORDS_QUERY, which runs asWritten.
+        if ((pop?.textContent ?? '').includes('byte_records=countif(')) {
+          await act(async () => { b.click() })
+          continue
+        }
         // The whole popover, prose included — a stage's "what this does" that
         // says the panels query gigamon_ami is the same false claim as the code.
         expect(pop?.textContent ?? '', b.getAttribute('aria-label') ?? '').not.toMatch(/dataset\s*=?\s*"gigamon_ami"/)
@@ -266,13 +274,15 @@ describe('every tab, while only sample data exists', () => {
 // its retention, its on-disk size, its name in the label — so the count beside
 // them must be of that dataset too, not of the sample under its name.
 describe('Data Flow’s Lake card while only sample data exists', () => {
-  it('counts gigamon_ami as written, when its retention outruns cribl_metrics', async () => {
+  it('counts the customer’s gigamon_ami, never the sample, under its name', async () => {
     amiRetention = 365
     await renderAt('/data-flow')
     expect(datasetTarget().sample).toBe(true)
     const counts = submits.map(bare).filter((q) => q.endsWith('| summarize total_events=count()'))
-    expect(counts).toEqual([LAKE_HELD_QUERY])
-    expect(LAKE_HELD_QUERY).toContain('dataset="gigamon_ami"')
+    expect(counts).toEqual([])
+    expect(submits.map(bare)).toContain(DATASET_RECORDS_QUERY)
+    expect(submits.every((q) => !q.includes('gigamon_ami_sample') || !q.includes('byte_records='))).toBe(true)
+    expect(container.textContent).toContain('storage size not shown')
   })
 })
 

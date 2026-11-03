@@ -37,6 +37,8 @@ import {
 } from '../../components/provisionPanelCopy'
 import {
   ONBOARDING_FAILURE_PROMISE, ONBOARDING_UNDO, ONBOARDING_UNINSTALL, REMOVE_PACK_UNDO, accelCostWords, emptyRealDatasetSentence,
+  PACK_HTTP_UNUSED, globalObjectDetail, globalSourceDetail, globalSourceExistsSentence, packKeptSentence, packSkippedSentence,
+  pickedAlreadyConnectedSentence, pickedSourceDetail,
   keptDatasetsSentence, keptSchedulesSentence, lakeEntryNotCreatedSentence,
   CLEANUP_FAILURE_PROMISE, CLEANUP_NO_LAKE, CLEANUP_ROUTES_KEPT_LOCAL, cleanupPipelinesSentence, cleanupUndo, cleanupUnreadableSentence,
   cleanupUnrestorableSentence, routeTableShapeWords,
@@ -56,6 +58,7 @@ import {
   type RouteRouting,
 } from '../pack'
 import { tlsFor } from '../packSpecs'
+import { GLOBAL_HTTP_INPUT_ID, GLOBAL_OBJECTS, GLOBAL_OBJECT_ID, GLOBAL_OBJECT_KIND, type GlobalObject } from '../globalHttpIds'
 import { DATASET_SPEC, PARQUET_DATASET_SPEC, sameValue, type CommitScope, type LakeDatasetSpec } from '../provision'
 
 // ── Datasets ────────────────────────────────────────────────────────────────
@@ -230,7 +233,11 @@ const printed = (resourceId: string, rows: readonly DiffRow[]): DiffEntry[] =>
 // ── What the run does to the Raw HTTP source ────────────────────────────────
 
 /**
- * What step 3 does to the pack's Raw HTTP source:
+ * What step 3 does to the Raw HTTP source. Since 2026-10-24 that is the
+ * group's own `in_gigamon_ami_http` (../globalHttp.ts): `configure` creates it
+ * (and whatever it names that is missing), `none` leaves one already there
+ * exactly as it is. `enable` is the pack source's, and only `httpActionOf`
+ * still answers it. What step 3 did to the pack's Raw HTTP source until then:
  *   * `configure` — ONE whole-body PATCH: port, a NEW token, TLS for the
  *     group's hosting, and started. A fresh install, and any source with no
  *     token (it would accept a POST from anyone who can reach the port).
@@ -298,6 +305,10 @@ export interface StepContext {
   /** Whether the pack is already installed and current in the group. An older
    *  copy is not onboarded over: Upgrade is offered instead. */
   packInstalled: boolean
+  /** Whether this build's pack release can be installed. Absent is true. A
+   *  build whose release cannot be installed skips the pack and still creates
+   *  the Raw HTTP source. */
+  packInstallable?: boolean
   /** Whether the run commits and deploys the group (`OnboardingDialog.deploys`).
    *  Absent is true. */
   deploys?: boolean
@@ -310,8 +321,8 @@ export function onboardingSteps(ctx: StepContext): OnboardingStep[] {
     { key: 'dataset_parquet', what: `Create ${PACK_PARQUET_DATASET_ID} if absent`, onFailure: 'continue' },
   ]
   if (ctx.sample) steps.push({ key: 'dataset_sample', what: `Create ${PACK_SAMPLE_DATASET_ID} if absent`, onFailure: 'continue' })
-  if (!ctx.packInstalled) steps.push({ key: 'pack', what: `Install ${PACK_ID}`, onFailure: 'stop' })
-  steps.push({ key: 'http_input', what: `Configure and start ${PACK_HTTP_INPUT_ID}`, onFailure: 'stop' })
+  if (!ctx.packInstalled && ctx.packInstallable !== false) steps.push({ key: 'pack', what: `Install ${PACK_ID}`, onFailure: 'stop' })
+  steps.push({ key: 'http_input', what: `Create ${GLOBAL_HTTP_INPUT_ID} in the group, connected to Cribl Lake`, onFailure: 'stop' })
   if (ctx.sample) steps.push({ key: 'sample_input', what: `Start ${PACK_SAMPLE_INPUT_ID}`, onFailure: 'continue' })
   if (ctx.deploys !== false) steps.push({ key: 'commit_deploy', what: 'Commit and deploy', onFailure: 'stop' })
   steps.push(
@@ -333,9 +344,22 @@ export interface OnboardingDialogContext {
   release: PackRelease
   /** Whether the pack is installed and current in the group. */
   packInstalled: boolean
-  /** What step 3 does to the Raw HTTP source (`httpActionOf`). Absent is
-   *  `configure`, which is what a fresh install always does. */
+  /** Why this build's pack release cannot be installed, or null when it can.
+   *  Absent is null. With a refusal the run skips the pack. */
+  packRefusal?: string | null
+  /** The version of an installed copy that is not this app's current release,
+   *  which the run leaves exactly as it is; null or absent otherwise. */
+  packKept?: string | null
+  /** What step 3 does to the group's own Raw HTTP source: `configure` creates
+   *  it, `none` leaves it. Absent is `configure`. */
   httpAction?: HttpAction
+  /** The Raw HTTP source the person picked to connect, and what connecting it
+   *  changes (globalHttp.ts `previewConnect`); null or absent: create
+   *  `in_gigamon_ami_http`. */
+  pickedSource?: { id: string; diff: readonly DiffRow[] } | null
+  /** Which of the Raw HTTP source's four objects the group already holds
+   *  (../globalHttp.ts `readGlobalHttp`). Absent: none of them. */
+  globalPresent?: readonly GlobalObject[]
   /** Ids Cribl Lake lists, from `listDatasets()`. */
   datasets: readonly string[]
   /** gigamon_ami's live retention, or null when it could not be read. */
@@ -430,8 +454,10 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
     resources.push({ action: 'create', kind: LAKE, id: PACK_SAMPLE_DATASET_ID, detail: `JSON · ${ONBOARDING_RETENTION_DAYS}-day retention · synthetic flows only` })
   }
 
-  // 4. The pack and every object in it.
-  if (!ctx.packInstalled) {
+  // 4. The pack and every object in it — skipped when its release cannot be
+  // installed.
+  const packSkipped = !ctx.packInstalled && (ctx.packRefusal ?? null) !== null
+  if (!ctx.packInstalled && !packSkipped) {
     resources.push({
       action: 'create', kind: 'Pack', id: PACK_ID, group,
       detail: `${ctx.release.version} from ${ctx.release.url}, with custom functions refused`,
@@ -441,19 +467,26 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
     }
   }
 
-  // 5–6. The two sources, each replaced whole — the Raw HTTP one only when
-  // step 3 will write it at all (`httpActionOf`).
-  const httpAction: HttpAction = ctx.httpAction ?? 'configure'
-  const httpDiff: readonly DiffRow[] = httpAction === 'none'
-    ? []
-    : ctx.liveHttpDiff ?? (httpAction === 'configure' ? expectedConfigureDiff(ctx.hosting, ctx.port) : [])
-  if (httpAction !== 'none') {
-    resources.push({
-      action: 'replace', kind: 'Raw HTTP source', id: PACK_HTTP_INPUT_ID, group,
-      detail: httpAction === 'configure'
-        ? `a new auth token, port ${ctx.port}, TLS for a ${ctx.hosting === 'managed' ? 'Cribl-managed' : 'hybrid'} group, and started`
-        : 'started, keeping its auth token, port and TLS as they are',
-    })
+  // 5. The group's own Raw HTTP source, and what it names that is missing,
+  // each created and never edited. The pack's own source is not written.
+  const httpAction: HttpAction = ctx.httpAction === 'none' ? 'none' : 'configure'
+  const picked = ctx.pickedSource ?? null
+  const httpDiff: readonly DiffRow[] = picked ? picked.diff : []
+  const present = new Set(ctx.globalPresent ?? [])
+  if (picked && picked.diff.length > 0) {
+    for (const o of GLOBAL_OBJECTS) {
+      if (o === 'source' || present.has(o)) continue
+      resources.push({ action: 'create', kind: GLOBAL_OBJECT_KIND[o], id: GLOBAL_OBJECT_ID[o], group, detail: globalObjectDetail(o) })
+    }
+    resources.push({ action: 'replace', kind: 'Raw HTTP source', id: picked.id, group, detail: pickedSourceDetail() })
+  } else if (!picked && httpAction === 'configure') {
+    for (const o of GLOBAL_OBJECTS) {
+      if (present.has(o)) continue
+      resources.push({
+        action: 'create', kind: GLOBAL_OBJECT_KIND[o], id: GLOBAL_OBJECT_ID[o], group,
+        detail: o === 'source' ? globalSourceDetail(ctx.port, ctx.hosting) : globalObjectDetail(o),
+      })
+    }
   }
   // The sample source is named only when there is something to change on it:
   // one already running reads back an empty diff, and the run writes nothing.
@@ -468,7 +501,7 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
   // 7. The deploy, only when the run changes the group or commits the pack's
   // own files somebody left uncommitted (the commit's scope says which). A Git
   // status nobody could read is not "nothing pending", so that one deploys.
-  const groupWrites = !ctx.packInstalled || httpAction !== 'none' || sampleDiff.length > 0
+  const groupWrites = (!ctx.packInstalled && !packSkipped) || httpAction !== 'none' || sampleDiff.length > 0
   const deploys = groupWrites || ctx.scope === null || ctx.scope.unknown || ctx.scope.alreadyDirty.length > 0
   if (deploys) resources.push({ action: 'deploy', kind: 'Worker group', id: group, detail: 'restarts its Worker Processes' })
 
@@ -507,6 +540,9 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
           HTTP_RESTART_PRECAUTION,
         ]
       : [nothingToDeploySentence(group)]),
+    ...(httpAction === 'none' ? [picked ? pickedAlreadyConnectedSentence(picked.id) : globalSourceExistsSentence(group)] : []),
+    ...(packSkipped ? [packSkippedSentence(ctx.packRefusal as string)] : [PACK_HTTP_UNUSED]),
+    ...(ctx.packKept ? [packKeptSentence(ctx.packKept)] : []),
     ...(mode === 'running' && !realDataSeen(ctx.target) ? [emptyRealDatasetSentence()] : []),
     ...lakeUnresolved.map((id) => lakeEntryNotCreatedSentence(id)),
     ONBOARDING_FAILURE_PROMISE,
@@ -516,11 +552,11 @@ export function onboardingDialog(ctx: OnboardingDialogContext): OnboardingDialog
   return {
     title: `Onboard Gigamon AMI in ${group}`,
     resources,
-    diff: [...printed(PACK_HTTP_INPUT_ID, httpDiff), ...printed(PACK_SAMPLE_INPUT_ID, sampleDiff)],
+    diff: [...(picked ? printed(picked.id, picked.diff) : []), ...printed(PACK_SAMPLE_INPUT_ID, sampleDiff)],
     costLine,
     consequences,
     undo: ONBOARDING_UNDO,
-    steps: onboardingSteps({ sample: ctx.sample, packInstalled: ctx.packInstalled, deploys }),
+    steps: onboardingSteps({ sample: ctx.sample, packInstalled: ctx.packInstalled, packInstallable: !packSkipped, deploys }),
     deploys,
     accelMode: mode,
     approvedAccel,
@@ -821,6 +857,8 @@ export interface SourceChangeContext {
   fromPort: number | null
   /** How the group is hosted: decides the port range. Null when not read. */
   hosting: 'managed' | 'hybrid' | null
+  /** Rotate token and Move port: the onboarded Raw HTTP source's id. */
+  sourceId?: string | null
   scope: CommitScope | null
   undeployed: string | null
   undeployedChecking?: boolean
@@ -845,7 +883,8 @@ export interface SourceChangeDialog {
 export function sourceChangeDialog(ctx: SourceChangeContext): SourceChangeDialog {
   const { group, change } = ctx
   const http = change.kind !== 'sample'
-  const id = http ? PACK_HTTP_INPUT_ID : PACK_SAMPLE_INPUT_ID
+  // Rotate token and Move port act on the group's own Raw HTTP source.
+  const id = http ? ctx.sourceId ?? GLOBAL_HTTP_INPUT_ID : PACK_SAMPLE_INPUT_ID
   const commitCtx = { group, scope: ctx.scope, undeployed: ctx.undeployed, undeployedChecking: ctx.undeployedChecking }
   const undeployedLine = undeployedSentence(commitCtx)
   const deployLines = [

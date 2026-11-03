@@ -20,7 +20,6 @@ const FAMILIES: { name: string; desc: string; fields: string }[] = [
   { name: 'SSL / TLS', desc: 'Handshake, cipher, and certificate posture.', fields: 'ssl_server_name ssl_issuer ssl_validity_not_after ssl_protocol_version ssl_cipher_suite_id' },
   { name: 'HTTP / HTTP2', desc: 'Request/response headers, URIs, status.', fields: 'http_host http_uri http_method http_code http_user_agent http2_*' },
   { name: 'TCP metrics', desc: 'Latency and wire-error counters.', fields: 'tcp_rtt tcp_rtt_app tcp_dup_ack tcp_wrong_crc tcp_loss_count tcp_flags' },
-  { name: 'Cloud enrichment (AWS)', desc: 'Per-endpoint instance, VPC, tags, security groups.', fields: 'src_aws_instance_id dst_aws_vpc_id *_aws_tags *_aws_security_group_name' },
   { name: 'Other protocols', desc: 'SSH, RTP, DHCP, NTP, ICMP, Kerberos, DCE/RPC.', fields: 'ssh_* rtp_* dhcp_* ntp_* icmp_* krb5_* dcerpc_*' },
 ]
 

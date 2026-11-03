@@ -1198,17 +1198,24 @@ export async function commitMatchingAndDeploy(
 
 /**
  * Best-effort ingress host to point Gigamon AMX at, or null when it cannot be
- * derived. On Cribl.Cloud the `default` group's workers answer at
- * `default.main.<org>.cribl.cloud`; for any other group, or a hybrid group
- * (whose workers are the customer's own machines), the card prints a
- * placeholder rather than a guess.
+ * derived. A Cribl.Cloud Leader answers at `<workspace>-<org>.cribl.cloud`
+ * (`main-<org>` for the first workspace), and a Cribl-managed group's workers
+ * at `<group>.<workspace>.<org>.cribl.cloud` — e.g.
+ * `default.networkteamworkspace.objective-yalow-4s3a3q5.cribl.cloud`. A
+ * workspace name holds no hyphen, so the first one ends it. A hybrid group
+ * (whose workers are the customer's own machines), a group id that is not a
+ * DNS label, or a Leader not on cribl.cloud gets a placeholder, never a guess.
  */
 export function suggestedIngressHost(group: string, managed: boolean): string | null {
-  if (!managed || group !== DEFAULT_STREAM_GROUP || typeof window === 'undefined') return null
-  const origin = window.__CRIBL_SEARCH_ORIGIN || window.location.origin
+  if (!managed || typeof window === 'undefined' || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(group)) return null
+  const host = leaderHostname() ?? hostnameOf(window.location.origin)
+  const m = host ? /^([a-z0-9]+)-([a-z0-9][a-z0-9-]*)\.cribl\.cloud$/.exec(host) : null
+  return m ? `${group}.${m[1]}.${m[2]}.cribl.cloud` : null
+}
+
+function hostnameOf(origin: string): string | null {
   try {
-    const host = new URL(origin).hostname // e.g. main-<org>.cribl.cloud
-    return host.startsWith('main-') ? `default.main.${host.slice('main-'.length)}` : null
+    return new URL(origin).hostname || null
   } catch {
     return null
   }

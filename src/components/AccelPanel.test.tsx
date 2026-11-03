@@ -513,7 +513,7 @@ describe('what a confirmation names', () => {
     const plan = applyPlan(state)
     const named = applyResources(state).map((r) => r.id)
     // Every entry but the one already stored correctly.
-    expect(named).toEqual(MANIFEST.map((e) => e.id).filter((id) => id !== SAMPLE))
+    expect(named).toEqual(MANIFEST.filter((e) => !e.legacyOnly && e.id !== SAMPLE).map((e) => e.id))
     for (const id of named) expect(plan.willWrite.some((w) => w.includes(id))).toBe(true)
     for (const leave of plan.willLeave) expect(named.some((id) => leave.label.includes(id))).toBe(false)
   })
@@ -529,8 +529,8 @@ describe('what a confirmation names', () => {
     expect(row.state).toBe('differs')
     expect(applyResources(state).map((r) => r.id)).not.toContain(LAKE)
     const note = rowNote(row, healthOf(row.state, null))
-    expect(note).toContain('retention could not be read')
-    expect(note).toContain('Apply leaves it as it is')
+    expect(note).toContain('no longer displayed')
+    expect(note).toContain('Apply leaves it unchanged')
     expect(note).not.toContain('Apply overwrites it')
   })
 
@@ -545,9 +545,8 @@ describe('what a confirmation names', () => {
     expect(applyResources(state).map((r) => r.id)).not.toContain(LAKE)
     expect(applyPlan(state).willLeave.some((l) => l.label.includes(LAKE))).toBe(true)
     const note = rowNote(row, healthOf(row.state, null))
-    expect(note).toContain('retention could not be read')
-    expect(note).toContain('window')
-    expect(note).toContain('Apply does not create it')
+    expect(note).toContain('no longer displayed')
+    expect(note).toContain('does not create it when absent')
   })
 
   it('does not call the workspace complete when the Lake total is only held back', async () => {
@@ -745,15 +744,16 @@ describe('no write without a confirmation', () => {
 })
 
 describe('a confirmed write', () => {
-  it('creates both scheduled searches, and nothing else', async () => {
+  it('creates active scheduled searches, but not retired Data Flow scans', async () => {
     const { calls } = stubWorkspace({ lake: LAKE_30 })
     await mount()
     await press(buttonNamed('Review changes…'))
     await press(buttonNamed('Yes, create them'))
     await settle()
     const writes = savedWrites(calls)
-    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual(MANIFEST.map(() => `POST ${SAVED}`))
-    expect(writes.map((w) => w.body?.id).sort()).toEqual(MANIFEST.map((e) => e.id).sort())
+    const active = MANIFEST.filter((e) => !e.legacyOnly)
+    expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual(active.map(() => `POST ${SAVED}`))
+    expect(writes.map((w) => w.body?.id).sort()).toEqual(active.map((e) => e.id).sort())
   })
 
   it('pauses by sending the WHOLE body back, schedule and all', async () => {

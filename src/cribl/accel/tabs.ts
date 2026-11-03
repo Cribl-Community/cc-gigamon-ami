@@ -96,6 +96,13 @@ export type AccelTabKey =
   | 'data-flow'
   | 'fields'
 
+/** Kept controllable for existing installs, but no longer read by Data Flow.
+ *  Switching these off must remain possible without automatically writing or
+ *  deleting customer schedules during a dashboard upgrade. */
+export const LEGACY_DATA_FLOW_SCHEDULES: readonly AccelId[] = [
+  'gno_lake_30d_c1d', 'gno_overview_c1h', 'gno_pipeline_c1h',
+]
+
 /** In the tab bar's order. Tabs no schedule serves (Reference, Setup) are not
  *  here: a switch for a tab nothing accelerates would switch nothing. TLS
  *  Posture and PQC Readiness joined on 2026-09-27 (`feat/accel-tls-pqc`). */
@@ -137,6 +144,7 @@ export function tabsOfEntry(entry: AccelEntry): readonly AccelTabKey[] {
   const held = tabsMemo.get(entry)
   if (held) return held
   const keys = new Set(entry.panels.map((p) => tabOfQueryId(p.queryId)?.key).filter((k): k is AccelTabKey => k !== undefined))
+  if (LEGACY_DATA_FLOW_SCHEDULES.includes(entry.id)) keys.add('data-flow')
   const out = Object.freeze(ACCEL_TABS.filter((t) => keys.has(t.key)).map((t) => t.key))
   tabsMemo.set(entry, out)
   return out

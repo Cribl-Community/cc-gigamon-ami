@@ -37,6 +37,8 @@ import { resetSelectedSnapshot, setSelectedSnapshot } from '../cribl/accel/selec
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import type { FieldSummary } from '../cribl/search'
 import { FieldExplorer, SAMPLE_CADENCE, feedComputed, sampleNote } from './FieldExplorer'
+import { CHECK_FIELDS } from '../queries/fieldExplorer'
+import { EXPLORER_CATALOG, EXPLORER_USE_CASES } from '../data/explorerFields'
 
 const SAMPLE = 'gno_sample_2m_c1h'
 const PRESENCE = 'gno_presence_c1h'
@@ -126,7 +128,7 @@ function stub(cfg: { storedFail?: { status: number; body: unknown }; history?: u
       }
       // The presence query: one row of per-field counts, all present.
       const row: Record<string, number> = {}
-      for (let i = 0; i < 96; i++) row[`c${i}`] = 10
+      for (let i = 0; i < CHECK_FIELDS.length; i++) row[`c${i}`] = 10
       return res(200, {}, [JSON.stringify({ totalEventCount: 1, job: 'j' }), JSON.stringify(row)].join('\n'))
     }
     if (u.includes('/search/jobs?')) return res(200, { items: cfg.history ?? [run()] })
@@ -207,6 +209,50 @@ const fieldNames = () => [...container.querySelectorAll('.fe-name')].map((n) => 
 const runLive = () => [...container.querySelectorAll<HTMLButtonElement>('.chip')].find((b) => b.textContent?.includes('Run live') || b.textContent?.includes('back to hourly'))!
 
 describe('the “In feed” list, served by the schedule', () => {
+  it('filters unused fields from the sample and keeps used fields under their application chip', async () => {
+    stub({ stored: [field('http_host'), field('http_uri'), field('http_server_ms'), field('http_rtt'), field('ssl_ja3'), field('tcp_reset'), field('ftp_data_content')] })
+    await render()
+    expect(fieldNames().sort()).toEqual(['ftp_data_content', 'http_host', 'http_rtt', 'tcp_reset'])
+    expect(container.textContent).toContain('4 of 4 query-used fields shown')
+    const http = [...container.querySelectorAll<HTMLButtonElement>('.fe-fams .chip')].find((b) => b.textContent === 'HTTP')!
+    await act(async () => { http.click() })
+    expect(fieldNames()).toEqual(['http_host', 'http_rtt'])
+    const tcp = [...container.querySelectorAll<HTMLButtonElement>('.fe-fams .chip')].find((b) => b.textContent === 'TCP / network performance')!
+    await act(async () => { tcp.click() })
+    expect(fieldNames()).toEqual(['tcp_reset'])
+  })
+
+  it('explains an empty filtered sample instead of showing unused fields', async () => {
+    stub({ stored: [field('http_uri'), field('ssl_ja3')] })
+    await render()
+    expect(fieldNames()).toEqual([])
+    expect(container.textContent).toContain('No matching query-used fields in this sample')
+    expect(container.querySelectorAll('.fe-fams .chip')).toHaveLength(1)
+  })
+
+  it('uses the same exact input catalog in coverage and use-case views', async () => {
+    stub()
+    await render()
+    const switchView = async (label: string) => {
+      const button = [...container.querySelectorAll<HTMLButtonElement>('.pivot-toggle button')].find((b) => b.textContent === label)!
+      await act(async () => { button.click() })
+      await settle()
+    }
+    await switchView('AMI coverage')
+    expect([...container.querySelectorAll('.cov-name')].map((n) => n.textContent).sort()).toEqual(EXPLORER_CATALOG.map((f) => f.name).sort())
+    const http = [...container.querySelectorAll('.panel')].find((p) => p.querySelector('.panel-title')?.textContent?.startsWith('HTTP'))!
+    expect(http.textContent).toContain('http_host')
+    expect(http.textContent).toContain('http_rtt')
+    expect(http.textContent).not.toContain('http_server_ms')
+    expect(http.textContent).not.toContain('http_uri')
+    await switchView('By use case')
+    const names = [...container.querySelectorAll('.cov-name')].map((n) => n.textContent)
+    expect(new Set(names)).toEqual(new Set(EXPLORER_USE_CASES.flatMap((u) => u.fields)))
+    expect(names).not.toContain('ssl_ja3')
+    expect(names).not.toContain('vlan_id')
+    expect(names).toContain('ftp_data_content')
+  })
+
   it('says when the sample was taken, and how many rows it holds', async () => {
     stub()
     await render()

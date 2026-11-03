@@ -12,8 +12,7 @@
 //     nothing on screen to say so. Same for a pivot no stored run can express:
 //     the rollup groups by app_name and l4_proto, and the tab's default src_ip
 //     view has its OWN run (gno_talkers_src_c1h, 2026-09-23) storing exactly
-//     that query — but the AWS-service pivot has neither, and serving it from
-//     either would mean a different top-12 from the one the live query returns.
+//     that query.
 //   * THE SENTINEL GROUP IS DROPPED. The body coalesces a null `app_name` and a
 //     null `l4_proto` into `""` before grouping, so that the panel summing along
 //     the OTHER key still counts those bytes. Lose it and the L4 split comes
@@ -315,22 +314,11 @@ describe('the states this entry must not serve', () => {
     expect(after.some((s) => s.query.includes('where app != ""')), 'the bar list did not read the schedule on the App pivot').toBe(true)
   })
 
-  it('keeps the AWS-service pivot live — no stored run can express it', async () => {
+  it('no longer offers an AWS service pivot', async () => {
     stub()
     await render()
-    const before = submits.length
-
-    act(() => button('AWS service').click())
-    await settle()
-
-    const after = submits.slice(before)
-    // The mix donut and L4 split re-run on a pivot change and read their rollup
-    // by right; what must not happen is the BAR LIST reading either stored run.
-    const barFromRun = after.filter(
-      (s) => s.query.includes('$vt_results') && (s.query.includes(`jobName="${TALKERS_SRC}"`) || s.query.includes('where app != ""')),
-    )
-    expect(barFromRun, 'a stored run answered a pivot it cannot express').toEqual([])
-    expect(after.some((s) => s.query.includes('dst_aws_flat_tags_name=*')), 'the AWS-service bar list did not run live').toBe(true)
+    expect([...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'AWS service')).toBe(false)
+    expect(submits.some((s) => s.query.includes('dst_aws_flat_tags_name')), 'Capacity queried the AWS tag').toBe(false)
   })
 })
 
@@ -397,7 +385,5 @@ describe('the words about the schedule agree with the manifest', () => {
 //   * That the tab is faster. happy-dom has no network and no clock worth
 //     reading; what is asserted is which queries were submitted, and against
 //     what.
-//   * Anything about the other two pivots. `src_ip` and
-//     `dst_aws_flat_tags_name` are other entries' groupings (the audit's N10
-//     and N11) and are not in this tranche; here they are only shown to stay
-//     live.
+//   * Anything about the `src_ip` pivot's own entry. It is another entry's
+//     grouping (the audit's N10) and is not in this tranche.

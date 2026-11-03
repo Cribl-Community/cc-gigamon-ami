@@ -62,12 +62,12 @@ import { pushToast } from './Toast'
 import { useSetupGroup } from './useSetupGroup'
 import {
   CLEANUP_LABEL, CLEANUP_TIP, cleanupNote, NOT_SEEN_TIP, NOT_SEEN_YET, ONBOARDING_GROUP_TIP, ONBOARDING_LEAD, ONBOARDING_LEAD_TIP, ONBOARDING_PORT_TIP, PACK_ENDPOINT_TIP,
-  PACK_TOKEN_ELSEWHERE, SAMPLE_LABEL, SAMPLE_START_REFUSAL, SAMPLE_TIP, SOURCE_SETTINGS_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR,
+  NEW_SOURCE_LABEL, SOURCE_PICK_TIP, sourceChoiceWords, tokenElsewhere, SAMPLE_LABEL, SAMPLE_START_REFUSAL, SAMPLE_TIP, SOURCE_SETTINGS_TIP, STATUS_LABELS, TOKEN_AFTER_ERROR,
   TOKEN_UNDEPLOYED,
   UPGRADE_TIP, accelStatusWords, datasetWords, finishRemovalNote, httpStatusWords, installedRefusal, onboardLabel,
   onboardNote, packStatusWords, removeTypeLabel,
 } from './onboardingCopy'
-import { AUTH_HEADER, ENDPOINT_LEAD, TOKEN_ONCE, UNENCRYPTED_WARNING } from './provisionPanelCopy'
+import { AUTH_HEADER, ENDPOINT_LEAD, authHeaderWith, TOKEN_ONCE, UNENCRYPTED_WARNING } from './provisionPanelCopy'
 import { MANIFEST } from '../cribl/accel/manifest'
 import { readAccelState, type AccelState } from '../cribl/accel/provision'
 import { useWriteGate } from '../cribl/authz'
@@ -75,7 +75,7 @@ import { IS_INSTALLED } from '../cribl/config'
 import { datasetTarget } from '../cribl/datasetTarget'
 import { listDatasets, listStreamGroupsCurrent, type LakeDataset } from '../cribl/lake'
 import {
-  cleanupBlockedBy, cleanupDialog, cleanupFindings, cleanupOffered, finishRemovalDialog, httpActionOf, onboardingDialog, packRemovalDialog,
+  cleanupBlockedBy, cleanupDialog, cleanupFindings, cleanupOffered, finishRemovalDialog, onboardingDialog, packRemovalDialog,
   packUpgradeDialog, sourceChangeDialog, type CleanupDialog, type CleanupDialogContext, type FinishRemovalDialog, type OnboardingDialog, type OnboardingDialogContext, type RemovalDialog, type SourceChange,
   type SourceChangeContext, type SourceChangeDialog, type UpgradeDialog, type UpgradeDialogContext,
 } from '../cribl/onboarding/plan'
@@ -83,21 +83,28 @@ import {
   finishPackRemoval, manifestPendingRefusal, prepareCleanup, prepareOnboarding, prepareSourceChange, prepareUpgrade, runOnboarding,
   runPackCleanup, runPackRemoval, runPackUpgrade, runSourceChange, type RunStep,
 } from '../cribl/onboarding/run'
-import { PACK_HTTP_INPUT_ID, PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_VERSION } from '../cribl/pack'
+import { PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_SAMPLE_DATASET_ID, PACK_VERSION } from '../cribl/pack'
 import {
-  PACK_COMMIT_KEY, compareVersions, packCommitScope, portsOfOthers, readPackState, thisPackRelease, type PackState,
+  PACK_COMMIT_KEY, compareVersions, packCommitScope, readPackState, thisPackRelease, type PackState,
 } from '../cribl/packClient'
 import {
   hostingOf, leaderHostname, pendingConfigPaths, pendingDeploy, portProblem, postUrl, suggestPort, suggestedIngressHost,
 } from '../cribl/provision'
 import { SETUP_RUN_BUSY, acquireSetupRun, useSetupRunHolder } from '../cribl/setupRunLock'
 import { updateCommitMemory } from '../cribl/setupMemory'
+import { GLOBAL_HTTP_INPUT_ID, portsOfOtherSources, readGlobalHttp, type GlobalHttpState } from '../cribl/globalHttp'
+
+/** The chooser's "create a new source" option. */
+const NEW_SOURCE = ' new' // a space: no Cribl source id holds one
 
 type Hosting = 'managed' | 'hybrid' | null
 
 /** What one refresh read for the picked group. */
 interface PanelRead {
   pack: PackState
+  /** The group's own Raw HTTP source and what it names (since 2026-10-24 the
+   *  source Gigamon AMX sends to, created by Onboard). */
+  global: GlobalHttpState | null
   /** Null when Cribl Lake's list could not be read. */
   datasets: LakeDataset[] | null
   hosting: Hosting
@@ -129,8 +136,8 @@ function accelCounts(a: AccelState | null): { total: number; installed: number; 
   return { total: MANIFEST.length, installed: installed.length, running: running.length, error: a.error }
 }
 
-/** The Raw HTTP source as read, or null. */
-const http0 = (p: PackState | null): PackState['http'] => p?.http ?? null
+/** The group's own Raw HTTP source as read, or null. */
+const http0 = (r: PanelRead | null): PackState['http'] => r?.global?.http ?? null
 
 /** The "Yes" inside a source change's confirmation. */
 function confirmLabel(change: SourceChange): string {
@@ -157,6 +164,10 @@ export function OnboardingPanel() {
   const [loading, setLoading] = useState(true)
   const [readErr, setReadErr] = useState<string | null>(null)
   const [portText, setPortText] = useState('')
+  // The Onboard chooser: open after Onboard is pressed; the Raw HTTP source
+  // picked in it (NEW_SOURCE: create `in_gigamon_ami_http`), null until picked.
+  const [choosing, setChoosing] = useState(false)
+  const [pick, setPick] = useState<string | null>(null)
   // "Also send sample data": UNTICKED by default, and never remembered.
   const [sample, setSample] = useState(false)
   const [confirming, setConfirming] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | 'cleanup' | null>(null)
@@ -174,7 +185,7 @@ export function OnboardingPanel() {
   const [running, setRunning] = useState<'onboard' | 'remove' | 'finish' | 'upgrade' | 'source' | 'cleanup' | null>(null)
   const [outcomes, setOutcomes] = useState<Record<string, RunStep[]>>({})
   const [token, setToken] = useState<{ group: string; value: string; afterError: boolean; undeployed?: boolean } | null>(null)
-  const [copied, setCopied] = useState<'url' | 'token' | null>(null)
+  const [copied, setCopied] = useState<'url' | 'token' | 'header' | null>(null)
   const seq = useRef(0)
   const pendingNow = useRef<UndeployedAtOpen>(NOT_KNOWN)
 
@@ -198,17 +209,18 @@ export function OnboardingPanel() {
       void pendingDeploy(group).catch(() => null).then((h) => {
         if (current()) pendingNow.current = { known: true, hash: h }
       })
-      const [datasets, groupsNow, usedPorts, accel] = await Promise.all([
+      const [datasets, groupsNow, usedPorts, accel, global] = await Promise.all([
         listDatasets(),
         listStreamGroupsCurrent(),
-        portsOfOthers(group).catch(() => null),
+        portsOfOtherSources(group).catch(() => null),
         readAccelState().catch(() => null),
+        readGlobalHttp(group).catch(() => null),
       ])
       if (!current()) return
       const rec = groupsNow.outcome === 'ok' ? groupsNow.value?.find((x) => x.id === group) : undefined
       const hosting: Hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
       const held = pack.installed ? manifestPendingRefusal(group, pending) : null
-      setRead({ pack, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel, stranded, held })
+      setRead({ pack, global, datasets: datasets.outcome === 'ok' ? datasets.value : null, hosting, usedPorts, accel, stranded, held })
       // Offer a free port, but never overwrite one somebody is typing.
       setPortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
       setMovePortText((cur) => cur || String(suggestPort(hosting !== 'hybrid', usedPorts) ?? ''))
@@ -228,6 +240,7 @@ export function OnboardingPanel() {
     setOpenErr(null)
     setPortText('')
     setMovePortText('')
+    setPick(null)
     seq.current++
     void refresh()
   }, [groupReady, refresh])
@@ -236,8 +249,12 @@ export function OnboardingPanel() {
   const installed = pack?.installed === true
   const owned = installed && pack.published && pack.fromRelease
   const behind = owned && pack.version !== null && compareVersions(pack.version, PACK_VERSION) < 0
-  const httpAction = installed ? httpActionOf(pack.http) : 'configure'
-  const needsPort = httpAction === 'configure'
+  const httpAction = read?.global?.objects.source === 'present' ? 'none' : 'configure'
+  const sources = read?.global?.sources ?? null
+  const chosen = pick ?? read?.global?.sourceId ?? sources?.find((x) => x.refusal === null)?.id ?? NEW_SOURCE
+  const creating = chosen === NEW_SOURCE
+  const chosenRefusal = creating ? null : sources?.find((x) => x.id === chosen)?.refusal ?? null
+  const needsPort = creating
   const port = Number(portText)
   const portIssue = !needsPort || !read
     ? null
@@ -246,14 +263,22 @@ export function OnboardingPanel() {
       : portProblem(port, read.hosting === 'managed', read.usedPorts)
 
   // Why Onboard will not open, as the sentence the button points at.
+  // A pack release that cannot be installed no longer refuses Onboard: the
+  // run creates the group's own Raw HTTP source and skips the pack.
+  const packSkipped = !installed && !release.installable
+  const openRefusal: string | null = pack?.error ? `Onboard is not available: the group’s pack list could not be read (${pack.error}).` : null
   const onboardRefusal: string | null =
-    !release.installable ? `Onboard is not available: ${release.refusal}.`
+    packSkipped && sample ? `Sample data needs the onboarding pack, which cannot be installed: ${release.refusal}. Untick it to onboard without the pack.`
       : pack?.error ? `Onboard is not available: the group’s pack list could not be read (${pack.error}).`
-        : installed && !pack.current ? installedRefusal({ version: pack.version, published: pack.published, fromRelease: pack.fromRelease, group })
+        // An older or foreign copy no longer blocks Onboard (the run leaves it
+        // as it is); only sample data, which needs the current pack, does.
+        : installed && !pack.current && sample
+          ? `${installedRefusal({ version: pack.version, published: pack.published, fromRelease: pack.fromRelease, group }).replace(/\.$/, '')} — sample data needs this app’s current pack. Untick it to onboard without it.`
           : null
   const busy = running !== null || lockHolder !== null ? SETUP_RUN_BUSY : null
-  const onboardBlocked = onboardRefusal !== null || busy !== null || loading || opening || installGate.denied !== null ||
-    (release.installable && portIssue !== null)
+  const onboardBlocked = openRefusal !== null || busy !== null || loading || opening || installGate.denied !== null
+  const reviewRefusal = onboardRefusal ?? (chosenRefusal ? `${chosen} cannot be picked: ${chosenRefusal}.` : null)
+  const reviewBlocked = onboardBlocked || reviewRefusal !== null || portIssue !== null
   const removeBlocked = busy !== null || removeGate.denied !== null || opening
   const stranded = !installed ? read?.stranded ?? [] : []
 
@@ -265,7 +290,7 @@ export function OnboardingPanel() {
   // The pack sources' own settings: only on this app's copy, and only on a
   // source there is to change (a Raw HTTP source that onboarding has not given
   // a token yet is Finish onboarding's, not these controls').
-  const canRotate = owned && http0(pack) !== null && http0(pack)!.tokenSet
+  const canRotate = http0(read) !== null && http0(read)!.tokenSet
   const sampleNow = owned ? pack.sample : null
   const sourceBlocked = busy !== null || configureGate.denied !== null || opening || loading
   const movePort = Number(movePortText)
@@ -273,8 +298,8 @@ export function OnboardingPanel() {
     ? null
     : read.hosting === null
       ? `This app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range.`
-      : movePort === http0(pack)?.port
-        ? `${PACK_HTTP_INPUT_ID} already listens on ${movePort}.`
+      : movePort === http0(read)?.port
+        ? `${GLOBAL_HTTP_INPUT_ID} already listens on ${movePort}.`
         : portProblem(movePort, read.hosting === 'managed', read.usedPorts)
   const sampleDatasetKnownAbsent = read !== null && read.datasets !== null &&
     !read.datasets.some((d) => d.id === PACK_SAMPLE_DATASET_ID && d.deletionStartedAt === null)
@@ -291,13 +316,13 @@ export function OnboardingPanel() {
   const cleanupBlocked = cleanupRefusal !== null || busy !== null || cleanupGate.denied !== null || opening || loading
 
   const openOnboard = async () => {
-    if (onboardBlocked) return
+    if (reviewBlocked) return
     const mine = seq.current
     setOpening(true)
     setOpenErr(null)
     try {
       const r = await prepareOnboarding(group, {
-        sample, port, target: datasetTarget(),
+        sample, port, target: datasetTarget(), source: creating ? null : chosen,
         undeployed: pendingNow.current.hash, undeployedChecking: !pendingNow.current.known,
       })
       if (mine !== seq.current) return
@@ -596,15 +621,15 @@ export function OnboardingPanel() {
 
   const steps = outcomes[group] ?? []
   const shownToken = token?.group === group ? token : null
-  const http = pack?.http ?? null
+  const http = http0(read)
   const host = suggestedIngressHost(group, read?.hosting !== 'hybrid')
   const url = http?.port == null ? null : postUrl(host ?? '<worker-ingress-host>', http.port, http.tls)
   // The card shows for a running source, OR for a token this panel still holds:
   // the token is shown once, so whatever should hide it (a group change, a
   // Remove that took the source) has to drop the token itself — the card
   // disappearing with the pack is not the same as the secret being gone.
-  const showCard = shownToken !== null || (installed && http !== null && !http.disabled)
-  const copy = (what: 'url' | 'token', text: string) => {
+  const showCard = shownToken !== null || (http !== null && !http.disabled)
+  const copy = (what: 'url' | 'token' | 'header', text: string) => {
     void navigator.clipboard?.writeText(text).then(() => {
       setCopied(what)
       setTimeout(() => setCopied(null), 1500)
@@ -616,8 +641,9 @@ export function OnboardingPanel() {
   const pending: StatusState = 'checking'
   const packState: StatusState = loading && !pack ? pending
     : !pack || pack.error ? 'unreadable' : !installed ? 'absent' : pack.current ? 'present' : 'differs'
-  const httpState: StatusState = loading && !pack ? pending
-    : !http ? 'absent' : http.disabled || !http.tokenSet ? 'paused' : 'enabled'
+  const httpState: StatusState = loading && !read ? pending
+    : read?.global === null || read?.global?.objects.source === 'unreadable' ? 'unreadable'
+      : !http ? 'absent' : http.disabled || !http.tokenSet ? 'paused' : 'enabled'
   const sampleState: StatusState = loading && !pack ? pending
     : !pack?.sample ? 'absent' : pack.sample.disabled ? 'paused' : 'enabled'
   const counts = accelCounts(read?.accel ?? null)
@@ -645,6 +671,16 @@ export function OnboardingPanel() {
           <InfoTip text={ONBOARDING_LEAD_TIP} />
         </p>
 
+        {!choosing && (
+          <p className="gs-note">
+            Worker group: <strong>{group}</strong>
+            <InfoTip text={ONBOARDING_GROUP_TIP} />
+          </p>
+        )}
+
+        {choosing && (
+        <div role="group" aria-labelledby="gs-onb-chooser-head" className="gs-chooser">
+        <div className="gs-checklist-head"><span id="gs-onb-chooser-head">Onboard: pick the worker group and the Raw HTTP source Gigamon AMX sends to</span></div>
         <div className="gs-group-picker">
           <label htmlFor="gs-onb-group-select" className="gs-group-label">Worker group</label>
           <InfoTip text={ONBOARDING_GROUP_TIP} />
@@ -662,7 +698,35 @@ export function OnboardingPanel() {
           </select>
         </div>
 
-        {needsPort && release.installable && (
+        <fieldset className="gs-port-picker" disabled={running !== null}>
+          <legend className="gs-group-label">Raw HTTP source <InfoTip text={SOURCE_PICK_TIP} /></legend>
+          {sources === null && !loading && <p className="gs-res-error">The Raw HTTP sources in {group} could not be read.</p>}
+          {(sources ?? []).map((s) => (
+            <div key={s.id}>
+              <label>
+                <input
+                  type="radio"
+                  name="gs-onb-source"
+                  value={s.id}
+                  checked={chosen === s.id}
+                  aria-disabled={s.refusal !== null || undefined}
+                  aria-describedby={s.refusal ? `gs-onb-src-${s.id}` : undefined}
+                  onChange={() => { if (s.refusal === null) setPick(s.id) }}
+                />
+                {' '}<code>{s.id}</code> <span className="gs-res-detail">{sourceChoiceWords(s)}</span>
+              </label>
+              {s.refusal && <span id={`gs-onb-src-${s.id}`} className="gs-action-note"> Cannot be picked: {s.refusal}.</span>}
+            </div>
+          ))}
+          <div>
+            <label>
+              <input type="radio" name="gs-onb-source" value={NEW_SOURCE} checked={creating} onChange={() => setPick(NEW_SOURCE)} />
+              {' '}{NEW_SOURCE_LABEL}
+            </label>
+          </div>
+        </fieldset>
+
+        {needsPort && (
           <div className="gs-port-picker">
             <label htmlFor="gs-onb-port" className="gs-group-label">Source port</label>
             <InfoTip text={ONBOARDING_PORT_TIP} />
@@ -692,6 +756,23 @@ export function OnboardingPanel() {
           <InfoTip text={SAMPLE_TIP} />
         </div>
 
+        <div className="gs-port-picker">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void openOnboard()}
+            aria-disabled={reviewBlocked || undefined}
+            aria-describedby={reviewRefusal ? refusalId : undefined}
+          >
+            {opening ? 'Reading…' : 'Review changes'}
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={() => setChoosing(false)} disabled={running !== null}>Close</button>
+        </div>
+        {reviewRefusal && <p id={refusalId} className="gs-action-note">{reviewRefusal}</p>}
+        {openErr && <p className="gs-action-note gs-action-warn">{openErr}</p>}
+        </div>
+        )}
+
         <div className="gs-grid">
           <div className="gs-checklist">
             <div className="gs-checklist-head">
@@ -707,26 +788,28 @@ export function OnboardingPanel() {
               STATUS_LABELS.datasets,
               read?.datasets === null ? `${id} · could not be read` : datasetWords(id, listed(id)),
             ))}
-            {row('http', httpState, STATUS_LABELS.http, httpStatusWords(http))}
+            {row('http', httpState, STATUS_LABELS.http, httpStatusWords(http, read?.global?.sourceId ?? null))}
             {row('sample', sampleState, STATUS_LABELS.sample, !pack?.sample ? 'not installed' : pack.sample.disabled ? 'off' : 'on')}
             {row('accel', accelState, STATUS_LABELS.accel, accelStatusWords(counts))}
             {readErr && <span className="gs-res-error">{readErr}</span>}
           </div>
 
           <div className="gs-actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void openOnboard()}
-              aria-disabled={onboardBlocked || undefined}
-              aria-describedby={onboardRefusal ? refusalId : undefined}
-            >
-              {running === 'onboard' ? 'Onboarding…' : opening ? 'Reading…' : onboardLabel({ installed, httpNeedsWork: httpAction !== 'none' })}
-            </button>
-            {onboardRefusal && <p id={refusalId} className="gs-action-note">{onboardRefusal}</p>}
+            {!choosing && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => { if (!onboardBlocked) { setOpenErr(null); setChoosing(true) } }}
+                aria-disabled={onboardBlocked || undefined}
+                aria-describedby={openRefusal ? refusalId : undefined}
+              >
+                {running === 'onboard' ? 'Onboarding…' : onboardLabel({ installed, httpNeedsWork: httpAction !== 'none' })}
+              </button>
+            )}
+            {!choosing && openRefusal && <p id={refusalId} className="gs-action-note">{openRefusal}</p>}
             <GateNote write="onboarding_pack.install" />
-            {openErr && <p className="gs-action-note gs-action-warn">{openErr}</p>}
-            {!onboardRefusal && <p className="gs-action-note">{onboardNote(group)}</p>}
+            {!choosing && <p className="gs-action-note">{onboardNote(group)}</p>}
+            {!choosing && openErr && <p className="gs-action-note gs-action-warn">{openErr}</p>}
             {behind && (
               <>
                 <span>
@@ -1005,14 +1088,17 @@ export function OnboardingPanel() {
                 <button type="button" className="btn btn-ghost" onClick={() => copy('token', shownToken.value)}>
                   {copied === 'token' ? 'Copied ✓' : 'Copy token'}
                 </button>
+                <button type="button" className="btn btn-ghost" onClick={() => copy('header', authHeaderWith(shownToken.value))}>
+                  {copied === 'header' ? 'Copied ✓' : 'Copy header'}
+                </button>
               </div>
             ) : null}
             {shownToken?.afterError && <p className="gs-action-note gs-action-warn">{TOKEN_AFTER_ERROR}</p>}
             {shownToken?.undeployed && <p className="gs-action-note gs-action-warn">{TOKEN_UNDEPLOYED}</p>}
-            <p className="gs-note">{shownToken ? TOKEN_ONCE : PACK_TOKEN_ELSEWHERE}</p>
+            <p className="gs-note">{shownToken ? TOKEN_ONCE : tokenElsewhere(read?.global?.sourceId ?? GLOBAL_HTTP_INPUT_ID)}</p>
             <div className="gs-endpoint-meta">
               <span><strong>Method</strong> POST</span>
-              <span><strong>Header</strong> <code>{AUTH_HEADER}</code></span>
+              <span><strong>Header</strong> <code>{shownToken ? authHeaderWith(shownToken.value) : AUTH_HEADER}</code></span>
               <span><strong>Port</strong> {http?.port ?? 'unknown'}</span>
               <span><strong>Format</strong> JSON array</span>
               <span><strong>Lands in</strong> Cribl Lake · <code>{PACK_LAKE_DATASET_ID}</code></span>

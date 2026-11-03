@@ -1052,17 +1052,26 @@ describe('paired teardown', () => {
     expect(LEFT_BEHIND.map((x) => x.resource).filter((r) => !created.has(r))).toEqual([])
   })
 
-  it('grants nothing on the global Raw HTTP stack, and no collection write in the group', () => {
+  it('grants nothing on the old global stacks; the group-own Raw HTTP source is created, never deleted, and no route is written', () => {
+    // Owner decision 2026-10-24: Onboard creates in_gigamon_ami_http and what
+    // it names in the group's own config (cribl/globalHttp.ts) — new ids, not
+    // the old stacks' — by POST to each collection, reads each by its exact
+    // id, and wires the source by QuickConnect, so the routing table is still
+    // only read.
     const byObject = new Map(DECLARED.map((d) => [d.object, [...d.actions].sort()]))
-    expect(byObject.get('/m/:gid/system/inputs')).toEqual(['GET'])
+    expect(byObject.get('/m/:gid/system/inputs')).toEqual(['GET', 'POST'])
     expect(byObject.get('/m/:gid/routes')).toEqual(['GET'])
     for (const gone of [
       '/m/:gid/system/inputs/in_gigamon_http', '/m/:gid/system/inputs/in_gigamon_syslog', '/m/:gid/lib/breakers/gigamon_ami_json_array',
       '/m/:gid/pipelines/gigamon_http_normalize', '/m/:gid/pipelines/gigamon_syslog', '/m/:gid/routes/:tableId',
     ]) expect(byObject.has(gone), gone).toBe(false)
-    for (const gone of ['/m/:gid/lib/breakers', '/m/:gid/pipelines', '/m/:gid/system/outputs']) {
-      expect(byObject.has(gone), gone).toBe(false)
+    for (const collection of ['/m/:gid/lib/breakers', '/m/:gid/pipelines', '/m/:gid/system/outputs']) {
+      expect(byObject.get(collection), collection).toEqual(['POST'])
     }
+    expect(byObject.get('/m/:gid/system/inputs/:inputId')).toEqual(['GET', 'PATCH'])
+    expect(byObject.get('/m/:gid/lib/breakers/gigamon_ami_http_json_array')).toEqual(['GET'])
+    expect(byObject.get('/m/:gid/pipelines/gigamon')).toEqual(['GET'])
+    expect([...byObject.entries()].filter(([, a]) => a.includes('DELETE')).map(([o]) => o).filter((o) => !o.includes('/p/') && !o.includes('/packs/') && !o.includes('/search/'))).toEqual([])
   })
 })
 

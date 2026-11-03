@@ -60,11 +60,18 @@ import {
 } from '../pack'
 import { deleteLeftover, restorePackRoutes, type CleanupStep } from '../packCleanup'
 import {
-  commitAndDeployPack, compareVersions, configureHttpInput, enableHttpInput, installPack, packCommitScope, portsOfOthers,
-  previewPackInput, readPackState, removePack, sampleInputIdOf, setHttpToken, setSampleEnabled, setSourcePort, thisPackRelease,
+  commitAndDeployPack, compareVersions, installPack, packCommitScope,
+  previewPackInput, readPackState, removePack, sampleInputIdOf, setSampleEnabled, thisPackRelease,
   type PackInputChange, type PackState, type PackStep,
 } from '../packClient'
 import { upgradePack } from '../packUpgrade'
+import {
+  GLOBAL_HTTP_INPUT_ID, GLOBAL_OBJECTS, GLOBAL_OBJECT_KIND, createGlobalHttpStack, onboardingCommitAlso, onboardingCommitScope,
+  portsOfOtherSources, readGlobalHttp, type GlobalStep,
+  applyGlobalHttpChange, commitAndDeployGlobal, globalCommitScope, previewGlobalHttpChange,
+  connectSource, ensureLakeObjects, previewConnect,
+} from '../globalHttp'
+import { sameDiff } from '../landing'
 import {
   ensureLakeDataset, generateToken, hostingOf, leaderHostname,
   pendingConfigPaths, portProblem, sameValue, type LakeDatasetStep, type StepResult,
@@ -74,7 +81,7 @@ import {
   routeTableShapeWords, upgradeHeldSentence, upgradeResetSentence, upgradeRoutesKeptSentence, upgradeRouteTableShapeSentence,
 } from '../../components/onboardingCopy'
 import {
-  SAMPLE_START_DIFF, accelMode, cleanupBlockedBy, cleanupFindings, cleanupOffered, httpActionOf, jsonRetentionFor, onboardingDatasets, sameWrites,
+  SAMPLE_START_DIFF, accelMode, cleanupBlockedBy, cleanupFindings, cleanupOffered, jsonRetentionFor, onboardingDatasets,
   upgradeReadBack, type CleanupDialog, type CleanupDialogContext, type CleanupFindings, type HttpAction, type OnboardingDialog, type OnboardingDialogContext, type SourceChange, type SourceChangeContext, type SourceChangeDialog,
   type SourceSnapshot, type UpgradeDialog, type UpgradeDialogContext,
 } from './plan'
@@ -124,6 +131,10 @@ const LABELS: Record<string, string> = {
   pack: `Pack ${PACK_ID}`,
   verify: 'Install read back',
   http_input: `Raw HTTP source ${PACK_HTTP_INPUT_ID}`,
+  global_breaker: `${GLOBAL_OBJECT_KIND.breaker}`,
+  global_pipeline: `${GLOBAL_OBJECT_KIND.pipeline}`,
+  global_destination: `${GLOBAL_OBJECT_KIND.destination}`,
+  global_source: `Raw HTTP source ${GLOBAL_HTTP_INPUT_ID}`,
   sample_input: `Sample source ${PACK_SAMPLE_INPUT_ID}`,
   commit: 'Commit',
   deploy: 'Deploy',
@@ -154,20 +165,43 @@ export type PrepareResult =
  */
 export async function prepareOnboarding(
   group: string,
-  opts: { sample: boolean; port: number; target: DatasetTarget; undeployed: string | null; undeployedChecking: boolean },
+  opts: {
+    sample: boolean; port: number; target: DatasetTarget; undeployed: string | null; undeployedChecking: boolean
+    /** The Raw HTTP source the person picked to connect, or null/absent to
+     *  create `in_gigamon_ami_http` on `port`. */
+    source?: string | null
+  },
 ): Promise<PrepareResult> {
   const release = thisPackRelease()
-  if (!release.installable) return { ok: false, why: release.refusal ?? 'the pack’s release cannot be installed' }
-  const [pack, datasets, groups, pending, accel] = await Promise.all([
+  const [pack, datasets, groups, pending, accel, global] = await Promise.all([
     readPackState(group),
     listDatasets(),
     listStreamGroupsCurrent(),
     pendingConfigPaths().catch(() => null),
     readAccelState(),
+    readGlobalHttp(group),
   ])
   if (pack.error) return { ok: false, why: pack.error }
-  if (pack.installed && !pack.current) {
-    return { ok: false, why: installedRefusal({ version: pack.version, published: pack.published, fromRelease: pack.fromRelease, group }) }
+  // An installed copy that is not this app's current release is LEFT AS IT
+  // IS (owner decision 2026-10-24): the group's own Raw HTTP source does not
+  // need the pack, so an older pack no longer blocks onboarding while its
+  // Upgrade waits for a release. Only sample data, which starts the pack's
+  // sample source, still needs the current pack.
+  const packKept = pack.installed && !pack.current ? pack.version ?? 'of an unknown version' : null
+  if (packKept !== null && opts.sample) {
+    return {
+      ok: false,
+      why: `${installedRefusal({ version: pack.version, published: pack.published, fromRelease: pack.fromRelease, group }).replace(/\.$/, '')} — sample data needs this app’s current pack. Untick it to onboard without it`,
+    }
+  }
+  // Since 2026-10-24 a build whose pack release cannot be installed still
+  // onboards the Raw HTTP source; only what needs the pack waits for it.
+  const packRefusal = pack.installed || release.installable ? null : release.refusal ?? 'the pack’s release cannot be installed'
+  if (packRefusal && opts.sample) return { ok: false, why: `sample data needs the onboarding pack, and ${packRefusal}. Untick it to onboard without the pack` }
+  const picked = opts.source ?? null
+  const unreadable = GLOBAL_OBJECTS.filter((o) => global.objects[o] === 'unreadable')
+  if (unreadable.length) {
+    return { ok: false, why: `this app could not tell whether ${group} already holds ${unreadable.map((o) => GLOBAL_OBJECT_KIND[o].toLowerCase()).join(', ')}` }
   }
   if (datasets.outcome !== 'ok' || datasets.value === null) return { ok: false, why: 'Cribl Lake’s dataset list could not be read' }
   if (accel.error !== null) return { ok: false, why: `the scheduled searches could not be read: ${accel.error}` }
@@ -176,27 +210,25 @@ export async function prepareOnboarding(
   if (hosting === null) {
     return { ok: false, why: `this app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range and TLS` }
   }
-  const httpAction: HttpAction = pack.installed ? httpActionOf(pack.http) : 'configure'
-  if (httpAction === 'configure') {
-    const problem = portProblem(opts.port, hosting === 'managed', await portsOfOthers(group))
+  // A picked source: what connecting it changes, READ off the live source.
+  // None picked: `in_gigamon_ami_http` is created, unless it is already there.
+  let pickedSource: { id: string; diff: DiffRow[] } | null = null
+  let httpAction: HttpAction = 'configure'
+  if (picked !== null) {
+    const preview = await previewConnect(group, picked)
+    if (!preview.ok) return { ok: false, why: preview.why }
+    pickedSource = { id: picked, diff: preview.diff }
+    if (preview.diff.length === 0) httpAction = 'none'
+  } else {
+    if (global.sources?.some((x) => x.id === GLOBAL_HTTP_INPUT_ID)) {
+      return { ok: false, why: `${GLOBAL_HTTP_INPUT_ID} is already in ${group}; pick it from the list of Raw HTTP sources to connect it` }
+    }
+    const problem = portProblem(opts.port, hosting === 'managed', await portsOfOtherSources(group))
     if (problem) return { ok: false, why: `port ${opts.port}: ${problem}` }
   }
 
-  // With the pack installed, the sources' before→after is READ, not predicted.
-  let liveHttpDiff: DiffRow[] | null = null
   let liveSampleDiff: DiffRow[] | null = null
-  if (pack.installed) {
-    if (httpAction === 'none') liveHttpDiff = []
-    else {
-      const preview = await previewPackInput(
-        group,
-        // The token is never shown, so the one in the preview is thrown away:
-        // the diff reads "a new token (not shown)" whatever its value.
-        httpAction === 'configure' ? { kind: 'configure', port: opts.port, token: generateToken(), hosting } : { kind: 'enable', hosting },
-      )
-      if (!preview.ok) return { ok: false, why: preview.step.detail ?? 'the pack’s Raw HTTP source could not be read' }
-      liveHttpDiff = preview.diff
-    }
+  if (pack.installed && packKept === null) {
     // Starting the sample changes one key, `disabled`; it is read off the
     // source rather than previewed, because a preview refuses until the sample
     // dataset exists — and this run is what creates it.
@@ -214,14 +246,20 @@ export async function prepareOnboarding(
       sample: opts.sample,
       release,
       packInstalled: pack.installed,
+      packRefusal,
+      packKept,
       httpAction,
+      pickedSource,
+      globalPresent: GLOBAL_OBJECTS.filter((o) => global.objects[o] === 'present'),
       datasets: ids,
       jsonRetentionDays: json?.retentionPeriodInDays ?? null,
-      liveHttpDiff,
+      liveHttpDiff: null,
       liveSampleDiff,
       accel,
       target: opts.target,
-      scope: packCommitScope(group, pending),
+      // With an older pack left as it is, the commit carries only the group's
+      // own files: the pack's pending ones may be an upgrade held back.
+      scope: packKept === null ? onboardingCommitScope(group, pending) : globalCommitScope(group, pending),
       undeployed: opts.undeployed,
       undeployedChecking: opts.undeployedChecking,
     },
@@ -234,10 +272,14 @@ export async function prepareOnboarding(
 async function whatMoved(ctx: OnboardingDialogContext): Promise<string[]> {
   const moved: string[] = []
   const release = thisPackRelease()
-  if (!release.installable) moved.push(release.refusal ?? 'the pack’s release can no longer be installed')
+  const skipping = !ctx.packInstalled && (ctx.packRefusal ?? null) !== null
+  if (!skipping && !ctx.packInstalled && !release.installable) moved.push(release.refusal ?? 'the pack’s release can no longer be installed')
+  else if (skipping && release.installable) moved.push(`the pack’s release ${release.version} can be installed now`)
   else if (release.version !== ctx.release.version) moved.push(`this app now installs ${release.version}, not ${ctx.release.version}`)
 
-  const [groups, pack, datasets] = await Promise.all([listStreamGroupsCurrent(), readPackState(ctx.group), listDatasets()])
+  const [groups, pack, datasets, global] = await Promise.all([
+    listStreamGroupsCurrent(), readPackState(ctx.group), listDatasets(), readGlobalHttp(ctx.group),
+  ])
   const rec = groups.outcome === 'ok' ? groups.value?.find((x) => x.id === ctx.group) : undefined
   const hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
   if (hosting === null) moved.push(`this app can no longer tell whether ${ctx.group} is Cribl-managed or hybrid`)
@@ -246,15 +288,30 @@ async function whatMoved(ctx: OnboardingDialogContext): Promise<string[]> {
   const planned: HttpAction = ctx.httpAction ?? 'configure'
   if (pack.error) moved.push(`the group’s pack list could not be read again (${pack.error})`)
   else {
-    if (ctx.packInstalled && !(pack.installed && pack.current)) {
+    if (ctx.packKept) {
+      if (!pack.installed || pack.current || (pack.version ?? 'of an unknown version') !== ctx.packKept) {
+        moved.push(`${PACK_ID} is ${pack.installed ? pack.version ?? 'of an unknown version' : 'no longer installed'} now, not ${ctx.packKept}`)
+      }
+    } else if (ctx.packInstalled && !(pack.installed && pack.current)) {
       moved.push(pack.installed ? `${PACK_ID} ${pack.version ?? ''} is installed now, not this app’s current release` : `${PACK_ID} is no longer installed`)
     }
     if (!ctx.packInstalled && pack.installed) moved.push(`${PACK_ID} ${pack.version ?? ''} has been installed since`.replace('  ', ' '))
-    const now: HttpAction = pack.installed ? httpActionOf(pack.http) : 'configure'
-    if (now !== planned) moved.push(`${PACK_HTTP_INPUT_ID} changed: it would now be ${now === 'none' ? 'left as it is' : now === 'enable' ? 'started' : 'configured'}`)
   }
-  if (planned === 'configure' && hosting !== null) {
-    const problem = portProblem(ctx.port, hosting === 'managed', await portsOfOthers(ctx.group))
+  const was = new Set(ctx.globalPresent ?? [])
+  for (const o of GLOBAL_OBJECTS) {
+    const now = global.objects[o]
+    if (now === 'unreadable') moved.push(`this app can no longer tell whether ${ctx.group} holds the ${GLOBAL_OBJECT_KIND[o].toLowerCase()}`)
+    else if ((now === 'present') !== was.has(o)) moved.push(`the ${GLOBAL_OBJECT_KIND[o].toLowerCase()} ${now === 'present' ? 'exists now' : 'is gone'}`)
+  }
+  if (!ctx.pickedSource && global.sources?.some((x) => x.id === GLOBAL_HTTP_INPUT_ID)) {
+    moved.push(`${GLOBAL_HTTP_INPUT_ID} exists now`)
+  }
+  if (ctx.pickedSource) {
+    const now = await previewConnect(ctx.group, ctx.pickedSource.id)
+    if (!now.ok) moved.push(now.why)
+    else if (!sameDiff(now.diff, ctx.pickedSource.diff)) moved.push(`${ctx.pickedSource.id} changed`)
+  } else if (planned === 'configure' && hosting !== null) {
+    const problem = portProblem(ctx.port, hosting === 'managed', await portsOfOtherSources(ctx.group))
     if (problem) moved.push(`port ${ctx.port}: ${problem}`)
   }
 
@@ -290,12 +347,17 @@ const fromPack = (p: PackStep, extra = ''): RunStep => ({
   key: p.key, label: labelOf(p.key), action: p.action, ...(p.detail || extra ? { detail: `${p.detail ?? ''}${extra}` } : {}),
 })
 
+const fromGlobal = (o: GlobalStep): RunStep => {
+  const key = `global_${o.object}`
+  return { key, label: o.object === 'source' ? labelOf(key) : `${labelOf(key)} ${o.id}`, action: o.action, ...(o.detail ? { detail: o.detail } : {}) }
+}
+
 const fromCommit = (r: StepResult): RunStep => ({
   key: r.key, label: labelOf(r.key), action: r.action, ...(r.detail ? { detail: r.detail } : {}),
 })
 
 /** The commit message, which names the pack, its version and the group. */
-export const onboardMessage = (group: string): string => `Gigamon AMI: onboard pack ${PACK_ID} ${PACK_VERSION} in ${group}`
+export const onboardMessage = (group: string): string => `Gigamon AMI: onboard ${GLOBAL_HTTP_INPUT_ID} and pack ${PACK_ID} ${PACK_VERSION} in ${group}`
 export const removeMessage = (group: string): string => `Gigamon AMI: remove pack ${PACK_ID} from ${group}`
 
 /** The saved-search steps as the log shows them: every problem on its own
@@ -378,7 +440,11 @@ export async function runOnboarding(ctx: OnboardingDialogContext, dialog: Onboar
 
   // 2. The pack, when it is not installed. A copy already current is `exists`;
   // an older or foreign one never reaches here (prepare and step 0 refuse it).
-  if (!ctx.packInstalled) {
+  if (ctx.packKept) {
+    step({ key: 'pack', label: labelOf('pack'), action: 'exists', detail: `${PACK_ID} ${ctx.packKept} is installed and left as it is` })
+  } else if (!ctx.packInstalled && (ctx.packRefusal ?? null) !== null) {
+    step({ key: 'pack', label: labelOf('pack'), action: 'skipped', detail: `not installed: ${ctx.packRefusal}` })
+  } else if (!ctx.packInstalled) {
     const got = await installPack(g)
     let failed: RunStep | null = null
     for (const p of got) {
@@ -394,48 +460,55 @@ export async function runOnboarding(ctx: OnboardingDialogContext, dialog: Onboar
     step({ key: 'pack', label: labelOf('pack'), action: 'exists', detail: `${PACK_ID} ${PACK_VERSION} is installed` })
   }
 
-  // 3. The Raw HTTP source.
-  const action: HttpAction = ctx.httpAction ?? 'configure'
-  if (action === 'configure') {
-    const token = generateToken()
-    const change = { port: ctx.port, token, hosting: ctx.hosting }
-    // On a fresh install the dialog's diff was predicted from the shipped file,
-    // and the source is now the Leader's installed copy of it. The write is
-    // held to what the dialog said it would SET (`sameWrites`); when that
-    // holds, the diff read now is the one approved, so packClient still sends
-    // nothing if the source moves between this read and its own.
-    let approved = dialog.approvedHttp
-    if (!ctx.packInstalled) {
-      const now = await previewPackInput(g, { kind: 'configure', ...change })
-      if (now.ok && sameWrites(now.diff, dialog.approvedHttp)) approved = now.diff
+  // 3. The group's own Raw HTTP source and what it names, each created only
+  // when absent (../globalHttp.ts). The pack's own Raw HTTP source is not
+  // written: it stays as shipped, switched off.
+  const action: HttpAction = ctx.httpAction === 'none' ? 'none' : 'configure'
+  if (ctx.pickedSource) {
+    // The Lake objects first — the connection names them — then ONE PATCH of
+    // the picked source, held to the diff the dialog showed. No token: its own
+    // stays as it is.
+    let failed: RunStep | null = null
+    for (const o of await ensureLakeObjects(g)) {
+      const s = step(fromGlobal(o))
+      if (o.action === 'created') wrote = true
+      if (o.action === 'error') failed = s
     }
-    const r = await configureHttpInput(g, change, approved)
-    if (r.action === 'updated') {
-      wrote = true
-      step(fromPack(r))
-      io.onToken(token, false)
-    } else if (r.action === 'exists') {
-      step(fromPack(r))
-    } else {
-      const s = step(fromPack(r))
-      if (r.sent) {
-        // The write answered an error. Whether the token landed anyway is read,
-        // not assumed: a source that now has a token has this one (it had none).
-        const after = await readPackState(g)
+    if (failed) return finish(failed)
+    const token = generateToken()
+    const c = await connectSource(g, ctx.pickedSource.id, dialog.approvedHttp, token)
+    const s = step(fromGlobal(c))
+    if (c.action === 'updated') wrote = true
+    // Switching on a source with no token set this one: shown once, like a
+    // new source's.
+    if (c.action === 'updated' && c.newToken) io.onToken(token, false)
+    if (c.action === 'error') return finish(s)
+  } else if (action === 'configure') {
+    const token = generateToken()
+    const got = await createGlobalHttpStack(g, { port: ctx.port, token, managed: ctx.hosting === 'managed' })
+    let failed: RunStep | null = null
+    for (const o of got) {
+      const s = step(fromGlobal(o))
+      if (o.action === 'created') wrote = true
+      if (o.action === 'error') failed = s
+    }
+    const source = got.find((o) => o.object === 'source')
+    if (source?.action === 'created') io.onToken(token, false)
+    if (failed) {
+      // Whether the token landed anyway is read, not assumed: the source was
+      // absent when the dialog opened, so one that now has a token has this one.
+      if (source?.action === 'error') {
+        const after = await readGlobalHttp(g)
         if (after.http?.tokenSet) {
+          wrote = true
           io.onToken(token, true)
-          step({ key: 'http_input', label: labelOf('http_input'), action: 'error', warning: true, detail: 'the source now has a token although the change reported an error; it is shown once above' })
+          step({ key: 'global_source', label: labelOf('global_source'), action: 'error', warning: true, detail: 'the source now has a token although the create reported an error; it is shown once above' })
         }
       }
-      return finish(s)
+      return finish(failed)
     }
-  } else if (action === 'enable') {
-    const r = await enableHttpInput(g, ctx.hosting, dialog.approvedHttp)
-    const s = step(fromPack(r))
-    if (r.action === 'updated') wrote = true
-    if (r.action === 'error' || r.action === 'skipped') return finish(s)
   } else {
-    step({ key: 'http_input', label: labelOf('http_input'), action: 'exists', detail: 'already has a token and is running' })
+    step({ key: 'global_source', label: labelOf('global_source'), action: 'exists', detail: 'already in the group; left as it is' })
   }
 
   // 4. The sample source, when ticked — refused (by packClient) until its
@@ -457,7 +530,9 @@ export async function runOnboarding(ctx: OnboardingDialogContext, dialog: Onboar
   if (!dialog.deploys && !wrote) {
     step({ key: 'commit', label: labelOf('commit'), action: 'skipped', detail: `nothing in ${g} changed, so nothing was committed or deployed` })
   } else {
-    const committed = await commitAndDeployPack(g, onboardMessage(g), { wrote, record: io.record }, (r) => { step(fromCommit(r)) })
+    const committed = ctx.packKept
+      ? await commitAndDeployGlobal(g, onboardMessage(g), io.record, (r) => { step(fromCommit(r)) })
+      : await commitAndDeployPack(g, onboardMessage(g), { wrote, record: io.record, also: onboardingCommitAlso(g) }, (r) => { step(fromCommit(r)) })
     const broken = committed.find((r) => r.action === 'error')
     if (broken) {
       step({ key: 'acceleration', label: labelOf('acceleration'), action: 'skipped', detail: 'not installed, because the commit or deploy did not complete' })
@@ -791,6 +866,14 @@ function packChange(change: SourceChange, hosting: 'managed' | 'hybrid' | null, 
   return { kind: 'sample', enabled: change.enabled }
 }
 
+/** A token or port change as globalHttp.ts takes it. The preview's token is
+ *  thrown away, as for the pack's. */
+function globalChange(change: SourceChange, hosting: 'managed' | 'hybrid' | null, token: string) {
+  return change.kind === 'port'
+    ? { kind: 'port' as const, port: (change as { port: number }).port, managed: hosting !== 'hybrid' }
+    : { kind: 'token' as const, token }
+}
+
 const ownedCopy = (p: PackState): boolean => !p.error && p.installed && p.published && p.fromRelease
 
 /**
@@ -825,15 +908,38 @@ export async function prepareSourceChange(
     pendingConfigPaths().catch(() => null),
     change.kind === 'port' ? listStreamGroupsCurrent() : Promise.resolve(null),
   ])
-  if (pack.error) return { ok: false, why: pack.error }
-  if (!ownedCopy(pack)) return { ok: false, why: `the pack in ${group} is not one this app installed from its own release` }
-  const held = manifestPendingRefusal(group, pending)
-  if (held) return { ok: false, why: held }
+  // Rotate token and Move port act on the group's own Raw HTTP source
+  // (../globalHttp.ts) and commit only its files, so they need neither the
+  // pack nor its manifest committed. Start and Stop sample data are the pack's.
+  const onGlobal = change.kind !== 'sample'
+  if (!onGlobal) {
+    if (pack.error) return { ok: false, why: pack.error }
+    if (!ownedCopy(pack)) return { ok: false, why: `the pack in ${group} is not one this app installed from its own release` }
+    const held = manifestPendingRefusal(group, pending)
+    if (held) return { ok: false, why: held }
+  }
   let hosting: 'managed' | 'hybrid' | null = null
   if (groups) {
     const rec = groups.outcome === 'ok' ? groups.value?.find((x) => x.id === group) : undefined
     hosting = rec ? hostingOf(rec.onPrem, leaderHostname()) : null
     if (hosting === null) return { ok: false, why: `this app could not tell whether ${group} is Cribl-managed or hybrid, which decides the port range` }
+  }
+  if (onGlobal) {
+    // The onboarded source: the one that carries the connection to Cribl Lake.
+    const global = await readGlobalHttp(group)
+    if (global.sourceId === null) {
+      return { ok: false, why: global.sources === null ? `the Raw HTTP sources in ${group} could not be read` : `no Raw HTTP source in ${group} is connected to Cribl Lake yet — run Onboard` }
+    }
+    const preview = await previewGlobalHttpChange(group, global.sourceId, globalChange(change, hosting, generateToken()))
+    if (!preview.ok) return { ok: false, why: preview.why }
+    if (preview.diff.length === 0) return { ok: false, why: 'nothing would change: the source is already that way' }
+    return {
+      ok: true,
+      ctx: {
+        group, change, diff: preview.diff, fromPort: global.http?.port ?? null, hosting, scope: globalCommitScope(group, pending),
+        undeployed: opts.undeployed, undeployedChecking: opts.undeployedChecking, sourceId: global.sourceId,
+      },
+    }
   }
   const preview = await previewPackInput(group, packChange(change, hosting, generateToken()))
   if (!preview.ok) return { ok: false, why: preview.step.detail ?? 'the source could not be read' }
@@ -849,9 +955,9 @@ export async function prepareSourceChange(
 
 const changeMessage = (group: string, change: SourceChange): string =>
   change.kind === 'token'
-    ? `Gigamon AMI: rotate the auth token of ${PACK_HTTP_INPUT_ID} in ${group}`
+    ? `Gigamon AMI: rotate the auth token of ${GLOBAL_HTTP_INPUT_ID} in ${group}`
     : change.kind === 'port'
-      ? `Gigamon AMI: move ${PACK_HTTP_INPUT_ID} to port ${change.port} in ${group}`
+      ? `Gigamon AMI: move ${GLOBAL_HTTP_INPUT_ID} to port ${change.port} in ${group}`
       : `Gigamon AMI: ${change.enabled ? 'start' : 'stop'} ${PACK_SAMPLE_INPUT_ID} in ${group}`
 
 /**
@@ -880,6 +986,7 @@ export async function runSourceChange(ctx: SourceChangeContext, dialog: SourceCh
     return { steps, stopped, pack: null }
   }
   const g = ctx.group
+  if (ctx.change.kind !== 'sample') return runGlobalSourceChange(ctx, dialog, io, step, finish)
   const now = await readPackState(g)
   if (!ownedCopy(now)) {
     return finish(step({
@@ -891,31 +998,16 @@ export async function runSourceChange(ctx: SourceChangeContext, dialog: SourceCh
   if (held) return finish(step({ key: 'precheck', label: labelOf('precheck'), action: 'error', detail: `Nothing was written: ${held}.` }))
 
   const change = ctx.change
-  const token = change.kind === 'token' ? generateToken() : null
-  const r: PackStep = change.kind === 'token'
-    ? await setHttpToken(g, token as string, dialog.approved)
-    : change.kind === 'port'
-      ? await setSourcePort(g, change.port, ctx.hosting, dialog.approved)
-      : await setSampleEnabled(g, change.enabled, dialog.approved)
+  const r: PackStep = await setSampleEnabled(g, change.enabled, dialog.approved)
   if (r.action === 'exists') {
     step(fromPack(r))
     step({ key: 'commit', label: labelOf('commit'), action: 'skipped', detail: `nothing changed in ${g}, so nothing was committed or deployed` })
     return finish(null)
   }
-  if (r.action !== 'updated') return finish(step(fromPack(r, token !== null && r.sent ? `. ${ROTATE_FAILED}` : '')))
+  if (r.action !== 'updated') return finish(step(fromPack(r)))
   step(fromPack(r))
-
-  // A rotation's token is handed over after the commit and deploy, whatever
-  // they did — the source holds it now — and says whether it reached the Workers.
-  let broken: StepResult | undefined
-  let ended = false
-  try {
-    const committed = await commitAndDeployPack(g, changeMessage(g, change), { wrote: true, record: io.record }, (c) => { step(fromCommit(c)) })
-    broken = committed.find((c) => c.action === 'error')
-    ended = true
-  } finally {
-    if (token !== null) io.onToken(token, !ended || broken !== undefined)
-  }
+  const committed = await commitAndDeployPack(g, changeMessage(g, change), { wrote: true, record: io.record }, (c) => { step(fromCommit(c)) })
+  const broken = committed.find((c) => c.action === 'error')
   return finish(broken ? steps.find((s) => s.key === broken.key && s.action === 'error') ?? null : null)
 }
 
@@ -1068,4 +1160,46 @@ export async function runPackCleanup(ctx: CleanupDialogContext, dialog: CleanupD
   const broken = committed.find((r) => r.action === 'error')
   if (broken) return finish(steps.find((s) => s.key === broken.key && s.action === 'error') ?? null)
   return finish(null, await readPackState(g))
+}
+
+/**
+ * Rotate token or Move port on the group's own Raw HTTP source: ONE
+ * whole-body PATCH held to the diff the dialog showed, then commit its files
+ * and deploy — only after a write that answered `updated`. A rotation's token
+ * is generated here and handed over once the commit and deploy have ended.
+ */
+async function runGlobalSourceChange(
+  ctx: SourceChangeContext,
+  dialog: SourceChangeDialog,
+  io: SourceChangeIO,
+  step: (s: RunStep) => RunStep,
+  finish: (stopped: RunStep | null) => RunOutcome,
+): Promise<RunOutcome> {
+  const logged: RunStep[] = []
+  const say = (x: RunStep): RunStep => { logged.push(x); return step(x) }
+  const g = ctx.group
+  const change = ctx.change
+  const token = change.kind === 'token' ? generateToken() : null
+  const r = await applyGlobalHttpChange(g, ctx.sourceId ?? GLOBAL_HTTP_INPUT_ID, globalChange(change, ctx.hosting, token ?? ''), dialog.approved)
+  const s: RunStep = { key: 'global_source', label: labelOf('global_source'), action: r.action, ...(r.detail ? { detail: r.detail } : {}) }
+  if (r.action === 'exists') {
+    say(s)
+    say({ key: 'commit', label: labelOf('commit'), action: 'skipped', detail: `nothing changed in ${g}, so nothing was committed or deployed` })
+    return finish(null)
+  }
+  if (r.action !== 'updated') return finish(say(token !== null && r.sent ? { ...s, detail: `${s.detail ?? ''}. ${ROTATE_FAILED}` } : s))
+  say(s)
+  // A rotation's token is handed over after the commit and deploy, whatever
+  // they did — the source holds it now — and says whether it reached the Workers.
+  let broken: StepResult | undefined
+  let ended = false
+  try {
+    const committed = await commitAndDeployGlobal(g, changeMessage(g, change), io.record, (c) => { say(fromCommit(c)) })
+    broken = committed.find((c) => c.action === 'error')
+    ended = true
+  } finally {
+    if (token !== null) io.onToken(token, !ended || broken !== undefined)
+  }
+  const failedStep = broken ? logged.find((x) => x.key === broken.key && x.action === 'error') ?? null : null
+  return finish(failedStep)
 }

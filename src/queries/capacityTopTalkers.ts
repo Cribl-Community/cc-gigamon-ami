@@ -16,7 +16,6 @@ import { q } from '../cribl/search'
 export const PIVOTS = [
   { key: 'src_ip', field: 'src_ip', label: 'Source IP', ph: 'e.g. 10.0.0.168', noun: 'talkers' },
   { key: 'app_name', field: 'app_name', label: 'App', ph: 'e.g. https / dns / openai', noun: 'apps' },
-  { key: 'dst_aws_flat_tags_name', field: 'dst_aws_flat_tags_name', label: 'AWS service', ph: 'e.g. Postgres_Sql_GEM', noun: 'services' },
 ] as const
 export type Pivot = (typeof PIVOTS)[number]['key']
 

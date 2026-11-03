@@ -87,7 +87,23 @@ let fake: {
   outputs: Record<string, string[]>
   failHttp: boolean
   globalHttp: boolean
+  /** Each group's own Raw HTTP stack (../cribl/globalHttp.ts), by kind. */
+  global: Record<string, Record<string, Record<string, unknown>>>
 }
+
+/** The group's own Raw HTTP stack's collections and ids, by kind. */
+const G_STACK = {
+  breaker: ['/lib/breakers', 'gigamon_ami_http_json_array', 'breakers.yml'],
+  pipeline: ['/pipelines', 'gigamon', 'pipelines/gigamon/conf.yml'],
+  destination: ['/system/outputs', 'gigamon_lake', 'outputs.yml'],
+  source: ['/system/inputs', 'in_gigamon_ami_http', 'inputs.yml'],
+} as const
+const G_SOURCE = (g: string) => `/m/${g}/system/inputs/in_gigamon_ami_http`
+/** The group's own source as onboarding leaves it: a token, a port, running. */
+const configuredGlobal = () => ({
+  ...configuredHttp(), id: 'in_gigamon_ami_http', breakerRulesets: ['gigamon_ami_http_json_array'], sendToRoutes: false,
+  connections: [{ pipeline: 'gigamon', output: 'gigamon_lake' }],
+})
 
 /** The table a pack of this build ships, as a Leader answers it. */
 const shippedTable = () => ({ id: 'default', groups: {}, comments: [], routes: structuredClone(PACK_ROUTES) })
@@ -161,6 +177,12 @@ function leader(o: {
     outputs: { default: [...PACK_OBJECTS.outputs, ...(o.leftovers ? ['out_gno_lake', 'out_gno_sample_lake'] : [])], lab: [...PACK_OBJECTS.outputs] },
     failHttp: o.failHttp ?? false,
     globalHttp: o.globalHttp ?? false,
+    global: {
+      default: o.configured
+        ? { source: configuredGlobal(), breaker: { id: G_STACK.breaker[1] }, pipeline: { id: G_STACK.pipeline[1] }, destination: { id: G_STACK.destination[1] } }
+        : {},
+      lab: {},
+    },
   }
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -198,7 +220,30 @@ function leader(o: {
       if (at('GET', `/products/stream/groups/${g}`)) return reply(200, { items: [{ id: g, configVersion: 'aaaa1111' }] })
       if (at('PATCH', `/products/stream/groups/${g}/deploy`)) return reply(200, { items: [] })
       if (at('GET', `/m/${g}/system/inputs`)) {
-        return reply(200, { items: fake.globalHttp && g === 'default' ? [{ id: 'in_gigamon_http', type: 'http_raw', port: 20001 }] : [] })
+        return reply(200, {
+          items: [
+            ...(fake.globalHttp && g === 'default' ? [{ id: 'in_gigamon_http', type: 'http_raw', port: 20001 }] : []),
+            ...(fake.global[g].source ? [fake.global[g].source] : []),
+          ],
+        })
+      }
+      for (const [kind, [collection, id, file]] of Object.entries(G_STACK)) {
+        if (at('GET', `/m/${g}${collection}/${id}`)) {
+          const it = fake.global[g][kind]
+          return it ? reply(200, { items: [it] }) : reply(404, { message: 'not found' })
+        }
+        if (at('POST', `/m/${g}${collection}`)) {
+          if (fake.failHttp && kind === 'source') return reply(500, { message: 'refused' })
+          fake.global[g][kind] = body as Record<string, unknown>
+          pending.push(`groups/${g}/local/cribl/${file}`)
+          return reply(200, { items: [body] })
+        }
+      }
+      if (at('PATCH', G_SOURCE(g))) {
+        if (fake.failHttp) return reply(500, { message: 'refused' })
+        fake.global[g].source = body as Record<string, unknown>
+        pending.push(`groups/${g}/local/cribl/inputs.yml`)
+        return reply(200, { items: [body] })
       }
       if (at('GET', `/m/${g}/packs`)) return reply(200, { items: fake.packs[g] })
       if (at('POST', `/m/${g}/packs`)) {
@@ -320,11 +365,24 @@ const bodyText = () => (document.body.textContent ?? '').replace(/\s+/g, ' ')
 const shownToken = () => document.body.querySelector('[aria-label="Auth token"]')?.textContent ?? null
 const writes = () => calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))
 const kvWrites = () => calls.filter((c) => c.method !== 'GET' && c.path.startsWith('/kvstore') && c.path !== '/kvstore/keys')
+/** The token the group's own Raw HTTP source was last given: in its create
+ *  POST, or a rotation's PATCH. */
 const sentToken = () => {
-  const patch = calls.find((c) => c.method === 'PATCH' && c.path.endsWith(`/system/inputs/${PACK_HTTP_INPUT_ID}`))
-  return ((patch?.body as { authTokensExt?: Array<{ token: string }> })?.authTokensExt ?? [])[0]?.token ?? null
+  const sent = [...calls].reverse().find((c) =>
+    (c.method === 'POST' && /\/m\/[^/]+\/system\/inputs$/.test(c.path)) || (c.method === 'PATCH' && c.path.endsWith('/system/inputs/in_gigamon_ami_http')))
+  return ((sent?.body as { authTokensExt?: Array<{ token: string }> })?.authTokensExt ?? [])[0]?.token ?? null
+}
+/** Onboard opens the chooser (worker group, Raw HTTP source, port, sample). */
+async function openChooser() {
+  if (!document.body.querySelector('#gs-onb-group-select')) await press(buttonNamed('Onboard') ?? buttonNamed('Run onboarding again'))
+}
+/** The chooser's Review changes: the Onboard confirmation. */
+async function review() {
+  await openChooser()
+  await press(buttonNamed('Review changes'))
 }
 async function pick(group: string) {
+  await openChooser()
   await act(async () => {
     const sel = document.body.querySelector<HTMLSelectElement>('#gs-onb-group-select')!
     const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!
@@ -332,6 +390,8 @@ async function pick(group: string) {
     sel.dispatchEvent(new Event('change', { bubbles: true }))
   })
   await settle(12)
+  // A group change closes nothing by itself; close the chooser as a person would.
+  if (buttonNamed('Review changes')) await press(buttonNamed('Close'))
 }
 async function typeInDialog(text: string) {
   await act(async () => {
@@ -349,7 +409,7 @@ async function escape() {
   await settle()
 }
 async function onboardThroughTheDialog() {
-  await press(buttonNamed('Onboard'))
+  await review()
   expect(dialog(), 'the Onboard confirmation did not open').not.toBeNull()
   await press(buttonNamed('Yes, onboard in default'), 40)
 }
@@ -376,6 +436,11 @@ describe('10. this build once its pin is released: 0.2.3, recorded by the mock a
     expect(onboard.getAttribute('aria-disabled')).not.toBe('true')
     expect(bodyText()).not.toContain('Onboard is not available')
     await press(onboard)
+    // The chooser first: the worker group and its Raw HTTP sources.
+    expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
+    expect(bodyText()).toContain('Create a new source, in_gigamon_ami_http')
+    expect(dialog()).toBeNull()
+    await press(buttonNamed('Review changes'))
     expect(dialog(), 'the Onboard confirmation did not open').not.toBeNull()
     expect(dialogText()).toContain(PACK_ID)
     expect(dialogText()).toContain(PACK_VERSION)
@@ -391,10 +456,12 @@ describe('10. this build once its pin is released: 0.2.3, recorded by the mock a
     // app no longer shows or removes it (2026-09-26), and offers no Remove.
     leader({ globalHttp: true })
     await mount()
+    await openChooser()
     expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
     expect(buttonNamed('Deploy onboarding stack')).toBeUndefined()
     expect(buttonNamed('Remove Raw HTTP stack')).toBeUndefined()
-    expect(bodyText()).not.toContain('in_gigamon_http')
+    // Since 2026-10-24 the chooser lists every Raw HTTP source in the group —
+    // that one included, to pick — and still offers nothing to remove it.
     expect(writes()).toEqual([])
   })
 
@@ -430,11 +497,11 @@ describe('3. nothing writes on load, a group change, Re-check, a dialog opened a
     await pick('lab')
     await pick('default')
     await press(buttonNamed('Re-check'))
-    await press(buttonNamed('Finish onboarding'))
+    await review()
     expect(dialog()).not.toBeNull()
     await press(buttonNamed('Cancel'))
     expect(dialog()).toBeNull()
-    await press(buttonNamed('Finish onboarding'))
+    await review()
     await escape()
     expect(dialog()).toBeNull()
     await press(buttonNamed('Remove pack'))
@@ -470,15 +537,17 @@ describe('4. the token is shown once', () => {
     expect(shownToken()).toBe(token)
     expect(JSON.stringify(toasts)).not.toContain(token)
     for (const c of kvWrites()) expect(JSON.stringify(c.body)).not.toContain(token)
-    // The step list is on screen too: the token appears exactly once in the page.
-    expect(bodyText().split(token!).length - 1).toBe(1)
+    // The step list is on screen too, and the token is in none of it.
+    // Only on the endpoint card: its token line, and the header built from it.
+    expect(bodyText().split(token!).length - 1).toBe(2)
+    expect(bodyText()).toContain(`Authorization: Bearer ${token}`)
   })
 
   it('the dialog shows "a new token (not shown)", never a value', async () => {
     leader()
     await mount()
-    await press(buttonNamed('Onboard'))
-    expect(dialogText()).toContain('a new token (not shown)')
+    await review()
+    expect(dialogText()).toContain('a new auth token, shown once')
     expect(dialogText()).not.toMatch(/[0-9a-f]{64}/)
   })
 
@@ -531,9 +600,10 @@ describe('8. "Also send sample data"', () => {
   it('is unticked by default, and unticked names no sample dataset and starts no sample source', async () => {
     leader()
     await mount()
+    await openChooser()
     expect(bodyText()).toContain(SAMPLE_LABEL)
     expect(box().checked).toBe(false)
-    await press(buttonNamed('Onboard'))
+    await review()
     expect(dialogText()).not.toContain(`Cribl Lake dataset ${PACK_SAMPLE_DATASET_ID}`)
     expect(dialogText()).not.toMatch(/Sample data: about/)
     await press(buttonNamed('Cancel'))
@@ -542,10 +612,11 @@ describe('8. "Also send sample data"', () => {
   it('ticked, the dialog names the sample dataset and its volume', async () => {
     leader()
     await mount()
+    await openChooser()
     await act(async () => { box().click() })
     await settle()
     expect(box().checked).toBe(true)
-    await press(buttonNamed('Onboard'))
+    await review()
     expect(dialogText()).toContain(PACK_SAMPLE_DATASET_ID)
     expect(dialogText()).toMatch(/Sample data: about 432,000 events a day/)
   })
@@ -656,15 +727,15 @@ describe('11. Upgrade', () => {
     ;(release as (() => void) | null)?.()
   })
 
-  it('held because it reset the source: none of the source controls opens a dialog that would deploy it', async () => {
+  it('held because it reset the source: the pack’s source controls open no dialog that would deploy it', async () => {
     leader({ installed: true, configured: true, sampleOn: true })
     await mount()
     // The upgrade this app held: the pack's manifest uncommitted in the group.
+    // Rotate token acts on the group's own source and commits none of the
+    // pack's files, so it is not held; Stop sample data is the pack's.
     heldManifest.push(`groups/default/default/${PACK_ID}/package.json`)
-    for (const label of ['Rotate token', 'Stop sample data']) {
-      await press(buttonNamed(label))
-      expect(dialog(), label).toBeNull()
-    }
+    await press(buttonNamed('Stop sample data'))
+    expect(dialog()).toBeNull()
     expect(bodyText()).toContain('package.json in default is uncommitted')
     expect(writes()).toEqual([])
   })
@@ -795,12 +866,14 @@ describe('the pack sources’ own settings', () => {
     expect(token).toMatch(/^[0-9a-f]{64}$/)
     expect(token).not.toBe(OLD_TOKEN)
     expect(shownToken()).toBe(token)
-    expect(bodyText().split(token!).length - 1).toBe(1)
+    // Only on the endpoint card: its token line, and the header built from it.
+    expect(bodyText().split(token!).length - 1).toBe(2)
+    expect(bodyText()).toContain(`Authorization: Bearer ${token}`)
     expect(JSON.stringify(toasts)).not.toContain(token)
     for (const c of kvWrites()) expect(JSON.stringify(c.body)).not.toContain(token)
-    const patch = writes().find((c) => c.method === 'PATCH' && c.path.endsWith(`/system/inputs/${PACK_HTTP_INPUT_ID}`))!
+    const patch = writes().find((c) => c.method === 'PATCH' && c.path === '/m/default/system/inputs/in_gigamon_ami_http')!
     // The whole source went back, with only the token moved.
-    expect(patch.body).toEqual({ ...configuredHttp(), authTokensExt: [{ token, authType: 'manual' }] })
+    expect(patch.body).toEqual({ ...configuredGlobal(), authTokensExt: [{ token, authType: 'manual' }] })
     expect(writes().map((c) => c.path).slice(-2)).toEqual(['/version/commit', '/products/stream/groups/default/deploy'])
     // Gone after a group change there and back.
     await pick('lab')

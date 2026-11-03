@@ -89,12 +89,9 @@ export function CapacityTopTalkers() {
   const unfiltered = applied === ''
 
   const talkersQuery = buildTalkersQuery(pivot, applied)
-  // TWO OF THE THREE PIVOT STATES. `app_name` is read out of the app/L4
-  // rollup; `src_ip` — the tab's DEFAULT view, and so the one every open waits
-  // on — has its own run storing exactly that query (gno_talkers_src_c1h,
-  // 2026-09-23). `dst_aws_flat_tags_name` stays live: neither scan can express
-  // it, and a tail returning a different top-12 from the live query would not
-  // be honest.
+  // BOTH PIVOT STATES. `app_name` is read out of the app/L4 rollup; `src_ip` —
+  // the tab's DEFAULT view, and so the one every open waits on — has its own
+  // run storing exactly that query (gno_talkers_src_c1h, 2026-09-23).
   const talkersServed = pivot === 'app_name' ? { accel: MIX_ACCEL, accelPanel: 'capacity-talkers-app' } : { accel: TALKERS_SRC_ACCEL, accelPanel: 'capacity-talkers-src' }
   const talkers = useSearch(talkersQuery, {
     deps: [pivot, applied],
@@ -173,7 +170,7 @@ export function CapacityTopTalkers() {
     <div className="tab">
       <div className="tab-intro">
         <h2 className="tab-h">Capacity &amp; top talkers</h2>
-        <p className="tab-sub">Pivot the whole view by source IP, application, or AWS service. Bytes summed from <code>total_bytes</code> (src+dst).</p>
+        <p className="tab-sub">Pivot the whole view by source IP or application. Bytes summed from <code>total_bytes</code> (src+dst).</p>
         <div className="cap-controls">
           <div className="pivot-toggle">
             {PIVOTS.map((x) => (

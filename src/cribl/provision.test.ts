@@ -50,7 +50,7 @@ import {
   commitMatchingAndDeploy, commitScopeFor, pendingConfigPaths, pendingDeploy, scrubbedErrText, tokensOf,
   undeployedHead, versionFilePaths, deployState, sameCommit,
   FILES_READ_CONCURRENCY, HISTORY_PAGE, HISTORY_PAGES,
-  portProblem, portsInUse, postUrl, suggestPort, hostingOf, isCriblCloudHost,
+  portProblem, portsInUse, postUrl, suggestPort, suggestedIngressHost, hostingOf, isCriblCloudHost,
   DATASET_SPEC, DEFAULT_STREAM_GROUP,
   type StepResult,
 } from './provision'
@@ -1081,3 +1081,29 @@ describe('the port picker’s rules', () => {
 //   * ANY REFUSAL. Every 401/403 in this suite is fabricated. The gate is
 //     retrospective and this workspace's callers are all admins, so no
 //     permission has ever actually been enforced against this code (V-S11).
+
+describe('the ingress host Gigamon AMX is pointed at', () => {
+  afterEach(() => {
+    window.CRIBL_API_URL = undefined
+    window.__CRIBL_SEARCH_ORIGIN = undefined
+  })
+
+  it('is <group>.<workspace>.<org>.cribl.cloud for a named workspace', () => {
+    window.CRIBL_API_URL = 'https://networkteamworkspace-objective-yalow-4s3a3q5.cribl.cloud/api/v1'
+    expect(suggestedIngressHost('default', true)).toBe('default.networkteamworkspace.objective-yalow-4s3a3q5.cribl.cloud')
+    expect(suggestedIngressHost('edge-1', true)).toBe('edge-1.networkteamworkspace.objective-yalow-4s3a3q5.cribl.cloud')
+  })
+
+  it('keeps the first workspace’s main form', () => {
+    window.__CRIBL_SEARCH_ORIGIN = 'https://main-acme.cribl.cloud'
+    expect(suggestedIngressHost('default', true)).toBe('default.main.acme.cribl.cloud')
+  })
+
+  it('is no guess for a hybrid group, a group id that is not a DNS label, or a Leader off cribl.cloud', () => {
+    window.CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
+    expect(suggestedIngressHost('default', false)).toBeNull()
+    expect(suggestedIngressHost('my_group', true)).toBeNull()
+    window.CRIBL_API_URL = 'https://leader.example.com/api/v1'
+    expect(suggestedIngressHost('default', true)).toBeNull()
+  })
+})

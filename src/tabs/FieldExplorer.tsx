@@ -43,12 +43,11 @@ import { type ComputedFrom } from '../components/PanelInfo'
 import { QueryBoundary } from '../components/QueryBoundary'
 import { StatusPill } from '../components/StatusPill'
 import { fmtCount } from '../lib/format'
-import { AMI_CATALOG, AMI_FAMILIES, AMI_USE_CASES, type AmiField } from '../data/amiFields'
+import { type AmiField } from '../data/amiFields'
+import { EXPLORER_CATALOG, EXPLORER_FAMILIES, EXPLORER_USE_CASES } from '../data/explorerFields'
 import { CHECK_FIELDS, familyOf, FEED_SAMPLE_QUERY, PRESENCE_QUERY, sectionQuery } from '../queries/fieldExplorer'
 
-const CATALOG_BY_NAME = new Map(AMI_CATALOG.map((f) => [f.name, f]))
-
-const FAMILY_ORDER = ['Core / 5-tuple', 'DNS', 'SNMP', 'SSL / TLS', 'HTTP', 'TCP / UDP', 'AWS enrichment', 'Other protocols']
+const CATALOG_BY_NAME = new Map(EXPLORER_CATALOG.map((f) => [f.name, f]))
 
 /** The scheduled search that serves the "In feed" list. */
 const SAMPLE_ACCEL: AccelId = 'gno_sample_2m_c1h'
@@ -367,7 +366,7 @@ export function FieldExplorer() {
           setPresence((s) => ({
             ...s,
             loading: false,
-            error: 'This stored run counted a different set of fields than this release knows about, so it was not read. The next scheduled run will match.',
+            error: 'This stored run counted a different set of fields than this release knows about, so it was not read. Re-apply gno_presence_c1h in Guided Setup, then wait for a new run or use Run live.',
             errorTitle: 'Stored run is from an older field catalogue',
           }))
           return
@@ -390,7 +389,7 @@ export function FieldExplorer() {
 
   // ---- Coverage view: catalog vs feed ----
   const coverage = useMemo(() => {
-    const rows = AMI_CATALOG.map((f) => ({ f, status: statusOf(f, presence.count) }))
+    const rows = EXPLORER_CATALOG.map((f) => ({ f, status: statusOf(f, presence.count) }))
     const present = rows.filter((r) => r.status === 'present').length
     const derived = rows.filter((r) => r.status === 'derived').length
     const missing = rows.filter((r) => r.status === 'missing').length
@@ -398,16 +397,17 @@ export function FieldExplorer() {
   }, [presence.count])
 
   // ---- Feed view: actual fields ----
+  const feedFields = useMemo(() => state.fields.filter((f) => CATALOG_BY_NAME.has(f.name)), [state.fields])
   const families = useMemo(() => {
-    const set = new Set(state.fields.map((f) => familyOf(f.name)))
-    return FAMILY_ORDER.filter((f) => set.has(f))
-  }, [state.fields])
+    const set = new Set(feedFields.map((f) => familyOf(f.name)))
+    return EXPLORER_FAMILIES.filter((f) => set.has(f))
+  }, [feedFields])
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return state.fields
+    return feedFields
       .filter((f) => (family === 'All' || familyOf(f.name) === family) && (!term || f.name.toLowerCase().includes(term)))
       .sort((a, b) => b.count - a.count)
-  }, [state.fields, family, search])
+  }, [feedFields, family, search])
   const fillPct = (f: FieldSummary) => (state.sampled ? (f.count / state.sampled) * 100 : 0)
 
   return (
@@ -415,13 +415,13 @@ export function FieldExplorer() {
       <div className="tab-intro">
         <h2 className="tab-h">Field explorer</h2>
         <p className="tab-sub">
-          Learn the dataset and its gaps. <strong>AMI coverage</strong> checks a curated catalog of key Gigamon
-          AMI attributes against this feed — flagging fields that are <strong className="d-danger">missing</strong>.
+          Fields used by this app’s analytics queries, scheduled searches and drill-downs, grouped by application.
+          <strong> AMI coverage</strong> checks those input attributes against this feed — flagging fields that are <strong className="d-danger">missing</strong>.
           <strong> By use case</strong> shows which analytics use cases the feed can support.{' '}
-          <strong>In feed</strong> browses the top fields with fill rate, cardinality, and top values (Cribl's
-          field-summaries API caps at 200; the feed carries ~310 distinct fields — the coverage checks above use
-          uncapped counts). The time range applies to the coverage counts; <strong>In feed</strong> reads a sample
-          taken on a schedule, and says when it was taken.
+          <strong>In feed</strong> shows only query-used fields returned by the sample, with fill rate,
+          cardinality and top values (Cribl’s field-summaries API caps at 200; coverage uses uncapped counts).
+          Unused attributes, temporary query aliases, offline audits and Explorer’s own coverage queries do not
+          add fields to this list. Scheduled results retain their own windows; <strong>Run live</strong> uses the selected range.
         </p>
         <div className="pivot-toggle">
           <button type="button" className={`seg ${view === 'coverage' ? 'seg-active' : ''}`} onClick={() => setView('coverage')}>AMI coverage</button>
@@ -434,19 +434,19 @@ export function FieldExplorer() {
         <QueryBoundary state={{ loading: presence.loading, error: presence.error, errorTitle: presence.errorTitle, rows: CHECK_FIELDS }} emptyLabel="No data in this window">
           <div className="kpi-row kpi-row-3">
             <KpiTile label="Present" value={String(coverage.present)} accent="success"
-              sub={`of ${AMI_CATALOG.length} key AMI fields`} info="Documented AMI fields found in this feed by their canonical name." />
+              sub={`of ${EXPLORER_CATALOG.length} query-used fields`} info="App query input attributes found in this feed by name, including persisted helper and provenance fields." />
             <KpiTile label="Derived" value={String(coverage.derived)} accent="warning"
               sub="raw field absent, computed equivalent" info="The raw AMI field isn't in the feed, but the pipeline derives an equivalent (e.g. http_server_ms from http_request_ts/http_response_ts)." />
             <KpiTile label="Missing" value={String(coverage.missing)} accent="danger"
-              sub="not in this feed" info="Documented AMI fields absent from this feed — features that depend on them can't be fully built." />
+              sub="not in this feed" info="Query input attributes absent from this feed. Analytics depending on them may be unavailable or incomplete." />
           </div>
 
-          {AMI_FAMILIES.map((fam) => {
+          {EXPLORER_FAMILIES.map((fam) => {
             const rows = coverage.rows.filter((r) => r.f.family === fam)
             if (rows.length === 0) return null
             return (
               <Panel key={fam} title={fam} onRefresh={refresh} refreshing={presence.loading}
-                info={`Documented ${fam} AMI fields checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`}
+                info={`Query-used ${fam} input attributes checked against this feed with count(field) over the whole window (not a sample, so rare fields are caught). Green = present, amber = derived from another field, red = missing.`}
                 query={sectionQuery(rows.map((r) => r.f.name))}
                 note={`${rows.filter((r) => r.status !== 'missing').length}/${rows.length} available`}>
                 <ul className="cov-list">
@@ -467,9 +467,9 @@ export function FieldExplorer() {
           })}
 
           <p className="cov-src">
-            Catalog curated from Gigamon AMI documentation (docs.gigamon.com/ami · Application Metadata Intelligence
-            datasheet) and the reference Gigamon NPM dashboard. AMI exports up to ~6,000 attributes; the full per-field
-            spec lives in the GigaVUE-FM Application Protobook. 🔒 = requires decrypted traffic.
+            This list contains only input attributes referenced by the app’s analytics queries, including persisted
+            pipeline helpers and Data Flow attribution fields. It is not the full Gigamon AMI catalog.
+            Presence does not prove correct values or complete coverage. 🔒 = requires decrypted traffic.
           </p>
         </QueryBoundary>
       ) : view === 'usecase' ? (
@@ -478,7 +478,7 @@ export function FieldExplorer() {
             Each use case lists the AMI fields it draws on and whether this feed carries them —
             the core analytics first, then supporting cuts.
           </p>
-          {AMI_USE_CASES.map((uc) => {
+          {EXPLORER_USE_CASES.map((uc) => {
             const rows = uc.fields.map((n) => {
               const f = CATALOG_BY_NAME.get(n)
               const status: Status = f ? statusOf(f, presence.count) : 'missing'
@@ -570,12 +570,12 @@ export function FieldExplorer() {
             onRefresh={refresh}
             refreshing={state.loading}
             query={FEED_SAMPLE_QUERY}
-            info="The top 200 AMI fields by fill: type, fill rate (% of events carrying it), and distinct-value count. Cribl's field-summaries API returns at most 200 fields, so the ~110 rarest protocol fields (e.g. dcerpc_*, whatsapp_*) aren't listed here — the AMI coverage view uses uncapped count() checks instead. Click a field for its top values."
+            info="Only app query input attributes returned by the sample’s field summaries are listed: type, fill rate (% of sampled events carrying it), distinct-value count and top values. Cribl’s field-summaries API returns at most 200 fields before this list is filtered, so a query-used field may be absent from the sample list. AMI coverage checks every query-used field with uncapped count(field). Click a field for its top values."
             infoLabel="What the field list shows, the query behind it, and when it was sampled"
             infoDialogLabel="How the In feed field list was computed"
             computed={feedComputed(state, { following: liveOnly, earliest: range.earliest, label: range.label })}
-            note={`${sampleNote(state, { following: liveOnly, label: range.label })} · ${visible.length} of ${state.fields.length} shown · top 200 (field-summaries cap; ~310 in feed)`}>
-            <QueryBoundary state={{ loading: state.loading, error: state.error, errorTitle: state.errorTitle, rows: state.fields }} emptyLabel="No fields in this window">
+            note={`${sampleNote(state, { following: liveOnly, label: range.label })} · ${visible.length} of ${feedFields.length} query-used fields shown · summaries capped at 200`}>
+            <QueryBoundary state={{ loading: state.loading, error: state.error, errorTitle: state.errorTitle, rows: visible }} emptyLabel="No matching query-used fields in this sample">
               <ul className="fe-list">
                 {visible.map((f) => {
                   const isOpen = open === f.name

@@ -133,11 +133,11 @@ export function searchUrl(path: string): string {
  * target="_blank"). Dev preview: prefixed with the injected Cribl origin so it
  * still reaches the real Search UI.
  */
-export function searchUiUrl(query: string, earliest: string, latest = 'now'): string {
+export function searchUiUrl(query: string, earliest: string, latest = 'now', asWritten = false): string {
   const origin = (typeof window !== 'undefined' && window.__CRIBL_SEARCH_ORIGIN) || ''
   const jobId = `link-${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
   // The Search UI opens on the dataset the panel actually read — see `toActiveDataset`.
-  const params = new URLSearchParams({ q: toActiveDataset(query), et: earliest, lt: latest, tz: 'local' })
+  const params = new URLSearchParams({ q: asWritten ? query : toActiveDataset(query), et: earliest, lt: latest, tz: 'local' })
   return `${origin}/search/${jobId}?${params.toString()}`
 }
 

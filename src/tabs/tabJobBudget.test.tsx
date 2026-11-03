@@ -97,7 +97,6 @@ import { TABS } from '../app/tabs'
 import { MANIFEST, accelSavedSearch, columnsOf, resolvedManifest, type AccelEntry, type AccelId, type AccelSavedSearch } from '../cribl/accel/manifest'
 import { accelServing, forgetAccelServing, loadAccelServing } from '../cribl/accel/serving'
 import { lakeWindow } from '../queries/lakeWindow'
-import { METRICS_QUERY } from '../queries/dataFlow'
 import { PRESENCE_QUERY } from '../queries/fieldExplorer'
 import { resetAccelKeyMemo } from '../cribl/accel/read'
 import { HEAD_LIMIT, cronIntervalMs } from '../cribl/accel/status'
@@ -106,6 +105,7 @@ import { dataMode } from '../cribl/dataMode'
 import { summariseRows, type Row } from '../cribl/search'
 import { resetSnapshotCensus, useSnapshotCensus, type SnapshotCensus } from '../components/snapshotCensus'
 import { SOURCES } from '../queries/security'
+import { DATASET_RECORDS_QUERY } from '../queries/dataFlow'
 import { buildTrendQuery, latencyQuery } from '../queries/tcpHealth'
 
 // ── The budget ──────────────────────────────────────────────────────────────
@@ -172,7 +172,14 @@ const BUDGET: Readonly<Record<string, TabBudget>> = {
   '/tls-posture': { served: 1, jobs: [] },
   '/pqc': { served: 2, jobs: [] },
   '/ai-saas': { served: 3, jobs: [] },
-  '/data-flow': { served: 2, jobs: [] },
+  // With no Onboard connection in this workspace stub, no telemetry job is
+  // submitted; the whole-dataset record aggregate (Lake, Search, Network
+  // Traffic, Enriched Metadata) runs regardless. Connected workspaces add the
+  // exact connection telemetry (DataFlow.test.tsx).
+  '/data-flow': {
+    served: 0,
+    jobs: [live('Lake / Search / AMI records', DATASET_RECORDS_QUERY, `${NOT_IN_MANIFEST}; owner decision 2026-11-02, whole gigamon_ami`)],
+  },
   '/fields': {
     // The default view is AMI coverage, whose family panels are drawn from the
     // stored presence scan but carry no snapshot caption of their own; the one
@@ -657,7 +664,7 @@ describe('jobs each tab submits in Snapshot mode, opened and scrolled', () => {
 // motivated the phase: both of Data Flow's Cribl-side figures paused, both run
 // live — no more, and not as stored reads.
 describe('a paused schedule’s panels run live', () => {
-  it('/data-flow with its pipeline and Lake schedules paused: exactly those two live queries', async () => {
+  it('/data-flow runs only its live record query when legacy schedules are paused', async () => {
     act(() => root.unmount())
     paused = new Set<AccelId>(['gno_pipeline_c1h', 'gno_lake_30d_c1d'])
     // The boot read in beforeEach saw the healthy list; this one sees the pause.
@@ -665,9 +672,7 @@ describe('a paused schedule’s panels run live', () => {
     void loadAccelServing()
     root = createRoot(container)
     await renderAt('/data-flow')
-    const lakeQuery = lakeWindow(30, 30)!.query
-    const strip = (q: string) => q.replace(EXEC_PREFIX, '')
-    expect(submits.map(strip).sort()).toEqual([METRICS_QUERY, lakeQuery].sort())
+    expect(submits.map((q) => q.slice(q.indexOf('dataset=')))).toEqual([DATASET_RECORDS_QUERY])
     const main = container.querySelector('.app-main')?.textContent ?? ''
     expect(main, 'a paused schedule’s panel told the reader to check the schedule').not.toContain('schedule overdue')
     // Neither the diagram (its Cribl half is live) nor the Lake card is a dated

@@ -660,7 +660,7 @@ export function approvedWrites(state: AccelState): ApprovedWrites {
   for (const row of state.rows) {
     // Never a write from a window nobody resolved — neither a create nor an
     // overwrite. See `windowUnresolved`.
-    if (row.windowUnresolved) continue
+    if (row.windowUnresolved || row.entry.legacyOnly) continue
     if (row.state === 'absent' || row.state === 'differs') out[row.id] = row.state
   }
   return out
@@ -741,6 +741,10 @@ export async function applyAcceleration(
 
   for (const row of before.rows) {
     const { entry, intended } = row
+    if (entry.legacyOnly) {
+      step({ id: row.id, action: 'skipped', detail: 'legacy combined Data Flow snapshot: no longer displayed; existing searches can be paused or removed' })
+      continue
+    }
     // A Lake row whose window nobody resolved is written in NO state — before
     // the approved-set check, because the confirmation never named it, and
     // "it changed while the dialog was open" would be the wrong reason.
@@ -1167,6 +1171,10 @@ export function applyPlan(state: AccelState): AccelPlan {
   const willWrite: string[] = []
   const willLeave: { label: string; why: string }[] = []
   for (const row of state.rows) {
+    if (row.entry.legacyOnly) {
+      willLeave.push({ label: label(row.entry), why: 'legacy combined Data Flow snapshot: no longer displayed; existing searches can be paused or removed' })
+      continue
+    }
     switch (row.state) {
       case 'absent':
         if (row.windowUnresolved) {

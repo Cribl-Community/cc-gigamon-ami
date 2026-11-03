@@ -63,6 +63,7 @@
 // pack YAML), so they are read from there rather than typed out again. Every export is frozen in __frozen__/display.json,
 // so a change to which ids are counted is a visible diff.
 
+import { GLOBAL_HTTP_INPUT_ID, GLOBAL_HTTP_PIPELINE_ID, GLOBAL_LAKE_DESTINATION_ID } from '../cribl/globalHttpIds'
 import {
   PACK_0_1_0, PACK_HTTP_INPUT_ID, PACK_HTTP_JSON_ROUTE_ID, PACK_HTTP_PARQUET_ROUTE_ID, PACK_JSON_OUTPUT_ID,
   PACK_LAKE_DATASET_ID, PACK_PARQUET_DATASET_ID, PACK_PARQUET_OUTPUT_ID, PACK_PARQUET_PIPELINE_ID, PACK_PIPELINE_ID, PACK_PUBLISHED_VERSIONS,
@@ -127,6 +128,24 @@ export const STACKS: readonly Stack[] = [
     what: "The demo feed: DataGen through QuickConnect into today's Lake destination.",
     paths: [
       { route: null, input: 'datagen:in_gigamon_datagen', pipeline: 'gigamon_ami', output: 'cribl_lake:gigamon_lake', dataset: 'gigamon_ami' },
+    ],
+  },
+  {
+    // The group's own Raw HTTP source Onboard creates (owner decision
+    // 2026-10-24; ../cribl/globalHttp.ts): QuickConnect into the same global
+    // Lake destination the demo feed writes, through a pipeline of its own id
+    // — never the pack's `gigamon_ami_normalize`, whose in-pack label is
+    // unmeasured — so its (source, pipeline) pair is its own and Processing
+    // counts it by `pipe.out_events` like the demo's. Adding it moved
+    // METRICS_QUERY (src_events and pipe_events), so gno_pipeline_c1h reads as
+    // drifted until Re-apply; LAKE_TOTAL_QUERY counts gigamon_lake by output
+    // alone and did not move.
+    key: 'global-http',
+    scope: 'global',
+    status: 'offered',
+    what: 'The Raw HTTP source Guided Setup creates for Gigamon AMX, through QuickConnect into the global Lake destination.',
+    paths: [
+      { route: null, input: `http_raw:${GLOBAL_HTTP_INPUT_ID}`, pipeline: GLOBAL_HTTP_PIPELINE_ID, output: `cribl_lake:${GLOBAL_LAKE_DESTINATION_ID}`, dataset: 'gigamon_ami' },
     ],
   },
   // The global Syslog and Raw HTTP stacks earlier releases of Guided Setup

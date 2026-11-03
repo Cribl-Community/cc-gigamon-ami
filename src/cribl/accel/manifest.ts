@@ -78,7 +78,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { APP_VERSION } from '../config'
-import { LAKE_TOTAL_QUERY, METRICS_QUERY, VOLUME_AGGS, VOLUME_QUERY } from '../../queries/dataFlow'
+import { LAKE_TOTAL_QUERY, METRICS_QUERY } from '../../queries/dataFlow'
 import { LAKE_DEFAULT_WINDOW, type LakeWindow } from '../../queries/lakeWindow'
 import { FEED_SAMPLE_QUERY, PRESENCE_QUERY } from '../../queries/fieldExplorer'
 import { KPI_AGGS as CAPACITY_KPI_AGGS, buildAppmixQuery, buildKpiQuery, buildL4Query, buildTalkersQuery } from '../../queries/capacityTopTalkers'
@@ -93,10 +93,10 @@ import {
 } from '../../queries/webApiHealth'
 import { COUNT_AGGS as SECURITY_COUNT_AGGS, COUNTS as SECURITY_COUNTS_QUERY } from '../../queries/security'
 import { FINDING_AGGS, FINDINGS_QUERY } from '../../queries/findings'
-import { nodesQuery } from '../../queries/flowMap'
+import { nodesQuery, pairsQuery } from '../../queries/flowMap'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
-import { APP_SRC_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY, WEB_HOST_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { APP_SRC_SNAPSHOT_QUERY, OVERVIEW_SNAPSHOT_QUERY, WEB_HOST_SNAPSHOT_QUERY } from '../../queries/snapshots'
 // TCP health's subnet heatmap: the four metric sums the scheduled bodies carry,
 // and the panel's own query builder, so the four `display` strings below are the
 // four strings that panel actually shows rather than copies of them.
@@ -197,6 +197,8 @@ export interface AccelServed {
 /** One scheduled search: what it runs, when, and on whose behalf. */
 export interface AccelEntry {
   readonly id: AccelId
+  /** Retained for managing existing searches, not created or reapplied. */
+  readonly legacyOnly?: boolean
   /** The title Cribl's Saved Searches list shows. Prefixed so an operator
    *  scanning that list sees ours grouped, the way the id does for the code. */
   readonly name: string
@@ -398,7 +400,6 @@ const CAPACITY_KPI_COLUMNS = aliasesOf(CAPACITY_KPI_AGGS)
 const WEB_KPI_COLUMNS = aliasesOf(WEB_KPI_AGGS)
 const SECURITY_COUNT_COLUMNS = aliasesOf(SECURITY_COUNT_AGGS)
 const FINDING_COLUMNS = aliasesOf(FINDING_AGGS)
-const VOLUME_COLUMNS = aliasesOf(VOLUME_AGGS)
 
 /**
  * THE NINE ENTRIES.
@@ -473,11 +474,12 @@ const tcpHeatPanels = (mask: Mask): AccelServed[] => {
 export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   entry({
     id: 'gno_lake_30d_c1d',
+    legacyOnly: true,
     name: 'GNO Lake total 30 days',
     panels: [
       {
         queryId: 'data-flow-lake-total',
-        what: 'Data Flow — Lake total (1 tile)',
+        what: 'Data Flow — legacy combined Lake total (no longer displayed)',
         display: LAKE_TOTAL_QUERY,
         // Events only: the card's size is the Lake API's stored size, not the
         // bytes Stream wrote (1.01 TB written against 110.5 GB stored, measured
@@ -501,7 +503,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     // yesterday's to show. One would be a daily window of blankness.
     keepLastN: 2,
     why:
-      "Data Flow's 30-day Lake total is the most expensive query this app runs: 9,297.7 billable CPU-s a run, 15–24 runs a day, because it sums thirty days of Stream write counters and every viewer's first paint asks for it again. The figure it produces changes once a day at most. Run once at 00:10 UTC, the tile reads that run's stored result for about 0.2 CPU-s.",
+      'Legacy combined Lake total, no longer displayed by Data Flow. Apply and onboarding leave it alone and never create it. An existing running search still bills daily; pause or remove it here if it is no longer needed. Its results cannot be attributed to the onboarded source.',
   }),
   entry({
     id: 'gno_sample_2m_c1h',
@@ -585,13 +587,6 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         tail: projectionOf(FINDING_AGGS, ['findings_total']),
         reads: ['findings_total', ...FINDING_COLUMNS],
       },
-      {
-        queryId: 'data-flow-volume',
-        what: 'Data Flow — records, bytes and packets in the window',
-        display: VOLUME_QUERY,
-        tail: projectionOf(VOLUME_AGGS),
-        reads: VOLUME_COLUMNS,
-      },
     ],
     body: OVERVIEW_SNAPSHOT_QUERY,
     // -18m…-3m: fifteen minutes of data, ending clear of the 120-second file
@@ -615,7 +610,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     // it first and leaving a picker full of times that read as empty.
     keepLastN: 24,
     why:
-      'Five panels on five tabs each open with their own unfiltered whole-window scan: the Capacity tiles, the Web and API tiles, the Security technique counts, the Findings counts and the Data Flow volume figures. One scan an hour carries all five, and each panel reads its own columns out of the stored row. It also gives those five a past — twenty-four retained runs mean a viewer can ask what the tiles said at 04:20, which no live query can answer at any price.',
+      'One hourly scan serves the Capacity tiles, Web and API tiles, Security technique counts and Findings counts. Each panel reads its own columns from the stored row, with twenty-four retained runs available in the snapshot picker. Data Flow now reads only its onboarded connection live; its legacy volume projection is no longer used.',
   }),
   entry({
     id: 'gno_svc_nodes_c1h',
@@ -627,7 +622,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
         display: nodesQuery,
         // No tail: the body IS the panel's query, sort and limit included. The
         // multi-panel machinery is not used where it would buy nothing.
-        reads: ['dst_aws_flat_tags_name', 'app', 'app_n', 'dns', 'dns_n', 'resets', 'flows'],
+        reads: ['dst_ip', 'host', 'net', 'net_n', 'dupack_flows', 'dupack_n', 'flows'],
       },
     ],
     body: nodesQuery,
@@ -645,44 +640,26 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
   entry({
     id: 'gno_svc_edges_c1h',
     name: 'GNO Flow map edges',
-    // ONE PANEL, AND IT USED TO BE TWO. The entry served `flow-map-edges`
-    // and `flow-map-sources` — two records, two tails, and therefore TWO
-    // STORED READS on the app's default route, because read.ts submits a
-    // `$vt_results` job per served panel (its KEY_MEMO caches the read key, not
-    // the rows). One scan was being asked for twice.
-    //
-    // The two tails were `| where dst_svc != "" | sort by flows desc | limit 40`
-    // and `| summarize out=sum(flows) by src_aws_flat_tags_name | sort by out
-    // desc | limit 20`. Both are now done in FlowMap.tsx over the rows of a
-    // single un-tailed read — which the tab was already half doing, since its
-    // external-peer spokes have always been arithmetic over the edge rows.
-    //
-    // This cost nothing and bought a whole read on the route every arrival lands
-    // on. It also made the ⓘ claim STRONGER rather than weaker: `display` is now
-    // the body, run verbatim, so this entry is back inside the Phase 2 promise
-    // that a served panel shows the string that produced its number. In Live
-    // mode the tab submits this same body once instead of two narrower scans.
+    // Source IP → destination IP pairs, sorted and limited in the body: the tab
+    // picks its client nodes, edges and "Other destinations" spokes from these
+    // rows. Until 2026-11 this entry grouped by the AWS Name tags, which the
+    // feed does not carry, and briefly by application.
     panels: [
       {
         queryId: 'flow-map-edges',
-        what: 'Flow map — the edges between services and the per-source outbound totals',
-        display: SERVICE_EDGES_SNAPSHOT_QUERY,
-        // No tail: the panel reads the whole grouping and cuts both of its own
-        // views out of it. The sentinel group the body's `extend` creates is
-        // what makes that safe — see src/queries/snapshots.ts. Dropping the
-        // untagged destinations server-side would take the client-only totals
-        // with it, short, with nothing on screen to say so.
-        reads: ['src_aws_flat_tags_name', 'dst_svc', 'flows'],
+        what: 'Flow map — the source IP → destination IP edges',
+        display: pairsQuery,
+        reads: ['src_ip', 'dst_ip', 'flows'],
       },
     ],
-    body: SERVICE_EDGES_SNAPSHOT_QUERY,
+    body: pairsQuery,
     earliest: '-18m',
     latest: '-3m',
     cron: '22 * * * *',
     tz: 'UTC',
     keepLastN: 24,
     why:
-      "The other two scans behind Flow map's graph — the edges and the per-source outbound totals — out of one grouping, read once. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
+      "The second scan behind Flow map's graph — the busiest source IP → application pairs. With the node entry this takes the app's default route to no live queries at all on arrival, and gives the whole map a day of past states.",
   }),
 
   entry({
@@ -849,11 +826,12 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
 
   entry({
     id: 'gno_pipeline_c1h',
+    legacyOnly: true,
     name: 'GNO Pipeline telemetry',
     panels: [
       {
         queryId: 'data-flow-pipeline',
-        what: 'Data Flow — the Cribl stage counters (source, pipeline, destination, blocked, backpressure)',
+        what: 'Data Flow — legacy combined stage counters (no longer displayed)',
         display: METRICS_QUERY,
         // No tail: the body IS the panel's query, one row of six counters.
         reads: ['src_events', 'pipe_events', 'dst_events', 'dst_bytes', 'blocked', 'backpressure'],
@@ -893,7 +871,7 @@ export const MANIFEST: readonly AccelEntry[] = Object.freeze([
     tz: 'UTC',
     keepLastN: 24,
     why:
-      "The last live query on the Data Flow tab, and nobody proposed it before the coverage audit: the two figures beside it — the record-derived volumes and the 30-day Lake total — have been served since Phase 2, so this one query was what kept the whole diagram reporting LIVE and undated. It reads cribl_metrics rather than gigamon_ami, which gno_lake_30d_c1d has been doing on a schedule since Phase 2, so the mechanism is proven on this dataset. With it the tab reaches three of three, and the diagram gains a past: twenty-four retained runs mean an operator can ask whether the destination was blocked at 04:24 rather than only whether it is blocked now.",
+      'Legacy combined Stream counters, no longer displayed by Data Flow. Apply and onboarding leave it alone and never create it. An existing running search still bills hourly; pause or remove it here if it is no longer needed. Data Flow now reads only the onboarded connection live.',
   }),
 
   // ── WEB & API HEALTH: FOUR ENTRIES FOR FIVE PANELS ────────────────────────

@@ -33,8 +33,8 @@ describe('the table holds only measured types', () => {
       krb5_message_type: 'string', snmp_community: 'string', icmp_tunneling: 'string',
       dcerpc_service: 'string', sip_from: 'string', http_cookie: 'string', ftp_data_content: 'string',
       snmp_processing_anomaly_type: 'string', http_code: 'string', dns_reply_code: 'string',
-      udp_wrong_crc: 'string', ip_wrong_crc: 'string', src_ip: 'string', dst_aws_flat_tags_name: 'string',
-      src_aws_flat_tags_name: 'string', dns_host: 'string', http_host: 'string',
+      udp_wrong_crc: 'string', ip_wrong_crc: 'string', src_ip: 'string',
+      dns_host: 'string', http_host: 'string',
       ssl_server_name: 'string', ssl_ext_ec_supported_groups_type: 'string',
     })
     expect(Object.isFrozen(FIELD_TYPES)).toBe(true)
@@ -81,11 +81,14 @@ describe('what the table lets through (nothing moves: every route stays json)', 
     // Until 2026-09-27 this listed eight. The seven below open with a presence
     // term `f=*`, read as class D (density); the first parity run failed every
     // one of them in all three windows, and the term is class A now.
+    // flowMap.pairs groups on src_ip and dst_ip since 2026-11-03 (Source IP →
+    // Destination IP); dst_ip's type is not measured, so it is refused on type,
+    // not density, and is no longer in this list.
     expect(verdicts.filter((v) => v.textAndType && !v.all).map((v) => v.id).sort()).toEqual(['tls.pqcByServer'])
   })
 
-  it('refuses the seven presence-term entries on class A, not on density', () => {
-    const presence = ['flowMap.edges', 'flowMap.serviceEdges', 'pqc.groups', 'web.codes', 'web.h2', 'web.hosts', 'web.trend']
+  it('refuses the five presence-term entries on class A, not on density', () => {
+    const presence = ['pqc.groups', 'web.codes', 'web.h2', 'web.hosts', 'web.trend']
     for (const id of presence) {
       const refusals = ROUTES.find((e) => e.id === id)!.queries.flatMap((q) => eligibility(q, FIELD_TYPES).refusals)
       expect(refusals.some((r) => r.kind === 'class' && /^class A on \S+ reads true on every Parquet row/.test(r.words)), id).toBe(true)

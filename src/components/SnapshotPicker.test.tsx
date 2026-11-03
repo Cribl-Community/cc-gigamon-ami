@@ -88,7 +88,9 @@ describe('the options', () => {
 describe('what the line under it says', () => {
   it('names how far back the list goes', () => {
     expect(horizonLine(HOURLY, null, T)).toContain('4 stored runs')
-    expect(horizonLine(HOURLY, null, T)).toMatch(/back to \d/)
+    // A clock, with the date in front when the oldest run fell on another day
+    // in the machine's own zone (it is 8 hours before T).
+    expect(horizonLine(HOURLY, null, T)).toMatch(/back to (\S+ \S+ )?\d{2}:\d{2}\./)
   })
 
   it('says how many sets answered the moment that was picked', () => {

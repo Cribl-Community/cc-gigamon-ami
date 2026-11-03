@@ -234,8 +234,9 @@ describe('the stack list', () => {
   it('counts no global stack an earlier release of Guided Setup created', () => {
     // The Syslog and Raw HTTP stacks earlier releases created left the list on
     // 2026-09-26 (owner decision): new installs never have them, and the app no
-    // longer shows or removes them. So no path, query or ⓘ names their objects,
-    // and the only global stack is the demo feed.
+    // longer shows or removes them. So no path, query or ⓘ names their objects.
+    // The global stacks are the demo feed and, since 2026-10-24 (owner
+    // decision), the Raw HTTP source Onboard creates under new ids.
     const EARLIER = ['in_gigamon_syslog', 'gigamon_syslog', 'gigamon_ami_syslog', 'in_gigamon_http', 'gigamon_http_normalize', 'gigamon_ami_http']
     const paths = STACKS.flatMap((s) => s.paths)
     for (const id of EARLIER) {
@@ -244,8 +245,8 @@ describe('the stack list', () => {
         expect(text, id).not.toMatch(new RegExp(`\\b${id}\\b`))
       }
     }
-    expect(STACKS.filter((s) => s.scope === 'global').map((s) => s.key)).toEqual(['global-demo'])
-    expect(STACKS.filter((s) => s.status === 'offered').map((s) => s.key), 'a global stack is offered again').toEqual([])
+    expect(STACKS.filter((s) => s.scope === 'global').map((s) => s.key)).toEqual(['global-demo', 'global-http'])
+    expect(STACKS.filter((s) => s.status === 'offered').map((s) => s.key)).toEqual(['global-http'])
   })
 
   it('has no stack still waiting for its ids', () => {
@@ -302,8 +303,8 @@ describe('the stage ⓘ prose', () => {
     const forbidden = [...ids(unshown)].filter((id) => !allowed.has(id))
     expect(forbidden.length).toBeGreaterThan(0)
     for (const text of PROSE) for (const id of forbidden) expect(text).not.toMatch(new RegExp(`\\b${id}\\b`))
-    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen'])
-    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami'])
+    expect(SHOWN_INPUTS).toEqual(['in_gigamon_datagen', 'in_gigamon_ami_http'])
+    expect(SHOWN_PIPELINES).toEqual(['gigamon_ami', 'gigamon'])
     expect(SHOWN_OUTPUTS).toEqual(['gigamon_lake'])
     for (const id of SHOWN_INPUTS) expect(COUNTED_SOURCES_PROSE).toContain(id)
     for (const id of SHOWN_PIPELINES) expect(COUNTED_PIPELINES_PROSE).toContain(id)

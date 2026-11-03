@@ -23,7 +23,7 @@
 import type { ConfirmResource } from './ConfirmDialog'
 import type { StatusState } from './StatusPill'
 import { SEARCH_GROUP } from '../cribl/config'
-import { MANIFEST, type AccelEntry } from '../cribl/accel/manifest'
+import { MANIFEST, accelEntry, type AccelEntry } from '../cribl/accel/manifest'
 import type { AccelEntryState, AccelRow, AccelState } from '../cribl/accel/provision'
 import type { AccelStatus } from '../cribl/accel/status'
 import { cadenceLooksRight } from '../cribl/accel/status'
@@ -222,6 +222,10 @@ export function showOwnerColumn(rows: readonly AccelRow[], me: string | null): b
 /** The extra sentence a row needs, or null. Rendered under the row rather than
  *  in a cell, because `.dtable` cells do not wrap. */
 export function rowNote(row: AccelRow, health: Health): string | null {
+  if (row.entry.legacyOnly && row.state !== 'foreign' && row.state !== 'unreadable') {
+    const differences = row.differences.length ? ` Detected differences: ${row.differences.join('; ')}.` : ''
+    return `Legacy combined Data Flow snapshot: no longer displayed. Apply leaves it unchanged and does not create it when absent. Existing searches can be paused or removed.${differences}`
+  }
   // Before the differences: with the Lake window unresolved they are only the
   // ones that do not depend on it, and Apply will not write this row at all
   // (provision.ts `windowUnresolved`), so "Apply overwrites it" would be false.
@@ -319,6 +323,7 @@ export function removeCostLine(saving: WorkspaceSaving): string {
 
 /** One entry's line in the estimate, basis and all. */
 export function entrySavingWords(saving: EntrySaving): string {
+  if (accelEntry(saving.id).legacyOnly) return 'No dashboard reads this legacy snapshot; its work is a recurring charge only.'
   const basis =
     saving.scheduledRun.basis === 'measured'
       ? 'the scheduled run’s cost was measured'
@@ -348,6 +353,7 @@ export const SAVED_KIND = 'Cribl Search saved search'
 export function applyResources(state: AccelState): ConfirmResource[] {
   const out: ConfirmResource[] = []
   for (const row of state.rows) {
+    if (row.entry.legacyOnly) continue
     // An absent Lake total with its window unresolved is not created
     // (provision.ts `windowUnresolved`, owner decision 2026-09-24).
     if (row.state === 'absent' && !row.windowUnresolved) {
@@ -433,6 +439,7 @@ export function scheduleCostLine(saving: WorkspaceSaving, id: string, enable: bo
   const entry = saving.entries.find((e) => e.id === id)
   if (!entry) return ''
   const schedule = creditsFor(entry.scheduledRun.cpuSeconds * entry.scheduledRunsPerDay)
+  if (accelEntry(entry.id).legacyOnly) return `${enable ? 'Starts' : 'Stops'} this legacy schedule's charge (${formatRecurringCost(schedule)}). No dashboard reads its results; Data Flow’s live counters are unchanged.`
   const live = creditSpanWords({ low: creditsFor(entry.beforeCpuSeconds.low), high: creditsFor(entry.beforeCpuSeconds.high) })
   return enable
     ? `Starts this schedule's charge again (${formatRecurringCost(schedule)}) and stops the live query's (${live}).`
@@ -539,6 +546,7 @@ export function setCostWords(cost: ScheduleSetCost): string {
  * is on whatever Findings' switch says. A shared search's cost is in the ⓘ.
  */
 export function tabCostWords(key: AccelTabKey, own: ScheduleSetCost): string {
+  if (key === 'data-flow') return `Legacy snapshots bill ${creditSpanWords(own.chargeCredits)} (estimated); they no longer replace any dashboard query. Live connection counters are independent of this switch.`
   const shared = sharedSchedulesOfTab(key)
   const mine = own.ids.length ? setCostWords(own) : 'no scheduled search of its own'
   return shared.length ? `${mine} · shares ${shared.join(', ')}` : mine
@@ -618,6 +626,9 @@ export function toggleResources(plan: TogglePlan): ConfirmResource[] {
 /** What the flip does to the bill, in the direction it goes. `cost` is the
  *  estimate for exactly `plan.changes`. */
 export function toggleCostLine(plan: TogglePlan, cost: ScheduleSetCost): string {
+  if (plan.changes.length && plan.changes.every((c) => c.entry.legacyOnly)) {
+    return `${planResumes(plan) ? 'Starts' : 'Stops'} the legacy snapshots’ charge (${creditSpanWords(cost.chargeCredits)}). They no longer serve any dashboard, and this does not change Data Flow’s live counters. An estimate, not a bill.`
+  }
   const live = liveCpuSecondsPerDay(cost.saving)
   const liveWords = creditSpanWords({ low: creditsFor(live.low), high: creditsFor(live.high) })
   const their = plan.changes.length === 1 ? 'this schedule’s' : 'these schedules’'

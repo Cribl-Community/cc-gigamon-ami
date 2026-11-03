@@ -60,7 +60,7 @@ const WRITES_TO_DATASET = `namespace=="data_insights" and ${anyOf('output', COUN
  * routes then take it. Measured 2026-09-24 on the demo feed: the two agree
  * exactly while there is one path (26,302 and 26,302 over three minutes).
  */
-const RECEIVED = `metric=="total.in_events" and namespace=="data_insights" and ${anyOf('input', COUNTED_INPUTS)}`
+const receivedFor = (inputs: readonly string[]) => `metric=="total.in_events" and namespace=="data_insights" and ${anyOf('input', inputs)}`
 
 /**
  * Passed on by a pipeline, one count per event.
@@ -113,14 +113,61 @@ export const VOLUME_QUERY = q(VOLUME_DERIVATION + ' | summarize ' + VOLUME_AGGS)
  * counts an event once is written beside RECEIVED, PROCESSED and
  * WRITES_TO_DATASET above; stackIds.test.ts checks it against a model of the rows.
  */
-export const METRICS_QUERY =
+export const metricsQueryFor = (extraInputs: readonly string[]): string =>
   'dataset="cribl_metrics" | summarize ' +
-  `src_events=sum(iif(${RECEIVED}, value, 0)), ` +
+  `src_events=sum(iif(${receivedFor([...COUNTED_INPUTS, ...extraInputs.filter((i) => !COUNTED_INPUTS.includes(i))])}, value, 0)), ` +
   `pipe_events=sum(iif(${PROCESSED}, value, 0)), ` +
   `dst_events=sum(iif(metric=="total.out_events" and ${WRITES_TO_DATASET}, value, 0)), ` +
   `dst_bytes=sum(iif(metric=="total.out_bytes" and ${WRITES_TO_DATASET}, value, 0)), ` +
   'blocked=sum(iif(metric=="blocked.outputs", value, 0)), ' +
   'backpressure=sum(iif(metric=="backpressure.outputs", value, 0))'
+
+/**
+ * The stage counters as the hourly snapshot runs them (`gno_pipeline_c1h`).
+ * The Data Flow tab adds the Raw HTTP source Guided Setup's Onboard connected
+ * (`metricsQueryFor`) when its id is not one ./stackIds.ts lists — then that
+ * panel runs live, because the stored run did not count it. Only the Sources
+ * term moves: the source's pipeline (`gigamon`) and destination are already
+ * counted by their own ids.
+ */
+export const METRICS_QUERY = metricsQueryFor([])
+
+export interface OnboardedMetricPath {
+  sourceId: string
+  pipeline: string
+  destination: string
+}
+
+/** Raw Stream counters for each named object, including shared-object traffic. */
+export function onboardedMetricsQueryFor(path: OnboardedMetricPath & { group: string }): string {
+  const input = JSON.stringify(`http_raw:${path.sourceId}`)
+  const output = JSON.stringify(`cribl_lake:${path.destination}`)
+  const received = `_metric=="cribl.logstream.total.in_events" and input==${input}`
+  const processed = `_metric=="cribl.logstream.pipe.out_events" and id==${JSON.stringify(path.pipeline)}`
+  const written = `output==${output}`
+  return `dataset="default_metrics" | where group==${JSON.stringify(path.group)} | summarize ` +
+    `src_samples=countif(${received}), src_events=sum(iif(${received}, _value, 0)), ` +
+    `pipe_samples=countif(${processed}), pipe_events=sum(iif(${processed}, _value, 0)), ` +
+    `dst_samples=countif(_metric=="cribl.logstream.total.out_events" and ${written}), ` +
+    `dst_events=sum(iif(_metric=="cribl.logstream.total.out_events" and ${written}, _value, 0)), ` +
+    `dst_byte_samples=countif(_metric=="cribl.logstream.total.out_bytes" and ${written}), ` +
+    `dst_bytes=sum(iif(_metric=="cribl.logstream.total.out_bytes" and ${written}, _value, 0))`
+}
+
+/**
+ * The four record figures (Lake, Search, Enriched Metadata, Network Traffic),
+ * counted over the whole gigamon_ami dataset for the selected window (owner
+ * decision 2026-11-02): every writer to the dataset is included, not only the
+ * onboarded source. A record's volume is covered only when both directions are
+ * numeric and nonnegative; a missing direction is not an observed zero.
+ */
+const VALID_BYTES = 'isnotnull(flow_src_bytes) and isnotnull(flow_dst_bytes) and flow_src_bytes>=0 and flow_dst_bytes>=0'
+const VALID_PACKETS = 'isnotnull(flow_src_packets) and isnotnull(flow_dst_packets) and flow_src_packets>=0 and flow_dst_packets>=0'
+export const DATASET_RECORDS_QUERY = q('| extend flow_src_bytes=toreal(src_bytes), flow_dst_bytes=toreal(dst_bytes), ' +
+  'flow_src_packets=toreal(src_packets), flow_dst_packets=toreal(dst_packets) ' +
+  '| summarize events=count(), ' +
+  `byte_records=countif(${VALID_BYTES}), bytes=sum(iif(${VALID_BYTES}, flow_src_bytes+flow_dst_bytes, 0)), ` +
+  `packet_records=countif(${VALID_PACKETS}), packets=sum(iif(${VALID_PACKETS}, flow_src_packets+flow_dst_packets, 0))`)
 
 /**
  * What is actually held in the Lake dataset, independent of the page's range —

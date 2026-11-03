@@ -71,6 +71,7 @@ interface Call { method: string; path: string; body: unknown }
 type Fail =
   | 'dataset:gigamon_ami' | 'dataset:gigamon_ami_pq' | 'dataset:gigamon_ami_sample'
   | 'packPost' | 'verify' | 'httpPatch' | 'samplePatch' | 'commit' | 'deploy' | 'savedPost' | 'packDelete'
+  | 'globalSource' | 'globalPipeline'
 
 interface Opts {
   managed?: boolean
@@ -95,7 +96,22 @@ interface Opts {
   /** What the Leader makes of the shipped Raw HTTP source when it installs the
    *  pack: keys set (an `undefined` value removes the key). */
   installMaterialises?: Record<string, unknown>
+  /** The group's own Raw HTTP stack (../globalHttp.ts) before the run: the
+   *  source's body, and which of the other three are there. */
+  global?: { source?: Record<string, unknown>; breaker?: boolean; pipeline?: boolean; destination?: boolean }
+  /** A failed source POST still stores the body (and so the token). */
+  globalTokenLandsOnError?: boolean
 }
+
+const G_SOURCE = `/m/${GROUP}/system/inputs/in_gigamon_ami_http`
+/** What onboarding leaves on a source: QuickConnect to Cribl Lake through `gigamon`. */
+const CONNECTED = { sendToRoutes: false, breakerRulesets: ['gigamon_ami_http_json_array'], connections: [{ pipeline: 'gigamon', output: 'gigamon_lake' }] }
+const G_PATHS = {
+  breaker: [`/m/${GROUP}/lib/breakers`, 'gigamon_ami_http_json_array', `groups/${GROUP}/local/cribl/breakers.yml`],
+  pipeline: [`/m/${GROUP}/pipelines`, 'gigamon', `groups/${GROUP}/local/cribl/pipelines/gigamon/conf.yml`],
+  destination: [`/m/${GROUP}/system/outputs`, 'gigamon_lake', `groups/${GROUP}/local/cribl/outputs.yml`],
+  source: [`/m/${GROUP}/system/inputs`, 'in_gigamon_ami_http', `groups/${GROUP}/local/cribl/inputs.yml`],
+} as const
 
 let calls: Call[] = []
 let world: ReturnType<typeof makeWorld>
@@ -121,7 +137,13 @@ function makeWorld(o: Opts) {
           [PACK_SAMPLE_INPUT_ID]: { ...shipped(PACK_SAMPLE_INPUT_ID), ...(o.installed?.sample ?? {}) },
         } as Record<string, Record<string, unknown>>
       : {} as Record<string, Record<string, unknown>>,
-    groupInputs: o.groupInputs ?? [],
+    groupInputs: [...(o.groupInputs ?? []), ...(o.global?.source ? [{ id: 'in_gigamon_ami_http', type: 'http_raw', ...CONNECTED, ...o.global.source }] : [])],
+    global: new Map<string, Record<string, unknown>>([
+      ...(o.global?.breaker ? [['breaker', { id: 'gigamon_ami_http_json_array' }]] : []),
+      ...(o.global?.pipeline ? [['pipeline', { id: 'gigamon' }]] : []),
+      ...(o.global?.destination ? [['destination', { id: 'gigamon_lake' }]] : []),
+      ...(o.global?.source ? [['source', { id: 'in_gigamon_ami_http', type: 'http_raw', ...CONNECTED, ...o.global.source }]] : []),
+    ] as Array<[string, Record<string, unknown>]>),
     pending: [] as string[],
     saved: new Map<string, Record<string, unknown>>(),
     kv: new Map<string, string>(),
@@ -233,6 +255,31 @@ function leader(o: Opts = {}): void {
       if (at('GET', p)) return w.packs.length ? reply(200, { items }) : reply(404, { message: 'no pack' })
     }
 
+    // The group's own Raw HTTP stack.
+    for (const [kind, [collection, id, file]] of Object.entries(G_PATHS)) {
+      if (at('GET', `${collection}/${id}`)) {
+        const found = w.global.get(kind)
+        return found ? reply(200, { items: [found] }) : reply(404, { message: 'not found' })
+      }
+      if (at('POST', collection)) {
+        const b = body as Record<string, unknown>
+        const s = kind === 'source' ? fail.globalSource : kind === 'pipeline' ? fail.globalPipeline : undefined
+        if (s) {
+          if (kind === 'source' && o.globalTokenLandsOnError) { w.global.set(kind, b); w.groupInputs = [...w.groupInputs, b] }
+          return reply(s, { message: 'the Leader refused it' })
+        }
+        w.global.set(kind, b)
+        if (kind === 'source') w.groupInputs = [...w.groupInputs, b]
+        if (!w.pending.includes(file)) w.pending.push(file)
+        return reply(200, { items: [b] })
+      }
+    }
+    if (at('PATCH', G_SOURCE)) {
+      w.global.set('source', body as Record<string, unknown>)
+      w.pending.push(G_PATHS.source[2])
+      return reply(200, { items: [body] })
+    }
+
     // Git.
     if (at('GET', '/version/status')) return reply(200, { items: [{ files: w.pending.map((f) => ({ path: f })) }] })
     if (at('POST', '/version/commit')) {
@@ -328,12 +375,13 @@ interface Onboarded {
 
 /** Prepare, build the dialog, optionally move the world, then run. */
 async function onboard(
-  o: { sample?: boolean; port?: number; target?: TargetReason; runTarget?: TargetReason; between?: () => void } = {},
+  o: { sample?: boolean; port?: number; target?: TargetReason; runTarget?: TargetReason; between?: () => void; source?: string } = {},
 ): Promise<Onboarded> {
   const { run, plan, dt } = await load()
   dt.settleDatasetTarget(o.target === 'real-empty' || o.target === 'real-absent', o.target ?? 'no-sample')
   const prepared = await run.prepareOnboarding(GROUP, {
     sample: o.sample ?? false, port: o.port ?? 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false,
+    source: o.source ?? null,
   })
   if (!prepared.ok) throw new Error(`prepare refused: ${prepared.why}`)
   const dialog = plan.onboardingDialog(prepared.ctx)
@@ -369,7 +417,9 @@ function writeWords(): string[] {
   return writes().map((c) => {
     if (c.path === DATASETS) return `dataset:${(c.body as { id: string }).id}`
     if (c.method === 'POST' && c.path === `/m/${GROUP}/packs`) return 'install'
-    if (c.path === HTTP_INPUT) return 'http'
+    if (c.path === HTTP_INPUT) return 'pack-http'
+    for (const [kind, [collection]] of Object.entries(G_PATHS)) if (c.method === 'POST' && c.path === collection) return `global:${kind}`
+    if (c.path === G_SOURCE) return 'global-patch'
     if (c.path === SAMPLE_INPUT) return 'sample'
     if (c.path === '/version/commit') return 'commit'
     if (c.path.endsWith('/deploy')) return 'deploy'
@@ -391,15 +441,17 @@ describe('5. the run, in order, and only what the dialog named', () => {
           `dataset:${PACK_PARQUET_DATASET_ID}`,
           ...(sample ? [`dataset:${PACK_SAMPLE_DATASET_ID}`] : []),
           ...(pack === 'absent' ? ['install'] : []),
-          'http',
+          'global:breaker', 'global:pipeline', 'global:destination', 'global:source',
           ...(sample ? ['sample'] : []),
           'commit', 'deploy', 'saved',
         ])
 
-        // The commit carries the pack's files and nothing else.
+        // The commit carries the pack's files and the group-own source's, and
+        // nothing else. The pack's own Raw HTTP source is never written.
         expect(world.committed).toHaveLength(1)
-        expect(world.committed[0].length).toBeGreaterThan(0)
-        for (const f of world.committed[0]) expect(f).toContain(`/${PACK_ID}/`)
+        expect(world.committed[0]).toContain(G_PATHS.source[2])
+        for (const f of world.committed[0]) expect(f.includes(`/${PACK_ID}/`) || f.includes('/local/cribl/'), f).toBe(true)
+        expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
 
         // What was written is what the dialog named (the pack's own objects
         // arrive with the install, and are named as rows of it).
@@ -407,8 +459,8 @@ describe('5. the run, in order, and only what the dialog named', () => {
         for (const c of writes()) {
           if (c.path === DATASETS || c.path === SAVED) written.add((c.body as { id: string }).id)
           else if (c.method === 'POST' && c.path === `/m/${GROUP}/packs`) written.add(PACK_ID)
-          else if (c.path === HTTP_INPUT) written.add(PACK_HTTP_INPUT_ID)
           else if (c.path === SAMPLE_INPUT) written.add(PACK_SAMPLE_INPUT_ID)
+          else if (c.method === 'POST' && Object.values(G_PATHS).some(([col]) => col === c.path)) written.add((c.body as { id: string }).id)
           else if (c.path.endsWith('/deploy')) written.add(GROUP)
         }
         const named = new Set(r.dialog.resources.filter((x) => x.detail !== `in pack ${PACK_ID}`).map((x) => x.id))
@@ -421,12 +473,13 @@ describe('5. the run, in order, and only what the dialog named', () => {
   // row could be named and not written: a sample source already running, and a
   // group the run has nothing left to change in.
   const RUNNING_HTTP = { disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] }
+  const GLOBAL_THERE = { source: { port: 20001, ...RUNNING_HTTP }, breaker: true, pipeline: true, destination: true }
   const ALL_DATASETS = [...REAL_DATA, { id: PACK_PARQUET_DATASET_ID, format: 'parquet' }, { id: PACK_SAMPLE_DATASET_ID }]
 
   for (const sample of [false, true]) {
     it(`nothing left to change in the group (sample ${sample ? 'ticked, already running' : 'unticked'}): no source row, no deploy row, no commit or deploy`, async () => {
-      leader({ datasets: ALL_DATASETS, installed: { http: RUNNING_HTTP, sample: { disabled: false } } })
-      const r = await onboard({ sample, target: 'has-data' })
+      leader({ datasets: ALL_DATASETS, installed: { http: RUNNING_HTTP, sample: { disabled: false } }, global: GLOBAL_THERE })
+      const r = await onboard({ sample, target: 'has-data', source: 'in_gigamon_ami_http' })
       expect(r.stopped).toBeNull()
       expect(r.dialog.resources.some((x) => x.id === PACK_SAMPLE_INPUT_ID)).toBe(false)
       expect(r.dialog.resources.some((x) => x.action === 'deploy')).toBe(false)
@@ -440,9 +493,9 @@ describe('5. the run, in order, and only what the dialog named', () => {
   }
 
   it('nothing of this run to change, but the pack’s own files are uncommitted: the deploy is named, and done', async () => {
-    leader({ datasets: ALL_DATASETS, installed: { http: RUNNING_HTTP, sample: { disabled: false } } })
+    leader({ datasets: ALL_DATASETS, installed: { http: RUNNING_HTTP, sample: { disabled: false } }, global: GLOBAL_THERE })
     world.pending.push(`groups/${GROUP}/local/${PACK_ID}/inputs.yml`)
-    const r = await onboard({ target: 'has-data' })
+    const r = await onboard({ target: 'has-data', source: 'in_gigamon_ami_http' })
     expect(r.dialog.resources.some((x) => x.action === 'deploy')).toBe(true)
     expect(writeWords()).toEqual(['commit', 'deploy', 'saved'])
   })
@@ -459,7 +512,7 @@ describe('5. the run, in order, and only what the dialog named', () => {
   it('records the pack commit under the onboarding key, and the log entry carries no token', async () => {
     leader({ datasets: REAL_DATA })
     const r = await onboard()
-    expect(r.records).toEqual([{ hash: HASH, message: `Gigamon AMI: onboard pack ${PACK_ID} ${PACK_VERSION} in ${GROUP}` }])
+    expect(r.records).toEqual([{ hash: HASH, message: `Gigamon AMI: onboard in_gigamon_ami_http and pack ${PACK_ID} ${PACK_VERSION} in ${GROUP}` }])
     const logged = kvPuts().filter((c) => c.path.startsWith('/kvstore/gigamon/log/'))
     expect(logged).toHaveLength(1)
     expect(JSON.stringify(logged[0].body)).toContain('onboarding_pack.applied')
@@ -470,81 +523,156 @@ describe('5. the run, in order, and only what the dialog named', () => {
 // ── 4. The token ────────────────────────────────────────────────────────────
 
 describe('4. the token is handed over once, and written into one request only', () => {
-  it('after `updated`: once, to the caller; in the PATCH body and nowhere else', async () => {
+  it('after the source is created: once, to the caller; in its POST body and nowhere else', async () => {
     leader({ datasets: REAL_DATA })
-    const r = await onboard()
+    const r = await onboard({ port: 20001 })
     expect(r.tokens).toEqual([{ token: TOKEN, afterError: false }])
     const carrying = calls.filter((c) => JSON.stringify(c.body ?? '').includes(TOKEN))
-    expect(carrying.map((c) => `${c.method} ${c.path}`)).toEqual([`PATCH ${HTTP_INPUT}`])
+    expect(carrying.map((c) => `${c.method} ${c.path}`)).toEqual([`POST ${G_PATHS.source[0]}`])
+    const sent = carrying[0].body as Record<string, unknown>
+    expect(sent).toMatchObject({
+      id: 'in_gigamon_ami_http', type: 'http_raw', port: 20001, disabled: false, sendToRoutes: false,
+      breakerRulesets: ['gigamon_ami_http_json_array'],
+      connections: [{ pipeline: 'gigamon', output: 'gigamon_lake' }],
+      authTokensExt: [{ token: TOKEN, authType: 'manual' }],
+    })
     expect(JSON.stringify(r.steps)).not.toContain(TOKEN)
     expect(JSON.stringify(r.dialog)).not.toContain(TOKEN)
   })
 
-  it('a failed PATCH that left no token: none handed over, and the run stops before the commit', async () => {
-    leader({ datasets: REAL_DATA, fail: { httpPatch: 500 } })
+  it('a failed create that left no source: none handed over, and the run stops before the commit', async () => {
+    leader({ datasets: REAL_DATA, fail: { globalSource: 500 } })
     const r = await onboard()
     expect(r.tokens).toEqual([])
-    expect(r.stopped?.key).toBe('http_input')
+    expect(r.stopped?.key).toBe('global_source')
     expect(writes().some((c) => c.path === '/version/commit')).toBe(false)
     expect(JSON.stringify(r.steps)).not.toContain(TOKEN)
   })
 
-  it('a failed PATCH that a re-read shows DID land: handed over, with a warning', async () => {
-    leader({ datasets: REAL_DATA, fail: { httpPatch: 500 }, tokenLandsOnError: true })
+  it('a failed create that a re-read shows DID land: handed over, with a warning', async () => {
+    leader({ datasets: REAL_DATA, fail: { globalSource: 500 }, globalTokenLandsOnError: true })
     const r = await onboard()
     expect(r.tokens).toEqual([{ token: TOKEN, afterError: true }])
-    expect(r.steps.some((s) => s.key === 'http_input' && s.warning)).toBe(true)
+    expect(r.steps.some((s) => s.key === 'global_source' && s.warning)).toBe(true)
     expect(JSON.stringify(r.steps)).not.toContain(TOKEN)
   })
 
-  // A fresh install's diff is PREDICTED from inputs.yml; the installed source is
-  // what the Leader made of that file. What the run sends is held to what the
-  // dialog showed it would SET, key for key and value for value — not to the
-  // Leader's spelling of "nothing there yet".
-  it('fresh install, the Leader wrote an empty token list into the source: the token is still set', async () => {
-    leader({ datasets: REAL_DATA, installMaterialises: { authTokensExt: [] } })
+  it('a pipeline that could not be created: the source is not created, no token, nothing committed', async () => {
+    leader({ datasets: REAL_DATA, fail: { globalPipeline: 500 } })
+    const r = await onboard()
+    expect(r.stopped?.key).toBe('global_pipeline')
+    expect(writes().some((c) => c.method === 'POST' && c.path === G_PATHS.source[0])).toBe(false)
+    expect(r.tokens).toEqual([])
+    expect(writes().some((c) => c.path === '/version/commit')).toBe(false)
+  })
+
+  it('what the group already has is left as it is: only the missing objects are created', async () => {
+    leader({ datasets: REAL_DATA, global: { destination: true, breaker: true } })
     const r = await onboard()
     expect(r.stopped).toBeNull()
+    expect(writeWords().filter((w) => w.startsWith('global:'))).toEqual(['global:pipeline', 'global:source'])
+    expect(r.dialog.resources.filter((x) => x.action === 'create').map((x) => x.id)).not.toContain('gigamon_lake')
+  })
+
+  it('a source already in the group is not written at all, and no token is made', async () => {
+    leader({ datasets: REAL_DATA, global: { source: { port: 20001, disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] }, breaker: true, pipeline: true, destination: true } })
+    const r = await onboard({ source: 'in_gigamon_ami_http' })
+    expect(r.tokens).toEqual([])
+    expect(writes().some((c) => c.path === G_SOURCE || c.path === G_PATHS.source[0])).toBe(false)
+    // The pack's own source of the same id is named as a row of the install;
+    // the group's own is not named at all.
+    expect(r.dialog.resources.some((x) => x.id === 'in_gigamon_ami_http' && x.detail !== `in pack ${PACK_ID}`)).toBe(false)
+    expect(r.dialog.consequences.join(' ')).toMatch(/in_gigamon_ami_http already sends to gigamon_lake through gigamon, so it is left exactly as it is/)
+  })
+
+  it('the pack’s own Raw HTTP source is never written, even when it is installed with no token', async () => {
+    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
+    await onboard()
+    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
+  })
+})
+
+// ── 4b. A Raw HTTP source the person picked ────────────────────────────────
+
+describe('4b. connecting a Raw HTTP source the person picked', () => {
+  const THEIRS = {
+    id: 'amx_feed', type: 'http_raw', port: 20003, disabled: false, sendToRoutes: false,
+    authTokensExt: [{ token: 'c'.repeat(64), authType: 'manual' }], breakerRulesets: ['gigamon'],
+    connections: [{ pipeline: 'theirs', output: 'their_dest' }],
+  }
+  const route = (c: Call) => `${c.method} ${c.path}`
+
+  it('creates what is missing, then ONE PATCH of the picked source: the connection added, the breaker first, nothing else — and no token', async () => {
+    leader({ datasets: REAL_DATA, groupInputs: [THEIRS] })
+    const inner = globalThis.fetch
+    let live: Record<string, unknown> = { ...THEIRS }
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace(/^\/capi/, '').split('?')[0]
+      const method = (init.method ?? 'GET').toUpperCase()
+      if (path === `/m/${GROUP}/system/inputs/amx_feed`) {
+        calls.push({ method, path, body: init.body == null ? undefined : JSON.parse(String(init.body)) })
+        if (method === 'PATCH') {
+          live = JSON.parse(String(init.body))
+          world.groupInputs = [live]
+          world.pending.push(G_PATHS.source[2])
+        }
+        return reply(200, { items: [live] })
+      }
+      return inner(url, init)
+    })
+    const r = await onboard({ source: 'amx_feed', target: 'has-data' })
+    expect(r.stopped).toBeNull()
+    expect(r.tokens).toEqual([])
+    expect(r.dialog.resources.find((x) => x.id === 'amx_feed')).toMatchObject({ action: 'replace', kind: 'Raw HTTP source' })
+    expect(r.dialog.diff.map((d) => `${d.resourceId}:${d.key}`)).toEqual(['amx_feed:connections', 'amx_feed:breakerRulesets'])
+    expect(writes().filter((c) => c.path.startsWith(`/m/${GROUP}/`)).map(route)).toEqual([
+      `POST /m/${GROUP}/packs`,
+      `POST ${G_PATHS.breaker[0]}`, `POST ${G_PATHS.pipeline[0]}`, `POST ${G_PATHS.destination[0]}`,
+      `PATCH /m/${GROUP}/system/inputs/amx_feed`,
+    ])
+    expect(writes().some((c) => c.method === 'POST' && c.path === G_PATHS.source[0])).toBe(false)
+    expect(live).toMatchObject({
+      port: 20003, authTokensExt: [{ token: 'c'.repeat(64), authType: 'manual' }],
+      connections: [{ pipeline: 'theirs', output: 'their_dest' }, { pipeline: 'gigamon', output: 'gigamon_lake' }],
+      breakerRulesets: ['gigamon_ami_http_json_array', 'gigamon'],
+    })
+    expect(world.committed[0]).toContain(G_PATHS.source[2])
+  })
+
+  it('an off source with no token is switched on with a new token, handed over once and only in the PATCH', async () => {
+    const OFF = { ...THEIRS, disabled: true, authTokensExt: [] }
+    leader({ datasets: REAL_DATA, groupInputs: [OFF] })
+    const inner = globalThis.fetch
+    let live: Record<string, unknown> = { ...OFF }
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace(/^\/capi/, '').split('?')[0]
+      const method = (init.method ?? 'GET').toUpperCase()
+      if (path === `/m/${GROUP}/system/inputs/amx_feed`) {
+        calls.push({ method, path, body: init.body == null ? undefined : JSON.parse(String(init.body)) })
+        if (method === 'PATCH') { live = JSON.parse(String(init.body)); world.groupInputs = [live]; world.pending.push(G_PATHS.source[2]) }
+        return reply(200, { items: [live] })
+      }
+      return inner(url, init)
+    })
+    const r = await onboard({ source: 'amx_feed', target: 'has-data' })
+    expect(r.stopped).toBeNull()
+    expect(live).toMatchObject({ disabled: false, authTokensExt: [{ token: TOKEN, authType: 'manual' }], port: 20003 })
     expect(r.tokens).toEqual([{ token: TOKEN, afterError: false }])
+    expect(calls.filter((c) => JSON.stringify(c.body ?? '').includes(TOKEN)).map((c) => c.method)).toEqual(['PATCH'])
+    expect(JSON.stringify(r.dialog)).not.toContain(TOKEN)
   })
 
-  it('fresh install, the Leader dropped `disabled` from the source: it is still configured and started', async () => {
-    leader({ datasets: REAL_DATA, installMaterialises: { disabled: undefined } })
-    const r = await onboard()
-    expect(r.stopped).toBeNull()
-    const patch = writes().find((c) => c.path === HTTP_INPUT)
-    expect(patch, 'the source was not written').toBeDefined()
-    expect((patch!.body as { disabled?: boolean }).disabled).toBe(false)
-  })
-
-  it('fresh install, the installed source would need a write the dialog never showed: nothing is sent', async () => {
-    // The dialog (port 20005, the shipped one) showed no port row; the Leader
-    // installed the source on another port, so the PATCH would also move it.
-    leader({ datasets: REAL_DATA, installMaterialises: { port: 20009 } })
-    const r = await onboard({ port: 20005 })
-    expect(r.dialog.approvedHttp.some((row) => row.key === 'port')).toBe(false)
-    expect(r.stopped?.key).toBe('http_input')
-    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
-    expect(r.tokens).toEqual([])
-  })
-
-  it('a source that already has a token is started, not rotated: no new token', async () => {
-    leader({ datasets: REAL_DATA, installed: { http: { disabled: true, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] } } })
-    const r = await onboard()
-    expect(r.tokens).toEqual([])
-    const patch = writes().find((c) => c.path === HTTP_INPUT)
-    expect(patch, 'the source was not started').toBeDefined()
-    const sent = patch!.body as { authTokensExt: unknown; disabled: boolean }
-    expect(sent.authTokensExt).toEqual([{ token: 'f'.repeat(64), authType: 'manual' }])
-    expect(sent.disabled).toBe(false)
-  })
-
-  it('a source that has a token and runs is not written at all', async () => {
-    leader({ datasets: REAL_DATA, installed: { http: { disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] } } })
-    const r = await onboard()
-    expect(r.tokens).toEqual([])
-    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
-    expect(r.dialog.resources.some((x) => x.id === PACK_HTTP_INPUT_ID && x.action === 'replace')).toBe(false)
+  it('a source on Send to Routes is refused before anything is written', async () => {
+    leader({ datasets: REAL_DATA, groupInputs: [{ ...THEIRS, sendToRoutes: true }] })
+    const { run, dt } = await load()
+    dt.settleDatasetTarget(false, 'has-data')
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) =>
+      String(url).split('?')[0].endsWith('/system/inputs/amx_feed') ? reply(200, { items: [{ ...THEIRS, sendToRoutes: true }] }) : inner(url, init))
+    const r = await run.prepareOnboarding(GROUP, { sample: false, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false, source: 'amx_feed' })
+    expect(r.ok).toBe(false)
+    expect(r.ok ? '' : r.why).toMatch(/Send to Routes/)
+    expect(writes()).toEqual([])
   })
 })
 
@@ -563,7 +691,9 @@ describe('6. the failure matrix', () => {
     const r = await onboard({ target: 'has-data' })
     expect(r.stopped).toBeNull()
     expect(r.steps.find((s) => s.key === 'dataset_parquet')?.action).toBe('error')
-    expect(writeWords()).toEqual([`dataset:${PACK_PARQUET_DATASET_ID}`, 'install', 'http', 'commit', 'deploy', 'saved'])
+    expect(writeWords()).toEqual([
+      `dataset:${PACK_PARQUET_DATASET_ID}`, 'install', 'global:breaker', 'global:pipeline', 'global:destination', 'global:source', 'commit', 'deploy', 'saved',
+    ])
   })
 
   it('gigamon_ami_pq there with another shape: left as it is, and said so', async () => {
@@ -650,18 +780,18 @@ describe('6. the failure matrix', () => {
 // ── 7. What was shown is what is written ────────────────────────────────────
 
 describe('7. anything that moved after the dialog', () => {
-  it('a live source that moved: step 3 sends nothing, and nothing is committed', async () => {
-    leader({ datasets: REAL_DATA, installed: { http: { disabled: true, port: 20005 } } })
+  it('the source created by somebody else while the dialog was open: zero writes', async () => {
+    leader({ datasets: REAL_DATA })
     const r = await onboard({
-      port: 20007,
-      // Someone moves the source to the chosen port while the dialog is open,
-      // so the diff it showed (a port row) is no longer the diff.
-      between: () => { world.packInputs[PACK_HTTP_INPUT_ID].port = 20007 },
+      between: () => {
+        const theirs = { id: 'in_gigamon_ami_http', type: 'http_raw', port: 20009 }
+        world.global.set('source', theirs)
+        world.groupInputs = [...world.groupInputs, theirs]
+      },
     })
-    expect(r.stopped?.key).toBe('http_input')
-    expect(r.stopped?.detail).toMatch(/changed after this change was shown/)
-    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
-    expect(writes().some((c) => c.path === '/version/commit')).toBe(false)
+    expect(r.stopped?.key).toBe('precheck')
+    expect(r.stopped?.detail).toMatch(/in_gigamon_ami_http exists now/)
+    expect(writes()).toEqual([])
   })
 
   it('the group’s hosting moved: zero writes', async () => {
@@ -709,15 +839,6 @@ describe('7. anything that moved after the dialog', () => {
     expect(writes()).toEqual([])
   })
 
-  it('the Raw HTTP source was given a token since: what step 3 would do changed, zero writes', async () => {
-    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
-    const r = await onboard({
-      between: () => { world.packInputs[PACK_HTTP_INPUT_ID].authTokensExt = [{ token: 'e'.repeat(64), authType: 'manual' }] },
-    })
-    expect(r.stopped?.detail).toMatch(new RegExp(`${PACK_HTTP_INPUT_ID} changed: it would now be started`))
-    expect(writes()).toEqual([])
-  })
-
   it('the pack was uninstalled since: zero writes, so nothing is created ahead of a step that would 404', async () => {
     leader({ datasets: REAL_DATA, installed: { http: tokenless } })
     const r = await onboard({
@@ -745,17 +866,16 @@ describe('7. anything that moved after the dialog', () => {
     expect(writes()).toEqual([])
   })
 
-  it('a token given to the source DURING the run: step 3 sends nothing, and no token is handed over', async () => {
-    leader({ datasets: REAL_DATA, installed: { http: tokenless } })
-    // After step 0 read the source and before step 3 reads it again, somebody
-    // else sets a token of their own.
+  it('the source created by somebody else DURING the run: left as it is, and no token is handed over', async () => {
+    leader({ datasets: REAL_DATA })
+    // After step 0 read the group and before step 3 reads the source again,
+    // somebody else creates one of their own.
     afterCall((c) => c.method === 'POST' && c.path === DATASETS, () => {
-      world.packInputs[PACK_HTTP_INPUT_ID].authTokensExt = [{ token: 'e'.repeat(64), authType: 'manual' }]
+      world.global.set('source', { id: 'in_gigamon_ami_http', port: 20009, authTokensExt: [{ token: 'e'.repeat(64), authType: 'manual' }] })
     })
     const r = await onboard()
-    expect(r.stopped?.key).toBe('http_input')
-    expect(r.stopped?.detail).toMatch(/changed after this change was shown/)
-    expect(writes().some((c) => c.path === HTTP_INPUT)).toBe(false)
+    expect(r.steps.find((s) => s.key === 'global_source')?.action).toBe('exists')
+    expect(writes().some((c) => c.method === 'POST' && c.path === G_PATHS.source[0])).toBe(false)
     // The source now has A token — somebody else's. The one this run generated
     // was never sent, so it must not be shown as the one this app set.
     expect(r.tokens).toEqual([])
@@ -775,7 +895,7 @@ describe('7. anything that moved after the dialog', () => {
     expect(r.steps.find((s) => s.key === 'sample_input')?.detail).toMatch(/changed after this change was shown/)
   })
 
-  it('the Lake window moved after the dialog: the Lake entry is built from a fresh read, not the cached one', async () => {
+  it('a Lake window change cannot cause onboarding to create the retired snapshot', async () => {
     leader({ datasets: [...REAL_DATA, { id: 'cribl_metrics', retention: 30 }] })
     const r = await onboard({
       target: 'has-data',
@@ -785,9 +905,7 @@ describe('7. anything that moved after the dialog', () => {
     })
     expect(r.stopped).toBeNull()
     const lake = calls.find((c) => c.method === 'POST' && c.path === SAVED && (c.body as { id: string }).id === LAKE_ENTRY)
-    expect(lake, 'the Lake entry was not created').toBeDefined()
-    expect(JSON.stringify(lake!.body)).not.toContain('cribl_metrics')
-    expect(JSON.stringify(lake!.body)).toContain('count()')
+    expect(lake).toBeUndefined()
   })
 
   it('what the app knows about the data changed: the scheduled searches are refused, everything else ran', async () => {
@@ -810,26 +928,44 @@ describe('prepareOnboarding refuses what the run could not honour', () => {
     return run.prepareOnboarding(GROUP, { sample: false, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false })
   }
 
-  it('an installed copy that is not this app’s current release: no dialog, and nothing sent', async () => {
+  it('an installed copy that is not this app’s current release, with sample data ticked: no dialog, and nothing sent', async () => {
     leader({ datasets: REAL_DATA, otherCopy: { version: '0.1.0', source: packReleaseUrl('0.1.0') } })
-    const r = await prepare()
+    const { run, dt } = await load()
+    dt.settleDatasetTarget(false, 'has-data')
+    const r = await run.prepareOnboarding(GROUP, { sample: true, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false })
     expect(r.ok).toBe(false)
-    expect(r.ok ? '' : r.why).toMatch(/0\.1\.0/)
+    expect(r.ok ? '' : r.why).toMatch(/0\.1\.0 .*sample data needs this app’s current pack/)
     expect(writes()).toEqual([])
   })
 
-  it('looks for no global stack: a group whose own sources could not be read still opens, and nothing names one', async () => {
-    // Until 2026-09-26 the dialog said the group held Guided Setup's global Raw
-    // HTTP stack when its sources could not be read. The app no longer shows or
-    // removes those objects (owner decision), so it no longer looks for them.
-    leader({
-      datasets: REAL_DATA,
-      installed: { http: { disabled: false, authTokensExt: [{ token: 'f'.repeat(64), authType: 'manual' }] } },
-      groupInputsStatus: 500,
-    })
+  it('an installed copy that is not this app’s current release: left exactly as it is, and the Raw HTTP source is still created', async () => {
+    // Owner decision 2026-10-24: an older pack no longer blocks onboarding
+    // while its Upgrade waits for a release.
+    leader({ datasets: REAL_DATA, otherCopy: { version: '0.1.0', source: packReleaseUrl('0.1.0') } })
+    world.pending.push(`groups/${GROUP}/default/${PACK_ID}/package.json`)
+    const r = await onboard({ target: 'has-data' })
+    expect(r.stopped).toBeNull()
+    expect(r.dialog.resources.some((x) => x.kind === 'Pack')).toBe(false)
+    expect(r.dialog.consequences.join(' ')).toMatch(/cc-network-gigamon-ami 0\.1\.0 stays installed exactly as it is/)
+    expect(r.steps.find((x) => x.key === 'pack')).toMatchObject({ action: 'exists' })
+    expect(writeWords()).toEqual([
+      `dataset:${PACK_PARQUET_DATASET_ID}`, 'global:breaker', 'global:pipeline', 'global:destination', 'global:source', 'commit', 'deploy', 'saved',
+    ])
+    // Nothing of the pack's: not its sources, not its pending files.
+    expect(writes().some((c) => c.path.startsWith(P) || c.path.startsWith(`/m/${GROUP}/packs`))).toBe(false)
+    for (const f of world.committed[0]) expect(f).toContain('/local/cribl/')
+    expect(world.pending).toContain(`groups/${GROUP}/default/${PACK_ID}/package.json`)
+  })
+
+  it('a group whose own Raw HTTP source cannot be read: no dialog, and nothing sent', async () => {
+    leader({ datasets: REAL_DATA })
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) =>
+      String(url).split('?')[0].endsWith(`/m/${GROUP}/system/inputs`) ? reply(500, { message: 'unavailable' }) : inner(url, init))
     const r = await prepare()
-    if (!r.ok) throw new Error(r.why)
-    expect(Object.keys(r.ctx)).not.toContain('globalStackPresent')
+    expect(r.ok).toBe(false)
+    expect(r.ok ? '' : r.why).toMatch(/could not tell whether default already holds raw http source/)
+    expect(writes()).toEqual([])
   })
 })
 
@@ -861,7 +997,7 @@ describe('9. acceleration is always installed, and paused on sample data', () =>
     leader({ datasets: REAL_DATA })
     await onboard({ target: 'has-data' })
     for (const b of posted()) expect(b.schedule?.enabled).toBe(true)
-    expect(posted().map((b) => b.id).sort()).toEqual(MANIFEST.map((e) => e.id).sort())
+    expect(posted().map((b) => b.id).sort()).toEqual(MANIFEST.filter((e) => !e.legacyOnly).map((e) => e.id).sort())
   })
 
   it('gigamon_ami created by this run: the Lake entry was not in the dialog, so it is not created', async () => {
@@ -875,7 +1011,7 @@ describe('9. acceleration is always installed, and paused on sample data', () =>
     leader({ datasets: [{ id: PACK_LAKE_DATASET_ID, retention: null, size: 5_000_000 }] })
     await onboard({ target: 'has-data' })
     expect(posted().some((b) => b.id === LAKE_ENTRY)).toBe(false)
-    expect(posted().length).toBe(MANIFEST.length - 1)
+    expect(posted().length).toBe(MANIFEST.filter((e) => !e.legacyOnly).length)
   })
 
   it('created paused but read back running: said, not believed', async () => {
@@ -895,13 +1031,34 @@ describe('9. acceleration is always installed, and paused on sample data', () =>
 // ── 10. A pin with no release, in the run ───────────────────────────────────
 
 describe('10. while no release is recorded', () => {
-  it('prepare refuses with the release’s own sentence, and nothing is sent', async () => {
+  it('sample data ticked: prepare refuses with the release’s own sentence, and nothing is written', async () => {
     leader({ datasets: REAL_DATA })
     const { run, dt } = await load({ published: false })
     dt.settleDatasetTarget(false, 'has-data')
-    const r = await run.prepareOnboarding(GROUP, { sample: false, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false })
-    expect(r).toEqual({ ok: false, why: `pack ${PACK_VERSION} has not been released, so there is nothing to install yet` })
-    expect(calls).toEqual([])
+    const r = await run.prepareOnboarding(GROUP, { sample: true, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false })
+    expect(r.ok).toBe(false)
+    expect(r.ok ? '' : r.why).toContain(`pack ${PACK_VERSION} has not been released, so there is nothing to install yet`)
+    expect(writes()).toEqual([])
+  })
+
+  it('sample data unticked: the pack is skipped and said so, and the Raw HTTP source is still created and deployed', async () => {
+    leader({ datasets: REAL_DATA })
+    const { run, plan, dt } = await load({ published: false })
+    dt.settleDatasetTarget(false, 'has-data')
+    const prepared = await run.prepareOnboarding(GROUP, { sample: false, port: 20007, target: dt.datasetTarget(), undeployed: null, undeployedChecking: false })
+    if (!prepared.ok) throw new Error(prepared.why)
+    const dialog = plan.onboardingDialog(prepared.ctx)
+    expect(dialog.resources.some((x) => x.kind === 'Pack')).toBe(false)
+    expect(dialog.consequences.join(' ')).toContain('The onboarding pack is not installed')
+    const out = await run.runOnboarding(prepared.ctx, dialog, {
+      onStep: () => {}, onToken: () => {}, record: async () => {}, target: () => dt.datasetTarget(),
+    })
+    expect(out.stopped).toBeNull()
+    expect(out.steps.find((x) => x.key === 'pack')?.action).toBe('skipped')
+    expect(calls.some((c) => c.method === 'POST' && c.path === `/m/${GROUP}/packs`)).toBe(false)
+    expect(writeWords()).toEqual([
+      `dataset:${PACK_PARQUET_DATASET_ID}`, 'global:breaker', 'global:pipeline', 'global:destination', 'global:source', 'commit', 'deploy', 'saved',
+    ])
   })
 
   it('a run handed a dialog anyway writes nothing: step 0 re-reads the release', async () => {

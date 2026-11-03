@@ -10,12 +10,12 @@ describe('Data Flow directional volume totals', () => {
     )
   })
 
-  it('serves the same calculated totals from the shared overview', () => {
+  it('retains the shared overview body without advertising an unused Data Flow projection', () => {
     const entry = accelEntry('gno_overview_c1h')
     expect(entry.body).toBe(OVERVIEW_SNAPSHOT_QUERY)
     expect(entry.body).toContain('capacity_total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0)')
     expect(entry.body).toContain('capacity_total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0)')
     expect(entry.body).toContain('events=count(), bytes=sum(capacity_total_bytes), packets=sum(capacity_total_packets)')
-    expect(entry.panels.find((p) => p.queryId === 'data-flow-volume')?.display).toBe(VOLUME_QUERY)
+    expect(entry.panels.some((p) => p.queryId === 'data-flow-volume')).toBe(false)
   })
 })

@@ -374,7 +374,7 @@ policies:
   # every source in the group, including ones this app did not create. No POST:
   # nothing here creates a global source any more (2026-09-25).
   - object: '/m/:gid/system/inputs'
-    actions: ['GET']
+    actions: ['GET', 'POST']
   # The sources inside each pack installed in the group, read for their ports
   # and never written: a pack source listening in 20000–20010 — the onboarding
   # pack's own Raw HTTP source does — is as much a collision for the pack's
@@ -476,6 +476,34 @@ policies:
   # way back is this same editor or the group's Git history.
   - object: '/m/:gid/system/outputs/gigamon_lake'
     actions: ['GET', 'PATCH']
+
+  # The group's own Raw HTTP source for Gigamon AMX (owner decision 2026-10-24).
+  # Guided Setup's Onboard, from one confirmation naming each object, creates
+  # whatever is absent of: the in_gigamon_ami_http Raw HTTP source (the
+  # person's port, an auth token this app generates and shows once, TLS for the
+  # group), its gigamon_ami_http_json_array breaker ruleset, its
+  # gigamon pipeline, and — only where the group has none —
+  # the gigamon_lake destination; the source reaches Cribl Lake by QuickConnect,
+  # so no route is written. POST on /m/:gid/system/inputs (above) creates the
+  # source. Nothing already there is replaced. Onboard may instead CONNECT a
+  # Raw HTTP source the person picks from the group's own list: one whole-body
+  # PATCH adding a QuickConnect connection gigamon -> gigamon_lake beside its
+  # others and the JSON-array breaker first, its port, token and TLS kept.
+  # Rotate token and Move port PATCH the connected source whole, each from its
+  # own confirmation. `:inputId` because the person picks the source. No
+  # DELETE: a person removes these in Cribl Stream.
+  - object: '/m/:gid/system/inputs/:inputId'
+    actions: ['GET', 'PATCH']
+  - object: '/m/:gid/lib/breakers'
+    actions: ['POST']
+  - object: '/m/:gid/lib/breakers/gigamon_ami_http_json_array'
+    actions: ['GET']
+  - object: '/m/:gid/pipelines'
+    actions: ['POST']
+  - object: '/m/:gid/pipelines/gigamon'
+    actions: ['GET']
+  - object: '/m/:gid/system/outputs'
+    actions: ['POST']
 
   # The group's one routing table, READ ONLY — for the Lake landing panel, to
   # name every route writing into the gigamon_lake destination before its

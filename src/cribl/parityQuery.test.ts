@@ -10,7 +10,8 @@ import { describe, expect, it } from 'vitest'
 import { buildTalkersQuery } from '../queries/capacityTopTalkers'
 import { OVERALL, PER_RESOLVER } from '../queries/dnsHealth'
 import { SOURCES } from '../queries/security'
-import { APP_L4_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../queries/snapshots'
+import { APP_L4_SNAPSHOT_QUERY } from '../queries/snapshots'
+import { pairsQuery } from '../queries/flowMap'
 import { buildTrendQuery } from '../queries/tcpHealth'
 import { SLOW } from '../queries/webApiHealth'
 import { PARITY_CHECKS, classify, classifyQuery, compareGrouped, summarizeColumns, type ClassHit, type GroupedSpec, type Row } from './parity'
@@ -55,11 +56,10 @@ describe('classifyQuery — a whole dashboard query', () => {
     expect(fields.sort()).toEqual(['app_name', 'dst_bytes', 'protocol', 'src_bytes'])
   })
 
-  it('still sees F on a raw key beside a normalised one (service edges)', () => {
-    const { hits } = classifyQuery(SERVICE_EDGES_SNAPSHOT_QUERY)
-    expect(has(hits, 'F', 'src_aws_flat_tags_name')).toBe(true)
-    expect(has(hits, 'F', 'dst_svc')).toBe(false)
-    expect(has(hits, 'A', 'dst_aws_flat_tags_name')).toBe(false)
+  it('sees F on both raw keys of the Flow Map pairs', () => {
+    const { hits } = classifyQuery(pairsQuery)
+    expect(has(hits, 'F', 'src_ip')).toBe(true)
+    expect(has(hits, 'F', 'dst_ip')).toBe(true)
   })
 
   it('does not call a time bin a key (TCP trend is class-free)', () => {
@@ -101,7 +101,6 @@ describe('classifyQuery — a presence term in the search head', () => {
     ['web.hosts', 'http_host'],
     ['web.h2', 'http_host'],
     ['pqc.groups', 'ssl_ext_ec_supported_groups_type'],
-    ['flowMap.serviceEdges', 'src_aws_flat_tags_name'],
   ])('reads %s as class A on %s, and the table refuses it whatever the types', (id, field) => {
     for (const q of ROUTES.find((e) => e.id === id)!.queries) {
       expect(has(classifyQuery(q).hits, 'A', field), q).toBe(true)
@@ -109,13 +108,6 @@ describe('classifyQuery — a presence term in the search head', () => {
       expect(e.eligible, q).toBe(false)
       expect(e.refusals.some((r) => r.kind === 'class' && r.words.startsWith(`class A on ${field}`)), q).toBe(true)
     }
-  })
-
-  it('reads both terms of flowMap.edges, on both of its texts', () => {
-    const [pairs, sources] = ROUTES.find((e) => e.id === 'flowMap.edges')!.queries
-    expect(has(classifyQuery(pairs).hits, 'A', 'src_aws_flat_tags_name')).toBe(true)
-    expect(has(classifyQuery(pairs).hits, 'A', 'dst_aws_flat_tags_name')).toBe(true)
-    expect(has(classifyQuery(sources).hits, 'A', 'src_aws_flat_tags_name')).toBe(true)
   })
 
   it('finds no presence term in either text that passed (dns.overall, tls.pqcByServer)', () => {

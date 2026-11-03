@@ -39,7 +39,7 @@ export const PERSONAS: Persona[] = [
         target: 'service-graph',
         title: 'Start at the epicenters',
         body: 'Service-to-service dependencies built purely from flow metadata — no agent, no sidecar, no eBPF. Node colour is health; size is flow volume.',
-        look: 'Red nodes pulse: >90% resets or 3x the latency SLO. Dashed grey spokes are traffic to peers with no AWS name tag.',
+        look: 'Red nodes pulse: p95 tcp_rtt above 600 ms (3x the 200 ms target) or duplicate ACKs on 25% of flows. Dashed grey spokes are traffic to destinations outside the twelve drawn.',
       },
       {
         route: '/flow-map',

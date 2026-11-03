@@ -25,7 +25,8 @@ import { LAKE_TOTAL_QUERY } from '../../queries/dataFlow'
 import { FEED_SAMPLE_QUERY } from '../../queries/fieldExplorer'
 import { AI_FILTER, aiOverallQuery, aiUsersQuery, appsQuery } from '../../queries/shadowAi'
 import { OVERALL as DNS_OVERALL_QUERY, PER_RESOLVER as DNS_PER_RESOLVER_QUERY } from '../../queries/dnsHealth'
-import { APP_SRC_SNAPSHOT_QUERY, SERVICE_EDGES_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { APP_SRC_SNAPSHOT_QUERY } from '../../queries/snapshots'
+import { pairsQuery } from '../../queries/flowMap'
 import { buildTalkersQuery } from '../../queries/capacityTopTalkers'
 import { SERVERS as TLS_SERVERS, PQC_BY_SERVER } from '../../queries/tlsPosture'
 import { SERVERS_Q, GROUPS_Q } from '../../queries/pqcReadiness'
@@ -106,6 +107,15 @@ describe('the manifest', () => {
       expect(e.id, `${e.id} does not match /^gno_[a-z0-9_]+$/`).toMatch(/^gno_[a-z0-9_]+$/)
       expect(isAccelId(e.id)).toBe(true)
     }
+  })
+
+  it('retires only the two standalone combined Data Flow scans', () => {
+    expect(MANIFEST.filter((e) => e.legacyOnly).map((e) => e.id)).toEqual([
+      'gno_lake_30d_c1d', 'gno_pipeline_c1h',
+    ])
+    expect(accelEntry('gno_overview_c1h').panels.map((p) => p.queryId)).toEqual([
+      'capacity-kpi', 'web-kpi', 'security-technique-counts', 'findings-counts',
+    ])
   })
 
   it('does not claim somebody else\'s saved search', () => {
@@ -258,17 +268,6 @@ describe('the bodies', () => {
     expect(columnsOf(capacity?.tail as string, columnsOf(overview.body).outputs as Set<string>).outputs).toContain('total')
   })
 
-  it('keeps the untagged destination as a group of its own, for the view that sums across it', () => {
-    // Flow map's client-only totals are every flow OUT of a source service,
-    // including flows to peers carrying no AWS name tag. Whether a `summarize`
-    // keeps a null group key is not something this app has measured, and if it
-    // drops them that number comes back short with nothing on screen to say so.
-    // The body coalesces the null into a sentinel before grouping, so both
-    // derivations are exact by construction: this pins the mechanism, because
-    // removing the `extend` would leave the panel still rendering.
-    expect(edges.body).toContain('extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name)')
-  })
-
   it('reads the service graph once, un-tailed, because two panels meant two stored reads', () => {
     // WHAT THIS REPLACES, AND WHY THE ASSERTION MOVED. This entry used to carry
     // `flow-map-edges` and `flow-map-sources`: two panel records, two
@@ -286,10 +285,10 @@ describe('the bodies', () => {
     // One panel, no tail, so the Phase 2 promise applies again: the ⓘ shows the
     // string that produced the number. The generic case above enforces it; this
     // says out loud which string that now is.
-    expect(edges.panels[0].display).toBe(SERVICE_EDGES_SNAPSHOT_QUERY)
-    expect(edges.body).toBe(SERVICE_EDGES_SNAPSHOT_QUERY)
-    // Both client-side derivations read these three and nothing else.
-    expect([...edges.panels[0].reads].sort()).toEqual(['dst_svc', 'flows', 'src_aws_flat_tags_name'])
+    expect(edges.panels[0].display).toBe(pairsQuery)
+    expect(edges.body).toBe(pairsQuery)
+    // The tab ranks sources and picks edges from these three and nothing else.
+    expect([...edges.panels[0].reads].sort()).toEqual(['dst_ip', 'flows', 'src_ip'])
   })
 
   it('serves all three of Shadow AI from one grouping, each ⓘ still its own query', () => {

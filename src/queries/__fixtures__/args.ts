@@ -82,17 +82,9 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
   },
 
   'src/tabs/DataFlow.tsx': {
-    // Every stage of the Deep Observability Pipeline. Each diagram node's ⓘ is
-    // built as <PanelInfo about={s.purpose} links={s.links} /> inside a helper,
-    // so without this the whole tab froze no customer-facing words at all.
-    // Read from STAGES itself, so editing a stage's purpose moves the snapshot.
+    flow: { group: 'default', sourceId: 'in_gigamon_ami_http', pipeline: 'gigamon', destination: 'gigamon_lake' },
     s: { $each: 'STAGES.map((x) => ({ label: x.id, value: x }))' } satisfies EachFixture,
-    // The Lake card's window and counting method come from the tenant's
-    // retention (src/queries/lakeWindow.ts), read at runtime. The surface is
-    // frozen on the default window; the builder itself is frozen over both of
-    // its methods through VARIANTS below, which is where each query it can
-    // return is pinned.
-    lake: { $expr: '({ window: LAKE_DEFAULT_WINDOW, storedBytes: null, storedAsOf: null, error: null })' } satisfies ExprFixture,
+    selected: { $each: 'STAGES.map((x) => ({ label: x.id, value: x }))' } satisfies EachFixture,
   },
 
   'src/tabs/FieldExplorer.tsx': {
@@ -101,10 +93,10 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
     // sectionQuery() reads only `.f.name`; the rows come from the catalog, so
     // adding a DNS field moves this too.
     rows: {
-      $each: 'AMI_FAMILIES.map((fam) => ({ label: fam, value: AMI_CATALOG.filter((f) => f.family === fam).map((f) => ({ f })) }))',
+      $each: 'EXPLORER_FAMILIES.map((fam) => ({ label: fam, value: EXPLORER_CATALOG.filter((f) => f.family === fam).map((f) => ({ f })) }))',
     } satisfies EachFixture,
     // Every use case, each carrying its own field list.
-    uc: { $each: 'AMI_USE_CASES.map((x) => ({ label: x.name, value: x }))' } satisfies EachFixture,
+    uc: { $each: 'EXPLORER_USE_CASES.map((x) => ({ label: x.name, value: x }))' } satisfies EachFixture,
   },
 
   'src/tabs/Findings.tsx': {
@@ -134,6 +126,12 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
   'src/tabs/FlowMap.tsx': {
     // The service selected on the dependency graph.
     service: 'donot_delete_Postgres_Sql_GEM',
+  },
+
+  'src/tabs/FlowMapDeps.tsx': {
+    // The dependency view selected on Flow Map. Every view is frozen: its ⓘ,
+    // its query and its words.
+    view: { $each: "(['dns', 'web', 'subnets'] as const).map((x) => ({ label: x, value: x }))" } satisfies EachFixture,
   },
 
   'src/tabs/TcpHealth.tsx': {
@@ -186,6 +184,24 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     onParquet: { cases: 'BENCH_QUERIES.map((b) => ({ label: b.id, args: [b.query] }))' },
   },
 
+  'src/queries/dataFlow.ts': {
+    onboardedMetricsQueryFor: {
+      cases:
+        "[{ label: 'created source', args: [{ group: 'default', sourceId: 'in_gigamon_ami_http', pipeline: 'gigamon', destination: 'gigamon_lake' }] }," +
+        " { label: 'picked source', args: [{ group: 'other', sourceId: 'amx_feed', pipeline: 'gigamon', destination: 'gigamon_lake' }] }," +
+        " { label: 'quoted identifier', args: [{ group: 'default', sourceId: 'feed\"name', pipeline: 'gigamon', destination: 'gigamon_lake' }] }]",
+    },
+    // The Raw HTTP source Guided Setup's Onboard connected is runtime input:
+    // none (the snapshot's own text), one the stack list already names, and
+    // one of another id, which joins the Sources term.
+    metricsQueryFor: {
+      cases:
+        "[{ label: 'none onboarded', args: [[]] }," +
+        " { label: 'in_gigamon_ami_http, already listed', args: [['http_raw:in_gigamon_ami_http']] }," +
+        " { label: 'a picked source of another id', args: [['http_raw:amx_feed']] }]",
+    },
+  },
+
   'src/queries/dnsHealth.ts': {
     // A resolver name is runtime input; one documented example.
     resolverDrillQuery: { over: ["['10.0.0.53']"] },
@@ -196,8 +212,8 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
     // opens from a section's ⓘ, and each has its own field list.
     sectionQuery: {
       cases:
-        'AMI_FAMILIES.map((fam) => ({ label: fam, args: [AMI_CATALOG.filter((f) => f.family === fam).map((f) => f.name)] }))' +
-        '.concat(AMI_USE_CASES.map((uc) => ({ label: uc.name, args: [uc.fields] })))',
+        'EXPLORER_FAMILIES.map((fam) => ({ label: fam, args: [EXPLORER_CATALOG.filter((f) => f.family === fam).map((f) => f.name)] }))' +
+        '.concat(EXPLORER_USE_CASES.map((uc) => ({ label: uc.name, args: [uc.fields] })))',
     },
     // Grouping, not a query: every catalog field at once, frozen as one digest.
     familyOf: { over: ['CHECK_FIELDS'], digest: true },
@@ -260,8 +276,8 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
   },
 
   'src/queries/flowMap.ts': {
-    buildDomainsQuery: { over: ["['donot_delete_Postgres_Sql_GEM']"] },
-    buildTrendQuery: { over: ["['donot_delete_Postgres_Sql_GEM']"] },
+    buildDomainsQuery: { over: ["['https']"] },
+    buildTrendQuery: { over: ["['https']"] },
   },
 
   'src/queries/tcpHealth.ts': {

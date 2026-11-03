@@ -141,6 +141,157 @@ Key constants in `config.ts`: `SEARCH_GROUP = 'default_search'` (search **always
 
 ## Architecture
 
+### Data Flow connection scope (2026-11-02)
+
+The Data Flow dashboard now uses **only the Raw HTTP connection Onboard shows**,
+through the same `readGlobalHttp` selection rule (the first connected source in
+the group's source list, not a hardcoded preference for `in_gigamon_ami_http`).
+`useOnboardedFlow` re-reads on a visit, group change, global Refresh and the
+diagram's Refresh; failures/timeouts are visible, and late responses cannot
+replace a newer group's connection.
+
+`onboardedMetricsQueryFor` in `src/queries/dataFlow.ts` counts source intake by
+`input`, Processing by pipeline `id`, `from_input` and the QuickConnect
+`instance=dc:http_raw:<source>:<destination>`, and destination events/bytes by
+`output` plus `from_input`, all under `namespace=="data_insights"`. Shared
+pipeline/destination traffic and demo/pack totals are excluded. These dimensions
+were measured on the demo QuickConnect path, not independently re-measured on
+every Raw HTTP installation; a missing series is **unavailable**, not zero.
+An observed series summing to zero still displays zero.
+
+All three counters run live over the selected range, in either header mode.
+Data Flow no longer reads `gno_pipeline_c1h`, `gno_lake_30d_c1d` or
+`gno_overview_c1h`. Those existing schedules and their controls are retained
+without automatic writes/deletes; the Acceleration panel explains that its
+Data Flow switch now manages legacy combined snapshots, not the live counters.
+The two standalone Data Flow entries are `legacyOnly`: Apply/onboarding never
+create or reapply them, even with a forged approved set, but pause/resume/remove
+still work on existing copies. Cost estimates give them no live-query savings.
+The overview snapshot still serves four other dashboards, unchanged; only its
+unused Data Flow panel projection is retired. This supersedes older Data Flow
+snapshot/coverage descriptions below.
+
+`DATASET_RECORDS_QUERY` supplies the remaining four diagram figures from **one**
+additional live query, `asWritten`, over the **whole `gigamon_ami` dataset**
+(owner decision 2026-11-02, superseding the tagged `onboardedRecordsQueryFor`
+and README's manual provenance Eval, both removed: the live `gigamon` pipeline
+adds no provenance tags). Every writer into `gigamon_ami` is counted, and the
+copy says so. Lake and Search show the same landed count over the selected
+event-time window; Enriched Metadata is that AMI record count. Network Traffic
+sums bidirectional bytes/packets (`toreal`) over the records whose both
+directions are numeric and nonnegative; partial coverage shows the summed total
+with a "Network Traffic coverage" note, zero covered records (with records
+landed) is unavailable, and an empty window is 0. The query runs without an
+onboarded connection. Its routing entry `dataFlow.records` stays `json`.
+Measured live 2026-11-02 over 15 minutes: 6,255 events, 5,494 with both
+directions, 140,204,825 bytes and 158,853 packets. Field Explorer dropped the
+three `gigamon_ingest_*` fields (47 attributes).
+
+A local production-preview browser smoke check (2026-11-02, mocked API) showed
+independent source/Processing/destination counts of 123/100/90, the selected
+Onboard object ids, and unavailable retained-storage/Search figures.
+The follow-up browser check, also synthetic, showed the same 75 records
+in Lake, Search and Enriched Metadata, and 8 KB / 150 packets for Network Traffic.
+The Lake card uses one caption line to avoid colliding with its provenance chip;
+the storage-size limitation stays visible in the toolbar. Diagram geometry is
+unchanged. Neither browser check is live provenance/count evidence.
+
+### Data Flow named-object counters (2026-11-02)
+
+Owner decision: Sources, Processing and Destinations show each named object's
+own counters, not a source-isolated population for all three. The live
+`onboardedMetricsQueryFor` reads `default_metrics` raw `_metric` / `_value`,
+scoped by exact worker `group`, with exact `input` for source intake, pipeline
+`id` for output and destination `output` for events/bytes. It does not require
+`namespace`, `from_input` or a QuickConnect `instance`: the raw samples inspected
+on this workspace lacked those connection dimensions. Shared pipeline/destination
+traffic is deliberately included and disclosed in visible copy and the tips.
+The normalized `cribl_metrics` query builders and legacy saved-search bodies are
+unchanged; no schedule Re-apply is required for this live-only change.
+Lake/Search and AMI volumes count the whole `gigamon_ami` dataset (see above). No configuration is written by this change.
+
+### Flow Map: destination-IP dependency graph (2026-11-03)
+
+Owner decision: rebuild the original service-dependency view with fields the
+feed has (measured over an hour: no AWS tags, `ssl_server_name`, `tcp_reset` or
+`tcp_rtt_app`). `nodesQuery` in `src/queries/flowMap.ts` ranks the top 12
+`dst_ip` with `net` (p95 `tcp_rtt`, seconds), `net_n`, `dupack_flows`
+(`countif(toreal(tcp_dup_ack)>0)`), `dupack_n`, `host=max(http_host)` and
+`flows`; `pairsQuery` reads the 1,000 busiest `src_ip` → `dst_ip` pairs.
+`FlowMap.tsx` draws the destinations plus up to 8 client-only sources on an
+ellipse, the top 40 pairs between drawn nodes, and dashed spokes to an "Other
+destinations" hub. Warning: p95 > 200 ms or dup-ACK ≥ 5 %; danger: > 600 ms or
+≥ 25 % (pulsing). `tcp_dup_ack` is not yet ingested (owner will add it), so the
+dup-ACK figure reads "no data"; it is in `SENTINEL_FIELDS` among the
+untyped strings (before the numeric block, so `CAST_CHECK_FIELDS` is unchanged),
+and the audit's derivation test requires it. `serviceFilter` is `dst_ip="<ip>"`. `dst_ip`'s type
+is unmeasured, so `flowMap.nodes`/`flowMap.pairs` are not Parquet-eligible (all
+routes stay JSON anyway). `gno_svc_nodes_c1h` and `gno_svc_edges_c1h` keep their
+ids with new bodies: **Re-apply both after upgrading**; until then they read as
+drifted and Flow Map runs live.
+
+Flow Map's latency triage domain is **HTTP RTT**: `buildDomainsQuery` and
+`buildTrendQuery` read `percentile(toreal(http_rtt),95)*1000` (count:
+`countif(isnotnull(toreal(http_rtt)))`), matching Web & API Health, instead of
+`http_server_ms`. No query reads `http_server_ms` now, so it left Field
+Explorer's catalog (44 attributes; `http_rtt` drops its `derivedField`). It stays
+in `SENTINEL_FIELDS` as a `SENTINEL_EXTRA_FIELDS` entry so the 2026-09-25 audit
+reports still re-read. Both queries run live: no Re-apply.
+
+### Flow Map: three dependency views (2026-11-03)
+
+Owner decision: add DNS, Web/API and Subnets views beside the destinations
+graph, which stays the default. `FlowMap()` in `src/tabs/FlowMap.tsx` holds the
+view (`role="group"` switcher, `aria-pressed`) and mounts only the selected one;
+`DependencyView` (`src/tabs/FlowMapDeps.tsx`) is `lazy()`-loaded, because Flow Map
+is the eager landing tab and the views put the initial JS over
+`asset-budget.json`. Queries in `src/queries/flowMap.ts`, each `limit 500`:
+`DNS_DEPS_QUERY` (`src_ip`, `dns_host`, `REPLY_CODE_AGGS`, p95
+`dns_response_time`), `WEB_DEPS_QUERY` (`HOSTS_HEAD`, `HOST_ERR_AGG`,
+`SERVER_P95_AGG` in ms, by `src_ip`, `http_host`) and `SUBNET_DEPS_QUERY`
+(`SUBNET24_HEAD`, p95 `tcp_rtt`, dup-ACK counts, by `src_subnet`, `dst_subnet`);
+routing entries `flowMap.dnsDeps`, `flowMap.webDeps`, `flowMap.subnetDeps` (JSON).
+Each is **one live `useSearch` with no `accel`**: no schedule, no Re-apply, and
+`tabJobBudget.test.tsx`'s `/flow-map` row (the default view) is unchanged.
+Drawing limits `MAX_SOURCES` 10, `MAX_TARGETS` 12, `MAX_EDGES` 40; hidden volume
+is stated. Thresholds (app defaults, not owner-confirmed): failure/error share
+1 % / 5 %; p95 targets DNS 100 ms, HTTP 200 ms, TCP 200 ms, red above 3×;
+dup-ACK 5 % / 25 %. A node's p95 is its worst pair's (percentiles do not combine).
+**`SPECS` must stay plain data** (title, unit, labels, query, info) and the
+per-row functions live in the unexported `LOGIC`: `scripts/extract-queries.mjs`
+resolves a panel's query through the spec object and fails on locals inside
+arrow functions. `src/queries/__fixtures__/args.ts` freezes every view with a
+`$each` fixture on `view`. No drill-down on click yet; `dns_host`,
+`dns_reply_code` and `http_rtt` presence in the live feed is unmeasured.
+
+### Field Explorer query-used catalog
+
+`src/data/explorerFields.ts` defines the 44 analytics input attributes shown in
+all three Field Explorer views. It reuses descriptions from `amiFields.ts` and
+adds missing persisted helpers, checksum fields, FTP data,
+event time and Data Flow volume fields. The broad `AMI_CATALOG` remains unchanged
+for sample generation. `EXPLORER_CATALOG`, `EXPLORER_FAMILIES` and
+`EXPLORER_USE_CASES` are plain arrays, frozen with the rest of `src/data`.
+`CHECK_FIELDS` checks exactly this list; the feed view filters summaries to it
+before family/search filtering and uses the same family labels as coverage.
+
+`explorerFields.test.ts` compares both directions against full analytics
+statements in the display freeze, including scheduled bodies and builder
+variants/drill-downs. It strips quoted values/function names and tracks
+query-local aliases, retaining a persisted helper only where it is actually
+read as input. This is a lightweight extractor for the app's current query
+grammar, not a general KQL parser. Field Explorer's own presence query is
+excluded to avoid self-justifying unused fields; offline/installation audits,
+probes, completeness and Stream-metric queries are excluded as agreed scope.
+Changing an analytics input requires updating this catalog and its definition.
+
+**Re-apply `gno_presence_c1h` after upgrading:** its body and cN mapping changed.
+The existing serving-drift guard sends mismatched schedules live; the stored
+width guard refuses old catalog rows and now explicitly recommends Re-apply.
+No schedule or ingestion config is written automatically. The In feed query
+and snapshot protocol are unchanged; filtering happens after field summaries,
+so the 200-field API cap can still hide a rare query-used attribute in that view.
+
 **Data flow: KQL from `src/queries/` → job → poll → NDJSON rows → hook → tab.**
 
 - `src/queries/<tab>.ts` — **every KQL string and query builder the app runs or shows.** They are
@@ -243,6 +394,8 @@ Formatting helpers are in `src/lib/format.ts`.
 **Guided Setup / provisioning** (`src/cribl/provision.ts`, `src/tabs/GuidedSetup.tsx`): `provision.ts` is no longer a panel of its own but the worker-group client every Guided Setup write shares — `ensureLakeDataset`, `commitMatchingAndDeploy` (commit exactly the run's files, refuse to deploy a commit that left one behind, and the stranded-commit repair that deploys only a hash this app recorded), `pendingDeploy`/`undeployedHead`/`deployState`, `pendingConfigPaths`/`commitScopeFor`, the port and hosting helpers, `groupInputs` and `scrubbedErrText`. Guided Setup writes **Cribl configuration** from **three** places today: the onboarding panel (below), the Lake landing panel — see item (3) under **App-specific conventions** — and acceleration. **The onboarding pack is the only onboarding (owner decision 2026-09-25), whatever the pinned release says**: the pack panel always renders and holds the page's one picker, the page's "What gets created" list is `PACK_SETUP_FACTS`, and in a build whose pinned pack cannot be installed Onboard is refused with the release's own sentence and **nothing falls back**. **Owner decision 2026-09-26: the app no longer shows or removes the global stacks earlier releases created** — the Raw HTTP stack (`in_gigamon_http`, `gigamon_ami_json_array`, `gigamon_http_normalize`, `gigamon_ami_http`) and the Syslog stack before it (`in_gigamon_syslog`, `gigamon_syslog`, `gigamon_ami_syslog`). New installs never have them; a tenant that still holds them keeps them, orphaned, and deletes them in Cribl Stream if it wants them gone. `<ProvisionPanel>` (their Remove-only panel), `provisionPanelMode`, `checkStatus`/`checkLegacyStatus`, `removeOnboardingStack` and its breaker-ruleset guards, the dirty-file refusal, the `guided_setup_memory/uncommitted_removals` record, the global ids, the `onboarding_stack.remove` write id and every grant only they used (the GET and DELETE of each object, and the `PATCH /m/:gid/routes/:tableId` that took their routes out) are gone; `policyCoverage.test.ts` fails if a call or a grant names one of those objects again, and `provision.test.ts` if one of those functions is exported again. `src/cribl/packSpecs.ts` keeps the global stack's specs, under their old ids as private literals, because `pack.test.ts` holds the pack's YAML to them. The tab also hosts `<SearchLimitsPanel>`, the install-wide search running-time settings, and `<AccelPanel>`, below. *(Corrected 2026-09-26, `chore/remove-global-stacks`: this paragraph described `<ProvisionPanel>`, "the **Remove** of the global stacks earlier releases created", rendered while one of their objects was (or might be) in the group, with a type-to-confirm dialog, `removeOnboardingStack` deleting only what the status check found present, the breaker ruleset deleted only once its source was gone, carried this app's description and was named by no other source, and "Remove old Syslog objects" taking the Syslog stack alone; and it counted **four** places a screen writes Cribl configuration. Corrected 2026-09-25, `feat/collapse-old-onboarding`: before that, `onboardingPath` made that panel THE onboarding while the pinned pack could not be installed, with `deployAll`, a port picker, an app-generated token and `SETUP_FACTS`. Corrected 2026-09-24, `feat/onboarding-raw-http`: before that it described a Syslog stack.)*
 
 *(Removed 2026-09-26, `chore/remove-global-stacks`: a paragraph here described "Remove refuses to commit somebody else's uncommitted work" — `removeDirtyRefusal`/`removeDirtyVerdict` in `provision.ts` (runbook 4c P1, added 2026-09-25, `feat/remove-dirty-refusal`), which re-read Git's status inside the run lock and refused the global stacks' Remove while a file its commit carried was already uncommitted, letting its own failed-commit retry through on the KV record `guided_setup_memory/uncommitted_removals`. It went with that Remove. The pack's own writes keep their guard: `manifestPendingRefusal`, below.)*
+
+**The group's own Raw HTTP source** (`src/cribl/globalHttp.ts`, ids in the pure `globalHttpIds.ts`; owner decisions 2026-10-24, reversing for the Raw HTTP source the 2026-09-25/26 decisions above). **Onboard opens a chooser**: the worker group, then that group's Raw HTTP sources (`listRawHttpSources`, from the granted `GET /m/:gid/system/inputs`), plus "Create a new source, `in_gigamon_ami_http`" with a port; **Review changes** opens the one confirmation. The run creates, **only when absent** and never edited, the breaker ruleset `gigamon_ami_http_json_array` (`HTTP_BREAKER_SPEC`), the pipeline **`gigamon`** (`PIPELINE_SPEC`; one already in the group is used as it is; not the pack's `gigamon_ami_normalize`, so Data Flow cannot count one event twice) and the `gigamon_lake` destination (`DESTINATION_SPEC`, writing `gigamon_ami`). Then, for a **picked** source, ONE whole-body PATCH (`connectSource`, held to the diff shown, `connectPlan`): a QuickConnect connection `gigamon` → `gigamon_lake` **added beside its others** — any other connection already into `gigamon_lake` is **replaced**, or every record would be written twice — and the JSON-array breaker put first; **an off source is switched on** (owner decision 2026-10-26) — refused while another source holds its port or the ports cannot be read, and given a new token, generated by the run and shown once, when it has none; its port, TLS and other connections are kept, and a source on **Send to Routes is refused** (switching it would cut off its routes). For "create new", `in_gigamon_ami_http` is POSTed with the person's port, a generated token shown once, TLS for the hosting and that connection. **The onboarded source is whichever carries the connection** (`isConnected`) — read, never stored — and the status row, the endpoint card (its token is never shown unless the app set it), Rotate token and Move port act on it (`applyGlobalHttpChange` by id) and commit only the group's own files (`GLOBAL_COMMIT_MARKERS`). The pack's own Raw HTTP source is not configured. Grants: POST on `/m/:gid/system/inputs`, `/lib/breakers`, `/pipelines`, `/system/outputs`; GET and PATCH on `/m/:gid/system/inputs/:inputId` (the person picks the source); GET on the breaker's and `gigamon`'s exact ids; **no DELETE** — `LEFT_BEHIND` (`stream_object`). Data Flow counts it as the `global-http` stack (`offered`, input `in_gigamon_ami_http`, pipeline `gigamon`). **The Data Flow tab follows the onboarded source** (owner decision 2026-10-27; `components/useOnboardedFlow.ts`, a read of the viewer's Guided Setup group, capped at 4 s, "none" on any failure): the Sources and Processing plates, the Source and Pipeline stages and their links name it and `gigamon`; when its id is not one `stackIds.ts` lists, the stage counters run `metricsQueryFor([http_raw:<id>])` **live** instead of reading `gno_pipeline_c1h`, which did not count it (held in `DataFlow.test.tsx`; the builder is frozen over its cases). That moved `METRICS_QUERY`: **Re-apply `gno_pipeline_c1h`**. The ingress host on the card is `<group>.<workspace>.<org>.cribl.cloud` from a `<workspace>-<org>.cribl.cloud` Leader (`suggestedIngressHost`), and the header it shows is `Authorization: Bearer <token>` — **unverified against a live source**. Not yet updated: the cutover preflight, which still reads the pack's own source. Built and tested against fakes only. **A build whose pack release cannot be installed still onboards**: the run skips the pack with the release's sentence, and only "Also send sample data" is refused. **An installed copy that is not the current release (older, or foreign) is left exactly as it is** (`packKept`): no upgrade, no write, and the commit carries only the group's own files (`commitAndDeployGlobal`), so a held upgrade's pending manifest is not deployed; only sample data is refused. *(Added 2026-10-24: before it, an installed 0.2.2 with 0.2.3 unreleased left both Onboard and Upgrade refused.)* The endpoint card, the Raw HTTP status row, Rotate token and Move port read and PATCH the group-own source (`applyGlobalHttpChange`, whole body, held to the shown diff) and commit only its files (`GLOBAL_COMMIT_MARKERS`: `local/cribl/inputs.yml`, `outputs.yml`, `breakers.yml`, the pipeline's directory), so they are not held by an uncommitted pack manifest. Grants: POST on `/m/:gid/system/inputs`, `/lib/breakers`, `/pipelines`, `/system/outputs`, GET on each object's exact id, PATCH on the source; **no DELETE** — `LEFT_BEHIND` (`stream_object`) says why, and Remove pack does not touch them. Data Flow counts it as the `global-http` stack (`offered`), which moved `METRICS_QUERY`: **Re-apply `gno_pipeline_c1h`**. The ingress host on the endpoint card is `<group>.<workspace>.<org>.cribl.cloud` from a `<workspace>-<org>.cribl.cloud` Leader (`suggestedIngressHost`), and the header it shows is `Authorization: Bearer <token>` — **the Bearer form is unverified against a live source**. Not yet updated for it: the cutover preflight, which still reads the pack's own source. Built and tested against fakes only.
 
 **The cutover preflight** (`npm run cutover:preflight`; `scripts/cutover-preflight.mjs`, the pure half `src/cribl/cutoverPreflight.ts`, the transport `scripts/cutover-preflight-fetch.mjs`) answers runbook 4c's "may Gigamon AMX be pointed at the pack's Raw HTTP source yet?" for one worker group (`--group`, default `default`), in one command. It reads, through the `npm run dev` proxy at `/capi` like `parquet-audit.mjs`, with **Guided Setup's own readers** imported under Node (`LIVE_READERS`: `readPackState` and `portsOfOthers` from `packClient.ts`, `pendingConfigPaths`, `deployState` and `pathInGroup` — exported for it — from `provision.ts`, `listDatasets` and `listStreamGroupsCurrent` from `lake.ts`, `packObjectsOf` from `onboarding/plan.ts`), so "owned", "current", "present" and "behind" mean what the screen means: the pack (installed, version, both ownership signals, current against `PACK_VERSION`), its Raw HTTP source (enabled, port, TLS, token set — never the token) and sample source, the three datasets with Lake's dated size, Git's pending files in the group (the pack's among them) and whether the group's Workers run the Leader's HEAD; **it fails closed on the deploy as on Git's status**: `deployState` (provision.ts, the reads `pendingDeploy` makes without its null that means both "nothing pending" and "could not tell") answers `unreadable`, `current`, or `behind` with `touches`, `clear` (every commit in between read, none touches the group) or `unknown`, and only `current` and `behind`/`clear` (a warning) can be Ready; then **Ready to point AMX at `<host>:<port>`**, or the blockers in plain words. *(Corrected 2026-09-26, `chore/remove-global-stacks`: it also read the global Raw HTTP and Syslog objects (`checkStatus`, `checkLegacyStatus`), printed them under "Global stacks (earlier releases)", named the pending files the global stacks' Remove would refuse over, and ended with "After the cutover: Guided Setup's Remove will find…". Guided Setup no longer shows or removes those objects, so neither does the preflight, and `cutoverPreflight.test.ts` fails if a request names one.)* The host is provision.ts's `suggestedIngressHost` (Cribl-managed `default` group only; a placeholder otherwise, never a guess), fed the Leader origin from `--leader` or the dev page's `__CRIBL_SEARCH_ORIGIN`, never from `.dev/cribl.json`. **GETs only, and no Search job**: the runner installs, before it imports anything from `src/`, a global fetch that refuses any non-GET, any `/search/` path and anything outside `/capi`; `cutoverPreflight.test.ts` runs the real readers over it and a fake transport and holds every request to a GET that `paths.ts` (so `config/policies.yml`) already grants, and the report to carrying no token. Exit 0 ready, 1 not ready, 2 failed. 0.1.0 and 0.2.0 are refused by name (`NON_DELIVERING_VERSIONS`: their routes never match inside a pack). **Any other owned published version older than `PACK_VERSION` (`olderThanPin`) blocks while this build's pin can be installed** (`packRelease().installable`), because Upgrade can then clear it — its sentence says to Upgrade to the pin from Guided Setup's onboarding panel first; **while the pin cannot be installed** (the window between a new pin and its flip, when Upgrade is refused and nothing could clear it) **it blocks only on a known, stated problem** (`OLDER_VERSION_GAPS` — today 0.2.1, which keeps `_raw` on every row of its Parquet copy, blocks either way, its sentence adding the release's own refusal) **and is otherwise a warning** (owner decision 2026-09-25, `fix/preflight-rules-route`, answering the question `fix/preflight-block-021` left open). **The Parquet route is read, not assumed** (owner decision 2026-09-25, same branch): for an installed version that ships `gigamon_ami_normalize_parquet` (0.2.2 on; older ones are held by the version rule), `readPackState`'s existing `GET /m/:gid/p/cc-network-gigamon-ami/routes` — already granted; no grant added — now also returns the table (`PackState.routeTable`, `packRoutesOf`: output, pipeline, enabled, a disabled route group counting as disabled; a 200 in which no table carries a `routes` array is unreadable, never an empty table), and its existing `GET …/p/cc-network-gigamon-ami/system/outputs` the destinations (`PackState.outputTable`, `packOutputsOf`: id, type, dataset). `parquetRouteBlockers` finds the routes into the Parquet copy **by where they send, never by their own id**: into `gigamon_ami_parquet_lake` or any other `cribl_lake` destination of the pack whose dataset is `gigamon_ami_pq` (`parquetOutputIds`). It blocks Ready when the table or the destination list cannot be read, when no enabled route writes the Parquet copy, when any enabled route into it runs another pipeline (or none) — two routes, one wrong, block — and, the stricter reading, when an enabled route's destination cannot be told: chosen by expression, a `router` or `default` destination (they forward to others), one the pack's list does not hold, or none named; each sentence says what it found and that the Parquet copy would keep `_raw`. A renamed shipped Parquet route on the shipped pipeline passes, verdict and all: its id reading absent is shown in the report but blocks only while the route check itself blocks; every other missing pack object still blocks by id. *(Corrected 2026-09-25 on that branch after review: the route check matched only the shipped destination's id, so a second destination writing `gigamon_ami_pq`, or a router forwarding to it, was never examined; a renamed route passed the route check but still blocked by id; and a table of an unknown shape read as having no routes.)* It does not read route filters, route order or what the pipeline itself does, so a Parquet route whose filter never matches, or a locally edited `gigamon_ami_normalize_parquet` that no longer removes `_raw`, still reads Ready. The tests: `cutoverPreflight.test.ts` on a released pin (the real constants moved forward by a mock while 0.2.3 is pinned unpublished, 2026-09-26; the real readers over the shipped `route.yml`, an edited and an unreadable table among them, every request still a granted GET), `cutoverPreflight.unpublished.test.ts` and `cutoverPreflight.nextPin.test.ts` with them moved by a mock to an unreleased and a released 0.2.3. An owned copy's ownership guard is held by a test (a foreign 0.2.1 is told "not this app's", never to Upgrade). *(Corrected 2026-09-25, `fix/preflight-block-021`, after review. Corrected again 2026-09-25, `fix/preflight-rules-route`: this said "the gate is by version only", the preflight reading no route's pipeline, and left open whether an older version with no known gap should block while the pin cannot be installed — it always did.)* A version newer than the pin is unchanged: the real readers report it as unpublished (it is not on `PACK_PUBLISHED_VERSIONS`), so it blocks as "not this app's"; `cutoverPreflight.test.ts` has one case per published version older than the pin, read off the list. *(Corrected 2026-09-25, `fix/preflight-block-021`, owner decision 2026-09-25 — no Parquet row with `_raw` from the cutover on: this said "an owned 0.2.1 is a warning, not a blocker".)* *(Added 2026-09-25, `feat/cutover-preflight`. Corrected the same day on that branch after review: it read `pendingDeploy` and `undeployedHead`, so an unreadable group record or history, a range past 200 commits or a failed `/version/files` read printed Ready — a pack committed and never deployed read as ready to cut over; and the Remove-refusal files were scoped to every global key, whatever was present. Built and tested against fakes and a local stub server only; **it has not been run against a Leader**, so no verdict of it has been compared with what Guided Setup shows for the same group.)*
 

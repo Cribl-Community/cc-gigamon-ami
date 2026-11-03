@@ -25,6 +25,7 @@ import type { AccelEntryState, AccelRow, AccelState } from './provision'
 import {
   ACCEL_TABS,
   ALL_TABS_ON,
+  LEGACY_DATA_FLOW_SCHEDULES,
   flipPlan,
   masterReading,
   ownSchedulesOfTab,
@@ -139,6 +140,11 @@ describe('which tab a schedule serves', () => {
     for (const t of ACCEL_TABS) {
       const file = app.find((a) => a.route === t.route)?.file ?? ''
       expect(file, `no component file for ${t.route}`).not.toBe('')
+      if (t.key === 'data-flow') {
+        expect(idsNamedIn(file).size, 'connection telemetry must not read combined snapshots').toBe(0)
+        expect(sorted(schedulesOfTab(t.key))).toEqual(sorted(LEGACY_DATA_FLOW_SCHEDULES))
+        continue
+      }
       expect(sorted([...idsNamedIn(file)]), `${file} vs the manifest's panels for ${t.key}`).toEqual(sorted(schedulesOfTab(t.key)))
     }
   })

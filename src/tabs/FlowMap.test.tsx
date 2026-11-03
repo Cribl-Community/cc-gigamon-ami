@@ -15,13 +15,13 @@
 //
 //   1. TWO JOBS, NOT THREE. And the graph read carries no tail, because a tail
 //      is either a second read or one panel reading the other's rows.
-//   2. THE OUTBOUND TOTALS SUM ACROSS THE UNTAGGED SENTINEL. The body keeps
-//      flows to peers with no AWS name tag as an empty-string group precisely so
-//      this number is not short, in the direction nobody can see.
-//   3. THE EXTERNAL SPOKE IS total − named, over EVERY tagged pair. It used to
-//      be computed against the already-limited top 40, so traffic to a named
-//      peer outside that cut counted as unnamed. That is the one number this
-//      change moves, and it moves towards being right.
+//   2. THE OUTBOUND TOTALS SUM OVER EVERY PAIR READ, not only the drawn edges,
+//      so a client's "flows out" is not short in the direction nobody can see.
+//   3. THE "OTHER DESTINATIONS" SPOKE IS total − to-drawn, over every pair
+//      read, not over the already-limited top 40 edges.
+//   (Since 2026-11-03 nodes are destination IPs and the pairs are source IP →
+//   destination IP; the AWS name tags these points were first written for are
+//   not in the feed.)
 //
 // The network is stubbed at `fetch`; the hook, the read path and search.ts are
 // all real.
@@ -71,29 +71,28 @@ const run = (id: string) => ({
   timeCompleted: NOW - HOUR,
 })
 
-/** Two tagged services, both of them destinations, so both get drawn. */
+/**
+ * Three destinations: 10.1.0.1 is named by its http_host and healthy; 10.1.0.2
+ * has no host and a p95 tcp_rtt of 700 ms (red); 10.1.0.3 is fast but 30% of
+ * its flows carry duplicate ACKs (red).
+ */
 const NODE_ROWS = [
-  { dst_aws_flat_tags_name: 'alpha', app: 0.01, app_n: 10, dns: 0.01, dns_n: 10, resets: 0, flows: 100, jobId: `${NODES}.run-1`, jobName: NODES },
-  { dst_aws_flat_tags_name: 'beta', app: 0.01, app_n: 10, dns: 0.01, dns_n: 10, resets: 0, flows: 100, jobId: `${NODES}.run-1`, jobName: NODES },
+  { dst_ip: '10.1.0.1', host: 'alpha.example.com', net: 0.01, net_n: 10, dupack_flows: 0, dupack_n: 10, flows: 100, jobId: `${NODES}.run-1`, jobName: NODES },
+  { dst_ip: '10.1.0.2', host: '', net: 0.7, net_n: 10, dupack_flows: 0, dupack_n: 0, flows: 100, jobId: `${NODES}.run-1`, jobName: NODES },
+  { dst_ip: '10.1.0.3', host: '', net: 0.01, net_n: 10, dupack_flows: 3, dupack_n: 10, flows: 50, jobId: `${NODES}.run-1`, jobName: NODES },
 ]
 
 /**
- * The un-tailed grouping, with the sentinel group the body's `extend` creates.
- *
- * alpha sends 60 flows to beta and 40 to peers nobody can name; beta sends 10 to
- * alpha and none anywhere else. So:
- *
- *   outbound total   alpha 100, beta 10   (summed ACROSS the sentinel)
- *   named out        alpha  60, beta 10
- *   external spoke   alpha  40, beta  0   — one spoke, 40 flows
- *
- * Drop the sentinel row and alpha's outbound total reads 60, its external spoke
- * disappears, and nothing on screen says a thing.
+ * Source IP → destination IP pairs. 10.0.0.1 sends 60 flows to 10.1.0.2 and 40
+ * to 10.1.0.1; 10.0.0.2 sends 10 to 10.1.0.1; 10.0.0.3 sends only to 10.9.9.9,
+ * which is not a drawn destination, so it is drawn as a client whose whole
+ * traffic is a spoke to "Other destinations".
  */
 const GRAPH_ROWS = [
-  { src_aws_flat_tags_name: 'alpha', dst_svc: 'beta', flows: 60, jobId: `${EDGES}.run-1`, jobName: EDGES },
-  { src_aws_flat_tags_name: 'alpha', dst_svc: '', flows: 40, jobId: `${EDGES}.run-1`, jobName: EDGES },
-  { src_aws_flat_tags_name: 'beta', dst_svc: 'alpha', flows: 10, jobId: `${EDGES}.run-1`, jobName: EDGES },
+  { src_ip: '10.0.0.1', dst_ip: '10.1.0.2', flows: 60, jobId: `${EDGES}.run-1`, jobName: EDGES },
+  { src_ip: '10.0.0.1', dst_ip: '10.1.0.1', flows: 40, jobId: `${EDGES}.run-1`, jobName: EDGES },
+  { src_ip: '10.0.0.2', dst_ip: '10.1.0.1', flows: 10, jobId: `${EDGES}.run-1`, jobName: EDGES },
+  { src_ip: '10.0.0.3', dst_ip: '10.9.9.9', flows: 500, jobId: `${EDGES}.run-1`, jobName: EDGES },
 ]
 
 let submits: Submitted[] = []
@@ -227,26 +226,37 @@ describe('the default route, drawn from two reads', () => {
     expect(accelEntry(EDGES).panels[0].tail).toBeUndefined()
   })
 
-  it('draws the edge between the two tagged services', async () => {
+  it('draws the destinations, named by http_host where known, and the client-only sources', async () => {
     stub()
     await render()
-    expect(container.querySelectorAll('.svc-node')).toHaveLength(2)
-    expect(titles().some((t) => t.includes('alpha'))).toBe(true)
+    expect(container.querySelectorAll('.svc-node:not(.svc-node-source)')).toHaveLength(3)
+    expect(container.querySelectorAll('.svc-node-source')).toHaveLength(3)
+    expect(titles().some((t) => t.startsWith('alpha.example.com (10.1.0.1)'))).toBe(true)
+    // No http_host: the IP is the label.
+    expect(titles().some((t) => t.startsWith('10.1.0.2 —'))).toBe(true)
+    // Only drawn destinations get solid edges.
+    expect(titles().filter((t) => / → 10\.1\.0\.|→ alpha/.test(t))).toHaveLength(3)
   })
 
-  it('sums each service’s outbound total across the untagged group', async () => {
-    // alpha sends 60 to beta and 40 to unnamed peers. The spoke to the external
-    // hub is the difference, so it exists only if the sentinel row was counted
-    // in the total and excluded from the named sum.
+  it('colours a destination red on p95 tcp_rtt or on its duplicate-ACK share', async () => {
     stub()
     await render()
+    expect(titles().find((t) => t.startsWith('10.1.0.2 —'))).toContain('tcp_rtt p95 700')
+    expect(titles().find((t) => t.startsWith('10.1.0.3 —'))).toContain('dup-ACK 30% of 10')
+    // A destination with no tcp_dup_ack values says so rather than reading 0%.
+    expect(titles().find((t) => t.startsWith('10.1.0.2 —'))).toContain('dup-ACK no data')
+    // Red nodes carry two pulse rings each: 10.1.0.2 and 10.1.0.3, not 10.1.0.1.
+    expect(container.querySelectorAll('.svc-pulse-ring')).toHaveLength(4)
+  })
 
-    const spoke = titles().find((t) => t.includes('unnamed / external peers'))
-    expect(spoke, 'the external spoke is missing, so the untagged flows were dropped').toBeDefined()
-    expect(spoke).toContain('40')
-    // beta sends everything to a named peer, so it has no spoke of its own.
-    expect(titles().filter((t) => t.includes('→ unnamed / external peers'))).toHaveLength(1)
-    expect(titles().some((t) => t.includes('Peers with no AWS name tag') && t.includes('40'))).toBe(true)
+  it('totals each source IP over every pair read, and spokes the rest to "Other destinations"', async () => {
+    stub()
+    await render()
+    expect(titles()).toContain('10.0.0.1 — client only · 100 flows out')
+    expect(titles()).toContain('10.0.0.2 — client only · 10 flows out')
+    expect(titles()).toContain('10.0.0.3 — client only · 500 flows out')
+    expect(titles()).toContain('10.0.0.3 → other destinations — 500 flows')
+    expect(titles().some((t) => t.startsWith('10.0.0.1 → other'))).toBe(false)
   })
 
   it('dates the card, because both of its halves came from a stored run', async () => {
@@ -263,8 +273,53 @@ describe('the default route, drawn from two reads', () => {
 //  • That two reads are faster than three. happy-dom has no network, and the
 //    ~1.6 s the platform leaves between admitting concurrent jobs — which is
 //    what the second read actually cost — cannot appear here.
-//  • That the client-side filter/sort/limit reproduces `| where dst_svc != "" |
-//    sort by flows desc | limit 40` on a real result. The fixture has three
-//    pairs; the cut only bites past forty.
+//  • That the 8-client and top-40 edge cuts hold on a real result. The fixture
+//    has four pairs; the cuts only bite past eight clients and forty edges.
+//  • Node colour. The health class is asserted through the title's figures,
+//    not a computed colour, which happy-dom does not resolve.
 //  • Anything about the drawing. The nodes are laid out on an ellipse this test
 //    never measures, and happy-dom computes no layout to measure it with.
+
+describe('the view switcher', () => {
+  const click = async (label: string) => {
+    const b = [...container.querySelectorAll('button')].find((x) => x.textContent === label)!
+    await act(async () => { b.click() })
+    for (let i = 0; i < 16; i++) await act(async () => { await Promise.resolve() })
+  }
+
+  it('offers Destinations, DNS, Web/API and Subnets, with Destinations selected', async () => {
+    stub()
+    await render()
+    const group = container.querySelector('[aria-label="Flow map view"]')!
+    const buttons = [...group.querySelectorAll('button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(['Destinations', 'DNS', 'Web/API', 'Subnets'])
+    expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false'])
+  })
+
+  it.each([
+    ['DNS', 'app_name="dns" dns_host=*'],
+    ['Web/API', 'by src_ip, http_host'],
+    ['Subnets', 'by src_subnet, dst_subnet'],
+  ])('%s runs its own one live search and nothing from the destinations view', async (label, marker) => {
+    stub()
+    await render()
+    expect(submits).toEqual([])
+    await click(label)
+    // The dependency views are a lazy chunk: wait for it to load and submit.
+    await vi.waitFor(() => expect(submits).toHaveLength(1))
+    for (let i = 0; i < 8; i++) await act(async () => { await Promise.resolve() })
+    expect(submits).toHaveLength(1)
+    expect(submits[0].query).toContain(marker)
+    expect(submits[0].query).not.toContain('$vt_results')
+  })
+
+  it('switching back to Destinations submits nothing new', async () => {
+    stub()
+    await render()
+    await click('DNS')
+    await vi.waitFor(() => expect(submits.length).toBeGreaterThan(0))
+    const after = submits.length
+    await click('Destinations')
+    expect(submits.length).toBe(after)
+  })
+})

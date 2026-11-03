@@ -215,12 +215,12 @@ type Confirming =
 const TAB_OWN_COST: Readonly<Record<AccelTabKey, ScheduleSetCost>> = Object.fromEntries(
   ACCEL_TABS.map((t) => [t.key, estimateScheduleSetCost(ownSchedulesOfTab(t.key))]),
 ) as Record<AccelTabKey, ScheduleSetCost>
-const TOTAL_COST: ScheduleSetCost = estimateScheduleSetCost(MANIFEST.map((e) => e.id))
 
 /** The ⓘ beside one switch: what it reads, the shared searches' own cost and
  *  which dashboards keep each one running, and the provenance of the figures. */
-function switchTipText(key: AccelTabKey | 'master'): string {
-  if (key === 'master') return `Covers all ${TOTAL_COST.ids.length} scheduled searches: ${setCostWords(TOTAL_COST)}. ${TOTAL_COST.provenance}`
+function switchTipText(key: AccelTabKey | 'master', totalCost?: ScheduleSetCost): string {
+  if (key === 'master' && totalCost) return `Covers ${totalCost.ids.length} scheduled searches: ${setCostWords(totalCost)}. ${totalCost.provenance}`
+  if (key === 'master') return ''
   const own = TAB_OWN_COST[key]
   const shared = sharedSchedulesOfTab(key).map((id) => {
     const cost = estimateScheduleSetCost([id])
@@ -234,7 +234,6 @@ function switchTipText(key: AccelTabKey | 'master'): string {
 const TAB_TIP: Readonly<Record<AccelTabKey, string>> = Object.fromEntries(
   ACCEL_TABS.map((t) => [t.key, switchTipText(t.key)]),
 ) as Record<AccelTabKey, string>
-const MASTER_TIP = switchTipText('master')
 
 export function AccelPanel() {
   const [state, setState] = useState<AccelState | null>(null)
@@ -322,7 +321,11 @@ export function AccelPanel() {
   }, [refresh])
 
   const rows = state?.rows ?? null
-  const saving = estimateWorkspaceSaving()
+  const saving = estimateWorkspaceSaving(MANIFEST.filter((e) =>
+    !e.legacyOnly || rows?.some((r) => r.id === e.id && r.state !== 'absent' && r.state !== 'unreadable' && r.state !== 'foreign'),
+  ).map((e) => e.id))
+  const applySaving = estimateWorkspaceSaving(MANIFEST.filter((e) => !e.legacyOnly).map((e) => e.id))
+  const totalCost = estimateScheduleSetCost(saving.entries.map((e) => e.id))
   const statusFor = (id: AccelId): AccelStatus | null => status?.find((s) => s.id === id) ?? null
   const withOwner = rows ? showOwnerColumn(rows, me) : false
   const columns = withOwner ? 6 : 5
@@ -544,8 +547,8 @@ export function AccelPanel() {
           label="Every dashboard"
           name={switchName('master')}
           reading={master}
-          costWords={setCostWords(TOTAL_COST)}
-          tip={MASTER_TIP}
+          costWords={setCostWords(totalCost)}
+          tip={switchTipText('master', totalCost)}
           note={nothing?.key === 'master' ? nothing.text : null}
           master
           onFlip={() => onFlip('master')}
@@ -565,6 +568,11 @@ export function AccelPanel() {
             </li>
           ))}
         </ul>
+        <p className="ac-note">
+          Data Flow now reads live counters for the onboarded connection. Its switch manages the older
+          combined snapshots only; switching it off does not stop these live counters. Shared snapshots
+          can still serve other dashboards.
+        </p>
       </div>
 
       <fieldset className="ac-presets">
@@ -711,7 +719,7 @@ export function AccelPanel() {
           ))}
         </ul>
         <p className="ac-note">{saving.provenance}</p>
-        <p className="ac-note">{applyCostLine(saving)}</p>
+        <p className="ac-note">{applyCostLine(applySaving)}</p>
       </div>
 
       <div className="gs-actions ac-actions">
@@ -817,7 +825,7 @@ export function AccelPanel() {
           isOpen={confirming?.kind === 'apply'}
           title={`Create ${applyResources(state).length === 1 ? 'a scheduled Cribl Search saved search' : `${applyResources(state).length} scheduled Cribl Search saved searches`} in ${SEARCH_GROUP}`}
           resources={applyResources(state)}
-          costLine={applyCostLine(saving)}
+          costLine={applyCostLine(applySaving)}
           consequences={[
             'Cribl records whoever presses this as the owner of each saved search. That is server-controlled — this app cannot set it and cannot move it afterwards.',
             // NOT "read, changed or removed", which shipped and was false on
@@ -913,7 +921,9 @@ export function AccelPanel() {
           ]}
           costLine={scheduleCostLine(saving, confirming.id, confirming.enable)}
           consequences={[
-            confirming.enable
+            scheduleTarget.legacyOnly
+              ? 'No dashboard reads this legacy search. This changes only its recurring charge; Data Flow’s live counters are unchanged.'
+              : confirming.enable
               ? `${scheduleTarget.serves} goes back to reading this search's stored result.`
               : `${scheduleTarget.serves} keeps showing the last stored run until it ages out, and then runs its own query on every paint.`,
             'This endpoint carries no version to make a write conditional on, so if somebody edits this saved search at the same moment, one of the two changes is lost with no error. This app re-reads afterwards and says so if that happened.',

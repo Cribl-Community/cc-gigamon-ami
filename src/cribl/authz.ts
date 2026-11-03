@@ -353,6 +353,24 @@ export const WRITE_SITES: readonly WriteSite[] = [
     why: 'DELETE of one source or destination an earlier published version of the pack shipped and the installed one does not — by its own exact path, never a tenant’s own object — from the clean-up confirmation that names each by id and version. Destinations only once no route names them. Each is read back; still present is a failure, and a failed step commits nothing.',
   },
   {
+    at: 'cribl/globalHttp.ts#createObject',
+    gates: ['onboarding_pack.install'],
+    surface: 'config',
+    why: 'POST creates the group’s own in_gigamon_ami_http Raw HTTP source, its breaker ruleset, its pipeline, and the gigamon_lake destination where the group has none — each only when absent, re-read just before, from the Onboard confirmation that names each one. Nothing already there is replaced (owner decision 2026-10-24).',
+  },
+  {
+    at: 'cribl/globalHttp.ts#connectSource',
+    gates: ['onboarding_pack.install'],
+    surface: 'config',
+    why: 'PATCH replaces the Raw HTTP source the person picked in Onboard WHOLESALE, so the body is the live source re-read in the same call with only a QuickConnect connection gigamon → gigamon_lake added beside its others and the JSON-array breaker put first — and nothing is sent when that read no longer gives the diff the confirmation showed. Its port, token, TLS and other connections are kept; a source on Send to Routes is refused.',
+  },
+  {
+    at: 'cribl/globalHttp.ts#applyGlobalHttpChange',
+    gates: ['onboarding_pack.configure'],
+    surface: 'config',
+    why: 'PATCH replaces the group’s own in_gigamon_ami_http source WHOLESALE, so the body is the live source re-read in the same call with only the token or port changed — and nothing is sent when that read no longer gives the diff the confirmation showed. From Rotate token and Move port, each with its own confirmation.',
+  },
+  {
     at: 'cribl/packClient.ts#patchPackInput',
     gates: ['onboarding_pack.install', 'onboarding_pack.configure'],
     surface: 'config',

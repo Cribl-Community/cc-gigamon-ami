@@ -303,8 +303,8 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
   // 15-minute window, and both flags are set, so the panel that renders a saving
   // from them says out loud that it is an estimate on an assumption.
   gno_overview_c1h: {
-    // Five panels, each a whole-window scan of its own at the modelled 39 CPU-s.
-    liveRunCpuSeconds: 195,
+    // Four active panels; Data Flow no longer reads its volume projection.
+    liveRunCpuSeconds: 156,
     liveCostModelled: true,
     // Nobody counted how often these five tabs get opened, and it is per-viewer
     // behaviour rather than a property of the workspace.
@@ -314,7 +314,7 @@ export const MEASURED: Readonly<Record<AccelId, MeasuredEntry>> = Object.freeze(
     // Wide: the union body carries roughly forty aggregates, which is the shape
     // the 1.43 multiplier was measured on.
     shapeMultiplier: WIDE_BODY_MULTIPLIER,
-    what: 'Capacity, Web, Security, Findings and Data Flow — the opening tiles on five tabs',
+    what: 'Capacity, Web, Security and Findings — the opening tiles on four tabs',
   },
   gno_svc_nodes_c1h: {
     liveRunCpuSeconds: 55.8,
@@ -759,8 +759,8 @@ export function estimateEntrySaving(id: AccelId, runsPerDayOverride?: number): E
       ? { low: runsPerDayOverride, high: runsPerDayOverride }
       : (measured.liveRunsPerDay ?? { low: measured.assumedRunsPerDay, high: measured.assumedRunsPerDay })
 
-  const low = dailyAt(measured, scheduledRun.cpuSeconds, scheduledPerDay, span.low)
-  const high = dailyAt(measured, scheduledRun.cpuSeconds, scheduledPerDay, span.high)
+  const low = dailyAt(measured, scheduledRun.cpuSeconds, scheduledPerDay, entry.legacyOnly ? 0 : span.low)
+  const high = dailyAt(measured, scheduledRun.cpuSeconds, scheduledPerDay, entry.legacyOnly ? 0 : span.high)
 
   // Saving rises with how often the panel is read, so the low bound is the low
   // frequency's saving and not some combination of independent extremes.
@@ -777,11 +777,12 @@ export function estimateEntrySaving(id: AccelId, runsPerDayOverride?: number): E
     savedCredits: { low: creditsFor(savedCpuSeconds.low), high: creditsFor(savedCpuSeconds.high) },
     scheduledRun,
     scheduledRunsPerDay: scheduledPerDay,
-    breakEvenRunsPerDay: perRead > 0 ? (scheduledRun.cpuSeconds * scheduledPerDay) / perRead : null,
+    breakEvenRunsPerDay: !entry.legacyOnly && perRead > 0 ? (scheduledRun.cpuSeconds * scheduledPerDay) / perRead : null,
     assumedFrequency,
     modelledLiveCost: measured.liveCostModelled === true,
     provenance: [
       scheduledRun.provenance,
+      entry.legacyOnly ? 'No dashboard reads this legacy snapshot. Its scheduled work is a charge with no live-query saving.' : '',
       assumedFrequency
         ? `How often this panel is opened was never measured; ${measured.assumedRunsPerDay} views a day is an assumption.`
         : '',
@@ -812,7 +813,7 @@ export interface WorkspaceSaving {
 }
 
 /** Everything the manifest accelerates, added up. */
-export function estimateWorkspaceSaving(ids: readonly AccelId[] = MANIFEST.map((e) => e.id)): WorkspaceSaving {
+export function estimateWorkspaceSaving(ids: readonly AccelId[] = MANIFEST.filter((e) => !e.legacyOnly).map((e) => e.id)): WorkspaceSaving {
   const entries = ids.map((id) => estimateEntrySaving(id))
   const savedCpuSeconds: Span = {
     low: entries.reduce((n, e) => n + e.savedCpuSeconds.low, 0),

@@ -9,10 +9,14 @@
 // `feat/pack-flip-021`, and again the same day, `feat/pack-022-parquet-pipeline`,
 // when the pin moved to the unreleased 0.2.2. Corrected again 2026-09-25,
 // `chore/release-fetch-and-doc-drift`: this said the build pinned 0.2.2 before
-// its release, so the mock "changes nothing today".)* The refusal is what is
-// pinned:
-//   * Onboard is aria-disabled, with the release's own sentence as visible text
-//     it points at, and pressing it opens nothing and sends nothing;
+// its release, so the mock "changes nothing today".)* What is pinned:
+//   * Onboard is OFFERED (owner decision 2026-10-24): the run creates the
+//     group's own Raw HTTP source and skips the pack, so a build with no pack
+//     release still onboards Gigamon AMX — the port is asked for; only with
+//     "Also send sample data" ticked, which needs the pack, is it
+//     aria-disabled, with the release's own sentence as visible text it points
+//     at, and pressing it then opens nothing and sends nothing. *(Until
+//     2026-10-24 Onboard was refused here outright.)*
 //   * `POST /packs` is never sent, by anything on the page;
 //   * NOTHING FALLS BACK: the pack panel holds the page's picker, and nothing
 //     offers a Deploy of a global stack. *(Until 2026-09-25 the Raw HTTP
@@ -109,6 +113,13 @@ async function mount(el: React.ReactElement) {
 const buttonNamed = (label: string) => [...document.body.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === label)
 const bodyText = () => (document.body.textContent ?? '').replace(/\s+/g, ' ')
 
+/** Onboard opens the chooser: the worker group and its Raw HTTP sources. */
+async function openChooser() {
+  if (document.body.querySelector('#gs-onb-group-select')) return
+  await act(async () => { buttonNamed('Onboard')!.click() })
+  await settle()
+}
+
 const REFUSAL = `pack ${PACK_VERSION} has not been released, so there is nothing to install yet`
 
 describe('10. while this build records no release', () => {
@@ -117,21 +128,33 @@ describe('10. while this build records no release', () => {
     expect(thisPackRelease()).toMatchObject({ installable: false, refusal: REFUSAL })
   })
 
-  it('Onboard is aria-disabled and points at the refusal, which is on screen; pressing it sends nothing', async () => {
+  it('Onboard is offered, with the port to pick: the Raw HTTP source does not need the pack', async () => {
     leader()
     await mount(<OnboardingPanel />)
     const onboard = buttonNamed('Onboard')!
+    expect(onboard.getAttribute('aria-disabled')).toBeNull()
+    expect(bodyText()).not.toContain('Onboard is not available')
+    await openChooser()
+    expect(document.body.querySelector('#gs-onb-port')).not.toBeNull()
+    expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
+  })
+
+  it('with sample data ticked, Review changes is aria-disabled and points at the release’s refusal; pressing it sends nothing', async () => {
+    leader()
+    await mount(<OnboardingPanel />)
+    await openChooser()
+    await act(async () => { document.body.querySelector<HTMLInputElement>('#gs-onb-sample')!.click() })
+    await settle()
+    const onboard = buttonNamed('Review changes')!
     expect(onboard.getAttribute('aria-disabled')).toBe('true')
     const said = document.getElementById(onboard.getAttribute('aria-describedby') ?? '')
-    expect(said?.textContent).toBe(`Onboard is not available: ${REFUSAL}.`)
+    expect(said?.textContent).toBe(`Sample data needs the onboarding pack, which cannot be installed: ${REFUSAL}. Untick it to onboard without the pack.`)
     const before = calls.length
     await act(async () => { onboard.click() })
     await settle()
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
     expect(calls.slice(before)).toEqual([])
     expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/packs'))).toBe(false)
-    // No port to pick for an install that cannot happen.
-    expect(document.body.querySelector('#gs-onb-port')).toBeNull()
   })
 
   it('nothing falls back to the Raw HTTP stack: the pack panel holds the page’s picker, and there is no Deploy', async () => {
@@ -139,19 +162,23 @@ describe('10. while this build records no release', () => {
     // the onboarding, with "Deploy onboarding stack" and the page's picker.
     leader()
     await mount(<OnboardingPanel />)
+    await openChooser()
     expect(buttonNamed('Deploy onboarding stack')).toBeUndefined()
     expect(document.body.querySelector('#gs-group-select')).toBeNull()
     expect(document.body.querySelector('#gs-port-input')).toBeNull()
     expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
     expect(bodyText()).not.toContain('picked in the panel below')
     expect(bodyText()).not.toContain('Raw HTTP stack created outside the pack')
-    expect(bodyText()).toContain(`Onboard is not available: ${REFUSAL}.`)
     expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
   })
 
   it('a copy this app owns is offered Remove, and Upgrade is aria-disabled, pointing at the release’s refusal; pressing it sends nothing', async () => {
     leader({ copy: { version: '0.1.0', source: packReleaseUrl('0.1.0') } })
     await mount(<OnboardingPanel />)
+    // The older copy no longer blocks onboarding (2026-10-24): the run leaves
+    // it as it is and creates the group's own Raw HTTP source.
+    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBeNull()
+    expect(bodyText()).not.toContain('Upgrade it before onboarding')
     expect(buttonNamed('Remove pack')).toBeTruthy()
     const upgrade = buttonNamed(`Upgrade to ${PACK_VERSION}`)!
     expect(upgrade.getAttribute('aria-disabled')).toBe('true')
@@ -176,7 +203,7 @@ describe('10. while this build records no release', () => {
     expect(buttonNamed('Remove pack')).toBeUndefined()
   })
 
-  it('installed in Cribl, with no pack in the group: the pack panel shows, Onboard refused, and nothing is written', async () => {
+  it('installed in Cribl, with no pack in the group: the panel shows, Onboard offered, and nothing is written', async () => {
     // Until 2026-09-25 an installed build showed no pack panel here at all,
     // because the global Raw HTTP stack's panel was the onboarding. With that
     // fallback gone, this panel is the only place the page says why nothing
@@ -191,8 +218,8 @@ describe('10. while this build records no release', () => {
     await act(async () => { root.render(<Provider><Installed /></Provider>) })
     await settle()
     expect(bodyText()).toContain('Onboard Gigamon AMI with the pack')
-    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBe('true')
-    expect(bodyText()).toContain(`Onboard is not available: ${REFUSAL}.`)
+    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBeNull()
+    await openChooser()
     expect(document.body.querySelector('#gs-onb-group-select')).not.toBeNull()
     expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
   })
@@ -215,7 +242,7 @@ describe('10. while this build records no release', () => {
 })
 
 describe('Live Preview: installed in Cribl, served by the dev server', () => {
-  it('shows the pack panel with Onboard refused, and writes nothing', async () => {
+  it('shows the panel with Onboard offered, and writes nothing', async () => {
     ;(window as { CRIBL_API_URL?: string }).CRIBL_API_URL = 'https://main-acme.cribl.cloud/api/v1'
     vi.stubEnv('DEV', true)
     vi.resetModules()
@@ -225,8 +252,7 @@ describe('Live Preview: installed in Cribl, served by the dev server', () => {
     await act(async () => { root.render(<Provider><Preview /></Provider>) })
     await settle()
     expect(bodyText()).toContain('Onboard Gigamon AMI with the pack')
-    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBe('true')
-    expect(bodyText()).toContain(`Onboard is not available: ${REFUSAL}.`)
+    expect(buttonNamed('Onboard')?.getAttribute('aria-disabled')).toBeNull()
     expect(calls.filter((c) => c.method !== 'GET' && !c.path.startsWith('/kvstore'))).toEqual([])
   })
 })

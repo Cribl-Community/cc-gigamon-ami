@@ -309,14 +309,16 @@ describe('planEntries', () => {
     // leaves to each install (fieldTypes.test.ts pins the same lists). The seven whose text
     // opens with a presence term `f=*` are class A since the first parity run (2026-09-27),
     // in which every one of them failed in all three windows, and are no longer selected.
+    // flowMap.pairs groups on dst_ip since 2026-11-03, whose type no census has measured,
+    // so it is refused on type and not selected.
     const plan = planEntries()
     expect(plan.selected.map((s) => s.id).sort()).toEqual(['dns.overall', 'tls.pqcByServer'])
+    expect(plan.refused.find((r) => r.id === 'flowMap.pairs')?.why).toMatch(/dst_ip/)
     expect(plan.selected.every((s) => s.mode === 'evidence')).toBe(true)
     expect(plan.refused.find((r) => r.id === 'tcp.trend')?.why).toMatch(/tcp_dup_ack/)
     for (const [id, field] of [
       ['web.trend', 'http_code'], ['web.codes', 'http_code'], ['web.hosts', 'http_host'], ['web.h2', 'http_host'],
-      ['pqc.groups', 'ssl_ext_ec_supported_groups_type'], ['flowMap.edges', 'src_aws_flat_tags_name'],
-      ['flowMap.serviceEdges', 'src_aws_flat_tags_name'],
+      ['pqc.groups', 'ssl_ext_ec_supported_groups_type'],
     ]) {
       expect(plan.refused.find((r) => r.id === id)?.why, id).toContain(`class A on ${field} reads true on every Parquet row`)
     }

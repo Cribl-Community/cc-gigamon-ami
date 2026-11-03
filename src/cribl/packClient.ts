@@ -271,7 +271,7 @@ export interface HttpInputState {
 }
 
 /** The TLS block's certificate, as `HttpInputState.tlsCert` names it. */
-function tlsCertOf(tls: Record<string, unknown>): string {
+export function tlsCertOf(tls: Record<string, unknown>): string {
   const text = (v: unknown) => (typeof v === 'string' ? v : '')
   return [tls.certificateName, tls.certPath, tls.privKeyPath, tls.caPath].map(text).join(' ').trim()
 }
@@ -990,6 +990,12 @@ export interface PackCommitOptions {
    * app" on every later run.
    */
   record: (hash: string, message: string) => Promise<unknown>
+  /**
+   * More files the same commit carries: the Onboard run's group-own Raw HTTP
+   * objects (globalHttp.ts `GLOBAL_COMMIT_MARKERS` and their paths), created
+   * beside the pack and deployed with it. Absent: the pack's files only.
+   */
+  also?: { markers: readonly string[]; paths: readonly string[] }
 }
 
 /** Commit exactly the pack's pending files in `group`, then deploy — Guided
@@ -1008,10 +1014,12 @@ export async function commitAndDeployPack(
     onStep?.(r)
   }
   const nothingCommitted = opts.wrote
-    ? `the pack was changed, but Git reports none of its files uncommitted in ${group}, so none of its files were committed ` +
-      `and nothing was deployed. Commit and deploy ${group} in Cribl.`
+    ? `${opts.also ? 'the group' : 'the pack'} was changed, but Git reports none of ${opts.also ? 'the changed' : 'its'} files uncommitted in ${group}, ` +
+      `so nothing was committed or deployed. Commit and deploy ${group} in Cribl.`
     : null
-  const steps = await commitMatchingAndDeploy(message, group, PACK_COMMIT_MARKERS, packCommitPaths(group), step, onPhase, nothingCommitted)
+  const markers = [...PACK_COMMIT_MARKERS, ...(opts.also?.markers ?? [])]
+  const paths = [...packCommitPaths(group), ...(opts.also?.paths ?? [])]
+  const steps = await commitMatchingAndDeploy(message, group, markers, paths, step, onPhase, nothingCommitted)
   await recorded
   return steps
 }

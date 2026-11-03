@@ -101,29 +101,6 @@ export const OVERVIEW_SNAPSHOT_QUERY = q(
 )
 
 /**
- * Service-map edges, with the untagged destination kept rather than dropped.
- *
- * The obvious body — `summarize flows=count() by src…, dst…` — serves the edge
- * panel and quietly breaks the one beside it. The client-only panel's number is
- * every flow OUT of a source service, including flows to peers carrying no AWS
- * name tag, and whether a `summarize` keeps a null group key is not something
- * this app has measured. If it drops them, that panel's totals come back short
- * by however much of the traffic leaves the tagged estate — a smaller number, in
- * the direction a viewer cannot detect.
- *
- * So the null is turned into a group of its own before the grouping happens.
- * `dst_svc` is empty for exactly those flows: the edge panel filters them out
- * (which is what its own `dst_aws_flat_tags_name=*` head does) and the
- * client-only panel sums across them (which is what its `count() by src` does).
- * Both are then exact by construction rather than by assumption.
- *
- * `extend` and `iif`/`isnotnull` are all shapes this app already runs live.
- */
-export const SERVICE_EDGES_SNAPSHOT_QUERY = q(
-  'src_aws_flat_tags_name=* | extend dst_svc=iif(isnotnull(dst_aws_flat_tags_name), dst_aws_flat_tags_name, "") | summarize flows=count() by src_aws_flat_tags_name, dst_svc',
-)
-
-/**
  * Every (application, source) pair seen in the window, with its flows and bytes.
  *
  * ONE SCAN FOR THE WHOLE SHADOW AI TAB. That tab fires three queries on mount —
@@ -260,8 +237,8 @@ export const WEB_HOST_SNAPSHOT_QUERY = q(
  * ── THE HEAD IS THE PANEL'S OWN, CHARACTER FOR CHARACTER ────────────────────
  * Both heads derive subnet labels from endpoint IPs, using the same head as
  * `buildHeatQuery`. That is
- * what makes the empty-group question — the one SERVICE_EDGES_SNAPSHOT_QUERY and
- * the former DNS grouping each needed an `extend`/`iif` sentinel for — not
+ * what makes the empty-group question — the one the former AWS-tag service-edges
+ * grouping and the former DNS grouping each needed an `extend`/`iif` sentinel for — not
  * arise here: no panel on this entry sums across a group the live query filters
  * out, because the live query filters out exactly the same rows. A sentinel
  * would be a column nothing reads.
