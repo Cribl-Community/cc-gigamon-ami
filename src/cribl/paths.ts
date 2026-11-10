@@ -151,6 +151,13 @@ export const UNREACHED_MODULES: readonly Unreached[] = []
  * from it. The test proves all three against the source.
  */
 export const API_CALLS: readonly ApiCall[] = [
+  {
+    method: 'POST',
+    path: '/system/metrics/query',
+    scope: 'product',
+    site: 'streamMetrics.ts readStreamMetrics',
+    why: 'Read the onboarded source, pipeline and destination counters directly from Stream Monitoring. Aggregate read only; no Search job, configuration mutation or deploy.',
+  },
   // ── Cribl Search: what every dashboard panel does ─────────────────────────
   // Search always runs in the dedicated search group (AGENTS.md, "Config Group
   // Context"), so `default_search` is a literal segment here and in the

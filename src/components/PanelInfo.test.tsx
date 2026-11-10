@@ -82,6 +82,19 @@ function openPopover(query: string) {
 }
 
 describe('PanelInfo', () => {
+  it('shows and copies a read-only API request verbatim without Search links or dataset retargeting', async () => {
+    const request = 'POST /system/metrics/query\n{"where":"input == \\"http_raw:feed\\" || id == \\"gigamon\\"","earliest":100,"latest":200}'
+    act(() => {
+      root.render(<DashboardProvider><PanelInfo apiRequest={request} about="Stream object counters." /></DashboardProvider>)
+    })
+    act(() => container.querySelector<HTMLButtonElement>('.pinfo-btn')!.click())
+    expect(container.querySelector('.pinfo-code')?.textContent).toBe(request)
+    expect(container.querySelector('.pinfo-code-link')).toBeNull()
+    expect(container.textContent).not.toContain('Open in Search')
+    await act(async () => container.querySelector<HTMLButtonElement>('.pinfo-copy')!.click())
+    expect(copied).toBe(request)
+  })
+
   it('shows the query under its one documented transformation, clause per line', () => {
     openPopover(QUERY)
     const code = container.querySelector('.pinfo-code')

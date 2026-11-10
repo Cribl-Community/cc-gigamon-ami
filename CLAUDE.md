@@ -150,16 +150,12 @@ the group's source list, not a hardcoded preference for `in_gigamon_ami_http`).
 diagram's Refresh; failures/timeouts are visible, and late responses cannot
 replace a newer group's connection.
 
-`onboardedMetricsQueryFor` in `src/queries/dataFlow.ts` counts source intake by
-`input`, Processing by pipeline `id`, `from_input` and the QuickConnect
-`instance=dc:http_raw:<source>:<destination>`, and destination events/bytes by
-`output` plus `from_input`, all under `namespace=="data_insights"`. Shared
-pipeline/destination traffic and demo/pack totals are excluded. These dimensions
-were measured on the demo QuickConnect path, not independently re-measured on
-every Raw HTTP installation; a missing series is **unavailable**, not zero.
-An observed series summing to zero still displays zero.
+`streamMetrics.ts` and `useStreamMetrics.ts` now read the named objects directly
+from Stream Monitoring; see the newest counter description below. Missing
+aggregates are **unavailable**, not zero. Shared pipeline/destination traffic is
+included deliberately; neither metrics Search datasets nor snapshots fill gaps.
 
-All three counters run live over the selected range, in either header mode.
+All three counters run live for supported short ranges, in either header mode.
 Data Flow no longer reads `gno_pipeline_c1h`, `gno_lake_30d_c1d` or
 `gno_overview_c1h`. Those existing schedules and their controls are retained
 without automatic writes/deletes; the Acceleration panel explains that its
@@ -196,16 +192,28 @@ The Lake card uses one caption line to avoid colliding with its provenance chip;
 the storage-size limitation stays visible in the toolbar. Diagram geometry is
 unchanged. Neither browser check is live provenance/count evidence.
 
-### Data Flow named-object counters (2026-11-02)
+### Data Flow direct Stream counters (2026-11-05)
 
 Owner decision: Sources, Processing and Destinations show each named object's
-own counters, not a source-isolated population for all three. The live
-`onboardedMetricsQueryFor` reads `default_metrics` raw `_metric` / `_value`,
-scoped by exact worker `group`, with exact `input` for source intake, pipeline
-`id` for output and destination `output` for events/bytes. It does not require
-`namespace`, `from_input` or a QuickConnect `instance`: the raw samples inspected
-on this workspace lacked those connection dimensions. Shared pipeline/destination
-traffic is deliberately included and disclosed in visible copy and the tips.
+own counters, not a source-isolated population for all three. `streamMetrics.ts`
+uses `capi` for three read-only `POST /system/metrics/query` calls: exact `input`
+(`total.in_events`), pipeline `id` (`pipe.out_events`), destination `output`
+(`total.out_events`/`total.out_bytes`), split by that dimension, cumulative, scoped
+to exact `__worker_group` and `__dist_mode=="worker"`. The endpoint has one POST
+grant in policies/paths and a read-only authz audit entry; refusals are background
+reads and cannot latch a concurrent write gate. No Search job or metrics dataset.
+
+All three requests share absolute epoch-ms bounds from one clock read (documented
+in openapi.json). Ranges up to one hour are offered for Stream counters: longer
+ranges stay unavailable, never clamped. Full-window coverage is not certified,
+so no average rate is displayed. Prior native 15-minute source/destination reads
+on one fresh workspace returned 36,956 events each; a later one-hour query returned
+72,836 each with 240 metric points. Pipeline `pipe.out_events`
+by `id` is **not live-verified**. Missing, invalid and duplicate aggregates never
+become zeros; independently successful object reads survive another object's
+failure. Refresh/group/range changes invalidate previous numbers; requests abort
+on supersession/unmount and time out at 30 seconds. The ⓘ displays/copies the
+exact API request, with no KQL/Search link or sample/router retargeting.
 The normalized `cribl_metrics` query builders and legacy saved-search bodies are
 unchanged; no schedule Re-apply is required for this live-only change.
 Lake/Search and AMI volumes count the whole `gigamon_ami` dataset (see above). No configuration is written by this change.

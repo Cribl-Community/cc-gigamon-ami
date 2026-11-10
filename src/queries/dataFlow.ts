@@ -123,36 +123,11 @@ export const metricsQueryFor = (extraInputs: readonly string[]): string =>
   'backpressure=sum(iif(metric=="backpressure.outputs", value, 0))'
 
 /**
- * The stage counters as the hourly snapshot runs them (`gno_pipeline_c1h`).
- * The Data Flow tab adds the Raw HTTP source Guided Setup's Onboard connected
- * (`metricsQueryFor`) when its id is not one ./stackIds.ts lists — then that
- * panel runs live, because the stored run did not count it. Only the Sources
- * term moves: the source's pipeline (`gigamon`) and destination are already
- * counted by their own ids.
+ * Legacy hourly snapshot body (`gno_pipeline_c1h`), retained unchanged for
+ * existing saved searches. Data Flow no longer submits it or reads its runs:
+ * its live object counters use the Stream Monitoring API (streamMetrics.ts).
  */
 export const METRICS_QUERY = metricsQueryFor([])
-
-export interface OnboardedMetricPath {
-  sourceId: string
-  pipeline: string
-  destination: string
-}
-
-/** Raw Stream counters for each named object, including shared-object traffic. */
-export function onboardedMetricsQueryFor(path: OnboardedMetricPath & { group: string }): string {
-  const input = JSON.stringify(`http_raw:${path.sourceId}`)
-  const output = JSON.stringify(`cribl_lake:${path.destination}`)
-  const received = `_metric=="cribl.logstream.total.in_events" and input==${input}`
-  const processed = `_metric=="cribl.logstream.pipe.out_events" and id==${JSON.stringify(path.pipeline)}`
-  const written = `output==${output}`
-  return `dataset="default_metrics" | where group==${JSON.stringify(path.group)} | summarize ` +
-    `src_samples=countif(${received}), src_events=sum(iif(${received}, _value, 0)), ` +
-    `pipe_samples=countif(${processed}), pipe_events=sum(iif(${processed}, _value, 0)), ` +
-    `dst_samples=countif(_metric=="cribl.logstream.total.out_events" and ${written}), ` +
-    `dst_events=sum(iif(_metric=="cribl.logstream.total.out_events" and ${written}, _value, 0)), ` +
-    `dst_byte_samples=countif(_metric=="cribl.logstream.total.out_bytes" and ${written}), ` +
-    `dst_bytes=sum(iif(_metric=="cribl.logstream.total.out_bytes" and ${written}, _value, 0))`
-}
 
 /**
  * The four record figures (Lake, Search, Enriched Metadata, Network Traffic),

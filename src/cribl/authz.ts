@@ -61,11 +61,13 @@ import { useSyncExternalStore } from 'react'
 // --- What a write touches -------------------------------------------------
 
 /**
- * Which authorization story a write belongs to. The three are governed by
+ * Which authorization story a body-carrying request belongs to. They are governed by
  * different things, so a refusal means something different in each and the
  * sentence a customer reads has to differ too.
  */
 export type WriteSurface =
+  /** Body-carrying, read-only product API requests (no confirmation or gate). */
+  | 'read'
   /** Customer configuration in Cribl, governed by config/policies.yml and by the
    *  caller's own role. This is the surface a non-admin can be refused on. */
   | 'config'
@@ -295,6 +297,12 @@ export interface WriteSite {
 }
 
 export const WRITE_SITES: readonly WriteSite[] = [
+  {
+    at: 'cribl/streamMetrics.ts#readStreamMetrics',
+    gates: [],
+    surface: 'read',
+    why: 'A POST that only reads Stream Monitoring aggregates. It submits no Search job and changes no configuration. Background refusals must not latch an unrelated write control.',
+  },
   // --- Guided Setup: the only customer configuration this app writes --------
   // The global Raw HTTP stack's create path (`ensureDestination`,
   // `ensureBreaker`, `ensurePipeline`, `ensureSource`, `ensureRoute`, all

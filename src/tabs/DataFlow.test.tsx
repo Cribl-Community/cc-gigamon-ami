@@ -3,7 +3,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardProvider } from '../app/DashboardContext'
 import { setDataMode } from '../cribl/dataMode'
-import { DATASET_RECORDS_QUERY, onboardedMetricsQueryFor } from '../queries/dataFlow'
+import { DATASET_RECORDS_QUERY } from '../queries/dataFlow'
+import type { MetricsRequest } from '../cribl/streamMetrics'
 import { settleDatasetTarget } from '../cribl/datasetTarget'
 import { DataFlow } from './DataFlow'
 
@@ -23,6 +24,7 @@ let inputStatus: number
 let failSearch: boolean
 let failRecords: boolean
 let submits: { query: string; earliest: string }[]
+let metricRequests: MetricsRequest[]
 let inputReads: number
 let container: HTMLDivElement
 let root: Root
@@ -41,6 +43,7 @@ beforeEach(() => {
   failSearch = false
   failRecords = false
   submits = []
+  metricRequests = []
   inputReads = 0
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -50,6 +53,18 @@ beforeEach(() => {
     if (/\/m\/default\/system\/inputs$/.test(u)) {
       inputReads++
       return response(inputStatus, { items: sources })
+    }
+    if (u.endsWith('/system/metrics/query')) {
+      const body = JSON.parse(String(init.body)) as MetricsRequest
+      metricRequests.push(body)
+      if (failSearch) return response(403, { message: 'denied' })
+      const dim = body.aggs.splitBys[0]
+      const stage = dim === 'input' ? 'src' : dim === 'id' ? 'pipe' : 'dst'
+      const value = JSON.parse(body.where.match(/^\w+ == ("(?:[^"\\]|\\.)*")/)![1])
+      return response(200, {
+        results: row[`${stage}_samples`] ? [{ [dim]: value, events: row[`${stage}_events`], bytes: row.dst_bytes }] : [],
+        metrics: {}, info: {},
+      })
     }
     if ((init.method ?? 'GET') === 'POST' && u.endsWith('/search/jobs')) {
       const body = JSON.parse(String(init.body))
@@ -90,8 +105,8 @@ async function refresh() {
 describe('Data Flow follows the Onboard connection', () => {
   it('uses named-object telemetry and one gigamon_ami record scan for all four remaining figures', async () => {
     await render()
-    expect(submits).toHaveLength(2)
-    expect(submits.some((s) => s.query.includes(onboardedMetricsQueryFor(path)))).toBe(true)
+    expect(submits).toHaveLength(1)
+    expect(metricRequests).toHaveLength(3)
     expect(submits.some((s) => s.query.includes(DATASET_RECORDS_QUERY))).toBe(true)
     expect(container.textContent).toContain(path.sourceId)
     expect(container.textContent).toContain('pipeline · gigamon')
@@ -117,10 +132,22 @@ describe('Data Flow follows the Onboard connection', () => {
   it('uses the same first matching source as Onboard, not a preferred hardcoded id', async () => {
     sources = [{ id: 'picked_by_onboard', ...CONNECTED }, ...sources]
     await render()
-    const counters = submits.find((s) => s.query.includes('src_events='))!
-    expect(counters.query).toContain('input=="http_raw:picked_by_onboard"')
-    expect(counters.query).not.toContain('http_raw:in_gigamon_ami_http')
+    const counters = metricRequests.find((s) => s.aggs.splitBys[0] === 'input')!
+    expect(counters.where).toContain('input == "http_raw:picked_by_onboard"')
+    expect(counters.where).not.toContain('http_raw:in_gigamon_ami_http')
     expect(container.textContent).toContain('picked_by_onboard')
+  })
+
+  it('shows the actual Stream API request as provenance, with no bogus Search link', async () => {
+    await render()
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Cribl Stream · Source"]')!.click() })
+    const pop = container.querySelector('.pinfo-pop')!
+    const code = pop.querySelector('.pinfo-code')!.textContent!
+    expect(code).toBe(`POST /system/metrics/query\n${JSON.stringify(metricRequests[0], null, 2)}`)
+    expect(pop.textContent).toContain('Stream Monitoring · API read')
+    expect(pop.textContent).not.toContain('Open in Search')
+    expect(code).not.toContain('default_metrics')
+    expect(code).not.toContain('dataset=')
   })
 
   it('does not replace a missing onboarded connection with demo or pack totals', async () => {
@@ -138,7 +165,7 @@ describe('Data Flow follows the Onboard connection', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not read the Raw HTTP sources')
     inputStatus = 200
     await refresh()
-    expect(submits.filter((s) => s.query.includes('src_events='))).toHaveLength(1)
+    expect(metricRequests).toHaveLength(3)
     expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 
@@ -147,22 +174,23 @@ describe('Data Flow follows the Onboard connection', () => {
     sources = [{ id: 'replacement', ...CONNECTED }]
     await refresh()
     expect(inputReads).toBe(2)
-    expect(submits).toHaveLength(4)
-    expect(submits.slice(2).some((s) => s.query.includes('http_raw:replacement'))).toBe(true)
-    expect(submits.slice(2).some((s) => s.query.includes(DATASET_RECORDS_QUERY))).toBe(true)
+    expect(submits).toHaveLength(2)
+    expect(metricRequests).toHaveLength(6)
+    expect(metricRequests.slice(3).some((s) => s.where.includes('http_raw:replacement'))).toBe(true)
+    expect(submits[1].query).toContain(DATASET_RECORDS_QUERY)
     expect(container.textContent).not.toContain(path.sourceId)
   })
 
   it('shows missing series as unavailable, but an observed zero as zero', async () => {
     row = { ...COUNTERS, src_events: 0, pipe_samples: 0, pipe_events: 0, dst_samples: 0, dst_events: 0 }
     await render()
-    expect(container.textContent).toContain('events in · avg 0/s')
+    expect(container.querySelector('[aria-label^="Sources "]')?.getAttribute('aria-label')).toContain('— 0 ')
     expect(container.textContent).toContain('processing unavailable')
     expect(container.textContent).toContain('writes unavailable')
     expect(container.textContent).toContain('Unavailable does not mean zero')
   })
 
-  it('surfaces Search failures instead of rendering zero counts', async () => {
+  it('surfaces Stream API failures instead of rendering zero counts', async () => {
     failSearch = true
     await render()
     expect(container.querySelector('[role="alert"]')).not.toBeNull()
@@ -190,7 +218,7 @@ describe('Data Flow follows the Onboard connection', () => {
     const cards = [...container.querySelectorAll('[role="button"]')].map((c) => c.getAttribute('aria-label') ?? '')
     expect(cards.some((c) => c.startsWith('Cribl Lake ') && c.includes('— 0 '))).toBe(true)
     expect(cards.some((c) => c.startsWith('Cribl Search ') && c.includes('— 0 '))).toBe(true)
-    expect(submits).toHaveLength(2)
+    expect(submits).toHaveLength(1)
   })
 
   it.each([undefined, '0', 1, -1])('rejects malformed empty-window sums (%s)', async (sum) => {
@@ -243,7 +271,7 @@ describe('Data Flow follows the Onboard connection', () => {
   it('never retargets the dataset record query onto synthetic sample data', async () => {
     settleDatasetTarget(true)
     await render()
-    expect(submits).toHaveLength(2)
+    expect(submits).toHaveLength(1)
     expect(submits.some((s) => s.query.includes(DATASET_RECORDS_QUERY))).toBe(true)
     expect(submits.every((s) => !s.query.includes('gigamon_ami_sample'))).toBe(true)
     await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Cribl Lake · gigamon_ami"]')!.click() })
@@ -267,22 +295,35 @@ describe('Data Flow follows the Onboard connection', () => {
     })
 
     await settle()
-    expect(submits).toHaveLength(4)
-    expect(submits.slice(2).every((s) => s.earliest !== submits[0].earliest)).toBe(true)
+    expect(submits).toHaveLength(2)
+    expect(submits[1].earliest).not.toBe(submits[0].earliest)
+    expect(metricRequests).toHaveLength(6)
+    expect(metricRequests.slice(3).every((s) => s.latest - s.earliest === 300_000)).toBe(true)
     await act(async () => { setDataMode('live') })
     await settle()
     expect(submits.every((s) => !s.query.includes('$vt_results'))).toBe(true)
   })
 
-  it('shows a fractional window-average source rate rather than rounding low intake to zero', async () => {
+  it('does not imply a window-average rate without certified coverage', async () => {
     await render()
-    expect(container.textContent).toContain('events in · avg 0.14/s')
+    expect(container.textContent).not.toContain('avg')
+    expect(container.textContent).toContain('complete window coverage is not certified')
   })
 
-  it('keeps a very small positive source rate distinguishable from zero', async () => {
-    row.src_events = 1
+  it('does not silently truncate longer ranges to the metrics store window', async () => {
     await render()
-    expect(container.textContent).toContain('events in · avg <0.01/s')
+    const select = container.querySelector<HTMLSelectElement>('.range-select')!
+    await act(async () => {
+      select.value = 'Last 4 hours'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await settle()
+    expect(metricRequests).toHaveLength(3)
+    expect(submits).toHaveLength(2)
+    expect(submits[1].earliest).toBe('-4h')
+    expect(container.textContent).toContain('longer metrics coverage has not been verified')
+    expect(container.textContent).toContain('intake unavailable')
+    expect(container.textContent).toContain('150 packets · from AMI')
   })
 })
 

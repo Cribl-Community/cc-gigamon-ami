@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { useSearch } from '../cribl/useSearch'
 import { criblUiUrl, LAKE_DATASET } from '../cribl/config'
-import { DATASET_RECORDS_QUERY, METRICS_QUERY, onboardedMetricsQueryFor } from '../queries/dataFlow'
+import { DATASET_RECORDS_QUERY } from '../queries/dataFlow'
 import { useDashboard, TIME_RANGES } from '../app/DashboardContext'
 import { useOnboardedFlow, type OnboardedFlow } from '../components/useOnboardedFlow'
+import { useStreamMetrics } from '../components/useStreamMetrics'
+import type { StreamStage } from '../cribl/streamMetrics'
 import { PanelInfo } from '../components/PanelInfo'
 import { DopDiagram, type DopNode, type HopId, type HopState, type InfoKey, type SlotId } from '../components/DopDiagram'
 import { useSnapshotSlot } from '../components/snapshotCensus'
-import { fmtCount, fmtBytes, toNum, windowSeconds } from '../lib/format'
+import { fmtCount, fmtBytes } from '../lib/format'
 
 interface Stage {
   id: string
@@ -35,12 +37,12 @@ const STAGES: Stage[] = [
   },
   {
     id: 'pipeline', name: 'Cribl Stream · Processing', short: 'Onboarded QuickConnect pipeline',
-    purpose: 'Counts events leaving the named pipeline in the selected worker group, from default_metrics raw Stream counters. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.',
+    purpose: 'Reads pipe.out_events for the exact pipeline id in the selected worker group from the Stream Monitoring API. This pipeline aggregation has not been live-verified; a missing series stays unavailable. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.',
     links: [],
   },
   {
     id: 'destination', name: 'Cribl Stream · Destination', short: 'Onboarded Cribl Lake destination',
-    purpose: 'Counts events and bytes written by the named destination in the selected worker group, from default_metrics raw Stream counters. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.',
+    purpose: 'Counts events and bytes written by the named destination in the selected worker group, from the Stream Monitoring API. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.',
     links: [],
   },
   {
@@ -55,7 +57,7 @@ const STAGES: Stage[] = [
   },
   {
     id: 'app', name: 'Gigamon Network Observability', short: 'Connection telemetry',
-    purpose: 'Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Two live queries read Stream telemetry and the gigamon_ami records for the selected range; combined demo and pack snapshots are not used. These searches consume Search credits; this dashboard never changes ingestion configuration.',
+    purpose: 'Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Three read-only Stream Monitoring API calls read object counters; one live gigamon_ami Search reads the record-derived figures and consumes Search credits. No combined snapshots or ingestion configuration writes are used.',
     links: [{ href: criblUiUrl('/apps'), label: 'Cribl Apps' }],
   },
 ]
@@ -86,26 +88,17 @@ export function DataFlow() {
   const { range, setRange, refreshNonce } = useDashboard()
   const connection = useOnboardedFlow(refreshNonce)
   const flow = connection.flow
-  // The disabled hook still needs a query string; it never submits without a connection.
-  const metricsQuery = flow ? onboardedMetricsQueryFor(flow) : METRICS_QUERY
-  const met = useSearch(metricsQuery, { enabled: flow !== null, deferred: connection.loading, asWritten: true })
+  const met = useStreamMetrics(flow)
   const recordsQuery = DATASET_RECORDS_QUERY
   const records = useSearch(recordsQuery, { asWritten: true })
-  useSnapshotSlot({
-    source: met.source, outcome: met.outcome, at: met.at, stale: met.stale, nearestAt: met.nearestAt,
-  })
   useSnapshotSlot({
     source: records.source, outcome: records.outcome, at: records.at, stale: records.stale, nearestAt: records.nearestAt,
   })
   const loading = connection.loading || records.loading || (flow !== null && met.loading)
-  const row = flow && !met.loading && !met.error ? met.rows[0] : undefined
-  const counter = (samples: string, value: string): number | null =>
-    row && toNum(row[samples]) > 0 && typeof row[value] === 'number' && Number.isFinite(row[value])
-      ? row[value] : null
-  const src = counter('src_samples', 'src_events')
-  const pipe = counter('pipe_samples', 'pipe_events')
-  const dst = counter('dst_samples', 'dst_events')
-  const bytes = counter('dst_byte_samples', 'dst_bytes')
+  const src = met.counters.source?.events ?? null
+  const pipe = met.counters.pipeline?.events ?? null
+  const dst = met.counters.destination?.events ?? null
+  const bytes = met.counters.destination?.bytes ?? null
   const recordRow = !records.loading && !records.error ? records.rows[0] : undefined
   const numberAt = (key: string): number | null => {
     const n = recordRow?.[key]
@@ -127,15 +120,12 @@ export function DataFlow() {
   const trafficBytes = landed === null || (landed > 0 && byteRecords === 0) ? null : numberAt('bytes') ?? 0
   const packets = landed === null || (landed > 0 && packetRecords === 0) ? null : numberAt('packets') ?? 0
   const count = (n: number | null) => n === null ? '—' : fmtCount(n)
-  const sourceRate = src === null ? null : src / Math.max(1, windowSeconds(range.earliest))
-  const rateLabel = sourceRate === null ? '—' : sourceRate > 0 && sourceRate < 0.01
-    ? '<0.01' : sourceRate.toLocaleString('en-US', { maximumFractionDigits: 2 })
   const stages = stagesFor(flow)
   const selected = stages.find((s) => s.id === sel)!
   const nodes: Record<SlotId, DopNode> = {
     sources: {
       id: 'datagen', title: ['Sources'], tier: 'cribl', sub: [flow?.sourceId ?? 'No onboarded source'],
-      value: count(src), label: [src === null ? 'intake unavailable' : `events in · avg ${rateLabel}/s`], from: 'cribl',
+      value: count(src), label: [src === null ? 'intake unavailable' : 'events in · returned telemetry'], from: 'cribl',
     },
     stream: {
       id: 'pipeline', title: ['Processing'], tier: 'cribl', icon: 'stream', sub: [flow ? `pipeline · ${flow.pipeline}` : 'No onboarded pipeline'],
@@ -144,7 +134,7 @@ export function DataFlow() {
     destinations: {
       id: 'destination', title: ['Destinations'], tier: 'cribl', sub: [flow?.destination ?? 'No onboarded destination'],
       value: bytes === null ? '—' : fmtBytes(bytes),
-      label: [dst === null ? 'writes unavailable' : `${fmtCount(dst)} events written this window`], from: 'cribl',
+      label: [dst === null ? 'writes unavailable' : `${fmtCount(dst)} events written · returned telemetry`], from: 'cribl',
     },
     lake: {
       id: 'lake', title: ['Cribl Lake'], tier: 'cribl', icon: 'lake', sub: [`${LAKE_DATASET} dataset`],
@@ -162,8 +152,12 @@ export function DataFlow() {
   }
   const stageInfo = (s: Stage) =>
     <PanelInfo label={s.name} about={s.purpose} aboutHeading="What this stage does" links={s.links} />
-  const telemetryInfo = (t: Stage) =>
-    <PanelInfo label={t.name} about={t.purpose} aboutHeading="What this stage does" links={t.links} query={metricsQuery} asWritten />
+  const telemetryInfo = (t: Stage) => {
+    const stage: StreamStage = t.id === 'datagen' ? 'source' : t.id === 'pipeline' ? 'pipeline' : 'destination'
+    const request = met.requests[stage]
+    return <PanelInfo label={t.name} about={t.purpose} aboutHeading="What this stage does" links={t.links}
+      apiRequest={request ? `POST /system/metrics/query\n${JSON.stringify(request, null, 2)}` : undefined} />
+  }
   const recordsInfo = (r: Stage) =>
     <PanelInfo label={r.name} about={r.purpose} aboutHeading="What this stage does" links={r.links} query={recordsQuery} asWritten />
   const infoOf = (id: string) => {
@@ -193,21 +187,23 @@ export function DataFlow() {
           {TIME_RANGES.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
         </select>
         <button type="button" className={`panel-refresh ${loading ? 'panel-refresh-on' : ''}`}
-          onClick={() => { connection.refresh(); met.refetch(); records.refetch() }} aria-label="Refresh data-flow volumes" title="Refresh data-flow volumes">
+          onClick={() => { connection.refresh(); records.refetch() }} aria-label="Refresh data-flow volumes" title="Refresh data-flow volumes">
           Refresh
         </button>
         <span className="flow-tb-note">
-          Raw object counters from default_metrics · {connection.group}. Lake, Search and AMI figures count all of gigamon_ami; storage size not shown. Searches consume credits.
+          Stream Monitoring API · {connection.group}. Lake, Search and AMI figures count all of gigamon_ami; storage size not shown. Only the record Search consumes Search credits.
         </span>
       </div>
       {connection.error && <p role="alert">{connection.error}</p>}
       {!loading && !connection.error && !flow && <p role="status">No onboarded Raw HTTP connection found in {connection.group}. Open Guided Setup and run Onboard.</p>}
-      {met.error && flow && <p role="alert">{met.errorTitle ?? 'Could not read connection telemetry'}: {met.error}</p>}
+      {met.error && flow && <p role="alert">{met.error}</p>}
+      {!met.supported && <p role="status">Stream counters are unavailable for this range. Choose a range of up to Last 1 hour; longer metrics coverage has not been verified. Record figures still use the selected range.</p>}
+      {met.supported && <p role="status">Stream counters sum returned telemetry for the requested window; complete window coverage is not certified. Pipeline aggregation is not yet live-verified.</p>}
       {records.error && <p role="alert">{records.errorTitle ?? 'Could not read gigamon_ami records'}: {records.error}</p>}
       {!records.loading && !records.error && !validRecords && <p role="alert">The gigamon_ami record query returned an incomplete or invalid summary. Record-derived figures are unavailable.</p>}
       {landed !== null && landed > 0 && (byteRecords !== landed || packetRecords !== landed) &&
         <p role="status">Network Traffic coverage: {fmtCount(byteRecords)} of {fmtCount(landed)} records carry bytes in both directions and {fmtCount(packetRecords)} carry packets; the totals sum those records only.</p>}
-      {unavailable && <p role="status">Some named-object counters have no matching telemetry in default_metrics for this group and window. Unavailable does not mean zero.</p>}
+      {unavailable && met.supported && <p role="status">Some named-object counters have no valid matching Stream telemetry for this group and window. Unavailable does not mean zero.</p>}
       <DopDiagram nodes={nodes} wire={{
         value: trafficBytes === null ? '—' : fmtBytes(trafficBytes),
         label: packets === null ? 'packets unavailable · from AMI' : `${fmtCount(packets)} packets · from AMI`,

@@ -12,16 +12,16 @@
     "Do not hand-edit: change src/, re-run `npm run queries:extract`, and review the diff."
   ],
   "counts": {
-    "surfaces": 88,
-    "searches": 40,
+    "surfaces": 87,
+    "searches": 39,
     "links": 23,
     "briefs": 17,
-    "prose": 27,
-    "modules": 245,
+    "prose": 28,
+    "modules": 242,
     "catalogs": 19,
     "states": 45,
     "passthrough": 3,
-    "unbound": 30
+    "unbound": 31
   },
   "fixtures": {
     "src/components/BenchmarkPanel.tsx": {
@@ -31,19 +31,13 @@
       }
     },
     "src/tabs/DataFlow.tsx": {
-      "flow": {
-        "group": "default",
-        "sourceId": "in_gigamon_ami_http",
-        "pipeline": "gigamon",
-        "destination": "gigamon_lake"
-      },
       "s": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "8 entries · sha256 6625104512f9b8e2"
+        "value": "8 entries · sha256 12101ff28310b5e3"
       },
       "selected": {
         "from": "STAGES.map((x) => ({ label: x.id, value: x }))",
-        "value": "8 entries · sha256 6625104512f9b8e2"
+        "value": "8 entries · sha256 12101ff28310b5e3"
       }
     },
     "src/tabs/DnsHealth.tsx": {
@@ -249,10 +243,7 @@
       "VOLUME_QUERY": "dataset=\"gigamon_ami\" | extend total_bytes = coalesce(src_bytes, 0) + coalesce(dst_bytes, 0) | extend total_packets = coalesce(src_packets, 0) + coalesce(dst_packets, 0) | summarize events=count(), bytes=sum(total_bytes), packets=sum(total_packets)",
       "metricsQueryFor(a picked source of another id)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\" or input==\"http_raw:amx_feed\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
       "metricsQueryFor(in_gigamon_ami_http, already listed)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
-      "metricsQueryFor(none onboarded)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))",
-      "onboardedMetricsQueryFor(created source)": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
-      "onboardedMetricsQueryFor(picked source)": "dataset=\"default_metrics\" | where group==\"other\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:amx_feed\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:amx_feed\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
-      "onboardedMetricsQueryFor(quoted identifier)": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:feed\\\"name\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:feed\\\"name\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))"
+      "metricsQueryFor(none onboarded)": "dataset=\"cribl_metrics\" | summarize src_events=sum(iif(metric==\"total.in_events\" and namespace==\"data_insights\" and (input==\"datagen:in_gigamon_datagen\" or input==\"http_raw:in_gigamon_ami_http\" or input==\"syslog:cc-network-gigamon-ami.in_gno_syslog\" or input==\"http_raw:cc-network-gigamon-ami.in_gigamon_ami_http\"), value, 0)), pipe_events=sum(iif(namespace==\"data_insights\" and ((metric==\"pipe.out_events\" and ((id==\"gigamon_ami\") or (id==\"gigamon\"))) or (metric==\"total.out_events\" and ((output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\") or (output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\")))), value, 0)), dst_events=sum(iif(metric==\"total.out_events\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), dst_bytes=sum(iif(metric==\"total.out_bytes\" and namespace==\"data_insights\" and (output==\"cribl_lake:gigamon_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.out_gno_lake\" or output==\"cribl_lake:cc-network-gigamon-ami.gigamon_ami_json_lake\"), value, 0)), blocked=sum(iif(metric==\"blocked.outputs\", value, 0)), backpressure=sum(iif(metric==\"backpressure.outputs\", value, 0))"
     },
     "src/queries/datasets.ts": {
       "REAL_DATASET": "gigamon_ami",
@@ -1256,12 +1247,6 @@
     },
     "src/tabs/DataFlow.tsx": {
       "surfaces": {
-        "PanelInfo · t.name": {
-          "ref": "metricsQuery",
-          "shape": "query",
-          "query": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
-          "reads": "(unbound)"
-        },
         "PanelInfo · r.name": {
           "ref": "recordsQuery",
           "shape": "query",
@@ -1270,16 +1255,6 @@
         }
       },
       "searches": {
-        "met": {
-          "ref": "metricsQuery",
-          "shape": "query",
-          "query": "dataset=\"default_metrics\" | where group==\"default\" | summarize src_samples=countif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\"), src_events=sum(iif(_metric==\"cribl.logstream.total.in_events\" and input==\"http_raw:in_gigamon_ami_http\", _value, 0)), pipe_samples=countif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\"), pipe_events=sum(iif(_metric==\"cribl.logstream.pipe.out_events\" and id==\"gigamon\", _value, 0)), dst_samples=countif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\"), dst_events=sum(iif(_metric==\"cribl.logstream.total.out_events\" and output==\"cribl_lake:gigamon_lake\", _value, 0)), dst_byte_samples=countif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\"), dst_bytes=sum(iif(_metric==\"cribl.logstream.total.out_bytes\" and output==\"cribl_lake:gigamon_lake\", _value, 0))",
-          "options": "{ enabled: flow !== null, deferred: connection.loading, asWritten: true }",
-          "optionsValue": {
-            "enabled": true,
-            "asWritten": true
-          }
-        },
         "records": {
           "ref": "recordsQuery",
           "shape": "query",
@@ -1320,14 +1295,14 @@
         },
         "PanelInfo · s.purpose · pipeline": {
           "ref": "s.purpose",
-          "about": "Counts events leaving the named pipeline in the selected worker group, from default_metrics raw Stream counters. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.",
+          "about": "Reads pipe.out_events for the exact pipeline id in the selected worker group from the Stream Monitoring API. This pipeline aggregation has not been live-verified; a missing series stays unavailable. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.",
           "aboutHeading": "What this stage does",
           "label": "s.name",
           "links": []
         },
         "PanelInfo · s.purpose · destination": {
           "ref": "s.purpose",
-          "about": "Counts events and bytes written by the named destination in the selected worker group, from default_metrics raw Stream counters. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.",
+          "about": "Counts events and bytes written by the named destination in the selected worker group, from the Stream Monitoring API. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.",
           "aboutHeading": "What this stage does",
           "label": "s.name",
           "links": []
@@ -1352,12 +1327,19 @@
         },
         "PanelInfo · s.purpose · app": {
           "ref": "s.purpose",
-          "about": "Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Two live queries read Stream telemetry and the gigamon_ami records for the selected range; combined demo and pack snapshots are not used. These searches consume Search credits; this dashboard never changes ingestion configuration.",
+          "about": "Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Three read-only Stream Monitoring API calls read object counters; one live gigamon_ami Search reads the record-derived figures and consumes Search credits. No combined snapshots or ingestion configuration writes are used.",
           "aboutHeading": "What this stage does",
           "label": "s.name",
           "links": [
             "Cribl Apps → /apps"
           ]
+        },
+        "PanelInfo · t.purpose": {
+          "ref": "t.purpose",
+          "about": "(unbound)",
+          "aboutHeading": "What this stage does",
+          "label": "t.name",
+          "links": "(unbound)"
         },
         "PanelInfo · selected.purpose · gigasmart": {
           "ref": "selected.purpose",
@@ -1380,12 +1362,12 @@
         },
         "PanelInfo · selected.purpose · pipeline": {
           "ref": "selected.purpose",
-          "about": "Counts events leaving the named pipeline in the selected worker group, from default_metrics raw Stream counters. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.",
+          "about": "Reads pipe.out_events for the exact pipeline id in the selected worker group from the Stream Monitoring API. This pipeline aggregation has not been live-verified; a missing series stays unavailable. Includes all traffic using this pipeline, not only the onboarded source. Processing can change event counts; equal counts are not assumed.",
           "links": []
         },
         "PanelInfo · selected.purpose · destination": {
           "ref": "selected.purpose",
-          "about": "Counts events and bytes written by the named destination in the selected worker group, from default_metrics raw Stream counters. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.",
+          "about": "Counts events and bytes written by the named destination in the selected worker group, from the Stream Monitoring API. Includes all sources using this destination. These are Stream write counters, not retained Lake records or compressed storage size.",
           "links": []
         },
         "PanelInfo · selected.purpose · lake": {
@@ -1404,7 +1386,7 @@
         },
         "PanelInfo · selected.purpose · app": {
           "ref": "selected.purpose",
-          "about": "Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Two live queries read Stream telemetry and the gigamon_ami records for the selected range; combined demo and pack snapshots are not used. These searches consume Search credits; this dashboard never changes ingestion configuration.",
+          "about": "Displays the same connected source, pipeline and destination that Guided Setup’s Onboard page identifies. Refresh re-reads that connection. Three read-only Stream Monitoring API calls read object counters; one live gigamon_ami Search reads the record-derived figures and consumes Search credits. No combined snapshots or ingestion configuration writes are used.",
           "links": [
             "Cribl Apps → /apps"
           ]

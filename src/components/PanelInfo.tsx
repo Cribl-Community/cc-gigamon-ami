@@ -40,6 +40,8 @@ interface Props {
   about?: string
   /** The exact Cribl Search (KQL) query behind the visualization. */
   query?: string
+  /** Exact read-only API request, not KQL; never linked to Search or retargeted. */
+  apiRequest?: string
   /** Match an asWritten Search read: neither display, prose nor links retarget. */
   asWritten?: boolean
   /** Deep links to the corresponding Cribl pages (Stream / Lake / Search). */
@@ -287,7 +289,7 @@ function pretty(q: string): string {
  *    query. Nothing dispatches for those, so the popover follows the anchor on
  *    an animation frame instead of waiting to be told.
  */
-export function PanelInfo({ about, query, asWritten = false, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed, promql, promqlHref }: Props) {
+export function PanelInfo({ about, query, apiRequest, asWritten = false, links, aboutHeading = 'What this shows', label = 'What this shows and the query behind it', dialogLabel, computed, promql, promqlHref }: Props) {
   const { range } = useDashboard()
   // THE QUERY AS IT RAN. Callers pass the query as written, against
   // `gigamon_ami`; while only sample data exists the job ran against the sample
@@ -318,6 +320,7 @@ export function PanelInfo({ about, query, asWritten = false, links, aboutHeading
    *  shared flag makes pressing either Copy tick BOTH buttons, which is a claim
    *  about what is on the clipboard and it would be wrong half the time. */
   const [pqCopied, setPqCopied] = useState(false)
+  const [apiCopied, setApiCopied] = useState<string | null>(null)
   const wrapRef = useRef<HTMLSpanElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
@@ -509,6 +512,17 @@ export function PanelInfo({ about, query, asWritten = false, links, aboutHeading
                    full archive (queryTarget.ts, the `evidence` pin). */
                 <p className="pinfo-about">{`This figure was read from ${PARQUET_DATASET}, the Parquet copy. “Open in Search” opens the same query on ${REAL_DATASET}, the full archive with every field and the original record.`}</p>
               )}
+            </div>
+          )}
+          {apiRequest && (
+            <div className="pinfo-block">
+              <div className="pinfo-h-row">
+                <span className="pinfo-h">Stream Monitoring · API read</span>
+                <button type="button" className="pinfo-copy" onClick={() => {
+                  navigator.clipboard?.writeText(apiRequest).then(() => setApiCopied(apiRequest))
+                }}>{apiCopied === apiRequest ? 'Copied ✓' : 'Copy'}</button>
+              </div>
+              <pre className="pinfo-code">{apiRequest}</pre>
             </div>
           )}
           {promql && (

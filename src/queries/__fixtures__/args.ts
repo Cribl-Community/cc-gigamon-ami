@@ -82,7 +82,6 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
   },
 
   'src/tabs/DataFlow.tsx': {
-    flow: { group: 'default', sourceId: 'in_gigamon_ami_http', pipeline: 'gigamon', destination: 'gigamon_lake' },
     s: { $each: 'STAGES.map((x) => ({ label: x.id, value: x }))' } satisfies EachFixture,
     selected: { $each: 'STAGES.map((x) => ({ label: x.id, value: x }))' } satisfies EachFixture,
   },
@@ -185,15 +184,7 @@ export const VARIANTS: Record<string, Record<string, VariantSpec>> = {
   },
 
   'src/queries/dataFlow.ts': {
-    onboardedMetricsQueryFor: {
-      cases:
-        "[{ label: 'created source', args: [{ group: 'default', sourceId: 'in_gigamon_ami_http', pipeline: 'gigamon', destination: 'gigamon_lake' }] }," +
-        " { label: 'picked source', args: [{ group: 'other', sourceId: 'amx_feed', pipeline: 'gigamon', destination: 'gigamon_lake' }] }," +
-        " { label: 'quoted identifier', args: [{ group: 'default', sourceId: 'feed\"name', pipeline: 'gigamon', destination: 'gigamon_lake' }] }]",
-    },
-    // The Raw HTTP source Guided Setup's Onboard connected is runtime input:
-    // none (the snapshot's own text), one the stack list already names, and
-    // one of another id, which joins the Sources term.
+    // Historical builder variants, retained for the legacy snapshot text.
     metricsQueryFor: {
       cases:
         "[{ label: 'none onboarded', args: [[]] }," +

@@ -172,10 +172,9 @@ const BUDGET: Readonly<Record<string, TabBudget>> = {
   '/tls-posture': { served: 1, jobs: [] },
   '/pqc': { served: 2, jobs: [] },
   '/ai-saas': { served: 3, jobs: [] },
-  // With no Onboard connection in this workspace stub, no telemetry job is
-  // submitted; the whole-dataset record aggregate (Lake, Search, Network
-  // Traffic, Enriched Metadata) runs regardless. Connected workspaces add the
-  // exact connection telemetry (DataFlow.test.tsx).
+  // Only the whole-dataset record aggregate submits a Search job. Connected
+  // workspaces read object counters through Stream Monitoring's API, not Search
+  // (DataFlow.test.tsx holds the three requests and unchanged record figures).
   '/data-flow': {
     served: 0,
     jobs: [live('Lake / Search / AMI records', DATASET_RECORDS_QUERY, `${NOT_IN_MANIFEST}; owner decision 2026-11-02, whole gigamon_ami`)],

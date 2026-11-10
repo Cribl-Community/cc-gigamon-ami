@@ -110,6 +110,9 @@
 # provisioning confirmation into components/ProvisionPanel.tsx, and Phase 2 added
 # the saved-search writes above.
 policies:
+  # Read-only Stream Monitoring aggregation; POST submits no Search job.
+  - object: '/system/metrics/query'
+    actions: ['POST']
   # --- Cribl Search: every dashboard panel ------------------------------------
   # Search always runs in the dedicated search group (AGENTS.md, "Config Group
   # Context"), so these are literal `default_search` paths. The app is granted

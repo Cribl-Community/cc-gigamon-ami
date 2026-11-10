@@ -224,18 +224,25 @@ to check a query-used field missing from the sampled list.
 ### Data Flow: the onboarded connection
 
 Data Flow follows the worker group and connected Raw HTTP source shown in Guided
-Setup's Onboard page. It reads each named object's raw Stream counters from
-`default_metrics`, filtered by the selected worker `group`: `_metric` names
-`cribl.logstream.total.in_events`, `cribl.logstream.pipe.out_events` and
-`cribl.logstream.total.out_events` / `total.out_bytes`; `_value` supplies the count.
+Setup's Onboard page. Three read-only `POST /system/metrics/query` calls read
+Stream Monitoring counters directly, scoped by exact `__worker_group` and
+`__dist_mode=="worker"`: `total.in_events`, `pipe.out_events`, and
+`total.out_events` / `total.out_bytes`. No metrics Search job is submitted.
 The source is matched by exact `input`, pipeline by `id`, destination by `output`.
 Processing includes every source using that pipeline, and Destinations includes
 every writer using that destination — these are object totals, not source-only
 connection totals. Equal counts are not assumed. Refresh also re-reads the connection.
-Missing metric series show **unavailable**, not zero.
-The Sources rate is an average over the selected window, not an instantaneous
-ingestion rate. It shows up to two decimal places; positive rates below 0.01/s
-show `<0.01/s` rather than rounding to zero.
+Missing or invalid aggregates show **unavailable**, not zero; observed zeros remain
+zero. The ⓘ shows/copies the actual API request and its absolute millisecond bounds,
+not KQL or an Open in Search link.
+
+Stream counters are offered for ranges **up to Last 1 hour**.
+Longer selections leave them unavailable rather than silently truncating the range;
+record figures still read the full selected window. Counts sum returned telemetry,
+not certified complete-window coverage; no average rate is claimed. Native 15-minute
+source/destination reads were live-verified on one fresh workspace (36,956 events
+each); a later one-hour query returned 72,836 events each with 240 metric points.
+The pipeline `pipe.out_events`/`id` aggregation is not yet live-verified.
 
 The diagram is unchanged. One additional live Search query counts the **whole
 `gigamon_ami` dataset** over the selected event-time window (owner decision: the
@@ -251,19 +258,18 @@ and a coverage note says how many; with no covered record the figure is
 unavailable. An empty window shows zero. Lake compressed storage size remains
 unavailable. Lake/Search may lag Stream writes and use event time.
 
-Both queries run live in either header mode and consume Search credits on a
-visit, refresh, time-range change or configured auto-refresh. They never use
+Reads run live in either header mode on a
+visit, refresh, time-range change or configured auto-refresh. Only the record
+Search consumes Search credits. They never use
 sample data in place of `gigamon_ami`. Data Flow does not use combined snapshots. Its legacy
 acceleration controls remain available for existing installs; they do not control
 the new live counters. New onboarding and Apply runs no longer create/reapply the
 unused standalone Data Flow searches; existing ones can still be paused or
 removed manually. The shared overview continues serving other dashboards.
 No ingestion settings or existing schedules change automatically.
-This live object query no longer reads `cribl_metrics`' normalized
-`namespace="data_insights"` records. On the inspected workspace, current raw
-metrics land in `default_metrics`; there is no silent fallback to a different
-dataset or to stale normalized counters. Other dashboards' queries and existing
-saved-search bodies are unchanged.
+Live object counters depend on neither `default_metrics` nor `cribl_metrics`.
+There is no silent fallback to a metrics dataset or stale snapshots. Other
+dashboards' queries and existing saved-search bodies are unchanged.
 
 Capacity's KPI query derives `total_bytes` from `coalesce(src_bytes, 0) +
 coalesce(dst_bytes, 0)` and `total_packets` from `coalesce(src_packets, 0) +
